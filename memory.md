@@ -160,3 +160,40 @@
 - **Próximo**: B2 (prefetch en hilos de fondo con cola prioritaria) y resto de
   Fase 1 (entregables 3-7): zoom, modo paginado, harness android-activity,
   overlay debug.
+
+## 2026-08-05 — Fase 1 Ola 6: B2 prefetch hilos de fondo (actor model)
+
+- **Hecho**: implementado `crates/pdf_core/src/prefetch.rs` (218 líneas) —
+  arquitectura **actor model con 1 worker thread**. Razón crítica:
+  `MupdfDocument` NO es Send-sound (raw `*mut fz_document` atado al TLS context
+  del hilo creador — verificado por `cargo check` en sonda y mupdf 0.8).
+  `Prefetcher::open(engine, path, budget)` crea el documento DENTRO del hilo
+  worker; nunca `unsafe impl Send/Sync`. Single worker (pool múltiple inseguro
+  con MuPDF TLS).
+- **Hecho**: API pública `open`, `request(vp,total,radius,scale_level)` (no
+  bloqueante — solo envía por canal mpsc; visibles PRIMERO, prefetch vecinos
+  después; Request nuevo reemplaza wishlist), `cancel_pending`,
+  `stats_snapshot()`, `resident_pages()`, `await_idle_timeout(timeout)`.
+- **Hecho**: cambios mínimos en cache.rs (+`pub fn resident_keys()` 3 líneas,
+  para soporte de `resident_pages` thread-safe vía round-trip por canal). Sin
+  deps nuevas (stdlib: mpsc, thread, atomic, HashSet).
+- **Hecho**: 6 tests REALES en tests/prefetch.rs (198 líneas) con MupdfEngine +
+  large_document.pdf. Verifican: ① prefetch puebla cache en background (7 misses
+  exactos); ② prioridad visibles-vs-prefetch observable vía resident_pages con
+  budget pequeño forzado; ③ request() < 200ms (no bloquea); ④ Drop no cuelga
+  (worker termina limpio); ⑤ cancel + reissue solo re-renderiza las nuevas
+  páginas (misses delta exacto); ⑥ await_idle realmente espera (13 misses
+  exactos).
+- **Hallazgo honesto**: `await_idle_timeout` inicialmente roto (retornaba
+  premature ~2ms sin esperar renders); arreglado con `Arc<AtomicU64>
+  requested/completed` (poll 2ms hasta `completed >= requested_snapshot`). Race
+  residual documentado: no usar request() concurrente durante await_idle.
+- **Hecho**: 24 tests en pdf_core pasando (basic 5 + cache 7 + scroll 6 +
+  prefetch 6), cero mocks, cero tests inventados. fmt + clippy
+  `--all-targets -- -D warnings` limpios. Bench cache_scroll no-regresión (mismos
+  números que B1: naive 105MB, cache 21MB).
+- **Pendiente (sigue SIN aprobar)**: mejora legal (SPDX, AGPL-3.0-or-later,
+  atribución MuPDF). Push a GitHub sigue bloqueado.
+- **Próximo**: B3 (zoom con escalado rápido del bitmap + re-render nítido async)
+  y resto de Fase 1 (entregables 4-7): modo paginado, harness android-activity,
+  overlay debug.

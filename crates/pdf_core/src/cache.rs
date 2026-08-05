@@ -144,6 +144,12 @@ impl<E: RenderEngine> RenderCache<E> {
         self.map.iter().map(|(k, _)| k.page_idx).collect()
     }
 
+    /// Full resident keys `(page, scale_level)`, most-recently-used first.
+    /// Used by the prefetcher's thread-safe `resident_pages` snapshot.
+    pub fn resident_keys(&self) -> Vec<PageKey> {
+        self.map.iter().map(|(k, _)| *k).collect()
+    }
+
     /// Drops every resident page and resets the byte accounting. The engine and
     /// document stay open; counters keep their history.
     pub fn clear(&mut self) {

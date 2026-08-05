@@ -4,6 +4,7 @@
 
 pub mod cache;
 pub mod engine;
+pub mod prefetch;
 pub mod scroll;
 
 pub use cache::{CacheStats, PageKey, RenderCache, RenderedPage, scale_for_level};

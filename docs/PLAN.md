@@ -218,6 +218,8 @@ seguridad.
 **Criterio de aceptación**: scroll a 60 fps sostenidos en escritorio con PDF de 500 páginas; en tablet, render/página < 25 ms y RSS < 150 MB (umbral revisable con la primera medición real).
 
 > **Progreso (2026-08-05)**: B1 (scroll virtualizado + caché LRU) ✅ — ver `docs/benchmark-results.md` (reducción 5× RAM: 105 MB → 20,6 MB en escritorio, cumple objetivo < 150 MB con margen) y `memory.md` Ola 5. Pendientes de Fase 1: B2 (prefetch en hilos de fondo), zoom, modo paginado, harness android-activity y overlay debug.
+>
+> **Progreso (2026-08-05)**: B2 ✅ (prefetch hilos de fondo, actor model 1-worker) — ver memory.md Ola 6.
 
 ### Fase 2 — Modo oscuro (semana 6, ~20 h)
 
