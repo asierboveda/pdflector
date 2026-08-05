@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["crates/pdf_core", "crates/pdf_app", "crates/pdf_bench"]
+
+[workspace.package]
+edition = "2024"

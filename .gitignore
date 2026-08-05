@@ -1,0 +1,9 @@
+/target
+/vendor/pdfium
+/corpus
+docs/.obsidian/workspace.json
+
+# Ecosystem agent skills (installed via `npx skills add`; reproducible from
+# skills-lock.json). Project-authored skills go in .opencode/skills/ (tracked).
+/.agents/skills/
+/.claude/skills/
