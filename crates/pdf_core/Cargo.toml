@@ -15,3 +15,7 @@ default = []
 # epub/html/xps/svg/cbz/tesseract/docx/js/brotli. Links statically via
 # mupdf-sys (no external library to fetch).
 mupdf = { version = "0.8", default-features = false, features = ["base14-fonts"] }
+# LRU map for the byte-bounded render cache (B1, Fase 1). Consolidated crate,
+# MIT license (verified with `cargo info lru`), no unsafe. Only the LRU
+# ordering/tracking is used; byte-budget eviction is handled in `cache.rs`.
+lru = "0.18"

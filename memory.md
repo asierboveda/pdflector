@@ -125,3 +125,38 @@
   local sin push.
 - **Próximo**: definir Fase 1 (render en dispositivo Android nativo vía app, no solo
   sweep CLI).
+
+## 2026-08-05 — Fase 1 Ola 5: B1 caché LRU + scroll virtualizado
+
+- **Hecho**: implementado `crates/pdf_core/src/cache.rs` — `RenderCache<E>` LRU
+  **limitado por bytes** (crate `lru`); tipos `PageKey` (página + escala),
+  `RenderedPage` (bitmap + byte_size real `w*h*4`) y `CacheStats` (hits, misses,
+  evictions, current_bytes, entries). API `get_or_render` / `stats` / `clear` /
+  `ensure_visible` (+ `resident_pages`); constructores `new(engine, doc, budget)`
+  y `open(engine, path, budget)`; escalado por `scale_for_level(level)=2^level`
+  (nivel 0 = 1x/72 dpi). Módulo `scroll.rs` — `Viewport` +
+  `visible_and_prefetch_pages` **pura** (ventana visible + N colindantes, clampada)
+  + `populate_visible`. Utilidad `corpus_dir()` en `pdf_core` (env var
+  `PDFLECTOR_CORPUS_DIR` con fallback).
+- **Hecho**: 18 tests REALES en pdf_core (5 basic preexistentes + 7 cache + 6
+  scroll), todos con MupdfEngine + PDFs reales del corpus. Cero mocks.
+  `cargo fmt`/`cargo clippy --all-targets -D warnings` limpio, build release OK.
+- **Hecho**: bench `crates/pdf_bench/benches/cache_scroll.rs` con 3 escenarios
+  (naive, caché 8 MB 1ª pasada, pass2 sobre residentes; VMHWM en proceso hijo).
+  **Reducción 5× RAM**: naive 107412 KB (~105 MB) → caché 8 MB 21104 KB
+  (~20,6 MB). Pass2 hits sobre residentes 0,35 ms. Detalle en
+  `docs/benchmark-results.md`.
+- **Hecho**: dep `lru = "0.18"` añadida (licencia MIT, verificada con `cargo info
+  lru`, compatible con AGPL-3.0 del repo).
+- **Hallazgo**: en 8 MB caben **4 páginas** de large_document a 1x (cada una
+  ~2 MB). Invariante `current_bytes <= byte_budget` siempre cumplida en 30
+  iteraciones con budget 4 MB.
+- **Hallazgo de honestidad**: "pass2 todo hits en 50 páginas es matemáticamente
+  imposible con caché byte-limitado menor que el barrido; se mide el hit path
+  sobre las páginas residentes" (así se documenta también en el bench).
+- **Pendiente (sigue SIN aprobar)**: mejora legal (SPDX headers, AGPL-3.0-or-later,
+  atribución MuPDF). Push sigue bloqueado. Tres commits locales sin push:
+  `30b1b4a`, `bd0aeea` y el de B1.
+- **Próximo**: B2 (prefetch en hilos de fondo con cola prioritaria) y resto de
+  Fase 1 (entregables 3-7): zoom, modo paginado, harness android-activity,
+  overlay debug.

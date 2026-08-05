@@ -59,3 +59,31 @@ PEAK_RSS_KB = 31220 (~30,5 MB)
   optimización futura del render de bitmaps.
 - PEAK_RSS 30,5 MB frente al objetivo <150 MB → margen ~5×; `large` (500 p) no
   eleva el RSS (carga perezosa / caché por bytes).
+
+## Fase 1 / B1 — Caché LRU vs naive (large_document.pdf, 50 pág, escala 1x)
+
+Benchmark: `crates/pdf_bench/benches/cache_scroll.rs` (criterion, grupo
+`cache_scroll`).
+
+| Escenario | Tiempo (ms) | VMHWM_KB |
+|---|---|---|
+| naive_hold_50p_1x | 108.02 | 107412 |
+| cache_8mb_firstpass_50p_1x | 74.78 | 21104 |
+| cache_8mb_pass2_50p_1x | 0.35 | 21184 |
+
+**Reducción RAM pico: 5× (105 MB → 20,6 MB). Cumple objetivo <150 MB con margen.**
+
+### Notas
+- Método: mediana criterion (warm-up 500 ms, sample_size 15, medición 3 s),
+  `cache_scroll` bench de `cargo bench -p pdf_bench`, 50 páginas de
+  `large_document.pdf` a escala 1x (72 dpi) con MuPDF release.
+- VMHWM (RSS pico) de `/proc/self/status`, medido en un **proceso hijo
+  separado** por escenario (el pico del kernel es monotónico y lo contaminaría
+  el escenario naive).
+- Hardware: escritorio AMD Ryzen 7 5800H (16 hilos), release build.
+- Hallazgo: en 8 MB caben 4 páginas de large_document a 1x (cada una ~2 MB);
+  `current_bytes <= byte_budget` se cumple en todas las iteraciones.
+- Honestidad: el escenario pass2 recorre solo las páginas **residentes** en la
+  caché de 8 MB (4 de 50); "todo hits en 50 páginas" es matemáticamente imposible
+  con una caché byte-limitada menor que el barrido. Mide el coste puro del hit path.
+

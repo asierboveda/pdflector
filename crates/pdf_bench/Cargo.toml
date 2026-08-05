@@ -12,3 +12,7 @@ criterion = "0.5"
 [[bench]]
 name = "open_render"
 harness = false
+
+[[bench]]
+name = "cache_scroll"
+harness = false
