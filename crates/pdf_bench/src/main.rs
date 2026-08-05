@@ -13,9 +13,18 @@ use pdf_core::{Document, RenderEngine};
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Corpus directory. Uses `PDFLECTOR_CORPUS_DIR` when set (e.g. on device),
+/// otherwise falls back to the workspace-relative corpus folder (desktop).
+fn corpus_dir() -> PathBuf {
+    match std::env::var("PDFLECTOR_CORPUS_DIR") {
+        Ok(dir) => PathBuf::from(dir),
+        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus"),
+    }
+}
+
 /// All corpus documents with a stable label, relative to the workspace root.
 fn corpus_files() -> Vec<(&'static str, PathBuf)> {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+    let base = corpus_dir();
     vec![
         ("dense", base.join("dense_textbook.pdf")),
         ("scanned", base.join("scanned_pages.pdf")),

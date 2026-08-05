@@ -101,3 +101,27 @@
 - Verificación final: `cargo build --workspace` OK, `cargo test -p pdf_core` OK, `cargo clippy --workspace -D warnings` limpio, `cargo fmt` limpio, cross-compile aarch64 OK.
 - `vendor/pdfium/` y `vendor/pdfium-android-arm64/` obsoletos (gitignored `/vendor`); se limpiarán tras Fase 6 si procede.
 - **Fase 0.5 cerrada**. Próximo: Fase 1 (lectura fluida, scroll virtualizado, caché LRU).
+
+## 2026-08-05 — Fase 0.5 Ola 4: Spike Android en hardware real
+
+- **Hardware real**: activada depuración USB + autorización RSA en el Xiaomi 2412DPC0AG
+  (adb autorizado, `NVQWDIOB7T9DVSG6 device`). Specs: arm64-v8a, Android 16 (SDK 36),
+  8 cores, MemTotal 7.483.884 kB (~7,5 GB RAM).
+- **Cambio mínimo en pdf_bench**: `corpus_dir()` lee la env var `PDFLECTOR_CORPUS_DIR`
+  (fallback a `CARGO_MANIFEST_DIR/../../corpus`). fmt/clippy/test OK.
+- **Cross-compile aarch64-linux-android release OK**: NDK r28 en PATH +
+  `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=$ANDROID_NDK_HOME/.../sysroot`.
+  Binario ~5,6 MB subido con `adb push` a `/data/local/tmp/pdflector/pdf_bench`; corpus
+  (4 PDFs) en `/data/local/tmp/pdflector/corpus/`.
+- **Medición sweep en el móvil** (mediana 3, escala 1x/2x, MuPDF release): render1x
+  3,88–15,97 ms (3/4 PDFs superan 120 fps, todos ≥60 fps); render2x 35,79–84,33 ms
+  (12–28 fps). PEAK_RSS_KB=31220 (~30,5 MB) < objetivo 150 MB → margen ~5×.
+  `large` (500 p) no eleva el RSS (lazy load).
+- **Hallazgo**: scanned (raster) es el peor caso (15,97 ms a 1x / 84,33 ms a 2x) →
+  candidato a optimización futura del render de bitmaps.
+- **Hallazgo**: a 2x se cae a 12–28 fps → futuro: tile/render cache para zoom fluido.
+- **Decisión diferida / pendiente**: legal (SPDX headers, AGPL-3.0-or-later, atribución
+  MuPDF) sigue SIN aprobar → push a GitHub sigue bloqueado. Commit `30b1b4a` sigue
+  local sin push.
+- **Próximo**: definir Fase 1 (render en dispositivo Android nativo vía app, no solo
+  sweep CLI).
