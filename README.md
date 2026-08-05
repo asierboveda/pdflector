@@ -18,20 +18,21 @@ crates/pdf_core/   core library (no UI): engine, render, cache, annotations
 crates/pdf_app/    egui desktop prototype
 crates/pdf_bench/  benchmark harness (Phase 0.5+)
 corpus/            test PDFs (gitignored; tools/generate_corpus.py)
-vendor/pdfium/     prebuilt PDFium (gitignored; tools/fetch_pdfium.sh)
 docs/              Obsidian vault (project docs + ADRs)
 ```
 
 ## Setup
 
 ```bash
-./tools/fetch_pdfium.sh        # one-time: downloads pinned libpdfium
 cargo run -p pdf_app           # launch the desktop app
 cargo run -p pdf_app -- file.pdf   # open a PDF directly
 cargo test -p pdf_core
 ```
 
+No external library is needed: the binary builds with **MuPDF** (static C
+shipped by `mupdf-sys`, AGPL-3.0 — decided in ADR-001). The old PDFium
+fetch (`./tools/fetch_pdfium.sh`) is no longer used.
+
 ## License
 
-To be decided after ADR-001 (engine choice): MIT/Apache-2.0 with PDFium,
-AGPL if MuPDF wins the Phase 0.5 benchmark.
+GNU AGPL-3.0 (ver [LICENSE](LICENSE)) — ligado a MuPDF tras ADR-001.

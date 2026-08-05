@@ -1,0 +1,13 @@
+# Repo config for cross-compiling pdf_core to Android ARM64 (spike Fase 0.5,
+# ADR-001: motor PDF). The NDK linker is expected to be on PATH via
+# $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin, so the short
+# name resolves at build time. API level 24 (minSdk of the tablet target).
+#
+# Target aarch64-linux-android. With the MuPDF engine (ADR-001) the linker
+# alone is not enough for bindgen (mupdf-sys): it also needs the NDK sysroot
+# exposed via the env var
+#   BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+# because bindgen does not use the NDK clang wrapper. This config is kept for
+# Fase 1 (Android harness) and Fase 6.
+[target.aarch64-linux-android]
+linker = "aarch64-linux-android24-clang"

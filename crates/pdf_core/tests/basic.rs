@@ -1,29 +1,35 @@
-//! Phase 0 acceptance tests (docs/PLAN.md §5, Fase 0): open a PDF, report
-//! page count, render page 1 to a bitmap of the expected dimensions.
+//! pdf_core acceptance tests (docs/PLAN.md §5, Fase 0 y 0.5): open a PDF,
+//! report page count, render page 1 to a bitmap of the expected dimensions.
+//! The engine under test is MuPDF — single backend since ADR-001 (Fase 0.5).
+//!
 //! Asset: tests/assets/simple.pdf (2-page A4, committed; generated with
-//! reportlab — uv + python, see tools/generate_corpus.py for the big corpus).
+//! reportlab — see tools/generate_corpus.py).
 
 use std::path::PathBuf;
 
-use pdf_core::engine::pdfium::PdfiumEngine;
+use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::{Document, Error, RenderEngine};
-
-fn lib_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/pdfium/lib/libpdfium.so")
-}
 
 fn asset() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/simple.pdf")
 }
 
-fn open_test_doc() -> pdf_core::engine::pdfium::PdfiumDocument {
-    let engine = PdfiumEngine::new(&lib_path()).expect("bind libpdfium");
+fn open_test_doc() -> pdf_core::engine::mupdf::MupdfDocument {
+    let engine = MupdfEngine::new().expect("mupdf engine init");
     engine.open(&asset()).expect("open test pdf")
 }
 
 #[test]
 fn opens_document_and_reports_page_count() {
     assert_eq!(open_test_doc().page_count(), 2);
+}
+
+#[test]
+fn page_size_is_a4_with_tolerance() {
+    let (w, h) = open_test_doc().page_size(0).unwrap();
+    // A4 = 595.27 x 841.89 points; allow small engine-specific fuzz.
+    assert!((w - 595.27).abs() <= 1.0, "width {w} not A4");
+    assert!((h - 841.89).abs() <= 1.0, "height {h} not A4");
 }
 
 #[test]

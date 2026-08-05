@@ -77,6 +77,9 @@ docs/adr/           # Decisiones de arquitectura (ADR-001: motor PDF, ...)
 ## 5. Stack vigente
 
 - Rust estable (toolchain vía rustup), cargo workspace.
+- Motor PDF: **MuPDF** (crate `mupdf` 0.8 + `mupdf-sys`, AGPL-3.0) detrás del
+  `trait RenderEngine` en pdf_core — único backend desde ADR-001
+  (el `pdfium-render` de Fase 0 fue eliminado).
 - UI prototipo: **egui/eframe** (solo escritorio; no portar a Android).
 - Persistencia: SQLite vía `rusqlite` (sidecar por PDF, pensado para Syncthing).
 - Benchmarks: `criterion`. Concurrencia: `rayon`.
@@ -87,10 +90,10 @@ docs/adr/           # Decisiones de arquitectura (ADR-001: motor PDF, ...)
 
 ## 6. Decisiones PENDIENTES — no asumir, preguntar
 
+> Motor y licencia resueltos por ADR-001 (2026-08-05): **MuPDF, AGPL-3.0**.
+
 | Decisión | Se resuelve en |
 |----------|----------------|
-| Motor PDF: PDFium vs MuPDF | Fase 0.5 → ADR-001 (benchmark con datos) |
-| Licencia del repo (depende del motor) | Tras ADR-001 |
 | UI final Android: Slint vs Tauri | Fase 6 (spike de 1-2 días) |
 | Ollama: PC por red local vs otra opción | Inicio de Fase 5 |
 | Formato canónico de anotaciones | Fases 3-4 |

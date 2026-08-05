@@ -78,3 +78,26 @@
 - Commit local: "Añade scaffolding estándar de repo (.editorconfig, plantillas GH, dependabot)".
 - Repo GitHub `pdflector` (público, decisión 3 del plan): creado vía `gh repo create --source=. --push`; remoto `origin` configurado. URL: https://github.com/asierboveda/pdflector.
 - Verificación previa al push: sin secretos en archivos tracked.
+
+## 2026-08-05 — Fase 0.5 Ola 1: backend MuPDF + harness pdf_bench + spike Android PDFium
+
+- **MuPDF backend (A)**: añadido `crates/pdf_core` tras feature `mupdf` (mitenu messense/mupdf 0.8.0, mupdf-sys 0.8.0, AGPL-3.0). Features mínimas: `default-features=false` + `base14-fonts`. Misma API `RenderEngine`/`Document` que PDFium. `MupdfEngine::new()` sin lib path (estático, thread-safe por context clonable por hilo, sin OnceLock). `engine/mupdf.rs`. Tests cruzados en `tests/mupdf_backend.rs` (5/5 OK): page_count==2 en simple.pdf = mismo que PDFium. Build C 1ª vez ~24 s.
+- **pdf_bench (B)**: criterion 0.5 (`benches/open_render.rs`, grupos open/render_1x/render_2x) + sesgo binario `src/main.rs` (barrido manual, mediana de 3, sonda VmHWM → PEAK_RSS_KB). Genérico sobre `RenderEngine`. Números PDFium inicial: dense 9,69/35,34 ms, scanned 20,01/66,20 ms, paper 1,72/26,44 ms, large 6,86/35,10 ms. PEAK_RSS_KB=32520.
+- **Android PDFium spike (C1)**: `pdf_core --features pdfium` cross-compila a `aarch64-linux-android` en **1 comando / 22 s** (bind dinámico en runtime, `libpdfium.so` ARM aarch64 descargada de bblanchon/pdfium-binaries chromium/7988 a `vendor/pdfium-android-arm64/`). `.cargo/config.toml` con linker `aarch64-linux-android24-clang`. `tools/fetch_pdfium_android.sh` (idempotente). `.gitignore` ampliado a `/vendor`.
+
+## 2026-08-05 — Fase 0.5 Ola 2: spike Android MuPDF + comparativa real
+
+- **Android MuPDF spike (C2)**: `pdf_core --features mupdf` cross-compila a `aarch64-linux-android` en **17 s** con 1 variable de entorno: `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot` (bindgen la necesita porque no usa el wrapper clang del NDK). Sin deps de sistema. Fricción **BAJA**. rlib ARM aarch64 confirmado. Dato clave del ADR.
+- **Comparativa (D)**: `pdf_bench` extendido con selector de motor (feature `mupdf = ["pdf_core/mupdf"]`, arg CLI). Resultados finales (release, AMD Ryzen 7 5800H): MuPDF gana en render 2,7-4× (dense 1x 3,53 vs 9,69 ms; large 2x 10,19 vs 35,10 ms) y en **RSS pico -21%** (25572 vs 32520 KB). Único caso donde PDFium no pierde: scanned 2x empata. Tabla en `docs/benchmark-results.md`.
+
+## 2026-08-05 — Fase 0.5 Ola 3: ADR-001 → MuPDF, AGPL-3.0, eliminación de PDFium
+
+- Mantengo las decisiones del autor: **MuPDF** motor único (prioridad RAM+fluir), repo licenciado **AGPL-3.0** (LICENSE añadido).
+- Creado `docs/adr/ADR-001-motor-pdf.md` con benchmark, justificación, consecuencias.
+- **PDFium eliminado**: `crates/pdf_core/src/engine/pdfium.rs`, `tests/basic.rs` (el viejo), dep `pdfium-render`, feature `pdfium`, selector de CLI en pdf_bench. `pdf_app` y `pdf_bench` migrados a MuPDF.
+- MuPDF pasa a ser **default** (no opt-in): `pdf_core/Cargo.toml` con `mupdf` como dep directa.
+- `.cargo/config.toml` conservado (linker aarch64) con comentario de la env var `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android` para MuPDF.
+- Docs alineados: README (licencia AGPL-3.0), AGENTS.md §5/§6, PLAN.md §1/§6 + Fase 0.5 ✅.
+- Verificación final: `cargo build --workspace` OK, `cargo test -p pdf_core` OK, `cargo clippy --workspace -D warnings` limpio, `cargo fmt` limpio, cross-compile aarch64 OK.
+- `vendor/pdfium/` y `vendor/pdfium-android-arm64/` obsoletos (gitignored `/vendor`); se limpiarán tras Fase 6 si procede.
+- **Fase 0.5 cerrada**. Próximo: Fase 1 (lectura fluida, scroll virtualizado, caché LRU).

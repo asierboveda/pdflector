@@ -4,10 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 
 [features]
-default = ["pdfium"]
-pdfium = ["dep:pdfium-render"]
+# MuPDF is the single engine (ADR-001, Fase 0.5): always compiled, no feature
+# needed. `base14-fonts` ships the standard Helvetica/Times/Courier fonts used
+# by the test corpus.
+default = []
 
 [dependencies]
-# PDFium backend (Chromium's PDF engine, BSD-3-Clause). Prebuilt lib fetched
-# by tools/fetch_pdfium.sh. Alternative backends (MuPDF) decided in ADR-001.
-pdfium-render = { version = "0.8", optional = true, features = ["thread_safe", "sync"] }
+# MuPDF backend via messense/mupdf 0.8 (bindings to MuPDF C, AGPL-3.0 — chosen
+# in ADR-001). Minimal feature set: only the base-14 PDF fonts; no
+# epub/html/xps/svg/cbz/tesseract/docx/js/brotli. Links statically via
+# mupdf-sys (no external library to fetch).
+mupdf = { version = "0.8", default-features = false, features = ["base14-fonts"] }

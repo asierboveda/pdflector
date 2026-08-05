@@ -1,11 +1,10 @@
-//! Rendering engine abstraction (docs/PLAN.md §3.2). Each backend (PDFium now,
-//! MuPDF candidate for the Phase 0.5 benchmark) lives behind a feature flag
-//! and implements these traits, so callers never depend on a concrete engine.
+//! Rendering engine abstraction (docs/PLAN.md §3.2). The single backend
+//! (MuPDF, chosen in ADR-001) implements these traits, so callers never
+//! depend on the concrete engine.
 
 use std::path::Path;
 
-#[cfg(feature = "pdfium")]
-pub mod pdfium;
+pub mod mupdf;
 
 /// RGBA8 bitmap of a rendered page, row-major, `data.len() == width * height * 4`.
 #[derive(Debug)]

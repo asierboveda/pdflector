@@ -11,7 +11,7 @@
 
 | # | Decisión | Resultado |
 |---|----------|-----------|
-| 1 | Motor PDF | **Benchmark comparativo PDFium vs MuPDF en Fase 0.5**, decisión con datos reales (también como ejercicio de aprendizaje) |
+| 1 | Motor PDF | **MuPDF (ADR-001, Fase 0.5)** — elegido por benchmark (render 2,7-4× más rápido, RSS pico -21%); repo licenciado AGPL-3.0 |
 | 2 | Presión del lápiz | **No necesaria.** Requisito real: anotaciones en márgenes (subrayado, dibujo tipo mapa mental) que se rendericen **nítidas y sin penalizar rendimiento** |
 | 3 | Distribución | **Código público en GitHub.** AGPL no impide publicar en GitHub; si MuPDF gana el benchmark, el proyecto se licencia AGPL. Si PDFium gana → MIT/Apache-2.0 |
 | 4 | Exportar notas | **Markdown** (citas con nº de página, ideal Obsidian) **+ PDF con anotaciones incrustadas** (estándar PDF, legible en cualquier lector) |
@@ -112,7 +112,7 @@ trait RenderEngine {
 ```
 
 Backends durante Fase 0.5: `PdfiumEngine` y `MupdfEngine`. Tras ADR-001 queda
-uno solo; el perdedor se elimina sin deuda.
+uno solo (**MuPDF**); el perdedor se eliminó sin deuda (Fase 0.5).
 
 ### 3.3 Módulos internos de `pdf_core`
 
@@ -186,12 +186,24 @@ seguridad.
 
 ### Fase 0.5 — Benchmark de motores (semana 2, ~20 h)
 
+> ✅ **Completada el 2026-08-05** con ADR-001.
+> Resultados: **MuPDF elegido** (benchmark en `docs/benchmark-results.md`:
+> render 2,7-4× más rápido — dense 1x 3,53 vs 9,69 ms; large 2x 10,19 vs
+> 35,10 ms — y RSS pico -21%, 25 572 vs 32 520 KB). Repo licenciado
+> **AGPL-3.0** (LICENSE). Backend **PDFium eliminado** por completo
+> (pdfium.rs, dep `pdfium-render`, feature `pdfium`, selector CLI);
+> MuPDF es motor único y default. Cross-compile Android aarch64 validado
+> (17 s + env var `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`).
+> Verificación: `cargo build --workspace` OK · `cargo test -p pdf_core` 5/5 OK ·
+> clippy limpio · fmt limpio · cross-compile aarch64 OK. Detalle en
+> `docs/adr/ADR-001-motor-pdf.md` y `memory.md`.
+
 - `trait RenderEngine` + backend MuPDF tras feature flag (crate `mupdf`; si está abandonado, bindgen propio — esfuerzo acotado, forma parte del aprendizaje).
 - Benchmarks con **criterion** sobre el corpus: apertura, render/página a 1x y 2x, RSS pico, tamaño de binario.
 - **Spike crítico de build Android** de ambos backends: pdfium necesita `libpdfium.so` precompilada (bblanchon/pdfium-binaries); MuPDF compila estático. La facilidad de este build es criterio de decisión tanto como la velocidad.
 - **ADR-001** documentando la elección y la licencia resultante (MuPDF → AGPL; PDFium → MIT/Apache-2.0).
 
-**Criterio de salida**: motor elegido con datos + compilación Android validada. Se elimina el backend perdedor.
+**Criterio de salida**: motor elegido con datos + compilación Android validada. Se elimina el backend perdedor. ✅
 
 ### Fase 1 — Lectura fluida (semanas 3–5, ~60 h)
 
@@ -281,7 +293,6 @@ seguridad.
 
 ## 8. Decisiones diferidas (con su fase de resolución)
 
-- Licencia final del repo → tras Fase 0.5 (depende del motor).
 - UI final Android (Slint vs Tauri) → spike en Fase 6.
 - Ollama en PC vs en tablet → confirmar al inicio de Fase 5.
 - Gestión de biblioteca (colección de PDFs, metadatos) → surgirá naturalmente en Fase 4.

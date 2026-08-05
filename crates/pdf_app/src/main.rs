@@ -4,13 +4,8 @@
 use std::path::PathBuf;
 
 use eframe::egui;
-use pdf_core::engine::pdfium::{PdfiumDocument, PdfiumEngine};
+use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::{Document, RenderEngine};
-
-fn pdfium_lib_path() -> PathBuf {
-    // Dev convenience: resolve the vendored lib relative to the workspace.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/pdfium/lib/libpdfium.so")
-}
 
 fn main() -> eframe::Result<()> {
     let initial_pdf = std::env::args().nth(1).map(PathBuf::from);
@@ -26,15 +21,16 @@ fn main() -> eframe::Result<()> {
 }
 
 struct App {
-    engine: PdfiumEngine,
-    doc: Option<PdfiumDocument>,
+    engine: MupdfEngine,
+    doc: Option<MupdfDocument>,
     texture: Option<egui::TextureHandle>,
     status: String,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, initial_pdf: Option<PathBuf>) -> Self {
-        let engine = PdfiumEngine::new(&pdfium_lib_path()).expect("failed to bind libpdfium");
+        // MuPDF links statically — nothing to bind, no lib path needed.
+        let engine = MupdfEngine::new().expect("failed to init mupdf");
         let mut app = Self {
             engine,
             doc: None,
