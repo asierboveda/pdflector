@@ -6,6 +6,6 @@ edition.workspace = true
 [dependencies]
 pdf_core = { path = "../pdf_core" }
 # Desktop prototype UI only — the final Android UI is chosen in Phase 6.
-eframe = "0.32"
+eframe = "0.36"
 # Native file dialog (GTK3 on this system).
 rfd = "0.15"
