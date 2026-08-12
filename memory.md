@@ -197,3 +197,47 @@
 - **Próximo**: B3 (zoom con escalado rápido del bitmap + re-render nítido async)
   y resto de Fase 1 (entregables 4-7): modo paginado, harness android-activity,
   overlay debug.
+
+## 2026-08-12 — Fase 1 Ola 7: Spike en tablet TCL NXTPaper 11 Plus (hardware objetivo final)
+
+- **Hecho**: spike en la tablet TCL NXTPaper 11 Plus — hardware objetivo final
+  (modelo 9469X, MediaTek MT8781 8× Cortex-A55 solo eficiencia, sin big cores,
+  8 GB RAM, pantalla 1440×2200 @ 320 dpi, Android 15 / SDK 35, ABI arm64-v8a).
+  adb autorizada; medición con pantalla ON (KEYCODE_WAKEUP + `svc power stayon
+  true` durante la prueba, limpiado después) — evita el pesimismo de
+  governor/doze.
+- **Hecho**: cross-compile release `aarch64-linux-android` OK (pdf_core
+  recompilado incluyendo los módulos nuevos B1/B2: cache/scroll/prefetch). Push
+  de binario + corpus a `/data/local/tmp/pdflector/`. 2 corridas estables
+  (difieren <5%).
+- **Resultados TCL** (mediana de 2 corridas, pantalla ON):
+
+  | PDF | open (ms) | render1x (ms) | render2x (ms) |
+  |---|---|---|---|
+  | dense (93p) | 0.40 | 14.51 | 44.18 |
+  | scanned (30p) | 0.15 | 31.34 | 119.01 |
+  | paper (12p) | 0.16 | 11.64 | 38.44 |
+  | large (500p) | 0.25 | 15.40 | 44.73 |
+
+  PEAK_RSS_KB = 26688 (~26,7 MB).
+- **Análisis de aceptación contra PLAN.md Fase 1**: render <25 ms cumple en 3/4
+  PDFs (dense 14.5, paper 11.6, large 15.4 — todos <25 ms; solo scanned 31 ms lo
+  excede, PDF raster = worst case esperable). RSS <150 MB cumple con ~6× de
+  margen (26,7 MB). 60 fps: dense→69 fps, paper→86 fps, large→65 fps cumplen;
+  scanned→32 fps NO (worst case raster).
+- **Corrección HONESTA**: NO es correcto decir "TCL más rápida que Xiaomi". La
+  comparación correcta, MISMO ESCALA render1x: TCL es ~2,3× MÁS LENTA que el
+  Xiaomi phone. Razón: el Xiaomi tiene big cores (Cortex-A78/A715-class),
+  mientras el MT8781 de la TCL tiene 8× Cortex-A55 solo eficiencia — tablet
+  enfocada a lectura, no a rendimiento. Se documenta honestamente.
+- **vs Desktop** (AMD Ryzen 7 5800H, Fase 0.5): el desktop es 3,5-5,3× más
+  rápido que la TCL (esperable; ratios calculados de los datos de
+  `docs/benchmark-results.md`).
+- **Conclusión**: la tablet cumple los objetivos para PDFs vectoriales (la
+  mayoría); no para scanned ni zoom 2x — justamente las optimizaciones futuras
+  (B3 zoom, tile/render cache).
+- **Pendiente (sigue SIN aprobar)**: mejora legal (SPDX, AGPL-3.0-or-later,
+  atribución MuPDF). Push a GitHub sigue bloqueado.
+- **Próximo**: B3 (zoom con escalado rápido del bitmap + re-render nítido async)
+  y resto de Fase 1 (entregables 4-7): modo paginado, harness android-activity,
+  overlay debug.

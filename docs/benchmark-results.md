@@ -87,3 +87,69 @@ Benchmark: `crates/pdf_bench/benches/cache_scroll.rs` (criterion, grupo
   caché de 8 MB (4 de 50); "todo hits en 50 páginas" es matemáticamente imposible
   con una caché byte-limitada menor que el barrido. Mide el coste puro del hit path.
 
+## Android — TCL NXTPaper 11 Plus (modelo 9469X, MT8781 8× A55, Android 15, pantalla 1440×2200, medición con pantalla ON)
+
+Hardware: TCL NXTPaper 11 Plus (modelo 9469X, MediaTek MT8781 8× Cortex-A55
+solo eficiencia sin big cores, 8 GB RAM, pantalla 1440×2200 @ 320 dpi,
+Android 15 / SDK 35, ABI arm64-v8a). Medición con pantalla ON
+(KEYCODE_WAKEUP + `svc power stayon true`, limpiado después).
+
+| PDF (páginas) | open (ms) | render 1x (ms) | render 2x (ms) |
+|---|---|---|---|
+| dense (93) | 0.40 | 14.51 | 44.18 |
+| scanned (30) | 0.15 | 31.34 | 119.01 |
+| paper (12) | 0.16 | 11.64 | 38.44 |
+| large (500) | 0.25 | 15.40 | 44.73 |
+
+PEAK_RSS_KB = 26688 (~26,7 MB)
+
+### render 1x MISMO ESCALA: Tablet TCL vs Xiaomi phone vs Desktop (MuPDF)
+
+| PDF (páginas) | render 1x TCL (ms) | render 1x Xiaomi (ms) | render 1x Desktop (ms) | Ratio TCL/Desktop |
+|---|---|---|---|---|
+| dense (93) | 14.51 | 6.28 | 3.53 | 4.11× |
+| scanned (30) | 31.34 | 15.97 | 8.93 | 3.51× |
+| paper (12) | 11.64 | 3.88 | 2.18 | 5.34× |
+| large (500) | 15.40 | 7.48 | 3.98 | 3.87× |
+
+Nota HONESTA: a la misma escala render 1x, la TCL es ~2,3× **más lenta** que el
+Xiaomi phone (no más rápida). Razón: el Xiaomi 2412DPC0AG tiene big cores
+(Cortex-A78/A715-class), mientras el MT8781 de la TCL tiene 8× Cortex-A55 solo
+eficiencia — tablet enfocada a lectura, no a rendimiento. El desktop
+(AMD Ryzen 7 5800H, Fase 0.5) es 3,5-5,3× más rápido que la TCL (ratios
+calculados sobre los datos de la Fase 0.5). Ojo metodológico: el Xiaomi se
+midió con pantalla OFF — posiblemente pesimista para Xiaomi (governor/doze a
+pantalla apagada puede reducir frecuencias); la TCL se midió con pantalla ON.
+
+### fps estimados (1000 / render 1x) — TCL
+
+| PDF (páginas) | render 1x (ms) | fps estimado | ¿cumple 60 fps? |
+|---|---|---|---|
+| dense (93) | 14.51 | 69 | ✓ |
+| scanned (30) | 31.34 | 32 | ✗ (worst case raster) |
+| paper (12) | 11.64 | 86 | ✓ |
+| large (500) | 15.40 | 65 | ✓ |
+
+Cumple 60 fps en 3/4 PDFs; único fallo: scanned (PDF raster).
+
+### Aceptación Fase 1 (PLAN.md)
+
+- render < 25 ms → **3/4 cumplen** ✓ (dense 14.5, paper 11.6, large 15.4; solo
+  scanned 31 ms lo excede — worst case raster esperable).
+- RSS < 150 MB → **26,7 MB** ✓ con ~6× de margen.
+- Conclusión: la tablet cumple para PDFs vectoriales (la mayoría); scanned y
+  zoom 2x requieren optimización futura (B3 zoom / tile-render cache).
+
+### Notas de método
+
+- Build: MuPDF release cross-compilado a `aarch64-linux-android` (NDK r28 +
+  `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=...`), pdf_core con
+  los módulos B1/B2 (cache/scroll/prefetch) incluidos.
+- Despliegue: `adb push` a `/data/local/tmp/pdflector/`; env
+  `PDFLECTOR_CORPUS_DIR` apuntando al corpus en el dispositivo.
+- Métrica: mediana de 3 intentos del propio sweep de `pdf_bench`; 2 corridas
+  estables (difieren <5%).
+- Pantalla ON durante la medición: `input keyevent KEYCODE_WAKEUP` + `svc power
+  stayon true` antes de la prueba, `svc power stayon false` después — evita el
+  pesimismo de governor/doze.
+
