@@ -77,10 +77,13 @@ docs/adr/           # Decisiones de arquitectura (ADR-001: motor PDF, ...)
 ## 5. Stack vigente
 
 - Rust estable (toolchain vía rustup), cargo workspace.
+- Motor PDF: **MuPDF** vía crate `mupdf` 0.8 (AGPL-3.0, ADR-001); se compila
+  estático desde fuente (mupdf-sys). Backend detrás de `trait RenderEngine`.
 - UI prototipo: **egui/eframe** (solo escritorio; no portar a Android).
 - Persistencia: SQLite vía `rusqlite` (sidecar por PDF, pensado para Syncthing).
 - Benchmarks: `criterion`. Concurrencia: `rayon`.
-- Android: despliegue y métricas por `adb` (USB) — Fases 0.5, 1 y 6.
+- Android: despliegue y métricas por `adb` (USB) — Fases 0.5, 1 y 6. Cross
+  compile con NDK r28, API 35 (config en `.cargo/config.toml`).
 - Sync: Syncthing externo; la app no implementa red, solo formato de ficheros
   sync-friendly.
 - Python 3.14 + uv disponibles para tooling auxiliar (generación de corpus, scripts).
@@ -89,8 +92,8 @@ docs/adr/           # Decisiones de arquitectura (ADR-001: motor PDF, ...)
 
 | Decisión | Se resuelve en |
 |----------|----------------|
-| Motor PDF: PDFium vs MuPDF | Fase 0.5 → ADR-001 (benchmark con datos) |
-| Licencia del repo (depende del motor) | Tras ADR-001 |
+| Motor PDF: **resuelto — MuPDF** (ADR-001, benchmark con datos de tablet) | ✅ ADR-001 |
+| Licencia del repo: **resuelta — AGPL-3.0** (depende del motor elegido) | ✅ ADR-001 |
 | UI final Android: Slint vs Tauri | Fase 6 (spike de 1-2 días) |
 | Ollama: PC por red local vs otra opción | Inicio de Fase 5 |
 | Formato canónico de anotaciones | Fases 3-4 |
@@ -100,11 +103,16 @@ docs/adr/           # Decisiones de arquitectura (ADR-001: motor PDF, ...)
 ```bash
 cargo run -p pdf_app          # lanzar app de escritorio
 cargo test -p pdf_core        # tests del núcleo
-cargo bench -p pdf_bench      # benchmarks
+cargo bench -p pdf_bench      # benchmarks (open + render por página)
+cargo run -p pdf_bench --release -- <pdf> [pages] [scale]   # harness timings+RSS
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all
 
 # Android (a partir de Fase 1), tablet por USB:
+cargo build -p pdf_bench --target aarch64-linux-android --release
+adb push target/aarch64-linux-android/release/pdf_bench /data/local/tmp/
+adb push corpus/<pdf>.pdf /data/local/tmp/
+adb shell '/data/local/tmp/pdf_bench /data/local/tmp/<pdf>.pdf 20 2.0'
 adb install <apk>
 adb shell dumpsys meminfo <paquete>
 adb logcat

@@ -133,3 +133,33 @@
 - **Uso**: números de referencia para el benchmark de Fase 0.5 (PDFium vs MuPDF
   vs poppler, misma máquina/método) y para fijar presupuesto de caché en Fase 1
   (página @2x ≈ 8 MB RGBA → 50 MB ≈ 6 páginas).
+
+## 2026-08-12 — Fase 0.5 completa: MuPDF gana el benchmark → repo AGPL-3.0 (ADR-001)
+
+- **Paso 1 — Backend MuPDF**: crate `mupdf` 0.8.0 evaluado (MuPDF 1.27.2,
+  AGPL-3.0, activo — push del autor 2026-08-11, mismo autor que pdfium-render).
+  Backend `MupdfEngine` en `pdf_core` con las mismas traits que PDFium
+  (open/page_count/page_size/render_page → Bitmap RGBA), sin mutex global:
+  mupdf-rs es thread-safe por diseño (fz_context por hilo). 4 tests equivalentes.
+- **Paso 2 — Benchmarks criterion** (`cargo bench -p pdf_bench --features mupdf`,
+  corpus 4 PDFs, 1x/2x, p1+central): ambos motores 4-15x más rápidos que el
+  baseline poppler/Evince (73,6 ms @1x, 326 ms @2x, Ryzen 7 5800H). Escritorio
+  con varianza alta (CPU scaling 89%) → dato direccional.
+- **Paso 3 — Spike Android** (Lenovo Idea Tab 9469X, Android 15, serial
+  A06B4A8E6774623, NDK r28 API 35): ambos compilan; PDFium necesita libpdfium.so
+  arm64 precompilada + dlopen; MuPDF estático. Incidencia resuelta: bindgen de
+  mupdf-sys usaba glibc del host → `BINDGEN_EXTRA_CLANG_ARGS` con sysroot NDK en
+  `.cargo/config.toml`. **Timings tablet**: MuPDF gana 7/7 renders (13,1 ms/pág
+  @2x large vs 29,4 PDFium; escaneado @2x 44 ms ambos — decodificador), open 1,4
+  ms (10x), RSS pico 28,2 MB vs 26,6, binario 5,7 MB estático vs 5,1+.so 6,1 MB.
+- **Paso 4 — Decisión**: **MuPDF + AGPL-3.0** confirmada por el autor. ADR-001 en
+  `docs/adr/ADR-001-motor-pdf-mupdf.md`. Eliminado PDFium sin deuda (pdfium.rs,
+  tests basic.rs, fetch_pdfium.sh, vendor/, features pdfium en pdf_bench).
+  `pdf_app` migrado a MupdfEngine. Herramientas: NDK r28, target
+  aarch64-linux-android, `.cargo/config.toml` (linker/CC/AR/bindgen sysroot).
+- **Mediciones**: docs/investigacion/benchmark-motores.md (tablas tablet +
+  escritorio + RSS + binarios).
+- **Pendientes que abre la fase**: añadir `LICENSE` (AGPL-3.0); acotar el store
+  de MuPDF (`set_store_max_size`) cuando la caché de `pdf_core` gobierne la RAM
+  (Fase 1); skill `android-tablet-adb` propuesto (Paso 5, pendiente de
+  aprobación).

@@ -1,0 +1,15 @@
+# Android cross-compilation (Phase 0.5 spike, docs/PLAN.md §5).
+# NDK r28 at ~/Android/Sdk/ndk/android-ndk-r28. API 35 = Android 15 (the
+# Lenovo Idea Tab 9469X runs Android 15). Env vars below feed build scripts
+# (mupdf-sys/cc) via cargo's [env].
+
+[target.aarch64-linux-android]
+linker = "/home/asierboveda/Android/Sdk/ndk/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang"
+
+[env]
+CC_aarch64_linux_android = "/home/asierboveda/Android/Sdk/ndk/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang"
+CXX_aarch64_linux_android = "/home/asierboveda/Android/Sdk/ndk/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang++"
+AR_aarch64_linux_android = "/home/asierboveda/Android/Sdk/ndk/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+# bindgen (mupdf-sys) invokes the host clang: point it at the NDK sysroot so
+# it parses bionic headers instead of glibc ones (pthreadtypes-arch.h error).
+BINDGEN_EXTRA_CLANG_ARGS = "--target=aarch64-linux-android35 --sysroot=/home/asierboveda/Android/Sdk/ndk/android-ndk-r28/toolchains/llvm/prebuilt/linux-x86_64/sysroot"

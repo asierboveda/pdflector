@@ -11,9 +11,9 @@
 
 | # | Decisión | Resultado |
 |---|----------|-----------|
-| 1 | Motor PDF | **Benchmark comparativo PDFium vs MuPDF en Fase 0.5**, decisión con datos reales (también como ejercicio de aprendizaje) |
+| 1 | Motor PDF | **RESUELTO: MuPDF** — benchmark PDFium vs MuPDF completado en Fase 0.5 con datos de la tablet (2026-08-12, ADR-001). MuPDF ganó 7/7 renders en tablet. **Repo → AGPL-3.0** |
 | 2 | Presión del lápiz | **No necesaria.** Requisito real: anotaciones en márgenes (subrayado, dibujo tipo mapa mental) que se rendericen **nítidas y sin penalizar rendimiento** |
-| 3 | Distribución | **Código público en GitHub.** AGPL no impide publicar en GitHub; si MuPDF gana el benchmark, el proyecto se licencia AGPL. Si PDFium gana → MIT/Apache-2.0 |
+| 3 | Distribución | **Código público en GitHub.** **RESUELTO: AGPL-3.0** (MuPDF ganó el benchmark, ADR-001). Falta añadir `LICENSE` al repo |
 | 4 | Exportar notas | **Markdown** (citas con nº de página, ideal Obsidian) **+ PDF con anotaciones incrustadas** (estándar PDF, legible en cualquier lector) |
 | 5 | Modo oscuro | **UI oscura + páginas del PDF invertidas** (página negra, texto claro) |
 | 6 | Sincronización | **Automática tablet ↔ PC ↔ móvil, gratuita** → Syncthing sincronizando la carpeta de datos; diseño de almacenamiento anti-conflicto |
@@ -43,7 +43,7 @@ al arrancar su fase (un skill documenta un procedimiento que ya existe; no antes
 | Skill | Se crea en |
 |-------|------------|
 | `pdflector-rendimiento` | Fase 0.5-1 |
-| `android-tablet-adb` | Fase 0.5 |
+| `android-tablet-adb` | Fase 0.5 (propuesto 2026-08-12, pendiente de creación) |
 | `benchmark-motores` | Fase 0.5 (temporal; archivable tras ADR-001) |
 | `exportar-anotaciones` | Fase 3 |
 | `syncthing-sync` | Fase 4 |
@@ -111,8 +111,8 @@ trait RenderEngine {
 }
 ```
 
-Backends durante Fase 0.5: `PdfiumEngine` y `MupdfEngine`. Tras ADR-001 queda
-uno solo; el perdedor se elimina sin deuda.
+Backend vigente tras ADR-001 (2026-08-12): `MupdfEngine`. PDFium se eliminó
+sin deuda al cerrar la Fase 0.5.
 
 ### 3.3 Módulos internos de `pdf_core`
 
@@ -196,6 +196,16 @@ seguridad.
 - **ADR-001** documentando la elección y la licencia resultante (MuPDF → AGPL; PDFium → MIT/Apache-2.0).
 
 **Criterio de salida**: motor elegido con datos + compilación Android validada. Se elimina el backend perdedor.
+
+> **✅ HITO CUMPLIDO — 2026-08-12** (resultados en `docs/investigacion/benchmark-motores.md`, decisión en `docs/adr/ADR-001-motor-pdf-mupdf.md`):
+> - **Motor: MuPDF** (crate `mupdf` 0.8 / MuPDF 1.27.2). Ganó 7/7 renders en
+>   tablet real (Lenovo Idea Tab 9469X, Android 15): 13,1 ms/pág @2x vs 29,4 de
+>   PDFium (large_document); open 1,4 ms (10x); RSS pico 28 MB; binario estático
+>   5,7 MB. Criterio <25 ms/pág cumplido en 6/7 casos (falla solo escaneado @2x).
+> - **Compilación Android validada** para ambos (NDK r28, API 35); MuPDF estático
+>   sin .so externa (`.cargo/config.toml` con linker+CC+AR+bindgen sysroot).
+> - **PDFium eliminado sin deuda** (código, tests, fetch script, vendor).
+> - **Licencia del repo: AGPL-3.0** (confirmada por el autor) — pendiente añadir `LICENSE`.
 
 ### Fase 1 — Lectura fluida (semanas 3–5, ~60 h)
 

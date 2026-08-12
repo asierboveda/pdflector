@@ -5,3 +5,10 @@ edition.workspace = true
 
 [dependencies]
 pdf_core = { path = "../pdf_core" }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "engine_bench"
+harness = false

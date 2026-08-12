@@ -3,11 +3,9 @@ name = "pdf_core"
 version = "0.1.0"
 edition.workspace = true
 
-[features]
-default = ["pdfium"]
-pdfium = ["dep:pdfium-render"]
-
 [dependencies]
-# PDFium backend (Chromium's PDF engine, BSD-3-Clause). Prebuilt lib fetched
-# by tools/fetch_pdfium.sh. Alternative backends (MuPDF) decided in ADR-001.
-pdfium-render = { version = "0.8", optional = true, features = ["thread_safe", "sync"] }
+# MuPDF backend: safe wrapper crate `mupdf` 0.8 (MuPDF 1.27.2), actively
+# maintained (messense, same author as the former pdfium-render). Vendored
+# MuPDF built from source by mupdf-sys. License AGPL-3.0 → repo license
+# AGPL-3.0 (ADR-001). Selected over PDFium with tablet data: ADR-001.
+mupdf = { version = "0.8", default-features = false, features = ["img", "base14-fonts"] }
