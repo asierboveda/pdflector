@@ -15,4 +15,10 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: test pdf_core
-        run: cargo test -p pdf_core
+        # tests/cache.rs abre corpus/*.pdf (gitignored); se generan antes de
+        # correr los tests, igual que en local (ver tools/generate_corpus.py).
+        run: |
+          python3 -m venv /tmp/corpus-venv
+          /tmp/corpus-venv/bin/pip install --quiet pillow reportlab
+          /tmp/corpus-venv/bin/python tools/generate_corpus.py
+          cargo test -p pdf_core
