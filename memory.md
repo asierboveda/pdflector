@@ -78,3 +78,58 @@
 - Commit local: "Añade scaffolding estándar de repo (.editorconfig, plantillas GH, dependabot)".
 - Repo GitHub `pdflector` (público, decisión 3 del plan): creado vía `gh repo create --source=. --push`; remoto `origin` configurado. URL: https://github.com/asierboveda/pdflector.
 - Verificación previa al push: sin secretos en archivos tracked.
+
+## 2026-08-10 — Investigación: arquitectura de rendimiento de Evince
+
+- **Qué**: ingeniería inversa del visor Evince (GNOME, rama `main`) a partir de su
+  código fuente real para extraer patrones de rendimiento replicables en PDFLector.
+- **Entregable**: `docs/investigacion/evince-rendimiento.md` — informe con
+  arquitectura verificada fichero:línea, mapeo a Android/PDFLector y buenas
+  prácticas. Referenciado desde la Fase 0.5 de `docs/PLAN.md`.
+- **Hallazgos clave** (verificados en código, no por rumores):
+  - Un solo hilo de render global con 4 colas de prioridad (URGENT/HIGH/LOW/NONE)
+    y cancelación estricta de jobs obsoletos; render serializado con mutex
+    globales doc+fontconfig (`ev-job-scheduler.c`, `ev-jobs.c`).
+  - Render completo de página a resolución de pantalla×zoom×device_scale
+    (Poppler/Cairo, ARGB32) — **sin tiling ni multirresolución**.
+  - Caché de píxeles = ventana deslizante con doble límite: 50 MB por bytes y
+    ≤3 páginas de preload a cada lado; eviction al salir de la ventana;
+    re-priorización en vuelo LOW→URGENT (`ev-pixbuf-cache.c`).
+  - Zoom máximo auto-limitado por el presupuesto de caché: `max_scale = sqrt(cache/(w·dpi·4·h·dpi))` (ev-view.c:7581).
+  - Prefetch N±1 y texto/mappings perezosos solo en rango visible±1; thumbnails
+    embebidos del PDF para vistas rápidas (`poppler_page_get_thumbnail`).
+  - GPU solo para composición (textura GDK); rasterizado 100 % CPU.
+  - Progresivo = texturas viejas escaladas por GPU mientras llega el re-render.
+- **Mapeo a PDFLector**: cola priorizada + 1 hilo de render por documento en
+  `pdf_core` (PDFium/MuPDF no son thread-safe por documento), bitmap→textura con
+  composición por transform, caché por bytes gobernada por el RSS objetivo
+  (<150 MB), `FPDFPage_GetThumbnailAsBitmap`, límite de zoom por presupuesto.
+- **Licencia**: Poppler es GPL-2+ → descartado para el proyecto; el patrón se
+  replica con PDFium (BSD-3) o MuPDF (AGPL) — sin cambio en la decisión pendiente
+  de Fase 0.5/ADR-001.
+- Nota: Evince NO tiene smooth scrolling con render multibanda; la fluidez viene
+  de composición barata + cancelación, no de paralelismo de rasterizado.
+
+## 2026-08-10 — Baseline de rendimiento: Evince/poppler en escritorio
+
+- **Qué**: primeras mediciones de rendimiento del proyecto, con Evince 48.4 /
+  Poppler 26.07.0 como baseline (el backend de Evince es poppler+cairo; medido
+  con `pdftoppm`, que usa ese mismo pipeline single-thread).
+- **Entregable**: `docs/investigacion/evince-baseline.md` + script reproducible
+  `tools/medir_baseline_evince.sh` (sin GNU time instalado → wrapper python3 con
+  `resource.ru_maxrss`).
+- **Hardware**: AMD Ryzen 7 5800H (8C/16T), 13 GiB RAM, Linux 7.1.4, Wayland.
+  **Corpus**: `corpus/large_document.pdf` (500 páginas A4).
+- **Resultados**:
+  - Render 500 pág @72 dpi: 73,6 ms/pág · @144 dpi: 326 ms/pág (el coste
+    cuadruplica al cuadruplicar píxeles). Max RSS del proceso de render: 22-28 MB.
+  - Primera página (apertura+render) @144 dpi: ~0,36 s · @216 dpi: 0,60 s.
+  - RSS del visor GUI con 500 páginas: **~198 MB** (frío y caliente) — supera el
+    presupuesto objetivo del proyecto (<150 MB en tablet); Evince no es modelo
+    de frugalidad, es tope superior a batir.
+- **Implicación**: 326 ms/página @2x ⇒ el frame de scroll no puede contener
+  nunca un render; confirma caché + render asíncrono + composición como
+  obligatorios (patrón ya analizado en `evince-rendimiento.md`).
+- **Uso**: números de referencia para el benchmark de Fase 0.5 (PDFium vs MuPDF
+  vs poppler, misma máquina/método) y para fijar presupuesto de caché en Fase 1
+  (página @2x ≈ 8 MB RGBA → 50 MB ≈ 6 páginas).

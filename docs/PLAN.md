@@ -186,6 +186,10 @@ seguridad.
 
 ### Fase 0.5 — Benchmark de motores (semana 2, ~20 h)
 
+- Patrones de rendimiento de referencia: `docs/investigacion/evince-rendimiento.md`
+  (ingeniería inversa de Evince: cola priorizada + cancelación, render a
+  resolución de pantalla, caché de ventana deslizante por bytes, límite de zoom
+  por presupuesto). Alimenta el diseño del benchmark y el ADR-001.
 - `trait RenderEngine` + backend MuPDF tras feature flag (crate `mupdf`; si está abandonado, bindgen propio — esfuerzo acotado, forma parte del aprendizaje).
 - Benchmarks con **criterion** sobre el corpus: apertura, render/página a 1x y 2x, RSS pico, tamaño de binario.
 - **Spike crítico de build Android** de ambos backends: pdfium necesita `libpdfium.so` precompilada (bblanchon/pdfium-binaries); MuPDF compila estático. La facilidad de este build es criterio de decisión tanto como la velocidad.
