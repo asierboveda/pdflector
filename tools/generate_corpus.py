@@ -56,11 +56,12 @@ def scanned_pages() -> None:
             w = random.randint(200, 900)
             h = random.randint(8, 14)
             draw.rectangle([x0, y, x0 + w, y + h], fill=random.randint(30, 90))
-        img.save("/tmp/opencode/_scan_tmp.png")
-        c.drawImage("/tmp/opencode/_scan_tmp.png", 0, 0, width=A4[0], height=A4[1])
+        tmp_png = OUT / "_scan_tmp.png"
+        img.save(tmp_png)
+        c.drawImage(str(tmp_png), 0, 0, width=A4[0], height=A4[1])
         c.showPage()
     c.save()
-    os.remove("/tmp/opencode/_scan_tmp.png")
+    os.remove(OUT / "_scan_tmp.png")
 
 
 def scientific_paper() -> None:
