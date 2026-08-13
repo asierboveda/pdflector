@@ -15,13 +15,15 @@ use jni::{JavaVM, jni_sig, jni_str};
 use log::{error, warn};
 use pdf_core::{Bitmap, Document, Highlight, Stroke};
 
+use crate::persist;
 use crate::reader::{
-    AiPhase, GRID_CELL_PAD, GRID_COLS, Reader, grid_cell_h, grid_cell_w, grid_cover_h,
-    grid_cover_w, grid_pad, human_size, lib_carousel_cover_h, lib_carousel_cover_w,
-    lib_carousel_cover_x, lib_chips, lib_content_y0, lib_filter_h, lib_grid_cell_rect,
-    lib_recents_block_h, lib_section_title_h, page_badge_size, picker_btn_h, picker_btn_w,
-    picker_header_h, picker_row_h, picker_visible_rows, sheet_btn_h, sheet_btn_w, sheet_h,
-    sheet_pad, sheet_row1_y, sheet_row2_y, truncate_name,
+    AiPhase, GRID_CELL_PAD, GRID_COLS, Reader, entry_author, entry_title, grid_cell_h, grid_cell_w,
+    grid_cover_h, grid_cover_w, grid_pad, human_size, lib_chips, lib_cont_block_h, lib_cont_card_h,
+    lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h, lib_cont_cover_w, lib_content_y0,
+    lib_empty_state_geom, lib_grid_cell_rect, lib_header_h, lib_org_chip_h, lib_org_chips,
+    lib_org_y, lib_search_h, lib_search_panel_h, lib_section_title_h, page_badge_size,
+    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, picker_visible_rows, sheet_btn_h,
+    sheet_btn_w, sheet_h, sheet_pad, sheet_row1_y, sheet_row2_y, title_from_name, truncate_name,
 };
 use crate::theme;
 
@@ -350,6 +352,25 @@ pub(crate) fn blit_composed(
     }
 }
 
+/// Blitea un bitmap OVERLAY en `(x, y)` con un lock+present PROPIO (segundo
+/// present del frame). Se usa para el aviso breve (toast) sobre el bitmap
+/// cacheado de la BIBLIOTECA, que no se puede tocar (un segundo present
+/// mientras el aviso está visible, ~1,5 s, cuesta ~1-2 ms; el compositor solo
+/// lo ve durante el aviso).
+pub(crate) fn blit_overlay(window: &NativeWindow, overlay: &Bitmap, x: i32, y: i32) {
+    let Ok(mut guard) = window.lock(None) else {
+        return;
+    };
+    let Some(bpp) = guard.format().bytes_per_pixel() else {
+        return;
+    };
+    let dst_w = guard.width();
+    let dst_h = guard.height();
+    let dst_stride = guard.stride(); // en píxeles
+    let dst = guard.bits() as *mut u8;
+    copy_region(dst, dst_w, dst_h, dst_stride, bpp, overlay, x, y);
+}
+
 /// Escala `src` (RGBA8) por vecino-más-cercano a tamaño `src × zoom` y copia
 /// el resultado al buffer con su esquina superior izquierda en `(dx, dy)` px,
 /// recortando los bordes fuera de la ventana. Espejo de
@@ -398,6 +419,68 @@ fn blit_page_scaled(
     }
     let vis_w = (x1 - x0) as usize;
     let src_row_bytes = src_w as usize * 4;
+    // Camino 1:1 (`zoom == 1.0`, el reposo del visor: página renderizada a la
+    // escala exacta, incluido el arrastre de la SELECCIÓN DE TEXTO — cada Move
+    // re-blitea la página): el mapa vecino-más-cercano es la identidad
+    // (`dw == src_w` ⇒ `src_x = x − dx`), así que se copia FILA a FILA sin
+    // tabla x ni divisiones — evita el coste del bucle de vecino-más-cercano
+    // en el camino que más veces se ejecuta (el lag del "cuadrado de
+    // seleccionar" se medía también aquí; ver `Reader::blit`).
+    if zoom == 1.0 {
+        let src_ox = (x0 - i64::from(dx)) as usize; // 1:1: origen = destino
+        for y in 0..(y1 - y0) as usize {
+            let dst_y = y0 + y as i64;
+            let src_y = (dst_y - i64::from(dy)) as usize;
+            let src_row =
+                &src.data[src_y * src_row_bytes + src_ox * 4..(src_y + 1) * src_row_bytes];
+            let dst_row = unsafe {
+                std::slice::from_raw_parts_mut(
+                    dst.add((dst_y as usize * dst_stride + x0 as usize) * bpp),
+                    vis_w * bpp,
+                )
+            };
+            match bpp {
+                4 => {
+                    if dark {
+                        for x in 0..vis_w {
+                            let o = x * 4;
+                            dst_row[o] = 255 - src_row[o];
+                            dst_row[o + 1] = 255 - src_row[o + 1];
+                            dst_row[o + 2] = 255 - src_row[o + 2];
+                            dst_row[o + 3] = src_row[o + 3];
+                        }
+                    } else {
+                        dst_row.copy_from_slice(&src_row[..vis_w * 4]);
+                    }
+                }
+                2 => {
+                    for x in 0..vis_w {
+                        let o = x * 4;
+                        let (r, g, b) = if dark {
+                            (255 - src_row[o], 255 - src_row[o + 1], 255 - src_row[o + 2])
+                        } else {
+                            (src_row[o], src_row[o + 1], src_row[o + 2])
+                        };
+                        dst_row[x * 2..x * 2 + 2].copy_from_slice(&rgb565(r, g, b).to_ne_bytes());
+                    }
+                }
+                _ => {
+                    let n = bpp.min(3);
+                    for x in 0..vis_w {
+                        let o = x * 4;
+                        if dark {
+                            for c in 0..n {
+                                dst_row[x * bpp + c] = 255 - src_row[o + c];
+                            }
+                        } else {
+                            dst_row[x * bpp..x * bpp + n].copy_from_slice(&src_row[o..o + n]);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
     // Mapeo x precalculado (vecino-más-cercano entero): `src_x = dst_rel ×
     // src_w / dw` con `dst_rel = x - dx ∈ [0, dw)`, lo que garantiza
     // `src_x ∈ [0, src_w)`. Una división por columna en vez de por píxel.
@@ -560,8 +643,16 @@ fn fill_rect(
 
 /// Rellena un rectángulo (px de ventana, f32) recortado a la ventana; con
 /// `border = Some(color)` dibuja además un borde de 2 px (píxeles a menos de
-/// 2 del borde del rect) con ese color, sobre el relleno. Reutiliza `stamp`
-/// para la escritura (alfa-blend bpp 4 / opaco bpp 2).
+/// 2 del borde del rect) con ese color, sobre el relleno.
+///
+/// Camino RÁPIDO (bpp 4, el formato forzado del buffer): relleno por FILAS
+/// con alfa-blend por LUT (`fill_rect_lut`, sin división ni llamada por
+/// píxel) y el borde como 4 rectas finas sobre el relleno. Es el camino del
+/// RECT DE SELECCIÓN, que se redibuja en cada Move del arrastre (~60-120 Hz):
+/// el camino antiguo (un `stamp` por píxel con división por 255 en cada
+/// canal) era la causa del lag del "cuadrado de seleccionar" en la tablet
+/// (medible con el log de frame time de `Reader::blit`). bpp 2/otros
+/// conservan el camino antiguo (raro: el buffer se fuerza a R8G8B8A8_UNORM).
 #[allow(clippy::too_many_arguments)]
 fn fill_rect_bordered(
     dst: *mut u8,
@@ -586,6 +677,66 @@ fn fill_rect_bordered(
         return;
     }
     const BORDER_W: i32 = 2;
+    if bpp == 4 {
+        // Relleno interior (sin el anillo del borde) + borde como 4 rectas
+        // finas encima. El blend sobre sí mismo es idempotente (las esquinas
+        // se escriben dos veces con el mismo color → resultado exacto).
+        fill_rect_lut(
+            dst, dst_w, dst_h, dst_stride, ix0, iy0, ix1, iy1, fill, BORDER_W,
+        );
+        if let Some(bc) = border {
+            fill_rect_lut(
+                dst,
+                dst_w,
+                dst_h,
+                dst_stride,
+                ix0,
+                iy0,
+                ix1,
+                iy0 + BORDER_W,
+                bc,
+                0,
+            );
+            fill_rect_lut(
+                dst,
+                dst_w,
+                dst_h,
+                dst_stride,
+                ix0,
+                iy1 - BORDER_W,
+                ix1,
+                iy1,
+                bc,
+                0,
+            );
+            fill_rect_lut(
+                dst,
+                dst_w,
+                dst_h,
+                dst_stride,
+                ix0,
+                iy0,
+                ix0 + BORDER_W,
+                iy1,
+                bc,
+                0,
+            );
+            fill_rect_lut(
+                dst,
+                dst_w,
+                dst_h,
+                dst_stride,
+                ix1 - BORDER_W,
+                iy0,
+                ix1,
+                iy1,
+                bc,
+                0,
+            );
+        }
+        return;
+    }
+    // bpp 2/otros: camino antiguo (un `stamp` por píxel).
     let disc = [(0, 0)];
     for y in iy0..iy1 {
         for x in ix0..ix1 {
@@ -600,6 +751,79 @@ fn fill_rect_bordered(
             };
             let c = if edge { border.unwrap() } else { fill };
             stamp(dst, dst_w, dst_h, dst_stride, bpp, x, y, &disc, c);
+        }
+    }
+}
+
+/// Rellena un rectángulo ALINEADO a píxel entero `[x0,x1) × [y0,y1)` (ya
+/// recortado por el caller) con alfa-blend RGBA8 por LUT:
+/// `out = (c·a)/255 + (d·(255−a))/255` con 2 tablas de 256 entradas
+/// construidas UNA vez por llamada — sin división por píxel (la división de
+/// la fórmula exacta `(c·a + d·(255−a))/255` se aproxima con ±1 por canal:
+/// imperceptible en overlays translúcidos como el rect de selección o los
+/// highlights). Relleno por FILAS completas, sin llamada por píxel. `shrink`
+/// resta ese nº de px a cada borde (el relleno interior del rect con borde).
+/// Opaco (a=255) → copia directa por filas (el borde SEL_BORDER); a=0 → no-op.
+//
+// 7 parámetros posicionales de un blit (raw pointer + dimensiones): mismo
+// patrón que `copy_region`; se acepta el allow en vez de empaquetarlos.
+#[allow(clippy::too_many_arguments)]
+fn fill_rect_lut(
+    dst: *mut u8,
+    dst_w: usize,
+    dst_h: usize,
+    dst_stride: usize,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: [u8; 4],
+    shrink: i32,
+) {
+    let x0 = (x0 + shrink).max(0);
+    let y0 = (y0 + shrink).max(0);
+    let x1 = (x1 - shrink).min(dst_w as i32);
+    let y1 = (y1 - shrink).min(dst_h as i32);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let w = (x1 - x0) as usize;
+    let a = color[3] as usize;
+    if a == 255 {
+        let px = u32::from_ne_bytes(color);
+        for y in y0..y1 {
+            let row = unsafe {
+                std::slice::from_raw_parts_mut(
+                    dst.add((y as usize * dst_stride + x0 as usize) * 4) as *mut u32,
+                    w,
+                )
+            };
+            row.fill(px);
+        }
+        return;
+    }
+    if a == 0 {
+        return;
+    }
+    // Tablas de blend (idénticas por canal, la fórmula solo depende de a).
+    let t_src: [u8; 256] = std::array::from_fn(|c| ((c as u32 * a as u32) / 255) as u8);
+    let t_dst: [u8; 256] = std::array::from_fn(|c| ((c as u32 * (255 - a) as u32) / 255) as u8);
+    let (s0, s1, s2) = (
+        t_src[color[0] as usize],
+        t_src[color[1] as usize],
+        t_src[color[2] as usize],
+    );
+    for y in y0..y1 {
+        let row = unsafe {
+            std::slice::from_raw_parts_mut(
+                dst.add((y as usize * dst_stride + x0 as usize) * 4),
+                w * 4,
+            )
+        };
+        for px in row.chunks_exact_mut(4) {
+            px[0] = s0 + t_dst[px[0] as usize];
+            px[1] = s1 + t_dst[px[1] as usize];
+            px[2] = s2 + t_dst[px[2] as usize];
         }
     }
 }
@@ -1625,149 +1849,185 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
     jni_text_bitmap(w, h, theme::LIB_BG, &rects, &texts)
 }
 
-/// Botones de la cabecera de la biblioteca.
-pub(crate) fn library_buttons(
-    reader: &Reader,
-    win_w: f32,
-    btn_w: f32,
-    btn_h: f32,
-    btn_y: f32,
-) -> Vec<(&'static str, ButtonRect)> {
-    let mut out = Vec::new();
-    let mut right = win_w - 8.0;
-    for label in ["Rescan", "Grant", "Back"] {
-        let show = match label {
-            "Rescan" => true,
-            "Grant" => !reader.permission_granted && reader.sdk_int >= 30,
-            _ => reader.doc.is_some(),
-        };
-        if !show {
-            continue;
-        }
-        let x0 = right - btn_w;
-        out.push((label, (x0, btn_y, right, btn_y + btn_h)));
-        right = x0 - 8.0;
-    }
-    out
-}
-
-/// Renderiza la biblioteca MediaStore a un bitmap RGBA8 de tamaño de ventana:
-/// rejilla de 3 columnas (`GRID_COLS`) donde cada celda muestra la PORTADA
-/// (página 1, perezosa — ver `Reader::thumbs`/`pump_thumbs`) con proporción
-/// 2:3 estilo tapa de libro (esquinas 12 px, sombra sutil, sin borde) y el
-/// título debajo (1 línea, 13 sp, truncada con "…"). Las celdas sin portada
-/// todavía cargada se pintan con una silueta placeholder que se sustituye
-/// cuando la portada llega a la caché (el re-render lo dispara `pump_thumbs`).
+/// Renderiza la biblioteca MediaStore a un bitmap RGBA8 de tamaño de
+/// ventana: la pantalla de biblioteca PERSONAL premium (estilo Apple
+/// Books/Kindle pero propio) — las PORTADAS son lo principal, no un file
+/// manager (sin rutas completas visibles, sin iconos PDF genéricos: siempre
+/// portada real o placeholder elegante con el título).
 ///
-/// El bitmap base (fondo, cabecera, estado, títulos, SOMBRAS y placeholders)
-/// se dibuja con Canvas+JNI (`jni_text_bitmap`); las portadas CACHEADAS se
-/// pegan después directamente sobre sus bytes RGBA (Canvas no pinta bitmaps):
-/// center-crop vecino-más-cercano al área de portada 2:3 (`grid_cover_w` ×
-/// `grid_cover_h`), sin pasar por un lock de ventana (el bitmap es nuestro).
+/// Estructura FIJA (no scrollea): cabecera editorial (título "Library"
+/// grande + botón "＋ Add book") + campo de búsqueda (+ panel de chips de
+/// letra/carpeta si está abierto) + franja de estado (si la hay). Contenido
+/// SCROLLABLE (desplazado `reader.lib_scroll` px): [Continue Reading:
+/// carousel horizontal de tarjetas con portada 2:3 grande, título, autor,
+/// barra de progreso, "Page X of Y · Z%" y botón Read] + [título "My
+/// Library" + chips de organización (sort/filter) + rejilla 3×3 de portadas
+/// con título, autor y barra fina de progreso] + EMPTY STATE si no hay PDFs.
+///
+/// El bitmap base (fondo, cabecera, campo de búsqueda, chips, tarjetas,
+/// textos, barras de progreso, SOMBRAS y placeholders) se dibuja con
+/// Canvas+JNI (`jni_text_bitmap`); las portadas CACHEADAS se pegan después
+/// directamente sobre sus bytes RGBA (Canvas no pinta bitmaps): center-crop
+/// vecino-más-cercano al área 2:3 (`grid_cover_w`×`grid_cover_h` /
+/// `lib_cont_cover_*`), sin pasar por un lock de ventana.
 pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let h = reader.win_h;
-    let header_h = picker_header_h(h);
-    let btn_w = picker_btn_w(w);
-    let btn_h = picker_btn_h(h);
-    let btn_y = (header_h - btn_h) as f32 / 2.0;
     let pad = grid_pad(w);
-    let filter_h = lib_filter_h(h);
-    let content_y0 = lib_content_y0(h, reader.status.is_some());
+    let header_h = lib_header_h(h);
+    let search_h = lib_search_h();
+    let search_open = reader.lib_search_open;
+    let panel_h = lib_search_panel_h(h, search_open);
+    let content_y0 = lib_content_y0(h, search_open, reader.status.is_some());
     let scroll = reader.lib_scroll;
-    let has_recents = !reader.lib_recents().is_empty();
-    let recents_block_h = lib_recents_block_h(w, h, has_recents);
+    let has_cont = !reader.lib_continue_reading().is_empty();
+    let cont_block_h = lib_cont_block_h(w, h, has_cont);
 
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
+    // Geometría de la rejilla, hoisted (la usa también el pegado de portadas).
+    let cell_w = grid_cell_w(w);
+    let cover_w = grid_cover_w(w);
+    let cover_h = grid_cover_h(w);
+    let (row0, rows) = reader.lib_visible_grid_rows();
 
-    // 1. Cabecera + borde inferior (título + botones, mismo layout que antes).
-    rects.push(CanvasRect::sharp(
-        0.0,
-        0.0,
-        w as f32,
-        header_h as f32,
-        theme::LIB_HEADER_BG,
-    ));
-    rects.push(CanvasRect::sharp(
-        0.0,
-        header_h as f32 - 1.5,
-        w as f32,
-        header_h as f32,
-        theme::LIB_HEADER_BORDER,
-    ));
-
-    let title_ts = picker_row_h(h) as f32 * 0.48;
+    // ---- 1. CABECERA editorial: título "Library" grande + "＋ Add book" ----
+    let btn_w = (w as f32 * 0.24).clamp(120.0, 220.0);
+    let btn_h = (header_h * 0.5).clamp(36.0, 52.0);
+    let btn_y = (header_h - btn_h) / 2.0;
+    let btn_x = w as f32 - pad - btn_w;
+    let title_ts = (header_h * 0.34).clamp(30.0, 44.0);
     texts.push(CanvasText::new(
         pad,
-        header_h as f32 * 0.62,
+        header_h * 0.66,
         title_ts,
         theme::LIB_TEXT_PRIMARY,
         TextAlign::Left,
         true,
         "Library",
     ));
+    draw_button(
+        &mut rects,
+        &mut texts,
+        btn_x,
+        btn_y,
+        btn_x + btn_w,
+        btn_y + btn_h,
+        theme::LIB_ACCENT,
+        theme::ACCENT_AMBER_BORDER,
+        theme::LIB_ACCENT_DARK,
+        btn_h * 0.42,
+        true,
+        "＋ Add book",
+    );
 
-    let btn_ts = btn_h as f32 * 0.42;
-    for (label, (l, t, r, b)) in
-        library_buttons(reader, w as f32, btn_w as f32, btn_h as f32, btn_y)
-    {
-        let (fill, border) = if label == "Rescan" {
-            (theme::ACCENT_BLUE_BG, theme::ACCENT_BLUE_BORDER)
-        } else if label == "Grant" {
-            (theme::ACCENT_AMBER_BG, theme::ACCENT_AMBER_BORDER)
-        } else {
-            (theme::DARK_BTN_BG, theme::DARK_BTN_BORDER)
-        };
-        draw_button(
-            &mut rects, &mut texts, l, t, r, b, fill, border, 0xFFFFFFFF, btn_ts, true, label,
-        );
+    // ---- 2. CAMPO de búsqueda (píldora; al tocarla abre el panel de chips) ----
+    let search_y = header_h + 6.0;
+    let search_hh = search_h - 12.0;
+    let field_r = search_hh / 2.0;
+    rects.push(CanvasRect::rounded(
+        pad,
+        search_y,
+        w as f32 - pad,
+        search_y + search_hh,
+        field_r,
+        theme::LIB_SEARCH_BORDER,
+    ));
+    rects.push(CanvasRect::rounded(
+        pad + 1.0,
+        search_y + 1.0,
+        w as f32 - pad - 1.0,
+        search_y + search_hh - 1.0,
+        (field_r - 1.0).max(0.0),
+        theme::LIB_SEARCH_BG,
+    ));
+    let (summary, has_filter) = search_summary(reader);
+    if has_filter {
+        // Resumen del filtro activo + "✕" (limpia filtros y cierra el panel).
+        texts.push(CanvasText::new(
+            pad + 14.0,
+            search_y + search_hh * 0.64,
+            13.0,
+            theme::LIB_TEXT_PRIMARY,
+            TextAlign::Left,
+            false,
+            summary,
+        ));
+        let xw = search_hh - 8.0;
+        let xx = w as f32 - pad - 14.0 - xw;
+        rects.push(CanvasRect::rounded(
+            xx,
+            search_y + 4.0,
+            xx + xw,
+            search_y + 4.0 + xw,
+            xw / 2.0,
+            theme::DARK_BTN_BG,
+        ));
+        texts.push(CanvasText::new(
+            xx + xw / 2.0,
+            search_y + 4.0 + xw * 0.64,
+            12.0,
+            theme::LIB_TEXT_SECONDARY,
+            TextAlign::Center,
+            false,
+            "✕",
+        ));
+    } else {
+        texts.push(CanvasText::new(
+            pad + 14.0,
+            search_y + search_hh * 0.64,
+            13.0,
+            theme::LIB_TEXT_MUTED,
+            TextAlign::Left,
+            false,
+            "Search by title or folder",
+        ));
     }
 
-    // 2. Barra de FILTROS (búsqueda SIN teclado): fila 0 = carpetas, fila 1 =
-    // letras A-Z / #. Chips píldora, activo = acento dorado. Cada fila scrollea
-    // en horizontal (`lib_folders_x` / `lib_letters_x`); los chips fuera de la
-    // ventana se saltan (el Canvas no recorta, así que el clipping es manual).
-    for row in 0..2usize {
-        for (label, (l, t, r, b), active) in lib_chips(reader, row) {
-            if r < 0.0 || l > w as f32 {
-                continue;
+    // ---- 3. PANEL de búsqueda (chips de letra/carpeta) si está abierto ----
+    if search_open {
+        for row in 0..2usize {
+            for (label, (l, t, r, b), active) in lib_chips(reader, row) {
+                if r < 0.0 || l > w as f32 {
+                    continue; // fuera de la ventana: el Canvas no recorta
+                }
+                let (fill, border, tc) = if active {
+                    (
+                        theme::ACCENT_AMBER_BG,
+                        theme::ACCENT_AMBER_BORDER,
+                        0xFF0B0D12,
+                    )
+                } else {
+                    (
+                        theme::DARK_BTN_BG,
+                        theme::DARK_BTN_BORDER,
+                        theme::DARK_BTN_TEXT,
+                    )
+                };
+                draw_button(
+                    &mut rects,
+                    &mut texts,
+                    l,
+                    t,
+                    r,
+                    b,
+                    fill,
+                    border,
+                    tc,
+                    (b - t) * 0.42,
+                    active,
+                    &label,
+                );
             }
-            let (fill, border, tc) = if active {
-                (
-                    theme::ACCENT_AMBER_BG,
-                    theme::ACCENT_AMBER_BORDER,
-                    0xFF0B0D12,
-                )
-            } else {
-                (
-                    theme::DARK_BTN_BG,
-                    theme::DARK_BTN_BORDER,
-                    theme::DARK_BTN_TEXT,
-                )
-            };
-            draw_button(
-                &mut rects,
-                &mut texts,
-                l,
-                t,
-                r,
-                b,
-                fill,
-                border,
-                tc,
-                (b - t) * 0.42,
-                active,
-                &label,
-            );
         }
     }
 
-    // 3. Franja de estado (si la hay), entre la barra de filtros y el contenido.
+    // ---- 4. FRANJA de estado (si la hay), entre el panel y el contenido ----
+    let status_top = header_h + search_h + panel_h;
     if let Some(status) = reader.status.as_deref() {
         rects.push(CanvasRect::sharp(
             0.0,
-            header_h as f32 + filter_h,
+            status_top,
             w as f32,
             content_y0 as f32,
             theme::STATUS_BG,
@@ -1779,11 +2039,10 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
             content_y0 as f32,
             theme::STATUS_BORDER,
         ));
-        let ts = picker_row_h(h) as f32 * 0.36;
         texts.push(CanvasText::new(
             pad,
-            header_h as f32 + filter_h + picker_row_h(h) as f32 * 0.62,
-            ts,
+            status_top + picker_row_h(h) as f32 * 0.62,
+            picker_row_h(h) as f32 * 0.36,
             theme::STATUS_TEXT,
             TextAlign::Left,
             true,
@@ -1791,197 +2050,353 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
         ));
     }
 
-    // 4. CONTENIDO scrolleable (desplazado `scroll` px hacia arriba desde
-    // `content_y0`): sección RECIENTES (carousel horizontal) + título de
-    // ARCHIVOS + rejilla 3×3 filtrada.
+    // ---- 5. CONTENIDO scrolleable (desplazado `scroll` px) ----
     let ctop = content_y0 as f32 - scroll;
 
-    // 4a. Sección RECIENTES: título + fila de portadas (carousel). Las portadas
-    // se recortan a la ventana en X (scroll horizontal `lib_carousel_x`) y la
-    // fila entera scrollea en vertical con el contenido. Sin recientes → la
-    // sección se OCULTA (`recents_block_h` = 0; ver `lib_recents_block_h`).
-    if has_recents {
+    if reader.library_list.is_empty() {
+        // ---- EMPTY STATE: sin PDFs → ilustración + textos + botón ----
+        draw_empty_state(reader, &mut rects, &mut texts);
+    } else {
+        // 5a. CONTINUE READING: tarjetas horizontales con portada grande,
+        // progreso y botón "Read" (el punto de entrada). Sin libros en
+        // curso → sección OCULTA (`cont_block_h` = 0).
+        if has_cont {
+            texts.push(CanvasText::new(
+                pad,
+                ctop + lib_section_title_h(h) * 0.72,
+                13.0,
+                theme::LIB_TEXT_SECONDARY,
+                TextAlign::Left,
+                true,
+                "CONTINUE READING",
+            ));
+            let cont_top = ctop + lib_section_title_h(h);
+            let cw = lib_cont_cover_w(w);
+            let chh = lib_cont_cover_h(w);
+            let card_w = lib_cont_card_w(w);
+            let card_h = lib_cont_card_h(w);
+            let cover_r = 12.0f32;
+            for (i, book) in reader.lib_continue_reading().iter().enumerate() {
+                let cx = lib_cont_card_x(w, i) - reader.lib_carousel_x;
+                if cx + card_w < 0.0 || cx > w as f32 {
+                    continue;
+                }
+                // Fondo de tarjeta sutil (borde + relleno 1px).
+                rects.push(CanvasRect::rounded(
+                    cx,
+                    cont_top,
+                    cx + card_w,
+                    cont_top + card_h,
+                    12.0,
+                    theme::LIB_CARD_BORDER,
+                ));
+                rects.push(CanvasRect::rounded(
+                    cx + 1.0,
+                    cont_top + 1.0,
+                    cx + card_w - 1.0,
+                    cont_top + card_h - 1.0,
+                    11.0,
+                    theme::LIB_CARD_BG,
+                ));
+                let cover_x = cx + 10.0;
+                let cover_y = cont_top + 10.0;
+                // Sombra sutil + portada (o placeholder elegante con el título).
+                rects.push(CanvasRect::rounded(
+                    cover_x + 2.0,
+                    cover_y + 3.0,
+                    cover_x + 2.0 + cw,
+                    cover_y + 3.0 + chh,
+                    cover_r,
+                    theme::LIB_COVER_SHADOW,
+                ));
+                if reader.thumbs.peek(&book.path).is_none() {
+                    rects.push(CanvasRect::rounded(
+                        cover_x,
+                        cover_y,
+                        cover_x + cw,
+                        cover_y + chh,
+                        cover_r,
+                        theme::LIB_COVER_PLACEHOLDER,
+                    ));
+                    texts.push(CanvasText::new(
+                        cover_x + cw / 2.0,
+                        cover_y + chh / 2.0 + 7.0,
+                        13.0,
+                        theme::LIB_TEXT_SECONDARY,
+                        TextAlign::Center,
+                        true,
+                        truncate_name(&title_from_name(&book.name), 12),
+                    ));
+                }
+                // Texto de la tarjeta: título, autor, barra, meta y botón Read.
+                let tx = cover_x;
+                let ty = cover_y + chh;
+                texts.push(CanvasText::new(
+                    tx,
+                    ty + 8.0 + 13.0 * 0.85,
+                    13.0,
+                    theme::LIB_TEXT_PRIMARY,
+                    TextAlign::Left,
+                    true,
+                    truncate_name(&title_from_name(&book.name), 16),
+                ));
+                texts.push(CanvasText::new(
+                    tx,
+                    ty + 8.0 + 20.0 + 10.0 * 0.85,
+                    10.0,
+                    theme::LIB_TEXT_MUTED,
+                    TextAlign::Left,
+                    false,
+                    truncate_name(&book.author, 16),
+                ));
+                // Barra de progreso (track + relleno dorado).
+                let bar_y = ty + 8.0 + 36.0;
+                rects.push(CanvasRect::rounded(
+                    tx,
+                    bar_y,
+                    tx + cw,
+                    bar_y + 3.0,
+                    1.5,
+                    theme::LIB_PROGRESS_TRACK,
+                ));
+                let fill_w = (cw * book.pct).max(0.0);
+                if fill_w > 0.0 {
+                    rects.push(CanvasRect::rounded(
+                        tx,
+                        bar_y,
+                        tx + fill_w,
+                        bar_y + 3.0,
+                        1.5,
+                        theme::LIB_ACCENT,
+                    ));
+                }
+                // "Page X of Y · Z%"
+                let meta = format!(
+                    "Page {} of {} · {:.0}%",
+                    book.page + 1,
+                    book.page_count,
+                    book.pct * 100.0
+                );
+                texts.push(CanvasText::new(
+                    tx,
+                    ty + 8.0 + 48.0 + 9.0 * 0.85,
+                    9.0,
+                    theme::LIB_TEXT_MUTED,
+                    TextAlign::Left,
+                    false,
+                    meta,
+                ));
+                // Acción clara "Read" (tocar la tarjeta también abre).
+                let rbw = (cw * 0.52).clamp(64.0, 120.0);
+                let rbh = 24.0;
+                let rbx = tx + (cw - rbw) / 2.0;
+                let rby = ty + 8.0 + 62.0;
+                draw_button(
+                    &mut rects,
+                    &mut texts,
+                    rbx,
+                    rby,
+                    rbx + rbw,
+                    rby + rbh,
+                    theme::LIB_ACCENT,
+                    theme::ACCENT_AMBER_BORDER,
+                    theme::LIB_ACCENT_DARK,
+                    11.0,
+                    true,
+                    "Read",
+                );
+            }
+        }
+
+        // 5b. Título de "My Library" (la rejilla principal).
         texts.push(CanvasText::new(
             pad,
-            ctop + lib_section_title_h(h) * 0.72,
-            12.0,
+            ctop + cont_block_h + lib_section_title_h(h) * 0.72,
+            13.0,
             theme::LIB_TEXT_SECONDARY,
             TextAlign::Left,
             true,
-            "RECIENTES",
+            "My Library",
         ));
-        let car_top = ctop + lib_section_title_h(h);
-        let cw = lib_carousel_cover_w(w);
-        let ch = lib_carousel_cover_h(w);
-        let cover_r = 10.0f32;
-        let recents = reader.lib_recents();
-        for (i, r) in recents.iter().enumerate() {
-            let cx = lib_carousel_cover_x(w, i) - reader.lib_carousel_x;
-            if cx + cw < 0.0 || cx > w as f32 {
-                continue;
-            }
-            // Sombra sutil (siempre) + placeholder mientras carga la portada.
-            rects.push(CanvasRect::rounded(
-                cx + 2.0,
-                car_top + 3.0,
-                cx + 2.0 + cw,
-                car_top + 3.0 + ch,
-                cover_r,
-                theme::LIB_COVER_SHADOW,
-            ));
-            if reader.thumbs.peek(&r.path).is_none() {
-                rects.push(CanvasRect::rounded(
-                    cx,
-                    car_top,
-                    cx + cw,
-                    car_top + ch,
-                    cover_r,
-                    theme::LIB_COVER_PLACEHOLDER,
-                ));
-                texts.push(CanvasText::new(
-                    cx + cw / 2.0,
-                    car_top + ch / 2.0 + 8.0,
-                    16.0,
-                    theme::LIB_TEXT_MUTED,
-                    TextAlign::Center,
-                    true,
-                    "…",
-                ));
-            }
-            // Nombre del PDF bajo la portada (1 línea, truncado).
-            let name = truncate_name(&r.name, 12);
+
+        // 5c. ORGANIZACIÓN: fila SORT + fila FILTER (chips pequeños, discretos).
+        let org_labels = ["SORT", "FILTER"];
+        for (row, label_text) in org_labels.iter().enumerate() {
+            let org_y0 = ctop + lib_org_y(w, h, has_cont, row);
             texts.push(CanvasText::new(
-                cx,
-                car_top + ch + 8.0 + 10.0 * 0.85,
-                10.0,
-                theme::LIB_TEXT_SECONDARY,
+                pad,
+                org_y0 + lib_org_chip_h(h) * 0.74,
+                9.0,
+                theme::LIB_TEXT_MUTED,
                 TextAlign::Left,
                 false,
-                name,
+                *label_text,
             ));
-        }
-    }
-
-    // 4b. Título de ARCHIVOS con el resumen del filtro activo ("Download/ · A").
-    let mut summary = String::new();
-    if let Some(f) = &reader.lib_folder {
-        summary.push_str(f);
-    }
-    if let Some(l) = reader.lib_letter {
-        if !summary.is_empty() {
-            summary.push_str(" · ");
-        }
-        summary.push(l);
-    }
-    let arch_label = if summary.is_empty() {
-        "ARCHIVOS".to_string()
-    } else {
-        format!("ARCHIVOS — {summary}")
-    };
-    texts.push(CanvasText::new(
-        pad,
-        ctop + recents_block_h + lib_section_title_h(h) * 0.72,
-        12.0,
-        theme::LIB_TEXT_SECONDARY,
-        TextAlign::Left,
-        true,
-        arch_label,
-    ));
-
-    // 4c. Rejilla 3×3 (lista FILTRADA): portada 2:3 + título, igual que antes
-    // pero con la geometría de `lib_grid_cell_rect` (scroll vertical en px).
-    let cell_w = grid_cell_w(w);
-    let cover_w = grid_cover_w(w);
-    let cover_h = grid_cover_h(w);
-    let title_ts = 13.0f32;
-    let char_w = title_ts * 0.55;
-    let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
-    let (row0, rows) = reader.lib_visible_grid_rows();
-    for row in row0..row0 + rows {
-        for col in 0..GRID_COLS {
-            let Some(entry) = reader.grid_entry_at(row, col) else {
-                continue;
-            };
-            let (cx, cy, _, _) =
-                lib_grid_cell_rect(w, h, content_y0, has_recents, scroll, row, col);
-            if cy + grid_cell_h(w) < content_y0 as f32 || cy > h as f32 {
-                continue; // celda fuera de la ventana (por el scroll vertical)
+            for (label, (l, t, r, b), active) in lib_org_chips(reader, row) {
+                if r < 0.0 || l > w as f32 {
+                    continue;
+                }
+                let (fill, border, tc) = if active {
+                    (
+                        theme::LIB_ACCENT,
+                        theme::ACCENT_AMBER_BORDER,
+                        theme::LIB_ACCENT_DARK,
+                    )
+                } else {
+                    (
+                        theme::DARK_BTN_BG,
+                        theme::DARK_BTN_BORDER,
+                        theme::DARK_BTN_TEXT,
+                    )
+                };
+                draw_button(
+                    &mut rects,
+                    &mut texts,
+                    l,
+                    t,
+                    r,
+                    b,
+                    fill,
+                    border,
+                    tc,
+                    (b - t) * 0.42,
+                    active,
+                    &label,
+                );
             }
-            let cover_x0 = cx + (cell_w - cover_w) / 2.0;
-            let cover_y0 = cy + 4.0;
-            let cover_r = 12.0f32;
-            rects.push(CanvasRect::rounded(
-                cover_x0 + 2.0,
-                cover_y0 + 3.0,
-                cover_x0 + 2.0 + cover_w,
-                cover_y0 + 3.0 + cover_h,
-                cover_r,
-                theme::LIB_COVER_SHADOW,
-            ));
-            if reader.thumbs.peek(&entry.uri).is_none() {
+        }
+
+        // 5d. REJILLA 3×3 ("My Library", lista FILTRADA): portada 2:3
+        // dominante + título + autor + barra fina de progreso si empezado.
+        let title_ts = 13.0f32;
+        let char_w = title_ts * 0.55;
+        let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
+        for row in row0..row0 + rows {
+            for col in 0..GRID_COLS {
+                let Some(entry) = reader.grid_entry_at(row, col) else {
+                    continue;
+                };
+                let (cx, cy, _, _) =
+                    lib_grid_cell_rect(w, h, content_y0, has_cont, scroll, row, col);
+                if cy + grid_cell_h(w) < content_y0 as f32 || cy > h as f32 {
+                    continue; // celda fuera de la ventana (scroll vertical)
+                }
+                let cover_x0 = cx + (cell_w - cover_w) / 2.0;
+                let cover_y0 = cy + 4.0;
+                let cover_r = 12.0f32;
                 rects.push(CanvasRect::rounded(
-                    cover_x0,
-                    cover_y0,
-                    cover_x0 + cover_w,
-                    cover_y0 + cover_h,
+                    cover_x0 + 2.0,
+                    cover_y0 + 3.0,
+                    cover_x0 + 2.0 + cover_w,
+                    cover_y0 + 3.0 + cover_h,
                     cover_r,
-                    theme::LIB_COVER_PLACEHOLDER,
+                    theme::LIB_COVER_SHADOW,
+                ));
+                if reader.thumbs.peek(&entry.uri).is_none() {
+                    rects.push(CanvasRect::rounded(
+                        cover_x0,
+                        cover_y0,
+                        cover_x0 + cover_w,
+                        cover_y0 + cover_h,
+                        cover_r,
+                        theme::LIB_COVER_PLACEHOLDER,
+                    ));
+                    // Placeholder ELEGANTE con el título (nada de "…" ni de
+                    // iconos PDF genéricos).
+                    texts.push(CanvasText::new(
+                        cover_x0 + cover_w / 2.0,
+                        cover_y0 + cover_h / 2.0 + title_ts * 0.35,
+                        title_ts,
+                        theme::LIB_TEXT_SECONDARY,
+                        TextAlign::Center,
+                        true,
+                        truncate_name(&entry_title(entry), 12),
+                    ));
+                }
+                // Título (primario) + autor (secundario/muted).
+                texts.push(CanvasText::new(
+                    cx + GRID_CELL_PAD,
+                    cy + 4.0 + cover_h + 10.0 + title_ts * 0.85,
+                    title_ts,
+                    theme::LIB_TEXT_PRIMARY,
+                    TextAlign::Left,
+                    false,
+                    truncate_name(&entry_title(entry), max_chars),
                 ));
                 texts.push(CanvasText::new(
-                    cover_x0 + cover_w / 2.0,
-                    cover_y0 + cover_h / 2.0 + title_ts * 0.35,
-                    title_ts * 1.6,
+                    cx + GRID_CELL_PAD,
+                    cy + 4.0 + cover_h + 10.0 + 19.0 + 10.0 * 0.85,
+                    10.0,
                     theme::LIB_TEXT_MUTED,
-                    TextAlign::Center,
-                    true,
-                    "…",
+                    TextAlign::Left,
+                    false,
+                    truncate_name(&entry_author(entry), max_chars),
                 ));
+                // Barra fina de progreso si el libro está empezado (registro
+                // de `library.json`; los nunca abiertos no llevan barra).
+                if let Some(p) = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
+                {
+                    let bar_y = cy + 4.0 + cover_h + 10.0 + 34.0;
+                    let track_w = cell_w - 2.0 * GRID_CELL_PAD;
+                    rects.push(CanvasRect::rounded(
+                        cx + GRID_CELL_PAD,
+                        bar_y,
+                        cx + GRID_CELL_PAD + track_w,
+                        bar_y + 3.0,
+                        1.5,
+                        theme::LIB_PROGRESS_TRACK,
+                    ));
+                    let fill_w = (track_w * p.pct()).max(0.0);
+                    if fill_w > 0.0 {
+                        rects.push(CanvasRect::rounded(
+                            cx + GRID_CELL_PAD,
+                            bar_y,
+                            cx + GRID_CELL_PAD + fill_w,
+                            bar_y + 3.0,
+                            1.5,
+                            theme::LIB_ACCENT,
+                        ));
+                    }
+                }
             }
-            let title_text = truncate_name(&entry.name, max_chars);
+        }
+
+        // 5e. Sin resultados con filtro activo (búsqueda o estado): aviso.
+        if reader.lib_filtered.is_empty()
+            && (reader.lib_letter.is_some()
+                || reader.lib_folder.is_some()
+                || reader.lib_status.is_some())
+        {
             texts.push(CanvasText::new(
-                cx + GRID_CELL_PAD,
-                cy + 4.0 + cover_h + 8.0 + title_ts * 0.85,
-                title_ts,
-                theme::LIB_TEXT_SECONDARY,
-                TextAlign::Left,
+                w as f32 / 2.0,
+                ctop + cont_block_h + lib_section_title_h(h) + 24.0,
+                13.0,
+                theme::LIB_TEXT_MUTED,
+                TextAlign::Center,
                 false,
-                title_text,
+                "No matches — tap ✕ to clear",
             ));
         }
-    }
-
-    // 4d. Aviso de "sin resultados" cuando hay filtro activo y nada coincide.
-    if reader.lib_filtered.is_empty()
-        && (reader.lib_letter.is_some() || reader.lib_folder.is_some())
-    {
-        texts.push(CanvasText::new(
-            w as f32 / 2.0,
-            ctop + recents_block_h + lib_section_title_h(h) + 24.0,
-            13.0,
-            theme::LIB_TEXT_MUTED,
-            TextAlign::Center,
-            false,
-            "No matches — tap All to clear",
-        ));
     }
 
     let mut out = jni_text_bitmap(w, h, theme::LIB_BG, &rects, &texts)?;
 
-    // 5. Pegar las portadas CACHEADAS sobre el bitmap base: primero las del
-    // carousel (clave = ruta local), después las de la rejilla (clave = URI).
-    if has_recents {
-        let car_top = ctop + lib_section_title_h(h);
-        let cw = lib_carousel_cover_w(w);
-        let ch = lib_carousel_cover_h(w);
-        for (i, r) in reader.lib_recents().iter().enumerate() {
-            let Some(thumb) = reader.thumbs.peek(&r.path) else {
+    // 6. Pegar las portadas CACHEADAS sobre el bitmap base: primero las del
+    // carousel de Continue Reading (clave = ruta local), después las de la
+    // rejilla (clave = URI).
+    if has_cont {
+        let cont_top = (ctop + lib_section_title_h(h)).round() as i32;
+        let cw = lib_cont_cover_w(w);
+        let chh = lib_cont_cover_h(w);
+        for (i, book) in reader.lib_continue_reading().iter().enumerate() {
+            let Some(thumb) = reader.thumbs.peek(&book.path) else {
                 continue;
             };
-            let cx = (lib_carousel_cover_x(w, i) - reader.lib_carousel_x).round() as i32;
-            // Fuera de la ventana: saltar (el Canvas no recorta; el clipping es
-            // manual). Ojo: `cx + cw as i32 < 0 || ...` confunde al parser de
-            // rustc (un `as` antes de `<` en una cadena con `||` se lee como
-            // argumento genérico), por eso el borde derecho va en variable.
+            let cx = (lib_cont_card_x(w, i) - reader.lib_carousel_x + 10.0).round() as i32;
+            // Fuera de la ventana: saltar (el Canvas no recorta; el clipping
+            // es manual). Ojo: `cx + cw as i32 < 0 || ...` confunde al parser
+            // de rustc (un `as` antes de `<` en una cadena con `||` se lee
+            // como argumento genérico), por eso el borde derecho va en var.
             let cover_right = cx + cw as i32;
             if cover_right < 0 || cx > w {
                 continue;
@@ -1991,9 +2406,9 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 out.width as usize,
                 thumb,
                 cx,
-                car_top.round() as i32,
+                cont_top + 10,
                 cw as i32,
-                ch as i32,
+                chh as i32,
             );
         }
     }
@@ -2005,8 +2420,7 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
             let Some(thumb) = reader.thumbs.peek(&entry.uri) else {
                 continue;
             };
-            let (cx, cy, _, _) =
-                lib_grid_cell_rect(w, h, content_y0, has_recents, scroll, row, col);
+            let (cx, cy, _, _) = lib_grid_cell_rect(w, h, content_y0, has_cont, scroll, row, col);
             if cy + grid_cell_h(w) < content_y0 as f32 || cy > h as f32 {
                 continue;
             }
@@ -2025,6 +2439,109 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
     }
 
     Some(out)
+}
+
+/// Resumen del filtro de BÚSQUEDA activo para el campo ("M" / "Download" /
+/// "M · Download"): texto mostrable + si hay filtro (para el "✕").
+fn search_summary(reader: &Reader) -> (String, bool) {
+    let mut parts = Vec::new();
+    if let Some(l) = reader.lib_letter {
+        parts.push(l.to_string());
+    }
+    if let Some(f) = &reader.lib_folder {
+        parts.push(f.trim_end_matches('/').to_string());
+    }
+    if parts.is_empty() {
+        (String::new(), false)
+    } else {
+        (parts.join(" · "), true)
+    }
+}
+
+/// Dibuja el EMPTY STATE de la biblioteca (sin PDFs): ilustración simple de
+/// un libro (portada + lomo + líneas de texto) + título + subtítulo + botón
+/// ("Add PDF" si el permiso está concedido, "Grant access" si no — el botón
+/// Grant abre los Ajustes de \"All files access\"). Geometría COMPARTIDA con
+/// el tap (`reader::lib_empty_state_geom`).
+fn draw_empty_state(reader: &Reader, rects: &mut Vec<CanvasRect>, texts: &mut Vec<CanvasText>) {
+    let Some(g) = lib_empty_state_geom(reader) else {
+        return;
+    };
+    let (bx, by, br, bb) = g.book;
+    // Portada (silueta oscura) + lomo a la izquierda + líneas de "texto".
+    rects.push(CanvasRect::rounded(
+        bx,
+        by,
+        br,
+        bb,
+        6.0,
+        theme::LIB_COVER_PLACEHOLDER,
+    ));
+    rects.push(CanvasRect::sharp(
+        bx - 8.0,
+        by + 4.0,
+        bx - 2.0,
+        bb - 4.0,
+        0xFF141922,
+    ));
+    let line_w = (br - bx) * 0.6;
+    for i in 0..3 {
+        let ly = by + 18.0 + i as f32 * 18.0;
+        rects.push(CanvasRect::sharp(
+            bx + 12.0,
+            ly,
+            bx + 12.0 + line_w,
+            ly + 2.0,
+            0xFF232B3A,
+        ));
+    }
+    // Título + subtítulo + botón.
+    let (title, subtitle, btn_label) = if reader.permission_granted {
+        (
+            "Your library is empty",
+            "Add your first PDF to start reading.",
+            "Add PDF",
+        )
+    } else {
+        (
+            "Access needed",
+            "Grant \u{201c}All files access\u{201d} to read your PDFs.",
+            "Grant access",
+        )
+    };
+    texts.push(CanvasText::new(
+        reader.win_w as f32 / 2.0,
+        g.title_y,
+        18.0,
+        theme::LIB_TEXT_PRIMARY,
+        TextAlign::Center,
+        true,
+        title,
+    ));
+    texts.push(CanvasText::new(
+        reader.win_w as f32 / 2.0,
+        g.subtitle_y,
+        13.0,
+        theme::LIB_TEXT_MUTED,
+        TextAlign::Center,
+        false,
+        subtitle,
+    ));
+    let (l, t, r, b) = g.button;
+    draw_button(
+        rects,
+        texts,
+        l,
+        t,
+        r,
+        b,
+        theme::LIB_ACCENT,
+        theme::ACCENT_AMBER_BORDER,
+        theme::LIB_ACCENT_DARK,
+        (b - t) * 0.42,
+        true,
+        btn_label,
+    );
 }
 
 /// Pega la portada escalada (center-crop, vecino-más-cercano) dentro del
