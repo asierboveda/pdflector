@@ -2,15 +2,15 @@
 //! paleta de colores.
 //!
 //! El modelo de datos (`AnnotationSet`, `Stroke`, `Color`) y la persistencia
-//! (sidecar SQLite, `store.rs`) viven en pdf_core; este módulo solo aporta el
-//! estado de dibujo del visor:
+//! (sidecar SQLite, `store.rs`) viven en pdf_core; este módulo solo aportaba
+//! el estado de dibujo del visor:
 //!
 //! - [`ActiveStroke`]: el trazo que se está dibujando (dedo bajado), con sus
 //!   puntos **en coordenadas de página** (puntos PDF, f32 — el mismo espacio
-//!   que `Document::page_size`), aún NO añadido al `AnnotationSet`. Se añade
-//!   al levantar el dedo (`Reader::finish_stroke`).
+//!   que `Document::page_size`), aún NO añadido al `AnnotationSet`. Se añadía
+//!   al levantar el dedo (`Reader::finish_stroke`, eliminado).
 //! - `DEFAULT_STROKE_COLOR` / `STROKE_PALETTE`: color por defecto y colores
-//!   entre los que alterna el botón "●" de la barra superior.
+//!   entre los que alternaba el botón "●" de la barra superior.
 //! - `STROKE_WIDTH_PT`: grosor del trazo nuevo en puntos PDF (la pantalla
 //!   dibuja `width × scale`, ver `draw.rs`).
 //!
@@ -21,7 +21,21 @@
 //! nunca rasterizadas en él. Guardar los puntos en puntos PDF los mantiene
 //! pegados a la página en cualquier zoom/scroll (la transformación
 //! página↔pantalla solo depende de la escala `cover × zoom` y de la posición
-//! de la página en la columna, ver `Reader::screen_to_page`).
+//! de la página en la columna).
+//!
+//! # dead_code intencional (2026-08-XX)
+//!
+//! El modo dibujo (✏️ / ● / ↶ de la barra superior) se ELIMINÓ de la UI por
+//! decisión del autor (visor minimalista: pantalla completa, sin gesto de
+//! dibujo). El módulo se conserva ÍNTEGRO con `#![allow(dead_code)]` porque:
+//!
+//! 1. La carga y el render de anotaciones YA GUARDADAS siguen vivos en
+//!    `reader`/`draw` (el usuario no pierde sus trazos, solo la creación
+//!    desde la UI por ahora);
+//! 2. Reintroducir el dibujo en una fase futura solo requiere volver a
+//!    conectar este estado con el input — el modelo (pdf_core) y la
+//!    transformación página↔pantalla no se tocan.
+#![allow(dead_code)]
 
 use pdf_core::Color;
 

@@ -576,3 +576,41 @@
     (MediaStore ya ordena por relative_path+display_name y cada fila muestra su carpeta).
 - **Verificación**: build release aarch64, clippy y fmt limpios en cada agente; host clippy/fmt
   verdes. Sin commits (regla AGENTS.md).
+
+## 2026-08-18 — Rediseño de UX: pantalla completa, sheet de ajustes, rejilla 3×3
+
+- **Visor a pantalla completa**: se ELIMINÓ la barra superior fija del visor
+  (Open/✏️/●/↶/−10/+10/Dark → `render_viewer_bar`, `viewer_bar_tap`, campo
+  `viewer_bar`, constantes de layout). El documento ocupa toda la pantalla.
+- **Sheet de ajustes** deslizante desde arriba (mitad de la ventana): se
+  revela con un tirón hacia abajo desde la mitad superior (sigue al dedo, sin
+  chocar con tap de página ni pinch), se cierra con swipe up o tap fuera.
+  Controles: Back (biblioteca), Open (picker interno), Dark/Light, −10/+10,
+  "N / total" (tap = página siguiente). Animación ~150 ms por `Reader::tick`
+  con `poll_events(Some(16 ms))` solo mientras hay trabajo diferido.
+- **Indicador de página** "N / total" como overlay abajo a la IZQUIERDA
+  (sin barra); tap en él = página siguiente (decisión documentada).
+- **Biblioteca en rejilla 3×3** con portada (página 1) + título (1-2 líneas):
+  portadas PERZOSAS (solo celdas visibles, ≤ 3/tick, placeholder "…"),
+  render sin copiar el PDF (`openFileDescriptor` + `/proc/self/fd/N`), caché
+  LRU nueva `thumbs.rs` (36 entradas / 9 MiB / 200 px). Se quitó el índice de
+  letras A-Z (no encaja en la rejilla; decisión documentada).
+- **Lápiz ✏️ / subrayado / undo ↶ / color ● eliminados** (minimalista): sin
+  gesto de dibujo; se MANTIENEN carga y render de anotaciones guardadas
+  (`annotations.rs` queda con `#![allow(dead_code)]` documentado).
+- **Solo se tocó pdf_android** (draw/input/reader/lib/jni/annotations +
+  thumbs nuevo); zoom.rs/view.rs/persist.rs/cache.rs y pdf_core/pdf_app/
+  pdf_bench intactos. Doc de estructura: `docs/ux-rediseño-estructura.md`.
+- **Verificación**: build release aarch64-linux-android sin warnings (NDK r28
+  + BINDGEN_EXTRA_CLANG_ARGS), clippy cross limpio, `cargo fmt --check` OK,
+  host check de pdf_core/pdf_app/pdf_bench OK. Sin commits (regla AGENTS.md).
+
+## 2026-08-18 — Restyling visual de la UI de Android: paleta warm-neutral, card de ajustes y portadas en rejilla
+
+- **Paleta de color (`lib.rs` `mod theme`)**: migrada a tonos cálidos/neutros premium (`DARK_BAR_BG` = `0xFF0B0D12`, `DARK_BAR_BORDER` = `0xFF232B3A`, `DARK_BTN_BG` = `0xFF161B26`, `DARK_BTN_BORDER` = `0xFF2A3444`, `DARK_BTN_TEXT` = `0xFFE6EAF0`, `ACCENT` warm gold `0xFFC8A96A`/`0xFFD9BD8B`, `DARK_BADGE_BG` = `0xDD0B0D12` semitransparente, `LIB_BG` = `0xFF0B0D12`, `LIB_ROW_EVEN/ODD` = `0xFF10141C`/`0xFF141922`, `LIB_TEXT_PRIMARY/SECONDARY/MUTED`).
+- **Sheet de ajustes (`draw.rs` `render_sheet`)**: panel card deslizante desde el borde superior con esquinas inferiores redondeadas (16px), 1px de borde `bar_border`, etiqueta "SETTINGS" en mayúsculas (11sp `LIB_TEXT_SECONDARY`), y botones estilo píldora (radio capsule $H/2$, 1px borde, `DARK_BTN_BG`/`DARK_BTN_TEXT`; toggle de modo oscuro con relleno `ACCENT` warm gold y texto oscuro en estado activo).
+- **Biblioteca en rejilla (`draw.rs` `render_library_grid` / `paste_thumb`)**: portadas en celdas de 3 columnas con esquinas redondeadas 12px, 1px de borde `LIB_ROW_BORDER`, escaladas con *scale-to-fill* (sin letterbox), y título de 14sp a 1 sola línea con puntos suspensivos abajo (`LIB_TEXT_SECONDARY`).
+- **Indicador de página (`draw.rs` `render_page_badge`)**: badge estilo píldora en la esquina inferior izquierda con fondo oscuro semitransparente (`DARK_BADGE_BG` `0xDD0B0D12`), 1px de borde y texto 12sp (`DARK_BADGE_TEXT`).
+- **Archivos editados**: ÚNICAMENTE `crates/pdf_android/src/lib.rs` y `crates/pdf_android/src/draw.rs`.
+- **Verificación**: `cargo build -p pdf_android --target aarch64-linux-android --release` (0 warnings), `cargo fmt --all -- --check` (limpio), `cargo clippy --all-targets -- -D warnings` (limpio).
+

@@ -4,50 +4,90 @@
 //! NativeActivity clásica, el `.so` se carga vía `android.app.lib_name`).
 //!
 //! - Al arrancar SIN intent (lanzamiento normal desde el launcher) muestra la
-//!   **biblioteca MediaStore**: los PDFs del sistema con CARPETA y NOMBRE
-//!   (p. ej. "Download/test.pdf" o "Document/Mates/3S/Fisica/TEMA_1.pdf");
-//!   tocar una fila copia el fichero al almacenamiento interno y lo abre con
-//!   `pdf_core` (motor MuPDF, ADR-001).
+//!   **biblioteca MediaStore en REJILLA 3×3**: cada celda muestra la portada
+//!   (página 1, render PERZOSO y bajo demanda con placeholder — ver `thumbs`)
+//!   y el título debajo; tocar una celda copia el fichero al almacenamiento
+//!   interno y lo abre con `pdf_core` (motor MuPDF, ADR-001).
 //! - Con "abrir con" (ACTION_VIEW + content://) abre el PDF directamente sin
 //!   pasar por la biblioteca (ver `launch_intent_pdf`).
-//! - En cada redibujado renderiza la página actual a una escala *contain*
-//!   (`min(win_w / page_w, win_h / page_h)`, puntos PDF → px) multiplicada por
-//!   el factor de zoom continuo (1.0 = página completa), centrada sobre un
-//!   fondo oscuro (letterbox).
+//! - En cada redibujado renderiza la página actual a una escala *cover*
+//!   (`max(win_w / page_w, win_h / page_h)`, puntos PDF → px; ver `view`)
+//!   multiplicada por el factor de zoom continuo (1.0 = página completa),
+//!   centrada sobre un fondo oscuro (letterbox).
 //! - Blitea el `Bitmap` RGBA8 de pdf_core al `ANativeWindow` fila a fila,
 //!   respetando `buffer.stride` (en píxeles, puede ser > `width`). El formato
 //!   del buffer se fuerza a `R8G8B8A8_UNORM` con
 //!   `ANativeWindow_setBuffersGeometry`; por defensa se manejan también
 //!   `R8G8B8X8_UNORM` (copia directa) y `R5G6B5_UNORM` (conversión 565).
 //! - Input multitáctil (`input_events_iter()`, que ya funcionaba para el tap):
-//!   - arrastre vertical → scroll continuo (el documento es una columna de
-//!     páginas apiladas; ver sección "Scroll vertical continuo" abajo);
-//!   - barrido horizontal / tap derecha-izquierda → página (fallback);
-//!   - pinch con dos dedos → zoom SOLO por pinch: durante el gesto solo se
-//!     actualiza el factor y se blitea el bitmap cacheado (sin re-render),
-//!     y al soltar se re-renderizan las páginas visibles UNA vez a la
-//!     resolución final.
+//!   - tap en la mitad derecha → página siguiente; izquierda → anterior
+//!     (el visor es PÁGINA a PÁGINA: el arrastre para scrollear se eliminó
+//!     por decisión del autor, 2026-08-XX; el deslizamiento de un dedo
+//!     cancela el tap sin hacer nada);
+//!   - tirón hacia abajo desde la mitad superior → **sheet de ajustes**
+//!     (panel deslizante desde arriba con Back/Open/Dark/−10/N/+10; swipe up
+//!     o tap fuera lo cierra — 2026-08-XX);
+//!   - pinch con dos dedos → zoom SOLO por pinch: factor RELATIVO a la
+//!     distancia inicial y anclado al centro del pinch (el punto bajo los
+//!     dedos no se desplaza); durante el gesto solo se actualiza el factor y
+//!     se blitea el bitmap cacheado (sin re-render), y al soltar se
+//!     re-renderizan las páginas visibles UNA vez a la resolución final.
 //!
-//! ## Scroll vertical continuo + caché de páginas (2026-08-13)
+//! ## Rediseño de UX: pantalla completa, sheet, rejilla (2026-08-XX)
 //!
-//! El visor sustituyó el salto de página (re-render ~18-25 ms por página) por
-//! un scroll vertical continuo: el documento se trata como una columna de
-//! páginas apiladas (alto = Σ alto(página) × escala + gap; `reader` mantiene
-//! `scroll_y`, el layout de la columna y el rango de páginas visibles).
+//! Cambios ESTRUCTURALES del visor y la biblioteca (el estilo lo hará otro
+//! agente; aquí solo la estructura funcional; ver `docs/ux-rediseño-estructura.md`):
+//!
+//! 1. **Visor a pantalla completa**: la barra superior fija (Open/✏️/●/↶/±10/
+//!    Dark) se ELIMINÓ; el documento ocupa TODA la pantalla. Los ajustes
+//!    viven ahora en un **sheet** deslizante desde arriba (mitad de la
+//!    ventana): se revela con un tirón hacia abajo desde la mitad superior
+//!    (sigue al dedo; al soltar, animación de ~150 ms hacia el objetivo más
+//!    cercano) y se cierra con swipe up o tap fuera. Controles: Back
+//!    (biblioteca MediaStore), Open (picker interno), Dark/Light, −10/+10 y
+//!    "N / total" (tap = página siguiente). La animación la avanza
+//!    `Reader::tick`, que el bucle llama con `poll_events(Some(16 ms))`
+//!    SOLO mientras hay trabajo diferido (sheet animándose o portadas
+//!    pendientes): en reposo el poll bloquea sin gastar batería.
+//! 2. **Indicador de página "N / total"** como overlay pequeño abajo a la
+//!    IZQUIERDA (sin barra); tap en él = página siguiente (decisión
+//!    documentada en `input::page_badge_tap`).
+//! 3. **Biblioteca en rejilla 3×3** con portada (página 1) + título (1-2
+//!    líneas). Portadas PERZOSAS: solo celdas visibles, en lotes de ≤ 3 por
+//!    tick (`Reader::pump_thumbs`), placeholder "…" mientras cargan, caché
+//!    LRU acotada en `thumbs.rs` (36 entradas / 9 MiB, portadas de 200 px).
+//!    La tira de letras A-Z se quitó (no encaja en la rejilla; decisión
+//!    documentada).
+//! 4. **Lápiz ✏️, subrayado, undo ↶ y color ● eliminados** (minimalista): no
+//!    hay gesto de dibujo; se MANTIENEN la carga y el render de anotaciones
+//!    ya guardadas (los trazos del usuario no se pierden, solo no se pueden
+//!    crear desde la UI por ahora). El estado de dibujo queda en
+//!    `annotations.rs` con `#![allow(dead_code)]` (ver su cabecera).
+//!
+//! ## Página a página + caché de páginas (2026-08-XX)
+//!
+//! El visor volvió al modo PÁGINA a PÁGINA (decisión del autor): el
+//! arrastre vertical continuo (que sustituyó al salto de página el
+//! 2026-08-13) se ELIMINÓ; pasar de página es un tap en la mitad derecha
+//! (siguiente) o izquierda (anterior), con la misma columna de páginas
+//! apiladas de fondo (`scroll_y` queda siempre alineado al borde superior de
+//! la página actual) y la misma caché:
 //!
 //! - `cache.rs` (`PageCache`): LRU en RAM de páginas renderizadas
 //!   (página → `Bitmap`), limitada por bytes (48 MiB) y por entradas (5),
 //!   coherente con el RSS < 150 MB; evita el re-render al volver atrás.
 //!   Los bitmaps se guardan SIEMPRE normales: la inversión de modo oscuro se
 //!   aplica al blitear (`draw::blit_stacked`), por página.
-//! - Render (vía caché) de las páginas visibles + 1 vecina (prefetch simple):
-//!   el blit dibuja cada página en su posición de la columna
-//!   (offset acumulado − scroll_y), recortando a la ventana con un solo
-//!   lock+present (`draw::blit_stacked`, vecino-más-cercano para el zoom).
-//! - El pinch sigue igual (zoom continuo; re-render nítido al soltar); el
-//!   scroll NO cambia de página. La página visible alimenta el indicador
-//!   "N / total", los saltos ±10 y la persistencia (`persist`), que sigue
-//!   guardando la página visible como `page` del estado.
+//! - Render (vía caché) de la página visible + 1 vecina por lado (prefetch
+//!   simple: el paso de página es instantáneo): el blit dibuja cada página en
+//!   su posición de la columna (offset acumulado − scroll_y, con scroll_y en
+//!   el borde superior de la página actual), recortando a la ventana con un
+//!   solo lock+present (`draw::blit_stacked`, vecino-más-cercano para el
+//!   zoom, pan de anclaje del pinch añadido al offset).
+//! - El pinch hace zoom (factor relativo + anclado; re-render nítido al
+//!   soltar); el tap cambia de página. La página visible alimenta el
+//!   indicador "N / total", los saltos ±10 y la persistencia (`persist`), que
+//!   sigue guardando la página visible como `page` del estado.
 //!
 //! ### Nota de rendimiento del zoom (por qué NO `scale_bitmap`)
 //!
@@ -109,23 +149,22 @@
 //! El picker de carpeta interna queda como fallback si MediaStore devuelve
 //! vacío (permiso concedido y sin PDFs).
 //!
-//! ## Índice de letras de la biblioteca (filtro, 2026-08-XX)
+//! ## Rejilla 3×3 y fin del índice de letras (2026-08-XX)
 //!
-//! La biblioteca añade una tira vertical de letras en el borde derecho
-//! (A-Z + '#'), sin IME (el teclado en pantalla es complejo en
-//! android-activity nativo): tocar una letra FILTRA la lista a las entradas
-//! cuyo DISPLAY_NAME empieza por esa letra normalizada (`reader::normalize_letter`:
-//! minúsculas, acentos → letra base — á→a, é→e, í→i, ó→o, ú→u, ü→u, ñ→n, ç→c —
-//! y números/símbolos → '#'); tocar de nuevo la letra activa (o un Rescan)
-//! quita el filtro. Las celdas sin entradas se atenúan y la activa se
-//! resalta; la geometría la comparten `draw::render_library_list` e
-//! `input::library_tap` (helpers `reader::lib_strip_*`).
+//! La biblioteca pasó de lista de filas a REJILLA de 3 columnas (portada de
+//! la página 1 + título; portadas perezosas y caché en `thumbs.rs` — ver
+//! "Rediseño de UX" arriba). Con la rejilla se ELIMINÓ la tira de letras
+//! A-Z+'#' que filtraba por inicial (decisión documentada en
+//! `docs/ux-rediseño-estructura.md`): sus 27 celdas estaban diseñadas para
+//! la lista de filas y no encajan en la rejilla; la navegación es por scroll.
+//! Se quitaron `normalize_letter`, `lib_strip_*`, `library_filter(_ed)` y
+//! `set_library_filter`.
 //!
 //! La agrupación por carpeta con encabezados colapsables NO se implementa en
 //! esta iteración (decisión documentada): MediaStore ya ordena por
-//! `relative_path, display_name` (las carpetas quedan agrupadas) y cada fila
-//! muestra su carpeta en la segunda línea; un colapso/expansión exigiría una
-//! indirección fila-visual→entrada en tap, scroll y clamp (más estado por
+//! `relative_path, display_name` (las carpetas quedan agrupadas); un
+//! colapso/expansión exigiría una indirección fila-visual→entrada en tap,
+//! scroll y clamp (más estado por
 //! carpeta) que complica el código por poco: con el índice se encuentra un
 //! PDF en ≤ 2 taps.
 //!
@@ -182,27 +221,31 @@
 //! - `view`: escala inicial de apertura (stub: contain; futuro: fill+crop).
 //! - `zoom`: blit rápido (stub: blit completo; futuro: recorte según zoom).
 //! - `persist`: estado del visor en `internal/state.json` (posición + modo
-//!   oscuro; ver la sección "Visor: barra superior, estado y modo oscuro").
-//! - `annotations`: estado de dibujo (trazo en curso, paleta de colores); el
+//!   oscuro; ver la sección "Visor: estado persistido y modo oscuro").
+//! - `annotations`: estado de dibujo (trazo en curso, paleta de colores) —
+//!   CONSERVADO pero SIN uso desde la UI (ver abajo y `annotations.rs`); el
 //!   modelo y la persistencia (sidecar SQLite) viven en pdf_core.
 //!
 //! Aquí queda SOLO `android_main`, el bucle de eventos, las constantes
 //! compartidas (`pub(crate)`) y los `mod`.
 //!
-//! ## Anotaciones a mano (modo dibujo, 2026-08-16)
+//! ## Anotaciones a mano (modo dibujo) — ELIMINADO de la UI (2026-08-XX)
 //!
-//! La barra superior del visor añade el botón "✏️" que activa/desactiva el
-//! **modo dibujo**: con él activo, el arrastre con un dedo crea un `Stroke`
-//! (polilínea) en coordenadas de página en vez de hacer scroll; al levantar
-//! el dedo, el trazo se añade al `AnnotationSet` y se guarda en el sidecar
-//! SQLite del PDF (`store::sidecar_path` → `<pdf-dir>/annotations/<stem>.db`;
-//! ver `Reader::load_annotations`). Los trazos se dibujan como capa vectorial
-//! sobre el bitmap ya bliteado (Bresenham, grosor `width × scale`), nunca
-//! rasterizados en el bitmap cacheado (AGENTS.md §4.3). Detalles en
-//! `annotations.rs` (estado de dibujo), `reader.rs` (transformación
-//! pantalla→página y persistencia) y `draw.rs` (render de la capa).
+//! La barra superior tenía el botón "✏️" (modo dibujo: el arrastre con un
+//! dedo creaba un `Stroke` en coordenadas de página, se guardaba en el
+//! sidecar SQLite y se dibujaba como capa vectorial Bresenham sobre el
+//! bitmap — AGENTS.md §4.3). Con el rediseño minimalista (pantalla completa
+//! con sheet) el modo dibujo y sus controles (✏️/●/↶) se ELIMINARON: no hay
+//! gesto de dibujo.
 //!
-//! ## Visor: barra superior, estado persistido y modo oscuro (2026-08-XX)
+//! Se MANTIENEN la carga y el render de anotaciones ya guardadas (el usuario
+//! no pierde sus trazos): la capa vectorial sigue en `draw.rs`
+//! (`PageAnnots`/`draw_annotations`) y el sidecar se sigue cargando
+//! (`Reader::load_annotations`). `annotations.rs` queda con
+//! `#![allow(dead_code)]` documentado por si una fase futura reintroduce la
+//! creación.
+//!
+//! ## Visor: estado persistido, modo oscuro y overlays (2026-08-XX)
 //!
 //! Tres mejoras del visor, coherentes entre sí:
 //!
@@ -213,13 +256,13 @@
 //!    el PDF se abre directamente en esa página/zoom/modo; si ya no existe (o
 //!    no se puede abrir), se BORRA el estado y se abre la biblioteca
 //!    MediaStore (política completa en `persist.rs`).
-//! 2. **Indicador de página**: barra superior del visor (overlay opaco único
-//!    bliteado en (0,0) — no hace falta tocar `zoom.rs`) con Open, modo
-//!    dibujo ✏️, color del trazo ●, undo ↶, saltos −10/+10, "N / total" (tap
-//!    en el indicador = página siguiente) y el toggle "Dark"/"Light".
-//!    Renderizado con el mismo Canvas+JNI de
+//! 2. **Overlays del visor** (bliteados en el MISMO buffer que las páginas,
+//!    tras ellas — no hace falta tocar `zoom.rs`): el indicador de página
+//!    "N / total" abajo a la izquierda (`draw::render_page_badge`, tap =
+//!    página siguiente) y el sheet de ajustes deslizante desde arriba
+//!    (`draw::render_sheet`). Renderizados con el mismo Canvas+JNI de
 //!    `draw.rs`; la geometría DEBE coincidir con las zonas de tap de
-//!    `input.rs`.
+//!    `input.rs` (helpers compartidos en `reader.rs`).
 //! 3. **Modo oscuro**: `toggle_dark` invierte el bitmap YA renderizado con
 //!    `pdf_core::dark::invert_bitmap` (sin re-renderizar MuPDF); los renders
 //!    nuevos se invierten al generarse, en `render_current_page`. El fondo
@@ -236,6 +279,7 @@ mod input;
 mod jni;
 mod persist;
 mod reader;
+mod thumbs;
 mod view;
 mod zoom;
 
@@ -250,36 +294,61 @@ pub(crate) const DARK_BG: [u8; 4] = [0x00, 0x00, 0x00, 0xFF];
 /// Fondo cuando no se pudo abrir el PDF (rojo apagado, visible en pantalla).
 pub(crate) const ERROR_BG: [u8; 4] = [0x5A, 0x12, 0x12, 0xFF];
 
-/// Fracción del ancho (eje x) o del alto (eje y) de la ventana que debe
-/// recorrer un swipe para cambiar de página. 25 % ≈ 360 px en x / 550 px en y
-/// en la tablet: claramente por encima del tap slop, sin exigir un barrido
-/// completo (el ">40 %" del enunciado era un ejemplo).
-pub(crate) const SWIPE_FRACTION: f32 = 0.25;
 /// Radio (px) de movimiento máximo entre Down y Up para considerar el gesto un
 /// "tap" (no un swipe). ~20 px a 320 dpi (ViewConfiguration touch slop ≈ 8 dp).
 pub(crate) const TAP_SLOP: f32 = 24.0;
 /// Límites del factor de zoom continuo (1.0 = página completa).
 pub(crate) const PINCH_MIN: f32 = 0.25;
 pub(crate) const PINCH_MAX: f32 = 8.0;
-/// Alto de la barra superior del visor (fracción de la ventana): contiene
-/// Open, ✏️ (modo dibujo), ● (color del trazo), ↶ (undo), saltos −10/+10, el
-/// indicador "N / total" y el toggle de modo oscuro.
-pub(crate) const VIEWER_BAR_H_DIV: i32 = 16;
-/// Región del botón "Open" en la barra superior (izquierda).
-pub(crate) const OPEN_BTN_W_DIV: i32 = 10;
-/// Región del botón "✏️" (modo dibujo) en la barra superior.
-pub(crate) const PENCIL_BTN_W_DIV: i32 = 10;
-/// Región del botón "●" (alternar color del trazo) en la barra superior.
-pub(crate) const COLOR_BTN_W_DIV: i32 = 10;
-/// Región del botón "↶" (undo: quitar el último trazo) en la barra superior.
-pub(crate) const UNDO_BTN_W_DIV: i32 = 10;
-/// Región del botón "Dark" en la barra superior (derecha).
-pub(crate) const DARK_BTN_W_DIV: i32 = 10;
-/// Región de los botones de salto −10/+10 (a cada lado del indicador).
-pub(crate) const JUMP_BTN_W_DIV: i32 = 14;
-/// Ancho de la tira de letras (índice A-Z + '#') de la biblioteca, como
-/// fracción del ancho de la ventana (el resto es la zona de lista).
-pub(crate) const LIB_STRIP_W_DIV: i32 = 20;
+
+/// Constantes de color y tema para la interfaz (0xAARRGGBB para Canvas JNI).
+pub(crate) mod theme {
+    // --- Modo Oscuro (Barra Superior del Visor en modo oscuro y Biblioteca) ---
+    pub(crate) const DARK_BAR_BG: u32 = 0xFF0B0D12;
+    pub(crate) const DARK_BAR_BORDER: u32 = 0xFF232B3A;
+    pub(crate) const DARK_BTN_BG: u32 = 0xFF161B26;
+    pub(crate) const DARK_BTN_BORDER: u32 = 0xFF2A3444;
+    pub(crate) const DARK_BTN_TEXT: u32 = 0xFFE6EAF0;
+
+    // Botones de Acción Destacada / Estado Activo (Warm Gold Accent)
+    pub(crate) const ACCENT_BLUE_BG: u32 = 0xFFC8A96A;
+    pub(crate) const ACCENT_BLUE_BORDER: u32 = 0xFFD9BD8B;
+    pub(crate) const ACCENT_AMBER_BG: u32 = 0xFFC8A96A;
+    pub(crate) const ACCENT_AMBER_BORDER: u32 = 0xFFD9BD8B;
+
+    // Indicador de Página (Modo Oscuro)
+    pub(crate) const DARK_BADGE_BG: u32 = 0xDD0B0D12;
+    pub(crate) const DARK_BADGE_BORDER: u32 = 0xFF232B3A;
+    pub(crate) const DARK_BADGE_TEXT: u32 = 0xFFE6EAF0;
+
+    // --- Modo Claro (Barra Superior del Visor en modo claro) ---
+    pub(crate) const LIGHT_BAR_BG: u32 = 0xFFF8FAFC;
+    pub(crate) const LIGHT_BAR_BORDER: u32 = 0xFFCBD5E1;
+    pub(crate) const LIGHT_BTN_BG: u32 = 0xFFE2E8F0;
+    pub(crate) const LIGHT_BTN_BORDER: u32 = 0xFFCBD5E1;
+    pub(crate) const LIGHT_BTN_TEXT: u32 = 0xFF1E293B;
+
+    // Indicador de Página (Modo Claro)
+    pub(crate) const LIGHT_BADGE_BG: u32 = 0xFFEDF2F7;
+    pub(crate) const LIGHT_BADGE_BORDER: u32 = 0xFFCBD5E1;
+    pub(crate) const LIGHT_BADGE_TEXT: u32 = 0xFF0F172A;
+
+    // --- Paleta de Biblioteca y Picker ---
+    pub(crate) const LIB_BG: u32 = 0xFF0B0D12;
+    pub(crate) const LIB_HEADER_BG: u32 = 0xFF0F1218;
+    pub(crate) const LIB_HEADER_BORDER: u32 = 0xFF1A2029;
+    pub(crate) const LIB_ROW_EVEN: u32 = 0xFF10141C;
+    pub(crate) const LIB_ROW_ODD: u32 = 0xFF141922;
+    pub(crate) const LIB_ROW_BORDER: u32 = 0xFF1E2530;
+    pub(crate) const LIB_TEXT_PRIMARY: u32 = 0xFFEDF0F4;
+    pub(crate) const LIB_TEXT_SECONDARY: u32 = 0xFF9AA3B2;
+    pub(crate) const LIB_TEXT_MUTED: u32 = 0xFF5C6674;
+
+    // Franja de Estado / Mensajes de Error
+    pub(crate) const STATUS_BG: u32 = 0xFF2A1212;
+    pub(crate) const STATUS_BORDER: u32 = 0xFF3A1A1A;
+    pub(crate) const STATUS_TEXT: u32 = 0xFFE5A0A0;
+}
 
 #[unsafe(no_mangle)]
 pub fn android_main(app: AndroidApp) {
@@ -293,7 +362,15 @@ pub fn android_main(app: AndroidApp) {
     let mut running = true;
 
     while running {
-        app.poll_events(None, |event| match event {
+        // Timeout del poll SOLO mientras hay trabajo diferido: animación del
+        // sheet de ajustes o portadas de la biblioteca pendientes (`tick` los
+        // avanza). En reposo el poll bloquea sin timeout (sin batería extra).
+        let timeout = if reader.sheet_animating() || reader.thumbs_pending() {
+            Some(std::time::Duration::from_millis(16))
+        } else {
+            None
+        };
+        app.poll_events(timeout, |event| match event {
             PollEvent::Main(MainEvent::InitWindow { .. }) => {
                 info!("InitWindow");
                 if let Some(win) = app.native_window() {
@@ -334,7 +411,12 @@ pub fn android_main(app: AndroidApp) {
                 info!("Destroy: saliendo del bucle");
                 running = false;
             }
-            PollEvent::Wake | PollEvent::Timeout | PollEvent::Main(_) => {}
+            PollEvent::Wake | PollEvent::Timeout | PollEvent::Main(_) => {
+                // Trabajo diferido: animación del sheet + lote de portadas.
+                // (Wake/Tiemout solo llegan con `poll_events(Some(..))`, es
+                // decir, mientras `sheet_animating()` o `thumbs_pending()`.)
+                reader.tick(&app);
+            }
             _ => {} // PollEvent es #[non_exhaustive]: cubrir futuras variantes
         });
     }

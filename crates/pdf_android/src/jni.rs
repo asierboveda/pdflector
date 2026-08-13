@@ -739,3 +739,125 @@ pub(crate) fn launch_all_files_settings(app: &AndroidApp) {
         }
     }
 }
+
+/// Un file descriptor nativo abierto sobre una content:// URI.
+///
+/// `open_content_fd` usa `ContentResolver.openFileDescriptor(uri, "r")` y
+/// devuelve el `ParcelFileDescriptor` como `Global` (JNI) junto con su fd
+/// nativo. El `Global` mantiene vivo el PFD (y por tanto el fd) mientras se
+/// renderiza la portada; `close` cierra el PFD vía JNI y suelta la referencia.
+///
+/// # Por qué un fd y no los bytes (portadas de la biblioteca)
+///
+/// `read_content_uri_bytes` copia el PDF COMPLETO a memoria, inaceptable para
+/// renderizar una portada (un PDF de 100 MB se leería entero por un thumbnail
+/// de 200 px). Con el fd, MuPDF abre `/proc/self/fd/{fd}` (ruta que resuelve
+/// al fichero real de MediaProvider) y solo lee los objetos que necesita para
+/// la página 1 — sin copia, sin pico de memoria. Para fds que no respalden un
+/// fichero real (proveedores que materializan en un pipe/tmp), el open de
+/// MuPDF falla y la celda se queda con su placeholder (comportamiento
+/// degradado aceptado y documentado).
+pub(crate) struct ContentFd {
+    /// fd nativo (valido mientras viva `pfd`).
+    pub(crate) fd: i32,
+    /// ParcelFileDescriptor como ref global JNI (mantiene el fd abierto).
+    pfd: jni::objects::Global<jni::objects::JObject<'static>>,
+}
+
+impl ContentFd {
+    /// Ruta `/proc/self/fd/{fd}` con la que MuPDF abre el fichero sin copiarlo.
+    pub(crate) fn proc_path(&self) -> String {
+        format!("/proc/self/fd/{}", self.fd)
+    }
+
+    /// Cierra el PFD (libera el fd nativo) y suelta la ref global.
+    pub(crate) fn close(self) {
+        let vm = match JavaVM::singleton() {
+            Ok(v) => v,
+            Err(e) => {
+                error!("ContentFd::close: JVM no disponible: {e}");
+                return;
+            }
+        };
+        let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+            let obj = self.pfd.as_obj();
+            let _ = env.call_method(obj, jni_str!("close"), jni_sig!(sig = () -> void), &[]);
+            Ok(())
+        });
+        // `self.pfd` (Global) se dropea aquí: borra la ref global JNI.
+    }
+}
+
+/// Abre una content:// URI con `ContentResolver.openFileDescriptor(uri, "r")`
+/// y devuelve el fd nativo + el PFD como `Global`. `None` si falla (URI
+/// inválida, permiso, proveedor sin fd). El caller debe llamar a `close`.
+pub(crate) fn open_content_fd(app: &AndroidApp, uri_str: &str) -> Option<ContentFd> {
+    let vm = JavaVM::singleton().ok()?;
+    let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
+    let res: jni::errors::Result<Option<ContentFd>> = vm.attach_current_thread(|env| {
+        env.with_local_frame(16, |env| {
+            // SAFETY: ref global no owned, válida mientras viva `app`.
+            let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
+            let resolver = env
+                .call_method(
+                    activity.as_ref(),
+                    jni_str!("getContentResolver"),
+                    jni_sig!(sig = () -> android.content.ContentResolver),
+                    &[],
+                )?
+                .l()?;
+            let uri_class = env.find_class(jni_str!("android/net/Uri"))?;
+            let jstr = env.new_string(uri_str)?;
+            let uri = env
+                .call_static_method(
+                    &uri_class,
+                    jni_str!("parse"),
+                    jni_sig!(sig = (java.lang.String) -> android.net.Uri),
+                    &[JValue::Object(jstr.as_ref())],
+                )?
+                .l()?;
+            let mode = env.new_string("r")?;
+            let pfd = env
+                .call_method(
+                    resolver.as_ref(),
+                    jni_str!("openFileDescriptor"),
+                    jni_sig!(
+                        sig = (android.net.Uri, java.lang.String) -> android.os.ParcelFileDescriptor
+                    ),
+                    &[JValue::Object(uri.as_ref()), JValue::Object(mode.as_ref())],
+                )?
+                .l()?;
+            if pfd.is_null() {
+                return Ok(None);
+            }
+            let fd = env
+                .call_method(
+                    pfd.as_ref(),
+                    jni_str!("getFd"),
+                    jni_sig!(sig = () -> int),
+                    &[],
+                )?
+                .i()?;
+            let global = env.new_global_ref(pfd)?;
+            if fd < 0 {
+                return Ok(None);
+            }
+            Ok(Some(ContentFd { fd, pfd: global }))
+        })
+    });
+    match res {
+        Ok(Some(cfd)) => Some(cfd),
+        Ok(None) => {
+            error!("open_content_fd: sin fd para {uri_str}");
+            None
+        }
+        Err(e) => {
+            let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+                env.exception_clear();
+                Ok(())
+            });
+            error!("open_content_fd {uri_str}: {e}");
+            None
+        }
+    }
+}
