@@ -951,7 +951,16 @@ impl Reader {
         }
         let lo = self.page.saturating_sub(1);
         let hi = (self.page + 1).min(n - 1);
-        for page in lo..=hi {
+        // Orden: vecinas PRIMERO y la página actual ÚLTIMA. Con zoom alto cada
+        // página (~36 MiB) supera el presupuesto de la caché (48 MiB), de modo
+        // que renderizar la actual en medio hacía que la última vecina la
+        // EVICTARA y el blit no encontrara bitmap → pantalla en blanco (fondo
+        // puro) al soltar el pinch. Renderizarla última garantiza que sobreviva
+        // a la evicción (las vecinas son prefetch best-effort y se re-renderizan
+        // al navegar).
+        let mut order: Vec<u32> = (lo..=hi).filter(|&p| p != self.page).collect();
+        order.push(self.page);
+        for page in order {
             if self.cache.get(page).is_some() {
                 continue; // hit: sin re-render (volver atrás es instantáneo)
             }
