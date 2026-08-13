@@ -57,13 +57,15 @@ use android_activity::input::{InputEvent, MotionAction};
 use android_activity::{AndroidApp, InputStatus};
 use log::warn;
 
-use crate::draw::{library_buttons, sheet_buttons};
+use crate::draw::sheet_buttons;
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
-    GRID_COLS, ListDrag, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap, grid_pad,
-    lib_carousel_cover_w, lib_chip_h, lib_chips, lib_chips_y0, lib_content_y0, lib_filter_h,
-    lib_grid_y0, lib_recents_block_h, lib_section_title_h, page_badge_rect, picker_btn_h,
-    picker_btn_w, picker_header_h, picker_row_h, picker_visible_rows, sheet_h,
+    BookStatus, GRID_COLS, LibSort, ListDrag, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap,
+    grid_pad, lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w, lib_cont_gap,
+    lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
+    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
+    lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h, picker_row_h,
+    picker_visible_rows, sheet_h,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 
@@ -600,48 +602,55 @@ fn list_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 }
 
-/// Tap de la biblioteca MediaStore (rejilla 3×3 + carousel de recientes +
-/// chips de filtro): botones de la cabecera (Back/Grant/Rescan), chips de la
-/// barra de filtros (fila 0 = carpetas, fila 1 = letras A-Z/#), portada del
-/// carousel de RECIENTES (abre el PDF local) o celda de la rejilla (abre el
-/// PDF por content://). La geometría DEBE reflejar exactamente la de
+/// Tap de la biblioteca (biblioteca personal premium): botón "＋ Add book"
+/// de la cabecera, campo de búsqueda (toggle del panel de chips + "✕"),
+/// chips del panel de búsqueda (fila 0 = letras A-Z/#, fila 1 = carpetas),
+/// tarjeta del carousel de Continue Reading (abre el libro en su página
+/// guardada), chips de organización (sort/filter) o celda de la rejilla
+/// (abre el libro). La geometría DEBE reflejar exactamente la de
 /// `render_library_grid` (mismas fórmulas: `lib_chips`, `lib_content_y0`,
-/// `lib_grid_cell_rect`, `lib_recents_block_h`).
+/// `lib_cont_block_h`, `lib_grid_cell_rect`, `lib_org_chips`).
 fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
-    let header_h = picker_header_h(reader.win_h) as f32;
-    let btn_w = picker_btn_w(reader.win_w) as f32;
-    let btn_h = picker_btn_h(reader.win_h) as f32;
-    let btn_y = (header_h - btn_h) / 2.0;
+    let header_h = lib_header_h(reader.win_h);
+    let search_h = lib_search_h();
+    let search_y = header_h + 6.0;
+    let search_hh = search_h - 12.0;
 
-    // Cabecera: botones a la derecha (Rescan, Grant, Back — ver library_buttons).
+    // CABECERA: botón "＋ Add book" (a la derecha; rescan + toast).
     if y < header_h {
-        for (label, (l, t, r, b)) in
-            library_buttons(reader, reader.win_w as f32, btn_w, btn_h, btn_y)
-        {
-            if x >= l && x < r && y >= t && y < b {
-                match label {
-                    "Rescan" => reader.rescan_library(app),
-                    "Grant" => {
-                        reader.grant_pending = true;
-                        launch_all_files_settings(app);
-                    }
-                    "Back" => reader.exit_picker(),
-                    _ => {}
-                }
-                return;
-            }
+        let pad = grid_pad(reader.win_w);
+        let btn_w = (reader.win_w as f32 * 0.24).clamp(120.0, 220.0);
+        let btn_h = (header_h * 0.5).clamp(36.0, 52.0);
+        let btn_y = (header_h - btn_h) / 2.0;
+        let btn_x = reader.win_w as f32 - pad - btn_w;
+        if x >= btn_x && x < btn_x + btn_w && y >= btn_y && y < btn_y + btn_h {
+            reader.add_book(app);
         }
         return;
     }
 
-    // Barra de FILTROS (búsqueda sin teclado): fila 0 = carpetas, fila 1 =
-    // letras. "All" limpia el filtro de su fila; un chip activo se vuelve a
-    // pulsar para desactivarlo (toggle implícito al pulsar otro).
-    let filter_top = header_h;
-    let filter_h = lib_filter_h(reader.win_h);
-    if y >= filter_top && y < filter_top + filter_h {
-        // Misma geometría que `lib_chips` (filas en `lib_chips_y0`/`y1`).
-        let row = if y < lib_chips_y0(reader.win_h) + lib_chip_h(reader.win_h) {
+    // CAMPO de búsqueda: "✕" limpia los filtros (si los hay); tocar el campo
+    // abre/cierra el panel de chips de letra/carpeta.
+    if y < search_y + search_hh {
+        let field_right = reader.win_w as f32 - grid_pad(reader.win_w);
+        let has_filter = reader.lib_letter.is_some() || reader.lib_folder.is_some();
+        if has_filter {
+            let xw = search_hh - 8.0;
+            let xx = field_right - 14.0 - xw;
+            if x >= xx && x < xx + xw {
+                reader.lib_clear_search();
+                return;
+            }
+        }
+        reader.lib_toggle_search();
+        return;
+    }
+
+    // PANEL de búsqueda desplegado: fila 0 = letras A-Z/#, fila 1 = carpetas.
+    let panel_top = search_y + search_hh + 6.0;
+    let panel_h = lib_search_panel_h(reader.win_h, reader.lib_search_open);
+    if reader.lib_search_open && y >= panel_top && y < panel_top + panel_h {
+        let row = if y < lib_search_chips_y0(reader) + lib_chip_h(reader.win_h) {
             0
         } else {
             1
@@ -650,14 +659,14 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
             if x >= l && x < r && y >= t && y < b {
                 if row == 0 {
                     if label == "All" {
-                        reader.lib_set_folder(None);
+                        reader.lib_set_letter(None);
                     } else {
-                        reader.lib_set_folder(Some(label.clone()));
+                        reader.lib_set_letter(label.chars().next());
                     }
                 } else if label == "All" {
-                    reader.lib_set_letter(None);
+                    reader.lib_set_folder(None);
                 } else {
-                    reader.lib_set_letter(label.chars().next());
+                    reader.lib_set_folder(Some(label.clone()));
                 }
                 return;
             }
@@ -666,7 +675,11 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 
     // Franja de estado: no es seleccionable.
-    let content_y0 = lib_content_y0(reader.win_h, reader.status.is_some()) as f32;
+    let content_y0 = lib_content_y0(
+        reader.win_h,
+        reader.lib_search_open,
+        reader.status.is_some(),
+    ) as f32;
     if y < content_y0 {
         return;
     }
@@ -675,22 +688,40 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // scroll vertical).
     let yc = y - content_y0 + reader.lib_scroll;
     let win_w = reader.win_w;
-    let has_recents = !reader.lib_recents().is_empty();
+    let has_cont = !reader.lib_continue_reading().is_empty();
 
-    // Sección RECIENTES: tap en la fila del carousel (portada o nombre) abre
-    // el PDF local directamente.
-    let recents_block_h = lib_recents_block_h(win_w, reader.win_h, has_recents);
-    if yc < recents_block_h {
-        if has_recents && yc >= lib_section_title_h(reader.win_h) {
-            let cw = lib_carousel_cover_w(win_w);
-            let i = ((x - grid_pad(win_w) + reader.lib_carousel_x) / (cw + grid_gap())).floor();
+    // EMPTY STATE: botón "Add PDF"/"Grant access" (misma geometría que el
+    // render).
+    if reader.library_list.is_empty() {
+        if let Some(g) = lib_empty_state_geom(reader) {
+            let (l, t, r, b) = g.button;
+            if x >= l && x < r && y >= t && y < b {
+                if reader.permission_granted {
+                    reader.add_book(app);
+                } else {
+                    reader.grant_pending = true;
+                    launch_all_files_settings(app);
+                }
+            }
+        }
+        return;
+    }
+
+    // CONTINUE READING: tap en cualquier punto de la tarjeta (portada o
+    // texto, incluido el botón "Read") abre el libro en su página guardada.
+    let cont_block_h = lib_cont_block_h(win_w, reader.win_h, has_cont);
+    if yc < cont_block_h {
+        if has_cont && yc >= lib_section_title_h(reader.win_h) {
+            let cw = lib_cont_card_w(win_w);
+            let i = ((x - grid_pad(win_w) + reader.lib_carousel_x) / (cw + lib_cont_gap())).floor();
             if i >= 0.0
-                && let Some(r) = reader.lib_recents().get(i as usize)
+                && let Some(book) = reader.lib_continue_reading().get(i as usize)
             {
-                // Clonar ruta+nombre: `open_pdf` necesita &mut self.
-                let path = r.path.clone();
-                let name = r.name.clone();
-                if !reader.open_pdf(&path) {
+                // Clonar ruta+nombre: `open_pdf_at` necesita &mut self.
+                let path = book.path.clone();
+                let name = book.name.clone();
+                let start = crate::persist::progress_for(&reader.lib_books, &path).map(|p| p.page);
+                if !reader.open_pdf_at(&path, start) {
                     reader.status = Some(format!("Cannot open {name}"));
                     reader.list_dirty = true;
                     reader.redraw();
@@ -700,14 +731,44 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         return;
     }
 
-    // Título de ARCHIVOS: no es seleccionable.
-    let grid_y0 = lib_grid_y0(win_w, reader.win_h, has_recents);
+    // Título de "My Library": no seleccionable. Tras él, el bloque de
+    // ORGANIZACIÓN (chips de sort/filter) antes de la rejilla.
+    let grid_y0 = lib_grid_y0(win_w, reader.win_h, has_cont);
     if yc < grid_y0 {
+        let org_top = grid_y0 - lib_org_block_h(reader.win_h);
+        if yc >= org_top {
+            let row = if yc < org_top + lib_org_chip_h(reader.win_h) {
+                0
+            } else {
+                1
+            };
+            for (label, (l, t, r, b), _active) in lib_org_chips(reader, row) {
+                if x >= l && x < r && y >= t && y < b {
+                    if row == 0 {
+                        reader.lib_set_sort(match label.as_str() {
+                            "Recently Read" => LibSort::RecentlyRead,
+                            "Title" => LibSort::Title,
+                            "Author" => LibSort::Author,
+                            _ => LibSort::RecentlyAdded,
+                        });
+                    } else {
+                        reader.lib_set_status(match label.as_str() {
+                            "Reading" => Some(BookStatus::Reading),
+                            "Finished" => Some(BookStatus::Finished),
+                            "Unread" => Some(BookStatus::Unread),
+                            _ => None,
+                        });
+                    }
+                    return;
+                }
+            }
+        }
         return;
     }
 
     // Celda de la rejilla (lista FILTRADA): fila por y, columna por x (misma
-    // geometría que `lib_grid_cell_rect`).
+    // geometría que `lib_grid_cell_rect`). Abre el libro (reanuda en su
+    // página guardada si está empezado — lo hace `open_library_entry`).
     let row = ((yc - grid_y0) / grid_cell_h(win_w)) as usize;
     let cell_w = grid_cell_w(win_w);
     let pad = grid_pad(win_w);
@@ -768,28 +829,51 @@ fn picker_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 }
 
 /// Zona de la biblioteca donde cayó el Down (qué arrastra en HORIZONTAL):
-/// 0 = contenido (scroll vertical), 1 = carousel de recientes, 2 = chips de
-/// carpetas, 3 = chips de letras. Misma geometría que `library_tap` y
-/// `render_library_grid`.
+/// 0 = contenido (scroll vertical), 1 = carousel de Continue Reading, 2 =
+/// fila de chips de LETRAS (búsqueda), 3 = fila de chips de CARPETAS
+/// (búsqueda), 4 = fila de chips de SORT, 5 = fila de chips de FILTER.
+/// Misma geometría que `library_tap` y `render_library_grid`.
 fn library_down_zone(reader: &Reader, y: f32) -> u8 {
-    let header_h = picker_header_h(reader.win_h) as f32;
-    let filter_h = lib_filter_h(reader.win_h);
-    if y < header_h {
-        return 0;
+    let header_h = lib_header_h(reader.win_h);
+    let search_h = lib_search_h();
+    let search_y = header_h + 6.0;
+    let search_hh = search_h - 12.0;
+    if y < search_y + search_hh {
+        return 0; // cabecera + campo de búsqueda: sin arrastre horizontal
     }
-    if y < lib_chips_y0(reader.win_h) + lib_chip_h(reader.win_h) {
-        return 2; // fila de chips de carpetas
+    // Panel de búsqueda desplegado: fila 0 = letras (2), fila 1 = carpetas (3).
+    if reader.lib_search_open {
+        let panel_top = search_y + search_hh + 6.0;
+        let panel_h = lib_search_panel_h(reader.win_h, true);
+        if y >= panel_top && y < panel_top + panel_h {
+            return if y < lib_search_chips_y0(reader) + lib_chip_h(reader.win_h) {
+                2
+            } else {
+                3
+            };
+        }
     }
-    if y < header_h + filter_h {
-        return 3; // fila de chips de letras
-    }
-    // Contenido: ¿la fila del carousel de recientes (bajo su título)?
-    let content_y0 = lib_content_y0(reader.win_h, reader.status.is_some()) as f32;
+    // Contenido: ¿la fila del carousel de Continue Reading (bajo su título)?
+    let content_y0 = lib_content_y0(
+        reader.win_h,
+        reader.lib_search_open,
+        reader.status.is_some(),
+    ) as f32;
     let yc = y - content_y0 + reader.lib_scroll;
-    let recents_h =
-        lib_recents_block_h(reader.win_w, reader.win_h, !reader.lib_recents().is_empty());
-    if yc >= lib_section_title_h(reader.win_h) && yc < recents_h {
+    let has_cont = reader.lib_has_cont();
+    let cont_h = lib_cont_block_h(reader.win_w, reader.win_h, has_cont);
+    if yc >= lib_section_title_h(reader.win_h) && yc < cont_h {
         return 1;
+    }
+    // Organización: fila SORT (4) / FILTER (5).
+    let grid_y0 = lib_grid_y0(reader.win_w, reader.win_h, has_cont);
+    let org_top = grid_y0 - lib_org_block_h(reader.win_h);
+    if yc >= org_top && yc < grid_y0 {
+        return if yc < org_top + lib_org_chip_h(reader.win_h) {
+            4
+        } else {
+            5
+        };
     }
     0
 }
@@ -815,8 +899,10 @@ fn handle_picker_motion(
                     let z = library_down_zone(reader, y);
                     let h = match z {
                         1 => reader.lib_carousel_x,
-                        2 => reader.lib_folders_x,
-                        3 => reader.lib_letters_x,
+                        2 => reader.lib_letters_x,
+                        3 => reader.lib_folders_x,
+                        4 => reader.lib_sort_x,
+                        5 => reader.lib_filter_x,
                         _ => 0.0,
                     };
                     (z, h)
@@ -847,23 +933,29 @@ fn handle_picker_motion(
                     // partida se guardó en `h0` según la zona del Down.
                     if reader.mode == UiMode::Library {
                         let max = match drag.zone {
-                            1 => reader.lib_carousel_max_x(),
+                            1 => reader.lib_cont_max_x(),
                             2 => reader.lib_chips_max_x(0),
                             3 => reader.lib_chips_max_x(1),
+                            4 => reader.lib_org_max_x(0),
+                            5 => reader.lib_org_max_x(1),
                             _ => 0.0,
                         };
                         let s = (drag.h0 - dx).clamp(0.0, max);
                         let changed = match drag.zone {
                             1 => reader.lib_carousel_x != s,
-                            2 => reader.lib_folders_x != s,
-                            3 => reader.lib_letters_x != s,
+                            2 => reader.lib_letters_x != s,
+                            3 => reader.lib_folders_x != s,
+                            4 => reader.lib_sort_x != s,
+                            5 => reader.lib_filter_x != s,
                             _ => false,
                         };
                         if changed {
                             match drag.zone {
                                 1 => reader.lib_carousel_x = s,
-                                2 => reader.lib_folders_x = s,
-                                3 => reader.lib_letters_x = s,
+                                2 => reader.lib_letters_x = s,
+                                3 => reader.lib_folders_x = s,
+                                4 => reader.lib_sort_x = s,
+                                5 => reader.lib_filter_x = s,
                                 _ => {}
                             }
                             reader.list_dirty = true;

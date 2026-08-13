@@ -468,6 +468,25 @@ pub(crate) mod theme {
     /// (silueta gris oscura sin borde, nada de ruido).
     pub(crate) const LIB_COVER_PLACEHOLDER: u32 = 0xFF161B26;
 
+    // --- Biblioteca personal premium (2026-08-XX): acento, tarjetas, ---
+    // --- búsqueda y progreso (paleta oscura cálida + dorado)          ---
+    /// Acento dorado cálido (acción destacada: Add book, Read, chip activo,
+    /// barra de progreso). Mismo tono que `ACCENT_AMBER_BG`; alias de uso
+    /// para la biblioteca.
+    pub(crate) const LIB_ACCENT: u32 = 0xFFC8A96A;
+    /// Texto oscuro sobre el acento dorado (contraste AA).
+    pub(crate) const LIB_ACCENT_DARK: u32 = 0xFF0B0D12;
+    /// Fondo de tarjeta del carousel de "Continue Reading" (sutil, más
+    /// claro que `LIB_BG`; borde `LIB_CARD_BORDER` de 1 px).
+    pub(crate) const LIB_CARD_BG: u32 = 0xFF11151D;
+    pub(crate) const LIB_CARD_BORDER: u32 = 0xFF1E2530;
+    /// Campo de búsqueda (píldora): relleno y borde discretos.
+    pub(crate) const LIB_SEARCH_BG: u32 = 0xFF141922;
+    pub(crate) const LIB_SEARCH_BORDER: u32 = 0xFF2A3444;
+    /// Pista de las barras de progreso (fina, discreta); el relleno usa
+    /// `LIB_ACCENT`.
+    pub(crate) const LIB_PROGRESS_TRACK: u32 = 0xFF232B3A;
+
     // Franja de Estado / Mensajes de Error
     pub(crate) const STATUS_BG: u32 = 0xFF2A1212;
     pub(crate) const STATUS_BORDER: u32 = 0xFF3A1A1A;
