@@ -614,3 +614,21 @@
 - **Archivos editados**: ÚNICAMENTE `crates/pdf_android/src/lib.rs` y `crates/pdf_android/src/draw.rs`.
 - **Verificación**: `cargo build -p pdf_android --target aarch64-linux-android --release` (0 warnings), `cargo fmt --all -- --check` (limpio), `cargo clippy --all-targets -- -D warnings` (limpio).
 
+## 2026-08-13 — Visor a UNA SOLA HOJA + sheet fluido + estudio legal
+
+- **Modo una sola hoja** (el autor no quería la columna de páginas apiladas): eliminada toda la
+  geometría de columna (page_offsets/page_heights/doc_height/scroll_y/layout_dirty/pending_page,
+  PAGE_GAP, visible_pages, rebuild_layout, clamp_scroll, update_page_from_scroll, blit_stacked) →
+  sustituida por `draw::blit_page`: el visor blitea SOLO la página actual (centrada cover + pan
+  anclado, recortada a sus bordes). Se conserva PageCache LRU con prefetch ±1 (no se dibuja) y el
+  zoom relativo/anclado.
+- **Sheet fluido**: la causa del lag era el re-blit de la página completa (~25-40 ms) por frame de la
+  animación/arrastre. Fix: `draw::compose_frame` compone el frame de página UNA vez
+  (fondo+página+anotaciones+indicador) y durante el deslizamiento `draw::blit_composed` solo hace
+  memcpy (~1-2 ms) + overlay del sheet — la página ya no se re-blitea por paso.
+- **Estudio legal preparatorio** en `docs/legal.md` (NO decisión, solo análisis para el futuro):
+  punto de partida (LICENSE=AGPL-3.0-only efectivo; MuPDF AGPL-3.0-or-later), las 3 piezas
+  (SPDX/REUSE, variante -or-later recomendada, NOTICE de atribución MuPDF/Artifex + terceros),
+  cumplimiento AGPL al distribuir, y checklist de 8 pasos para ejecutar cuando haya versión.
+- Sin commits (regla AGENTS.md: pendiente de que el autor lo pida).
+
