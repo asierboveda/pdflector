@@ -20,8 +20,8 @@ use pdf_core::{Annotation, AnnotationSet, Bitmap, Document, RenderEngine, Stroke
 
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
 use crate::draw::{
-    PageAnnots, PageBlit, blit_stacked, render_library_grid, render_page_badge, render_picker_list,
-    render_sheet,
+    PageAnnots, PageBlit, blit_composed, blit_page, compose_frame, render_library_grid,
+    render_page_badge, render_picker_list, render_sheet,
 };
 use crate::input::GestureState;
 use crate::jni::{
@@ -33,11 +33,6 @@ use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, THUMB_W, ThumbCache};
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
 use crate::{BACKGROUND, DARK_BG, ERROR_BG, PINCH_MAX, PINCH_MIN};
-
-/// Separación vertical (px) entre páginas de la columna del scroll continuo y
-/// margen superior/inferior del documento (el alto total de la columna es
-/// `PAGE_GAP + Σ(alto(página) + PAGE_GAP)`).
-const PAGE_GAP: i32 = 8;
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
 /// Construido en `jni::launch_intent_pdf`, consumido en `Reader::new`.
@@ -344,9 +339,9 @@ struct PinchAnchor {
 /// `lib` llama a los métodos (gestos y listas viven en otros módulos).
 pub(crate) struct Reader {
     pub(crate) doc: Option<MupdfDocument>,
-    /// Página visible actual, 0-based (la primera página que toca el borde
-    /// superior del viewport en el scroll). Alimenta el indicador "N / total",
-    /// los saltos ±10 y la persistencia.
+    /// Página actual, 0-based: la ÚNICA hoja que se dibuja (modo UNA HOJA,
+    /// sin columna de páginas). Alimenta el indicador "N / total", los saltos
+    /// ±10 y la persistencia.
     pub(crate) page: u32,
     /// Referencia owned al ANativeWindow (Some entre InitWindow y TerminateWindow).
     window: Option<NativeWindow>,
@@ -354,10 +349,12 @@ pub(crate) struct Reader {
     /// con Canvas+JNI). Las páginas del visor viven en `cache` (PageCache);
     /// este campo solo lo usan los modos Picker/Library.
     pub(crate) bitmap: Option<Bitmap>,
-    /// Caché LRU de páginas renderizadas (página → Bitmap) para el scroll
-    /// vertical continuo: evita re-renderizar al volver atrás. Guarda SIEMPRE
-    /// bitmaps normales; la inversión de modo oscuro se aplica al blitear
-    /// (`draw::blit_stacked`).
+    /// Caché LRU de páginas renderizadas (página → Bitmap) para el paso de
+    /// página INSTANTÁNEO (prev/next): evita re-renderizar al volver atrás y
+    /// precarga la vecina (`ensure_pages_rendered`). Guarda SIEMPRE bitmaps
+    /// normales; la inversión de modo oscuro se aplica al blitear
+    /// (`draw::blit_page`). SOLO se dibuja la página actual (modo UNA HOJA);
+    /// las vecinas solo se cachean.
     cache: PageCache,
     /// Zoom con el que están renderizados los bitmaps de la caché (1.0 =
     /// escala *cover* base; el re-render nítido al soltar el pinch pone
@@ -386,28 +383,17 @@ pub(crate) struct Reader {
     /// biblioteca; 0 por ahora).
     offset_x: i32,
     offset_y: i32,
-    /// Posición vertical del viewport en px del documento, SIEMPRE alineada
-    /// con el borde superior de la página actual (`scroll_y ==
-    /// page_offsets[page]`; el modo página a página no tiene scroll libre).
-    /// La fija `scroll_to_page` (vía `pending_page` + `rebuild_layout`) y la
-    /// leen `blit`/`visible_pages`. Antes era el scroll continuo del arrastre
-    /// (eliminado por decisión del autor); se conserva el campo porque toda
-    /// la geometría de la columna lo usa.
-    pub(crate) scroll_y: f32,
-    /// El layout de la columna (`page_offsets`/`page_heights`/`doc_height`)
-    /// está obsoleto: reconstruirlo en el próximo redraw (cambió el zoom, la
-    /// ventana o el documento).
-    layout_dirty: bool,
-    /// Página pendiente de scroll (salto de página con el layout sin
-    /// construir, p. ej. al restaurar el estado antes del primer InitWindow).
-    pending_page: Option<u32>,
-    /// Borde superior de cada página (px, en espacio del documento),
-    /// construido por `rebuild_layout` a la escala de la caché.
-    page_offsets: Vec<i32>,
-    /// Alto renderizado de cada página (px), paralelo a `page_offsets`.
-    page_heights: Vec<i32>,
-    /// Alto total de la columna (gap superior + Σ(alto + gap)).
-    doc_height: i32,
+    /// Frame de página compuesto (fondo, página actual, capa de anotaciones
+    /// e indicador "N / total") en un `Bitmap` RGBA8 del tamaño de la ventana.
+    /// Se compone UNA vez al empezar a deslizar el sheet (`sheet_progress > 0`,
+    /// en `blit`) y se reutiliza mientras el sheet esté visible: cada frame de
+    /// la animación/arrastre copia este bitmap (`draw::blit_composed`, memcpy
+    /// ~1-2 ms) + el overlay del sheet, en vez de re-blitear la página
+    /// completa en cada paso (~25-40 ms/frame — la CAUSA del lag del sheet;
+    /// ver `blit` y `draw::compose_frame`). Se invalida (None) al cambiar
+    /// página, zoom, modo oscuro, ventana o documento; se libera al cerrar el
+    /// sheet del todo.
+    page_frame: Option<Bitmap>,
     /// Dimensiones actuales de la ventana (px).
     pub(crate) win_w: i32,
     pub(crate) win_h: i32,
@@ -497,12 +483,7 @@ impl Reader {
             pinch: None,
             offset_x: 0,
             offset_y: 0,
-            scroll_y: 0.0,
-            layout_dirty: true,
-            pending_page: None,
-            page_offsets: Vec::new(),
-            page_heights: Vec::new(),
-            doc_height: 0,
+            page_frame: None,
             win_w: 0,
             win_h: 0,
             gesture: GestureState::new(),
@@ -582,8 +563,8 @@ impl Reader {
                             reader.zoom = state.zoom.clamp(PINCH_MIN, PINCH_MAX);
                             reader.rendered_zoom = reader.zoom;
                             reader.dark = state.dark;
-                            reader.pending_page = Some(reader.page); // scroll a la página restaurada
-                            reader.layout_dirty = true; // layout nuevo (aún sin tamaño de ventana)
+                            // Modo UNA HOJA: la página restaurada se fija
+                            // directamente (no hay scroll que alinear).
                             reader.cache.clear();
                             reader.page_badge = None; // indicador de la página restaurada
                             info!(
@@ -633,11 +614,11 @@ impl Reader {
         self.bitmap = None;
         self.page_badge = None;
         self.sheet_bitmap = None;
+        self.page_frame = None;
         self.list_dirty = true;
-        // Nueva ventana → posible nueva escala cover: reconstruir el layout.
-        // Las páginas de la caché se reutilizan si el tamaño no cambió; el
-        // redraw detecta el cambio de `win_w/h` y limpia la caché si hace falta.
-        self.layout_dirty = true;
+        // Nueva ventana → posible nueva escala cover: las páginas de la caché
+        // se reutilizan si el tamaño no cambió; el redraw detecta el cambio de
+        // `win_w/h` y limpia la caché si hace falta.
         self.redraw();
     }
 
@@ -647,6 +628,7 @@ impl Reader {
         self.bitmap = None;
         self.page_badge = None;
         self.sheet_bitmap = None;
+        self.page_frame = None;
         self.list_dirty = true;
     }
 
@@ -664,43 +646,24 @@ impl Reader {
             self.win_h = h;
             self.bitmap = None; // lista del picker → re-render
             self.cache.clear(); // nueva escala cover → los bitmaps viejos no sirven
-            self.layout_dirty = true;
             self.list_dirty = true;
             self.page_badge = None;
             self.sheet_bitmap = None;
+            self.page_frame = None;
         }
         match self.mode {
             UiMode::Viewer => {
-                // Layout de la columna (reconstrucción O(páginas), solo al
-                // cambiar zoom/ventana/documento — NUNCA durante el scroll).
-                if self.layout_dirty {
-                    self.rebuild_layout();
-                    self.layout_dirty = false;
-                }
-                // Salto de página pendiente (p. ej. restauración del estado):
-                // alinear el scroll con el borde superior de la página.
-                if let Some(p) = self.pending_page.take() {
-                    let n = self.page_offsets.len();
-                    if n > 0 {
-                        self.scroll_y = self.page_offsets[p.min(n as u32 - 1) as usize] as f32;
-                    }
-                }
-                // Clamp tras layout y salto pendiente (documento más corto que
-                // la ventana → scroll 0; última página → sin sobrepasar).
-                self.clamp_scroll();
-                // Páginas visibles + 1 vecina (prefetch simple), vía caché.
+                // Modo UNA HOJA: página actual + 1 vecina por lado (prefetch
+                // simple para que prev/next sea instantáneo), vía caché LRU.
+                // SOLO se dibuja la página actual (`blit`): las vecinas solo
+                // se cachean.
                 self.ensure_pages_rendered();
-                // Indicador "N / total": la página visible se persiste al
-                // cruzar bordes de página durante el scroll.
-                if self.update_page_from_scroll() {
-                    self.save_state();
-                }
                 // Indicador de página (abajo a la izquierda) y sheet de
                 // ajustes, cacheados: se re-renderizan solo si cambió la
-                // ventana, la página o el modo oscuro (invalidadores arriba,
-                // en `update_page_from_scroll` y en `toggle_dark`). El sheet
-                // se materializa solo cuando empieza a verse y se libera al
-                // cerrar del todo.
+                // ventana, la página o el modo oscuro (invalidadores en
+                // `goto_page`, `toggle_dark`, `set_zoom_*` y el resize de
+                // arriba). El sheet se materializa solo cuando empieza a
+                // verse y se libera al cerrar del todo.
                 if self.doc.is_some() && self.page_badge.is_none() {
                     self.page_badge = render_page_badge(self);
                 }
@@ -709,6 +672,7 @@ impl Reader {
                 }
                 if self.sheet_progress <= 0.0 {
                     self.sheet_bitmap = None;
+                    self.page_frame = None; // liberar el frame al cerrar del todo
                 }
             }
             UiMode::Picker | UiMode::Library => {
@@ -744,50 +708,9 @@ impl Reader {
                 }
             }
         }
-        if let Some(win) = self.window.as_ref() {
-            self.blit(win);
+        if self.window.is_some() {
+            self.blit();
         }
-    }
-
-    /// Reconstruye el layout de la columna de páginas apiladas del scroll
-    /// continuo: `page_offsets[p]` = borde superior de la página p en px de
-    /// documento, `page_heights[p]` = su alto renderizado y `doc_height` =
-    /// alto total (gap superior + Σ(alto + gap)).
-    ///
-    /// La escala de cada página es `cover(página) × rendered_zoom` (cover
-    /// per-page, `view::initial_scale`: cada página llena la pantalla según su
-    /// propia proporción — comportamiento de apertura actual). Se reconstruye
-    /// SOLO al cambiar zoom, ventana o documento (`layout_dirty`), NUNCA
-    /// durante el scroll: el scroll solo mueve `scroll_y`.
-    fn rebuild_layout(&mut self) {
-        self.page_offsets.clear();
-        self.page_heights.clear();
-        let mut y = PAGE_GAP;
-        if let Some(doc) = self.doc.as_ref() {
-            let n = doc.page_count();
-            for p in 0..n {
-                self.page_offsets.push(y);
-                let h = self.page_height_px(p);
-                self.page_heights.push(h);
-                y += h + PAGE_GAP;
-            }
-        }
-        self.doc_height = y;
-    }
-
-    /// Alto en px de la página `page` a la escala de la caché
-    /// (`cover × rendered_zoom`). `page_size` devuelve puntos PDF;
-    /// `view::initial_scale` aplica la política cover (llenar la pantalla
-    /// recortando el exceso por los bordes).
-    fn page_height_px(&self, page: u32) -> i32 {
-        let Some(doc) = self.doc.as_ref() else {
-            return 0;
-        };
-        let Ok((pw, ph)) = doc.page_size(page) else {
-            return 0;
-        };
-        let scale = initial_scale(pw, ph, self.win_w, self.win_h) * self.rendered_zoom;
-        (ph * scale).round().max(1.0) as i32
     }
 
     /// Tamaño de la página `page` en px de ventana a zoom 1 (cover × puntos
@@ -810,7 +733,7 @@ impl Reader {
     /// horizontal: `base(z) = (win − doc·z) / 2` (px de zoom 1), la misma
     /// fórmula que `blit` usa para `dx` sin pan. Lineal en `z`; en el
     /// anclaje Y la base es 0 (el borde superior de la página actual está
-    /// fijo en el borde superior del viewport: `scroll_y = page_offsets[page]`).
+    /// fijo en el borde superior del viewport — modo UNA HOJA, sin scroll).
     fn centered_base(win: i32, doc: f32, z: f32) -> f32 {
         (win as f32 - doc * z) / 2.0
     }
@@ -844,71 +767,28 @@ impl Reader {
         anchor - base - q * z
     }
 
-    /// Ajusta `scroll_y` al rango válido del documento (`[0, doc_height − win_h]`).
-    fn clamp_scroll(&mut self) {
-        let max = (self.doc_height - self.win_h).max(0);
-        self.scroll_y = self.scroll_y.clamp(0.0, max as f32);
-    }
-
-    /// Rango de páginas que intersectan el viewport (`[scroll_y, scroll_y +
-    /// win_h)` en px de documento). Devuelve `(first, last)` con `last >= first`.
-    /// Con el documento vacío o una ventana degenerada devuelve la página más
-    /// cercana al borde superior del viewport (evita un rango vacío).
-    fn visible_pages(&self) -> (usize, usize) {
-        let n = self.page_offsets.len();
-        if n == 0 {
-            return (0, 0);
-        }
-        let top = self.scroll_y as i32;
-        let bottom = top + self.win_h;
-        let mut first = n;
-        let mut last = 0usize;
-        for i in 0..n {
-            let off = self.page_offsets[i];
-            if off + self.page_heights[i] > top && off < bottom {
-                if i < first {
-                    first = i;
-                }
-                last = i;
-            }
-        }
-        if last >= first {
-            return (first, last);
-        }
-        let mut best = 0usize;
-        let mut best_d = i32::MAX;
-        for i in 0..n {
-            let d = (self.page_offsets[i] - top).abs();
-            if d < best_d {
-                best_d = d;
-                best = i;
-            }
-        }
-        (best, best)
-    }
-
-    /// Garantiza en la caché las páginas visibles + 1 vecina por cada lado
-    /// (prefetch simple): renderiza solo los miss, a `cover × rendered_zoom`
-    /// (la escala de la caché), y promueve la recencia LRU de las páginas que
-    /// toca. El render es síncrono en el hilo del bucle (~18-25 ms/página en
-    /// la tablet); el prefetch adelanta una página para que el scroll entre en
-    /// ella sin re-render en el momento de volverse visible.
+    /// Garantiza en la caché la página actual + 1 vecina por cada lado
+    /// (prefetch simple para que prev/next sea INSTANTÁNEO): renderiza solo
+    /// los miss, a `cover × rendered_zoom` (la escala de la caché), y
+    /// promueve la recencia LRU de las páginas que toca. El render es
+    /// síncrono en el hilo del bucle (~18-25 ms/página en la tablet); el
+    /// prefetch adelanta la vecina para que el tap de página entre en ella
+    /// sin re-render en el momento de volverse visible. En el modo UNA HOJA
+    /// SOLO se DIBUJA la página actual (`blit`): las vecinas solo se cachean.
     fn ensure_pages_rendered(&mut self) {
-        let n = self.page_offsets.len();
+        let Some(doc) = self.doc.as_ref() else {
+            return;
+        };
+        let n = doc.page_count();
         if n == 0 {
             return;
         }
-        let (first, last) = self.visible_pages();
-        let lo = first.saturating_sub(1);
-        let hi = (last + 1).min(n - 1);
-        for p in lo..=hi {
-            let page = p as u32;
+        let lo = self.page.saturating_sub(1);
+        let hi = (self.page + 1).min(n - 1);
+        for page in lo..=hi {
             if self.cache.get(page).is_some() {
                 continue; // hit: sin re-render (volver atrás es instantáneo)
             }
-            let Some(doc) = self.doc.as_ref() else {
-                return;
-            };
             let (pw, ph) = match doc.page_size(page) {
                 Ok(s) => s,
                 Err(e) => {
@@ -938,47 +818,28 @@ impl Reader {
         }
     }
 
-    /// Actualiza `page` a la primera página visible en el scroll (la que toca
-    /// el borde superior del viewport): alimenta el indicador "N / total", los
-    /// saltos ±10 y la persistencia. En el modo página a página coincide con
-    /// `self.page` (scroll_y = su borde superior); sirve de red de seguridad
-    /// si el clamp del final del documento (zoom < 1) desvía el scroll.
-    /// Devuelve true si cambió (→ invalidar la barra y guardar el estado).
-    fn update_page_from_scroll(&mut self) -> bool {
-        let n = self.page_offsets.len();
-        let (first, _) = self.visible_pages();
-        let page = if n == 0 {
-            0
-        } else {
-            (first as u32).min(n as u32 - 1)
-        };
-        if page != self.page {
-            self.page = page;
-            self.page_badge = None; // el indicador "N / total" cambia
-            self.sheet_bitmap = None; // el indicador del sheet cambia
-            info!("page {}", self.page + 1);
-            true
-        } else {
-            false
-        }
-    }
-
     /// Blitea el frame actual al buffer del ANativeWindow con UN solo
     /// lock+present.
     ///
-    /// - Visor (página a página): `draw::blit_stacked` dibuja el fondo y cada
-    ///   página visible de la columna en su posición (offset acumulado −
-    ///   scroll_y, con scroll_y siempre alineado al borde superior de la
-    ///   página actual; pan de anclaje del pinch añadido), recortando a la
-    ///   ventana; los overlays (indicador de página + sheet de ajustes)
-    ///   van después en el mismo buffer. Zoom RELATIVO `zoom / rendered_zoom`
-    ///   por página: 1:1 nítido para bitmaps recién renderizados y escala
-    ///   vecino-más-cercana durante el pinch (sin re-render).
+    /// - Visor (modo UNA HOJA): `draw::blit_page` dibuja el fondo y SOLO la
+    ///   página actual (centrado cover + pan de anclaje del pinch; nunca otra
+    ///   hoja), recortando a la ventana; los overlays (indicador de página +
+    ///   sheet de ajustes) van después en el mismo buffer. Zoom RELATIVO
+    ///   `zoom / rendered_zoom`: 1:1 nítido para bitmaps recién renderizados
+    ///   y escala vecino-más-cercana durante el pinch (sin re-render). Con el
+    ///   sheet visible se usa el FRAME COMPUESTO (`page_frame`, ver abajo):
+    ///   el frame se compone una vez y cada frame de la animación copia ese
+    ///   bitmap (`draw::blit_composed`) + el overlay del sheet — la PÁGINA
+    ///   NO se re-blitea en cada paso de la animación (el fix del lag del
+    ///   sheet; ver `draw::compose_frame`).
     /// - Picker/Biblioteca: `zoom::blit_fast` con el bitmap de la lista.
     ///
     /// Aquí se decide SOLO el estado que depende del `Reader`: fondo rojo sin
     /// documento, modo oscuro (inversión al blitear) y overlays del visor.
-    fn blit(&self, window: &NativeWindow) {
+    fn blit(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
         let t0 = Instant::now();
         let bg = if self.doc.is_none() {
             ERROR_BG
@@ -989,84 +850,72 @@ impl Reader {
         };
         match self.mode {
             UiMode::Viewer => {
-                let (first, last) = self.visible_pages();
+                // Piezas del blit de la página actual (una sola hoja): bitmap
+                // cacheado (`peek`, sin promoción LRU — el blit solo lee; la
+                // recencia la fija el render/prefetch), centrado horizontal
+                // cover + pan de anclaje (puede ser negativo con zoom > 1: se
+                // recortan los bordes de la página) y la capa de anotaciones.
                 let blit_zoom = if self.rendered_zoom.is_finite() && self.rendered_zoom > 0.0 {
                     self.zoom / self.rendered_zoom
                 } else {
                     1.0
                 };
-                let mut pages: Vec<PageBlit> = Vec::with_capacity(last - first + 1);
-                // Capa de anotaciones: trazos guardados de cada página visible
-                // + el trazo en curso (modo dibujo), transformados por la
-                // misma (dx, dy, scale) que el blit de la página (la capa se
-                // dibuja SOBRE el bitmap, ver `draw::blit_stacked`).
-                let mut ann_layers: Vec<PageAnnots> = Vec::new();
-                for p in first..=last {
-                    // `peek` (sin promoción LRU): el blit solo lee; la
-                    // recencia la fija el render/prefetch.
-                    let Some(bmp) = self.cache.peek(p as u32) else {
-                        continue;
-                    };
-                    // Centrado horizontal del bitmap en la ventana (puede ser
-                    // negativo con zoom > 1: se recortan los bordes; mismo
-                    // criterio que el centrado *contain* previo a la caché),
-                    // + el pan de anclaje del pinch (0 fuera de un gesto).
+                let page_blit: Option<PageBlit> = self.cache.peek(self.page).map(|bmp| {
                     let dx = (((self.win_w as f32 - bmp.width as f32 * blit_zoom) / 2.0)
                         + self.pan_x)
                         .round() as i32;
-                    // Posición en la columna: offset acumulado − scroll (en el
-                    // modo página a página, scroll_y = borde superior de la
-                    // página actual → dy = 0 + pan), + pan de anclaje.
-                    let dy =
-                        (self.page_offsets[p] as f32 - self.scroll_y + self.pan_y).round() as i32;
-                    pages.push(PageBlit {
-                        page: p as u32,
+                    // Una sola hoja: sin columna ni scroll_y → dy = pan.
+                    let dy = self.pan_y.round() as i32;
+                    PageBlit {
                         bitmap: bmp,
                         dx,
                         dy,
                         zoom: blit_zoom,
-                    });
-                    // Trazos guardados de la página, en orden de dibujo (z);
-                    // solo Stroke (Highlight/TextNote no se dibujan aún). El
-                    // trazo en curso (modo dibujo) se eliminó con la barra
-                    // superior (2026-08-XX): no hay nada que añadir encima.
+                    }
+                });
+                // Trazos guardados de la página, en orden de dibujo (z); solo
+                // Stroke (Highlight/TextNote no se dibujan aún). El trazo en
+                // curso (modo dibujo) se eliminó con la barra superior
+                // (2026-08-XX): no hay nada que añadir encima.
+                let anns: Option<PageAnnots> = page_blit.as_ref().and_then(|pb| {
                     let strokes: Vec<&Stroke> = self
                         .annotations
-                        .for_page(p)
+                        .for_page(self.page as usize)
                         .iter()
                         .filter_map(|a| match &a.kind {
                             Annotation::Stroke(s) => Some(s),
                             _ => None,
                         })
                         .collect();
-                    if !strokes.is_empty() {
-                        // scale = cover × zoom: px de ventana por punto PDF
-                        // (la misma escala efectiva del blit). Si no se puede
-                        // saber el tamaño de la página (render fallido),
-                        // escala degradada.
-                        let scale = match self.doc.as_ref().and_then(|d| d.page_size(p as u32).ok())
-                        {
-                            Some((pw, ph)) => {
-                                initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom
-                            }
-                            None => blit_zoom,
-                        };
-                        ann_layers.push(PageAnnots {
-                            page: p as u32,
-                            dx,
-                            dy,
-                            scale,
-                            strokes,
-                        });
+                    if strokes.is_empty() {
+                        return None;
                     }
-                }
-                // Overlays del visor en el MISMO buffer (un solo lock+present):
-                // indicador de página abajo a la izquierda (siempre) y sheet de
-                // ajustes deslizado desde el borde superior (solo si está
-                // visible; `progress == 1` = abierto del todo).
-                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(2);
-                if let Some(b) = self.page_badge.as_ref() {
+                    // scale = cover × zoom: px de ventana por punto PDF (la
+                    // misma escala efectiva del blit). Si no se puede saber el
+                    // tamaño de la página (render fallido), escala degradada.
+                    let scale = match self.doc.as_ref().and_then(|d| d.page_size(self.page).ok()) {
+                        Some((pw, ph)) => initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom,
+                        None => blit_zoom,
+                    };
+                    Some(PageAnnots {
+                        dx: pb.dx,
+                        dy: pb.dy,
+                        scale,
+                        strokes,
+                    })
+                });
+                // Indicador de página (abajo a la izquierda, siempre): se usa
+                // en el blit normal y también dentro del frame compuesto.
+                let badge: Option<(&Bitmap, i32, i32)> = self.page_badge.as_ref().map(|b| {
                     let (bx, by, _, _) = page_badge_rect(self.win_w, self.win_h);
+                    (b, bx, by)
+                });
+                // Overlays del visor en el MISMO buffer (un solo lock+present):
+                // indicador de página y sheet de ajustes deslizado desde el
+                // borde superior (solo si está visible; `progress == 1` =
+                // abierto del todo).
+                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(2);
+                if let Some((b, bx, by)) = badge {
                     overlays.push((b, bx, by));
                 }
                 if self.sheet_progress > 0.0
@@ -1076,7 +925,58 @@ impl Reader {
                         (sheet_h(self.win_h) as f32 * (1.0 - self.sheet_progress)).round() as i32;
                     overlays.push((s, 0, -slide));
                 }
-                blit_stacked(window, bg, self.dark, &pages, &ann_layers, &overlays);
+                if self.sheet_progress > 0.0 {
+                    // Sheet visible: frame compuesto + overlay del sheet. El
+                    // frame (fondo + página + anotaciones + indicador) se
+                    // compone UNA vez al empezar a deslizar y se reutiliza
+                    // mientras el sheet esté visible: cada frame de la
+                    // animación/arrastre copia el frame (memcpy ~1-2 ms) +
+                    // el sheet, en vez de re-blitear la página completa
+                    // (~25-40 ms/frame — la CAUSA del lag del sheet).
+                    if self.page_frame.is_none() {
+                        let composed = compose_frame(
+                            self.win_w,
+                            self.win_h,
+                            bg,
+                            self.dark,
+                            page_blit.as_ref(),
+                            anns.as_ref(),
+                            badge,
+                        );
+                        self.page_frame = Some(composed);
+                    }
+                    if let Some(frame) = self.page_frame.as_ref() {
+                        // El frame ya incluye el indicador: solo el sheet
+                        // como overlay.
+                        let mut sheet_ov: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(1);
+                        if let Some(s) = self.sheet_bitmap.as_ref() {
+                            let slide = (sheet_h(self.win_h) as f32 * (1.0 - self.sheet_progress))
+                                .round() as i32;
+                            sheet_ov.push((s, 0, -slide));
+                        }
+                        blit_composed(window, frame, &sheet_ov);
+                    } else {
+                        // Defensa: frame no disponible (compose falló) → blit
+                        // normal con el sheet como overlay.
+                        blit_page(
+                            window,
+                            bg,
+                            self.dark,
+                            page_blit.as_ref(),
+                            anns.as_ref(),
+                            &overlays,
+                        );
+                    }
+                } else {
+                    blit_page(
+                        window,
+                        bg,
+                        self.dark,
+                        page_blit.as_ref(),
+                        anns.as_ref(),
+                        &overlays,
+                    );
+                }
             }
             UiMode::Picker | UiMode::Library => match self.bitmap.as_ref() {
                 Some(bmp) => {
@@ -1125,14 +1025,18 @@ impl Reader {
         );
     }
 
-    /// Desplaza el scroll a la página `page` (0-based): la página queda
-    /// alineada con el borde superior del viewport (`scroll_y =
-    /// page_offsets[page]`, vía `pending_page` + `rebuild_layout`). Base
-    /// compartida de `next_page`/`prev_page`/`jump_page` y del tap
-    /// derecho/izquierdo. No hay salto con re-render: las páginas vecinas
-    /// salen de la caché (paso instantáneo).
-    fn scroll_to_page(&mut self, page: u32) {
-        self.pending_page = Some(page);
+    /// Cambia a la página `page` (0-based) — modo UNA HOJA: `page` se fija
+    /// directamente (no hay scroll que alinear: la columna de páginas se
+    /// eliminó). Base compartida de `next_page`/`prev_page`/`jump_page` y del
+    /// tap derecho/izquierdo. No hay salto con re-render: las páginas vecinas
+    /// salen de la caché (paso instantáneo). Invalida los overlays cacheados
+    /// (indicador, sheet, frame de la animación).
+    fn goto_page(&mut self, page: u32) {
+        self.page = page;
+        self.page_badge = None; // el indicador "N / total" cambia
+        self.sheet_bitmap = None; // el indicador del sheet cambia
+        self.page_frame = None; // el frame de la animación del sheet cambia
+        info!("page {}", self.page + 1);
         self.redraw();
         self.save_state();
     }
@@ -1143,13 +1047,13 @@ impl Reader {
         };
         let last = doc.page_count().saturating_sub(1);
         if self.page < last {
-            self.scroll_to_page(self.page + 1);
+            self.goto_page(self.page + 1);
         }
     }
 
     pub(crate) fn prev_page(&mut self) {
         if self.page > 0 {
-            self.scroll_to_page(self.page - 1);
+            self.goto_page(self.page - 1);
         }
     }
 
@@ -1161,7 +1065,7 @@ impl Reader {
         let last = doc.page_count().saturating_sub(1) as i32;
         let target = (self.page as i32 + delta).clamp(0, last) as u32;
         if target != self.page {
-            self.scroll_to_page(target);
+            self.goto_page(target);
         }
     }
 
@@ -1184,8 +1088,11 @@ impl Reader {
 
     /// Arrastre del sheet: `dy` = desplazamiento vertical del dedo desde el
     /// Down (px, positivo = hacia abajo). El progreso sigue al dedo
-    /// (`dy / alto del sheet`, recortado a [0, 1]) y se redibuja el frame
-    /// (solo blit: las páginas visibles ya están en la caché).
+    /// (`dy / alto del sheet`, recortado a [0, 1]) y se redibuja el frame.
+    /// El redraw es BARATO con el sheet visible: `blit` usa el frame de
+    /// página compuesto (`page_frame`, memcpy) + el overlay del sheet, NO
+    /// re-blitea la página completa (ver `blit`) — la animación del sheet
+    /// no degrada el frame time.
     pub(crate) fn drag_sheet(&mut self, dy: f32) {
         let h = sheet_h(self.win_h).max(1) as f32;
         self.sheet_progress = (dy / h).clamp(0.0, 1.0);
@@ -1220,6 +1127,7 @@ impl Reader {
         self.sheet_progress = 0.0;
         self.sheet_anim = false;
         self.sheet_bitmap = None;
+        self.page_frame = None;
     }
 
     /// Tick del bucle de eventos (timeout ~16 ms): avanza la animación del
@@ -1238,6 +1146,7 @@ impl Reader {
             }
             if self.sheet_progress <= 0.0 {
                 self.sheet_bitmap = None; // liberar el bitmap al cerrar del todo
+                self.page_frame = None; // liberar también el frame compuesto
             }
             self.redraw();
         }
@@ -1364,18 +1273,20 @@ impl Reader {
     }
 
     /// Zoom DURANTE el pinch (fast): solo actualiza el factor (1.0 = página
-    /// completa) y hace un redraw de solo blit — `blit` escala los bitmaps
-    /// cacheados de la columna con el zoom RELATIVO `zoom / rendered_zoom`
-    /// (vecino-más-cercano), SIN re-renderizar MuPDF. El re-render nítido a la
-    /// resolución final se hace UNA vez al soltar el pinch
-    /// (`set_zoom_sharp`). El redraw normal (render + blit) no se usa aquí
-    /// porque `ensure_pages_rendered` re-renderizaría en cada Move.
+    /// completa) y hace un redraw de solo blit — `blit` escala el bitmap
+    /// cacheado de la página ACTUAL (la única hoja) con el zoom RELATIVO
+    /// `zoom / rendered_zoom` (vecino-más-cercano), SIN re-renderizar MuPDF.
+    /// El re-render nítido a la resolución final se hace UNA vez al soltar el
+    /// pinch (`set_zoom_sharp`). El redraw normal (render + blit) no se usa
+    /// aquí porque `ensure_pages_rendered` re-renderizaría en cada Move.
     ///
     /// El zoom es un factor RELATIVO a la distancia inicial del gesto
     /// (`zoom = z0 × dist / start_dist`, calculado por `input`); aquí solo se
     /// aplica. Además recalcula el pan de ANCLAJE: el punto de documento que
     /// estaba bajo el centro del pinch al iniciar (`begin_pinch`) se mantiene
-    /// fijo en pantalla (ver `anchor_pan`).
+    /// fijo en pantalla (ver `anchor_pan`). Al hacer zoom-in solo se ve una
+    /// porción de ESA página, recortada a sus bordes (nunca otra hoja: el
+    /// blit solo dibuja la página actual).
     pub(crate) fn set_zoom_fast(&mut self, zoom: f32) {
         let zoom = zoom.clamp(PINCH_MIN, PINCH_MAX);
         if (self.zoom - zoom).abs() < 1e-4 {
@@ -1386,8 +1297,8 @@ impl Reader {
             if dw > 0.0 && dh > 0.0 {
                 // X: el bitmap escalado se centra en la ventana → base
                 // dependiente del zoom. Y: el borde superior de la página
-                // actual queda en el borde superior del viewport (scroll_y =
-                // page_offsets[page]) → base 0.
+                // actual queda en el borde superior del viewport (modo UNA
+                // HOJA, sin scroll) → base 0.
                 self.pan_x = Self::anchor_pan(
                     p.ax,
                     Self::centered_base(self.win_w, dw, p.z0),
@@ -1400,38 +1311,36 @@ impl Reader {
             }
         }
         self.zoom = zoom;
+        self.page_frame = None; // el frame compuesto del sheet tiene el zoom viejo
         // Redraw de solo blit: reutiliza los bitmaps de la caché (escala de la
-        // última renderización, `rendered_zoom`) y el layout de la columna;
-        // `blit` escala cada página con el zoom nuevo. El render y el
-        // reescalado de ventana los cubre el bucle de eventos
-        // (RedrawNeeded/WindowResized) si hicieran falta.
-        if let Some(win) = self.window.as_ref() {
-            self.blit(win);
+        // última renderización, `rendered_zoom`); `blit` escala la página
+        // actual con el zoom nuevo. El render y el reescalado de ventana los
+        // cubre el bucle de eventos (RedrawNeeded/WindowResized) si hicieran
+        // falta.
+        if self.window.is_some() {
+            self.blit();
         }
     }
 
     /// Zoom FINAL del pinch (sharp): setea el factor (1.0 = página completa),
     /// conserva el pan de anclaje calculado por el último `set_zoom_fast` (el
-    /// punto bajo los dedos no salta al re-renderizar) y re-renderiza las
-    /// páginas visibles UNA única vez a la escala continua resultante (render
+    /// punto bajo los dedos no salta al re-renderizar) y re-renderiza la
+    /// página actual UNA única vez a la escala continua resultante (render
     /// directo a resolución de pantalla — el camino medido más rápido en la
     /// tablet, ver nota de rendimiento en la cabecera de `lib.rs`): la caché
-    /// se limpia y el layout se reconstruye; el redraw renderiza vía
-    /// `ensure_pages_rendered`. Persiste el zoom (solo aquí, al soltar el
-    /// gesto: `set_zoom_fast` es transitorio y escribir en cada Move de
-    /// 60-120 Hz llenaría el disco).
+    /// se limpia y el redraw renderiza vía `ensure_pages_rendered`. Persiste
+    /// el zoom (solo aquí, al soltar el gesto: `set_zoom_fast` es transitorio
+    /// y escribir en cada Move de 60-120 Hz llenaría el disco).
     pub(crate) fn set_zoom_sharp(&mut self, zoom: f32) {
         let zoom = zoom.clamp(PINCH_MIN, PINCH_MAX);
         // El pan de anclaje YA es el del zoom final (último `set_zoom_fast`);
         // el re-render a la nueva escala (`rendered_zoom = zoom`) mantiene el
         // mismo mapeo documento→pantalla (la escala efectiva `doc·zoom` no
         // cambia), así que el punto bajo los dedos permanece fijo al soltar.
-        // `scroll_y` no se toca: en el modo página a página está siempre
-        // alineado con el borde superior de la página actual.
         self.zoom = zoom;
         self.rendered_zoom = zoom;
         self.cache.clear();
-        self.layout_dirty = true;
+        self.page_frame = None; // el frame compuesto del sheet tiene el zoom viejo
         info!("zoom {:.3}", self.zoom);
         self.redraw();
         self.save_state();
@@ -1440,16 +1349,17 @@ impl Reader {
     /// Alterna el modo oscuro SIN re-renderizar MuPDF y SIN tocar la caché:
     /// esta guarda SIEMPRE bitmaps normales (de colores) y la inversión
     /// (255 − v, la transformación de `pdf_core::dark::invert_bitmap`) se
-    /// aplica en el blit (`draw::blit_stacked`), por página, solo cuando el
-    /// modo oscuro está activo. El fondo letterbox pasa a negro puro
-    /// (`DARK_BG`). La preferencia se persiste junto a la posición.
+    /// aplica en el blit (`draw::blit_page`), solo cuando el modo oscuro está
+    /// activo. El fondo letterbox pasa a negro puro (`DARK_BG`). La
+    /// preferencia se persiste junto a la posición.
     pub(crate) fn toggle_dark(&mut self) {
         self.dark = !self.dark;
         // La caché guarda SIEMPRE bitmaps normales: la inversión (255 − v) se
-        // aplica en el blit (`draw::blit_stacked`), por página, solo con el
-        // modo oscuro activo — no se re-renderiza ni se invierte nada aquí.
+        // aplica en el blit (`draw::blit_page`), solo con el modo oscuro
+        // activo — no se re-renderiza ni se invierte nada aquí.
         self.page_badge = None; // colores del indicador cambian
         self.sheet_bitmap = None; // colores del sheet cambian (Dark/Light)
+        self.page_frame = None; // el frame compuesto cambia de modo
         info!("dark mode: {}", self.dark);
         self.save_state();
         self.redraw();
@@ -1559,19 +1469,16 @@ impl Reader {
                 self.page = 0;
                 self.zoom = 1.0;
                 self.rendered_zoom = 1.0;
-                self.scroll_y = 0.0; // columna desde el principio
-                self.pending_page = None;
                 self.pan_x = 0.0;
                 self.pan_y = 0.0;
                 self.pinch = None;
                 self.bitmap = None;
                 self.cache.clear(); // otro documento: nada reutilizable
-                self.layout_dirty = true;
                 self.mode = UiMode::Viewer;
                 self.status = None;
                 self.doc_path = Some(path.to_string());
                 self.page_badge = None;
-                self.sheet_hide_now(); // sheet del visor anterior: fuera
+                self.sheet_hide_now(); // sheet del visor anterior: fuera (libera también el frame)
                 self.thumbs.clear(); // portadas de otra biblioteca: no sirven
                 self.thumb_failed.clear();
                 self.list_dirty = true;

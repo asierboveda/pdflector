@@ -132,14 +132,12 @@ pub(crate) fn copy_region(
     }
 }
 
-/// Una página de la columna (scroll vertical continuo) a blitear en el
-/// buffer: índice de página + bitmap cacheado + esquina superior izquierda en
-/// px de ventana + zoom RELATIVO al render (1.0 = blit 1:1 nítido; > 1 durante
-/// el pinch sin re-render, escala vecino-más-cercano del bitmap cacheado). El
-/// índice lo usa `blit_stacked` para emparejar la página con su capa de
-/// anotaciones.
+/// Una página a blitear en el buffer (modo UNA HOJA: solo la página actual,
+/// nunca una columna): bitmap cacheado + esquina superior izquierda en px de
+/// ventana + zoom RELATIVO al render (1.0 = blit 1:1 nítido; > 1 durante el
+/// pinch sin re-render, escala vecino-más-cercano del bitmap cacheado). Su
+/// capa de anotaciones se pasa aparte (`PageAnnots`).
 pub(crate) struct PageBlit<'a> {
-    pub(crate) page: u32,
     pub(crate) bitmap: &'a Bitmap,
     pub(crate) dx: i32,
     pub(crate) dy: i32,
@@ -155,7 +153,6 @@ pub(crate) struct PageBlit<'a> {
 /// visibles, no ∝ área de página. Solo trazos YA GUARDADOS: el trazo en curso
 /// (modo dibujo) se eliminó con la barra superior (2026-08-XX).
 pub(crate) struct PageAnnots<'a> {
-    pub(crate) page: u32,
     pub(crate) dx: i32,
     pub(crate) dy: i32,
     /// px de ventana por punto PDF (cover × zoom).
@@ -164,32 +161,34 @@ pub(crate) struct PageAnnots<'a> {
     pub(crate) strokes: Vec<&'a Stroke>,
 }
 
-/// Blit de la columna de páginas apiladas (scroll vertical continuo) con UN
-/// solo lock+present: fondo + cada página (vecino-más-cercano para el zoom,
-/// recorte a la ventana) + la capa de anotaciones de cada página (trazos
-/// Bresenham sobre su bitmap) + los overlays del visor (indicador de página y
-/// sheet de ajustes, cada uno con su posición). Es el equivalente
-/// multi-página de `zoom::blit_fast` (mismo contrato: fondo + página(s) +
-/// overlays en el mismo buffer, un único unlock_and_post — dividirlo en
-/// varios locks presentaría varios buffers por frame y el compositor
-/// mostraría el frame anterior).
+/// Blit del visor (modo UNA HOJA) con UN solo lock+present: fondo + la página
+/// actual (vecino-más-cercano para el zoom, recorte a la ventana — nunca otra
+/// hoja: solo se dibuja `page`) + su capa de anotaciones (trazos Bresenham
+/// sobre el bitmap) + los overlays del visor (indicador de página y sheet de
+/// ajustes, cada uno con su posición). Es el equivalente de una página de
+/// `zoom::blit_fast` (mismo contrato: fondo + página + overlays en el mismo
+/// buffer, un único unlock_and_post — dividirlo en varios locks presentaría
+/// varios buffers por frame y el compositor mostraría el frame anterior).
 ///
-/// `dark` = modo oscuro activo: invierte los canales RGB de cada página
+/// `page = None` si la página actual no tiene bitmap en la caché (render
+/// fallido): solo fondo + overlays.
+///
+/// `dark` = modo oscuro activo: invierte los canales RGB de la página
 /// (255 − v, la misma transformación que `pdf_core::dark::invert_bitmap`) en
 /// el propio blit, píxel a píxel. La caché guarda SIEMPRE bitmaps normales;
 /// materializar una copia invertida por página y frame sería memoria y GC
 /// innecesarios (a zoom alto una página puede pesar cientos de MiB). Coste:
-/// una pasada extra por página visible (~1-3 ms a pantalla completa).
+/// una pasada extra (~1-3 ms a pantalla completa).
 ///
 /// Las ANOTACIONES no se invierten en modo oscuro: la tinta conserva su
 /// color (decisión: la capa de anotaciones es independiente del modo de
 /// visualización de la página, como el subrayado físico).
-pub(crate) fn blit_stacked(
+pub(crate) fn blit_page(
     window: &NativeWindow,
     bg: [u8; 4],
     dark: bool,
-    pages: &[PageBlit],
-    anns: &[PageAnnots],
+    page: Option<&PageBlit>,
+    anns: Option<&PageAnnots>,
     overlays: &[(&Bitmap, i32, i32)],
 ) {
     // El guard se cae al final del scope: ANativeWindow_unlockAndPost.
@@ -215,11 +214,10 @@ pub(crate) fn blit_stacked(
     // Fondo (letterbox; rojo si el PDF no se abrió — lo decide el caller).
     fill_buffer(dst, dst_w, dst_h, dst_stride, bpp, bg);
 
-    // Páginas en orden de documento: cada una escalada al zoom relativo
-    // pedido y recortada a la ventana (las posiciones las calcula `reader`
-    // con el layout de la columna: offset acumulado − scroll_y). Tras cada
-    // página, su capa de anotaciones (trazos sobre el bitmap, en orden z).
-    for page in pages {
+    // La página actual, escalada al zoom relativo pedido y recortada a la
+    // ventana (la posición la calcula `reader`: centrado cover + pan). Tras
+    // ella, su capa de anotaciones (trazos sobre el bitmap, en orden z).
+    if let Some(page) = page {
         blit_page_scaled(
             dst,
             dst_w,
@@ -232,13 +230,98 @@ pub(crate) fn blit_stacked(
             page.zoom,
             dark,
         );
-        if let Some(layer) = anns.iter().find(|l| l.page == page.page) {
+        if let Some(layer) = anns {
             draw_annotations(dst, dst_w, dst_h, dst_stride, bpp, layer);
         }
     }
 
     // Overlays del visor (indicador de página, sheet de ajustes), cada uno
     // con su esquina superior izquierda en px de ventana.
+    for (ov, ox, oy) in overlays {
+        copy_region(dst, dst_w, dst_h, dst_stride, bpp, ov, *ox, *oy);
+    }
+}
+
+/// Compone el frame de página (fondo + página actual + capa de anotaciones +
+/// indicador "N / total") en un `Bitmap` RGBA8 del tamaño de la ventana: la
+/// MISMA salida que un blit normal, pero en memoria propia en vez del
+/// ANativeWindow. Lo usa `Reader` para la animación del sheet: el frame se
+/// compone UNA vez al empezar a deslizar y cada frame de la animación solo lo
+/// copia al buffer (`blit_composed`, memcpy ~1-2 ms) + el overlay del sheet,
+/// en vez de re-blitear la página completa en cada paso (~25-40 ms/frame — la
+/// causa del lag del sheet; ver `Reader::page_frame`).
+///
+/// `page = None` si la página actual no tiene bitmap en la caché: el frame
+/// queda con solo fondo + indicador.
+pub(crate) fn compose_frame(
+    w: i32,
+    h: i32,
+    bg: [u8; 4],
+    dark: bool,
+    page: Option<&PageBlit>,
+    anns: Option<&PageAnnots>,
+    badge: Option<(&Bitmap, i32, i32)>,
+) -> Bitmap {
+    let (fw, fh) = (w.max(0) as usize, h.max(0) as usize);
+    let mut frame = Bitmap {
+        width: fw as u32,
+        height: fh as u32,
+        data: vec![0u8; fw * fh * 4],
+    };
+    let dst = frame.data.as_mut_ptr();
+    fill_buffer(dst, fw, fh, fw, 4, bg);
+    if let Some(page) = page {
+        blit_page_scaled(
+            dst,
+            fw,
+            fh,
+            fw,
+            4,
+            page.bitmap,
+            page.dx,
+            page.dy,
+            page.zoom,
+            dark,
+        );
+        if let Some(layer) = anns {
+            draw_annotations(dst, fw, fh, fw, 4, layer);
+        }
+    }
+    if let Some((b, bx, by)) = badge {
+        copy_region(dst, fw, fh, fw, 4, b, bx, by);
+    }
+    frame
+}
+
+/// Blit de un frame ya compuesto (`compose_frame`) + overlays al buffer con
+/// UN solo lock+present. Cada overlay va con su esquina superior izquierda en
+/// px de ventana. Uso: animación del sheet — copiar el frame es un memcpy
+/// (~1-2 ms en la tablet), mucho más barato que re-blitear la página.
+pub(crate) fn blit_composed(
+    window: &NativeWindow,
+    frame: &Bitmap,
+    overlays: &[(&Bitmap, i32, i32)],
+) {
+    let Ok(mut guard) = window.lock(None) else {
+        warn!("ANativeWindow_lock failed");
+        return;
+    };
+    let bpp = match guard.format().bytes_per_pixel() {
+        Some(b) => b,
+        None => {
+            warn!(
+                "buffer format without bytes_per_pixel: {:?}",
+                guard.format()
+            );
+            return;
+        }
+    };
+    let dst_w = guard.width();
+    let dst_h = guard.height();
+    let dst_stride = guard.stride(); // en píxeles
+    let dst = guard.bits() as *mut u8;
+    // Frame completo (fondo + página + indicador) en la esquina (0,0).
+    copy_region(dst, dst_w, dst_h, dst_stride, bpp, frame, 0, 0);
     for (ov, ox, oy) in overlays {
         copy_region(dst, dst_w, dst_h, dst_stride, bpp, ov, *ox, *oy);
     }
@@ -251,7 +334,7 @@ pub(crate) fn blit_stacked(
 /// aquí): misma fórmula, mismo estilo — véase su doc para el mapeo entero
 /// `src = (dst_rel × src_dim) / dst_dim` con tabla x precalculada.
 ///
-/// `dark` añade la inversión de canales RGB inline (ver `blit_stacked`).
+/// `dark` añade la inversión de canales RGB inline (ver `blit_page`).
 //
 // 11 parámetros posicionales de un blit (raw pointer + dimensiones): mismo
 // patrón que `copy_region` y `blit_scaled_nearest`; se acepta el allow en vez
@@ -272,7 +355,7 @@ fn blit_page_scaled(
     let src_w = src.width as i64;
     let src_h = src.height as i64;
     // Guardas: zoom inválido o destino degenerado → solo fondo (ya pintado
-    // por el caller; el overlay lo pinta `blit_stacked` después).
+    // por el caller; el overlay lo pinta `blit_page` después).
     if src_w <= 0 || src_h <= 0 || !zoom.is_finite() || zoom <= 0.0 {
         return;
     }
@@ -387,7 +470,7 @@ fn draw_annotations(
 /// Transforma un trazo (coordenadas de página) a px de ventana
 /// (`pt × scale + (dx, dy)`) y lo dibuja como polilínea Bresenham de grosor
 /// `width × scale` px (mínimo 1 px). El color se pasa tal cual (RGBA8): las
-/// anotaciones no se invierten en modo oscuro (ver `blit_stacked`).
+/// anotaciones no se invierten en modo oscuro (ver `blit_page`).
 //
 // 10 parámetros posicionales de un blit (raw pointer + dimensiones + trazo):
 // mismo patrón que `copy_region` y `blit_page_scaled`; se acepta el allow.

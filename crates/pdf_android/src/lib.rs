@@ -69,25 +69,51 @@
 //! El visor volvió al modo PÁGINA a PÁGINA (decisión del autor): el
 //! arrastre vertical continuo (que sustituyó al salto de página el
 //! 2026-08-13) se ELIMINÓ; pasar de página es un tap en la mitad derecha
-//! (siguiente) o izquierda (anterior), con la misma columna de páginas
-//! apiladas de fondo (`scroll_y` queda siempre alineado al borde superior de
-//! la página actual) y la misma caché:
+//! (siguiente) o izquierda (anterior).
+//!
+//! ## Modo UNA HOJA (2026-08-XX) — la columna de páginas se eliminó
+//!
+//! El visor muestra SOLO la página actual (modo UNA HOJA): se eliminaron
+//! toda la geometría de la columna apilada (`page_offsets`/`page_heights`/
+//! `doc_height`/`scroll_y`/`layout_dirty`/`pending_page`), `visible_pages()`,
+//! `blit_stacked` y `update_page_from_scroll` (ver el diff del commit). El
+//! blit dibuja UNA página (fondo + página actual + anotaciones + overlays,
+//! `draw::blit_page`) centrada con cover y recortada a los bordes de la
+//! ventana; el zoom (pinch) actúa SOLO sobre la página actual (recortada a
+//! sus bordes, nunca otra hoja) y mantiene el pan de anclaje. La `PageCache`
+//! (LRU) se CONSERVA para que prev/next sea instantáneo (precarga la vecina,
+//! `ensure_pages_rendered`), pero las vecinas nunca se dibujan:
 //!
 //! - `cache.rs` (`PageCache`): LRU en RAM de páginas renderizadas
 //!   (página → `Bitmap`), limitada por bytes (48 MiB) y por entradas (5),
 //!   coherente con el RSS < 150 MB; evita el re-render al volver atrás.
 //!   Los bitmaps se guardan SIEMPRE normales: la inversión de modo oscuro se
-//!   aplica al blitear (`draw::blit_stacked`), por página.
-//! - Render (vía caché) de la página visible + 1 vecina por lado (prefetch
-//!   simple: el paso de página es instantáneo): el blit dibuja cada página en
-//!   su posición de la columna (offset acumulado − scroll_y, con scroll_y en
-//!   el borde superior de la página actual), recortando a la ventana con un
-//!   solo lock+present (`draw::blit_stacked`, vecino-más-cercano para el
-//!   zoom, pan de anclaje del pinch añadido al offset).
+//!   aplica al blitear (`draw::blit_page`).
+//! - Render (vía caché) de la página actual + 1 vecina por lado (prefetch
+//!   simple: el paso de página es instantáneo); el blit dibuja SOLO la
+//!   página actual (centrado cover + pan de anclaje del pinch, recorte a la
+//!   ventana) con un solo lock+present (`draw::blit_page`, vecino-más-cercano
+//!   para el zoom).
 //! - El pinch hace zoom (factor relativo + anclado; re-render nítido al
-//!   soltar); el tap cambia de página. La página visible alimenta el
+//!   soltar); el tap cambia de página. La página actual alimenta el
 //!   indicador "N / total", los saltos ±10 y la persistencia (`persist`), que
-//!   sigue guardando la página visible como `page` del estado.
+//!   sigue guardando la página actual como `page` del estado.
+//!
+//! ## Sheet de ajustes: animación sin re-blit de la página (2026-08-XX)
+//!
+//! El sheet (panel deslizante desde arriba) iba LENTO al tirar hacia abajo:
+//! la causa era que cada frame de la animación (~150 ms con `poll_events` +
+//! timeout, ~10 ticks) y cada Move del arrastre hacían un redraw completo que
+//! re-bliteaba la página ENTERA (~25-40 ms/blit en la tablet) + el overlay
+//! del sheet — la animación no llegaba a 60 fps. El fix: mientras el sheet
+//! está visible (`sheet_progress > 0`) el visor usa un FRAME COMPUESTO
+//! (`Reader::page_frame`, un `Bitmap` RGBA8 del tamaño de la ventana con
+//! fondo + página + anotaciones + indicador, compuesto UNA vez al empezar a
+//! deslizar con `draw::compose_frame`) y cada frame de la animación/arrastre
+//! solo copia ese frame al buffer (`draw::blit_composed`, memcpy ~1-2 ms) +
+//! el overlay del sheet. La PÁGINA no se re-blitea en cada paso: el sheet se
+//! siente inmediato y fluido. El frame se invalida al cambiar página/zoom/
+//! modo oscuro/ventana/documento y se libera al cerrar el sheet del todo.
 //!
 //! ### Nota de rendimiento del zoom (por qué NO `scale_bitmap`)
 //!

@@ -28,7 +28,7 @@
 //!   `bitmap` único que ya alojaba la app antes de la caché.
 //! - **Modo oscuro**: la caché guarda SIEMPRE bitmaps normales (de colores).
 //!   La inversión (255 − v) se aplica al blitear, por página, solo si el modo
-//!   oscuro está activo (ver `draw::blit_stacked`); nunca se almacena una
+//!   oscuro está activo (ver `draw::blit_page`); nunca se almacena una
 //!   variante invertida.
 //!
 //! `HashMap` + `VecDeque` (cola de recencia, frente = LRU): con ≤ 5 entradas
