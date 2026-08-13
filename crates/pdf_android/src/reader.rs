@@ -19,12 +19,16 @@ use android_activity::ndk::native_window::NativeWindow;
 use log::{error, info, warn};
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::store::{AnnotationStore, sidecar_path};
-use pdf_core::{Annotation, AnnotationSet, Bitmap, Document, RenderEngine, Stroke};
+use pdf_core::{
+    Annotation, AnnotationSet, Bitmap, Color, Document, Highlight, Rect, RenderEngine, Stroke,
+    TextSpan,
+};
 
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
 use crate::draw::{
-    PageAnnots, PageBlit, blit_composed, blit_page, compose_frame, render_library_grid,
-    render_page_badge, render_picker_list, render_sheet,
+    ButtonRect, PageAnnots, PageBlit, blit_composed, blit_page, compose_frame, render_library_grid,
+    render_page_badge, render_picker_list, render_sel_menu, render_sheet, render_toast,
+    sel_menu_layout,
 };
 use crate::input::GestureState;
 use crate::jni::{
@@ -35,7 +39,7 @@ use crate::persist;
 use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, THUMB_W, ThumbCache};
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
-use crate::{BACKGROUND, DARK_BG, ERROR_BG, PINCH_MAX, PINCH_MIN};
+use crate::{BACKGROUND, DARK_BG, ERROR_BG, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS};
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
 /// Construido en `jni::launch_intent_pdf`, consumido en `Reader::new`.
@@ -339,6 +343,43 @@ struct PinchAnchor {
     pan_y0: f32,
 }
 
+/// Selección de texto en curso (rectángulo de arrastre del doble-tap): ancla
+/// (punto del doble-tap) y punto actual del dedo, ambos en px de VENTANA
+/// (pantalla).
+///
+/// Decisión documentada: la selección se guarda en coords de PANTALLA (no de
+/// página) porque el gesto, el render del rect y el menú viven en pantalla y
+/// la conversión a página solo se hace UNA vez cuando se necesita
+/// (`sel_page_rect`, con `screen_to_page` — la INVERSA exacta del mapeo del
+/// blit, misma `scale = cover × zoom` y `dx/dy` que la capa de anotaciones).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SelState {
+    /// Punto del doble-tap (px de ventana): esquina fija del rect.
+    pub(crate) anchor: (f32, f32),
+    /// Posición actual del dedo (px de ventana): esquina móvil del rect.
+    pub(crate) cur: (f32, f32),
+}
+
+/// Menú flotante de la selección fijada (Copiar / Subrayar / IA): tarjeta
+/// pequeña cerca del rect de selección con sus botones (etiqueta + rect en px
+/// de ventana — geometría COMPARTIDA por el render y el tap de `input`). Se
+/// muestra al soltar el arrastre (`end_sel`); tocar fuera lo cierra y
+/// descarta la selección. "IA" es un hueco visual para la Parte 2 (otro
+/// agente): se dibuja atenuado y su tap solo avisa.
+pub(crate) struct SelMenu {
+    /// Esquina superior izquierda del menú en px de ventana.
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    /// Tamaño del menú en px (el del bitmap cacheado).
+    pub(crate) w: i32,
+    pub(crate) h: i32,
+    /// Bitmap del menú (Canvas+JNI, fondo transparente), cacheado mientras
+    /// el menú esté abierto.
+    pub(crate) bitmap: Bitmap,
+    /// Botones (etiqueta + rect en px de ventana), compartidos con el tap.
+    pub(crate) buttons: Vec<(&'static str, ButtonRect)>,
+}
+
 /// Estado de la app, vivo durante todo el bucle de `android_main`.
 /// `pub(crate)` por la partición de `lib.rs`: `input` y `draw` leen campos,
 /// `lib` llama a los métodos (gestos y listas viven en otros módulos).
@@ -471,6 +512,23 @@ pub(crate) struct Reader {
     /// a la copia en `internal/pdfs/` → `internal/pdfs/annotations/<stem>.db`
     /// (ver `open_library_entry`/`jni::launch_intent_pdf`).
     annot_sidecar: Option<PathBuf>,
+    /// Selección de texto en curso (doble-tap + arrastre) en px de ventana
+    /// (ver `SelState`): Some durante el arrastre Y mientras está fijada con
+    /// su menú abierto (`sel_menu`); se descarta al tocar fuera del menú o al
+    /// ejecutar Copiar/Subrayar. None = sin selección activa
+    /// (`has_selection`).
+    pub(crate) sel: Option<SelState>,
+    /// Menú flotante de la selección fijada (Copiar/Subrayar/IA): bitmap +
+    /// posición/geometría en px de ventana (ver `SelMenu`). Some mientras el
+    /// menú esté abierto; tocar fuera lo cierra y descarta la selección.
+    pub(crate) sel_menu: Option<SelMenu>,
+    /// Aviso breve ("copied", "highlighted", "no text", ...) sobre el
+    /// indicador de página: texto + momento de creación; `tick` lo expira a
+    /// los `TOAST_MS` (1,5 s) y el bitmap cacheado se invalida con el texto.
+    pub(crate) toast: Option<(String, Instant)>,
+    /// Bitmap cacheado del aviso breve (`draw::render_toast`), None sin
+    /// aviso o con texto nuevo (se re-renderiza al cambiarlo).
+    toast_bitmap: Option<Bitmap>,
 }
 
 impl Reader {
@@ -514,6 +572,10 @@ impl Reader {
             picker_drag: None,
             annotations: AnnotationSet::new(),
             annot_sidecar: None,
+            sel: None,
+            sel_menu: None,
+            toast: None,
+            toast_bitmap: None,
         };
         match launch_intent_pdf(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
@@ -908,21 +970,29 @@ impl Reader {
                         zoom: blit_zoom,
                     }
                 });
-                // Trazos guardados de la página, en orden de dibujo (z); solo
-                // Stroke (Highlight/TextNote no se dibujan aún). El trazo en
-                // curso (modo dibujo) se eliminó con la barra superior
-                // (2026-08-XX): no hay nada que añadir encima.
+                // Anotaciones de la página, en orden de dibujo (z): trazos y
+                // highlights guardados (Stroke/Highlight; TextNote no se
+                // dibuja aún). Los highlights se dibujan DEBAJO de los trazos
+                // (`draw::draw_annotations`); el trazo/highlight en curso no
+                // existe (no hay modo dibujo; el rect de selección en vivo va
+                // aparte, ver `sel_rect` abajo).
                 let anns: Option<PageAnnots> = page_blit.as_ref().and_then(|pb| {
-                    let strokes: Vec<&Stroke> = self
-                        .annotations
-                        .for_page(self.page as usize)
+                    let page_anns = self.annotations.for_page(self.page as usize);
+                    let strokes: Vec<&Stroke> = page_anns
                         .iter()
                         .filter_map(|a| match &a.kind {
                             Annotation::Stroke(s) => Some(s),
                             _ => None,
                         })
                         .collect();
-                    if strokes.is_empty() {
+                    let highlights: Vec<&Highlight> = page_anns
+                        .iter()
+                        .filter_map(|a| match &a.kind {
+                            Annotation::Highlight(h) => Some(h),
+                            _ => None,
+                        })
+                        .collect();
+                    if strokes.is_empty() && highlights.is_empty() {
                         return None;
                     }
                     // scale = cover × zoom: px de ventana por punto PDF (la
@@ -937,7 +1007,25 @@ impl Reader {
                         dy: pb.dy,
                         scale,
                         strokes,
+                        highlights,
                     })
+                });
+                // Rect de selección en vivo/fijado (px de ventana, recortado
+                // a los bordes de la PÁGINA por `sel_screen_rect`): se dibuja
+                // como capa translúcida sobre la página, antes de los
+                // overlays (`draw::blit_page`/`compose_frame`).
+                let sel_rect = self.sel_screen_rect();
+                // Aviso breve ("copied", ...): bitmap cacheado materializado
+                // aquí para que las dos rutas de blit (normal y frame
+                // compuesto del sheet) lo usen como overlay.
+                if self.toast.is_some() && self.toast_bitmap.is_none() {
+                    self.toast_bitmap = render_toast(self);
+                }
+                let toast_ov: Option<(&Bitmap, i32, i32)> = self.toast_bitmap.as_ref().map(|tb| {
+                    let (_, by, _, _) = page_badge_rect(self.win_w, self.win_h);
+                    let tx = (self.win_w - tb.width as i32) / 2;
+                    let ty = by - tb.height as i32 - 8;
+                    (tb, tx, ty)
                 });
                 // Indicador de página (abajo a la izquierda, siempre): se usa
                 // en el blit normal y también dentro del frame compuesto.
@@ -946,12 +1034,20 @@ impl Reader {
                     (b, bx, by)
                 });
                 // Overlays del visor en el MISMO buffer (un solo lock+present):
-                // indicador de página y sheet de ajustes deslizado desde el
-                // borde superior (solo si está visible; `progress == 1` =
-                // abierto del todo).
-                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(2);
+                // indicador de página, menú de selección, aviso breve y sheet
+                // de ajustes deslizado desde el borde superior (solo si está
+                // visible; `progress == 1` = abierto del todo). El menú y el
+                // aviso van SIEMPRE (también con el sheet: se añaden al frame
+                // compuesto o como overlays de `blit_composed`).
+                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(4);
                 if let Some((b, bx, by)) = badge {
                     overlays.push((b, bx, by));
+                }
+                if let Some(menu) = self.sel_menu.as_ref() {
+                    overlays.push((&menu.bitmap, menu.x, menu.y));
+                }
+                if let Some((tb, tx, ty)) = toast_ov {
+                    overlays.push((tb, tx, ty));
                 }
                 if self.sheet_progress > 0.0
                     && let Some(s) = self.sheet_bitmap.as_ref()
@@ -976,14 +1072,21 @@ impl Reader {
                             self.dark,
                             page_blit.as_ref(),
                             anns.as_ref(),
+                            sel_rect,
                             badge,
                         );
                         self.page_frame = Some(composed);
                     }
                     if let Some(frame) = self.page_frame.as_ref() {
-                        // El frame ya incluye el indicador: solo el sheet
-                        // como overlay.
-                        let mut sheet_ov: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(1);
+                        // El frame ya incluye el indicador y el rect de
+                        // selección: menú, aviso breve y sheet como overlays.
+                        let mut sheet_ov: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(3);
+                        if let Some(menu) = self.sel_menu.as_ref() {
+                            sheet_ov.push((&menu.bitmap, menu.x, menu.y));
+                        }
+                        if let Some((tb, tx, ty)) = toast_ov {
+                            sheet_ov.push((tb, tx, ty));
+                        }
                         if let Some(s) = self.sheet_bitmap.as_ref() {
                             let slide = (sheet_h(self.win_h) as f32 * (1.0 - self.sheet_progress))
                                 .round() as i32;
@@ -999,6 +1102,7 @@ impl Reader {
                             self.dark,
                             page_blit.as_ref(),
                             anns.as_ref(),
+                            sel_rect,
                             &overlays,
                         );
                     }
@@ -1009,6 +1113,7 @@ impl Reader {
                         self.dark,
                         page_blit.as_ref(),
                         anns.as_ref(),
+                        sel_rect,
                         &overlays,
                     );
                 }
@@ -1105,12 +1210,297 @@ impl Reader {
     }
 
     // ---------------------------------------------------------------------
+    // Selección de texto: doble-tap + arrastre, copiar y subrayar (Parte 1)
+    // ---------------------------------------------------------------------
+    //
+    // El gesto vive en `input.rs` (doble-tap sin levantar + arrastre); aquí
+    // el estado (`sel`/`sel_menu`), las transformaciones de coords, la
+    // extracción de texto y las acciones Copiar/Subrayar. Decisiones
+    // documentadas en `SelState` (coords de pantalla) y en el doc de la
+    // cabecera de `lib.rs`.
+
+    /// ¿Hay una selección activa (en curso o fijada con su menú)? El tap
+    /// simple izq/der de página NO se dispara mientras tanto (ver
+    /// `input::sel_menu_tap`/`fire_tap_action`).
+    ///
+    /// `dead_code` intencional (2026-08-XX): los gestos consultan el estado
+    /// directamente (`sel`/`sel_menu`) y esta es la API pública que pide la
+    /// Parte 1 para que otros agentes (p. ej. la Parte 2 —IA—) sepan si hay
+    /// selección sin tocar el estado interno.
+    #[allow(dead_code)]
+    pub(crate) fn has_selection(&self) -> bool {
+        self.sel.is_some()
+    }
+
+    /// Comienza el arrastre de selección: ancla = punto del doble-tap y
+    /// punto actual = el mismo (el rect crece con `update_sel`). Solo se
+    /// llama tras moverse > `SELECT_SLOP` desde el segundo down
+    /// (`input`, `GestureKind::Selecting`). Blit directo (sin re-render):
+    /// como en el pinch, la página está cacheada y solo cambia la capa.
+    pub(crate) fn begin_sel(&mut self, ax: f32, ay: f32) {
+        self.sel = Some(SelState {
+            anchor: (ax, ay),
+            cur: (ax, ay),
+        });
+        self.page_frame = None; // el frame compuesto incluiría el rect viejo
+        if self.window.is_some() {
+            self.blit();
+        }
+    }
+
+    /// Actualiza el punto actual del arrastre (posición del dedo) y
+    /// redibuja el rect (blit directo, página cacheada).
+    pub(crate) fn update_sel(&mut self, cx: f32, cy: f32) {
+        if let Some(s) = self.sel.as_mut() {
+            s.cur = (cx, cy);
+        }
+        self.page_frame = None;
+        if self.window.is_some() {
+            self.blit();
+        }
+    }
+
+    /// Fija la selección al levantar el dedo: si el rect es significativo
+    /// (≥ `SEL_MIN_PX` por lado) abre el menú Copiar/Subrayar/IA; un
+    /// doble-tap sin arrastre (rect degenerado) se descarta.
+    pub(crate) fn end_sel(&mut self) {
+        let Some((l, t, r, b)) = self.sel_screen_rect() else {
+            self.clear_selection(); // no hubo arrastre
+            return;
+        };
+        if (r - l).abs() < SEL_MIN_PX || (b - t).abs() < SEL_MIN_PX {
+            self.clear_selection(); // doble-tap sin arrastre: nada que fijar
+            return;
+        }
+        self.open_sel_menu();
+        if self.window.is_some() {
+            self.blit();
+        }
+    }
+
+    /// Descarta la selección y su menú (si los hay) y redibuja solo si había
+    /// algo visible que quitar. Es la acción de "tocar fuera del menú" y la
+    /// limpieza de cualquier transición (cambio de página/documento, gesto
+    /// cancelado, segundo dedo).
+    pub(crate) fn clear_selection(&mut self) {
+        let had = self.sel.is_some() || self.sel_menu.is_some();
+        self.sel = None;
+        self.sel_menu = None;
+        self.page_frame = None;
+        if had && self.window.is_some() {
+            self.blit();
+        }
+    }
+
+    /// Transformación pantalla → página (px de ventana → puntos PDF): la
+    /// INVERSA exacta del mapeo del blit (`screen = (dx, dy) + pt × scale`,
+    /// con `scale = cover × zoom` y `dx/dy` la esquina del bitmap escalado —
+    /// centrado cover + pan de anclaje; ver `blit` y `PageAnnots`). Es la
+    /// misma familia de transformación que usan el pinch (`anchor_pan`) y la
+    /// capa de anotaciones, así que el rect de selección queda alineado con
+    /// lo que se ve. None si la página actual no está disponible.
+    fn screen_to_page(&self, sx: f32, sy: f32) -> Option<(f32, f32)> {
+        let doc = self.doc.as_ref()?;
+        let (pw, ph) = doc.page_size(self.page).ok()?;
+        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
+        let scale = cover * self.zoom;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round();
+        let dy = self.pan_y.round();
+        Some(((sx - dx) / scale, (sy - dy) / scale))
+    }
+
+    /// Rectángulo de la página actual en px de ventana (left, top, right,
+    /// bottom): la posición del bitmap escalado + su tamaño a la escala
+    /// efectiva `cover × zoom` — la MISMA geometría del blit. None si la
+    /// página no está disponible. Se usa para RECORTAR el rect de selección
+    /// a los bordes de la hoja (nunca a la ventana entera).
+    fn page_screen_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        let doc = self.doc.as_ref()?;
+        let (pw, ph) = doc.page_size(self.page).ok()?;
+        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
+        let scale = cover * self.zoom;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round();
+        let dy = self.pan_y.round();
+        Some((dx, dy, dx + pw * scale, dy + ph * scale))
+    }
+
+    /// Rect normalizado de la selección en px de ventana (left, top, right,
+    /// bottom), RECORTADO a los bordes de la página actual: si el dedo
+    /// arrastra fuera de la hoja (letterbox/pan), el rect se detiene en el
+    /// borde. None sin selección o sin página.
+    pub(crate) fn sel_screen_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        let s = self.sel?;
+        let l = s.anchor.0.min(s.cur.0);
+        let r = s.anchor.0.max(s.cur.0);
+        let t = s.anchor.1.min(s.cur.1);
+        let b = s.anchor.1.max(s.cur.1);
+        let (pl, pt, pr, pb) = self.page_screen_rect()?;
+        Some((l.max(pl), t.max(pt), r.min(pr), b.min(pb)))
+    }
+
+    /// Rect de la selección en coordenadas de PÁGINA (puntos PDF): convierte
+    /// las dos esquinas del rect de pantalla con `screen_to_page`. Lo usan
+    /// la extracción de texto (`sel_text`) y el subrayado
+    /// (`highlight_sel`) — la ÚNICA conversión a página que se hace.
+    pub(crate) fn sel_page_rect(&self) -> Option<Rect> {
+        let (l, t, r, b) = self.sel_screen_rect()?;
+        let a = self.screen_to_page(l, t)?;
+        let c = self.screen_to_page(r, b)?;
+        // `Rect::new` normaliza extents negativos (defensa; ya ordenado).
+        Some(Rect::new(a.0, a.1, c.0 - a.0, c.1 - a.1))
+    }
+
+    /// Extrae el texto bajo la selección actual: llama a `doc.text(page)`
+    /// UNA sola vez y concatena el texto de los spans cuyo bbox INTERSECTA
+    /// el rect de selección en página, en orden de lectura (ordenados por y
+    /// y luego x).
+    ///
+    /// Devuelve cadena vacía si no hay selección, si la página no tiene
+    /// texto extraíble (p. ej. PDF ESCANEADO: `spans` vacío) o si el rect no
+    /// cubre ningún span — en ese caso "Copiar" avisa "no text" en vez de
+    /// copiar basura.
+    pub(crate) fn sel_text(&self) -> String {
+        let Some(page_rect) = self.sel_page_rect() else {
+            return String::new();
+        };
+        let Some(doc) = self.doc.as_ref() else {
+            return String::new();
+        };
+        let Ok(pt) = doc.text(self.page) else {
+            return String::new();
+        };
+        if pt.spans.is_empty() {
+            return String::new(); // PDF escaneado / sin texto extraíble
+        }
+        // Intersección de bbox en coords de página (el rect ya está en
+        // página): `span` corta al rect si sus bordes se solapan.
+        let (px, py) = (page_rect.x, page_rect.y);
+        let (qx, qy) = (page_rect.x + page_rect.w, page_rect.y + page_rect.h);
+        let mut hits: Vec<&TextSpan> = pt
+            .spans
+            .iter()
+            .filter(|s| s.x < qx && s.x + s.w > px && s.y < qy && s.y + s.h > py)
+            .collect();
+        // Orden de lectura: por y (fila), luego x (izquierda → derecha).
+        // MuPDF ya devuelve los spans en orden aproximado de lectura, pero
+        // el sort garantiza el orden aunque la selección cruce columnas.
+        hits.sort_by(|a, b| {
+            a.y.partial_cmp(&b.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        // Los spans son líneas de texto (stext line): se unen con salto de
+        // línea para conservar la lectura por filas al copiar.
+        hits.iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// "Copiar": copia el texto de la selección al portapapeles de Android
+    /// (`jni::copy_to_clipboard`) y muestra "copied"; si no hay texto (PDF
+    /// escaneado) avisa "no text". En ambos casos cierra el menú y descarta
+    /// la selección.
+    pub(crate) fn copy_sel(&mut self, app: &AndroidApp) {
+        let text = self.sel_text();
+        if text.is_empty() {
+            self.show_toast("no text");
+        } else {
+            crate::jni::copy_to_clipboard(app, &text);
+            self.show_toast("copied");
+        }
+        self.clear_selection();
+    }
+
+    /// "Subrayar": añade al `AnnotationSet` un `Annotation::Highlight` con
+    /// el rect de selección en página (amarillo por defecto) y lo PERSISTE
+    /// en el sidecar SQLite (`AnnotationStore::save`). El render de
+    /// highlights ya existente (`draw::draw_annotations`, relleno
+    /// translúcido bajo los trazos) lo muestra al redibujar; el frame
+    /// compuesto del sheet se invalida para que lo recoja. Cierra el menú y
+    /// descarta la selección.
+    pub(crate) fn highlight_sel(&mut self) {
+        let Some(rect) = self.sel_page_rect() else {
+            self.clear_selection();
+            return;
+        };
+        let ann = Annotation::Highlight(Highlight {
+            // El rect de selección completo como un único rect (el modelo
+            // permite varios rects por línea; aquí basta con la caja).
+            rects: vec![rect],
+            // Amarillo por defecto, alfa ~43 % (translúcido sobre el texto).
+            color: Color {
+                r: 255,
+                g: 235,
+                b: 59,
+                a: 110,
+            },
+        });
+        if self.annotations.add(self.page as usize, ann).is_some() {
+            self.save_annotations();
+            self.page_frame = None; // el frame compuesto tendría el highlight viejo
+            self.show_toast("highlighted");
+        } else {
+            self.show_toast("highlight failed");
+        }
+        self.clear_selection();
+    }
+
+    /// Aviso breve sobre el indicador de página ("copied", ...): texto +
+    /// timestamp; `tick` lo expira a los `TOAST_MS` y el bitmap cacheado se
+    /// invalida al cambiar el texto.
+    pub(crate) fn show_toast(&mut self, msg: &str) {
+        self.toast = Some((msg.to_string(), Instant::now()));
+        self.toast_bitmap = None;
+        self.redraw();
+    }
+
+    /// Abre el menú flotante de la selección fijada: calcula la geometría
+    /// (`draw::sel_menu_layout`, cerca del rect, dentro de la ventana),
+    /// renderiza el bitmap (Canvas+JNI) y guarda ambos en `sel_menu`.
+    fn open_sel_menu(&mut self) {
+        let Some(layout) = sel_menu_layout(self) else {
+            return;
+        };
+        let Some(bitmap) = render_sel_menu(self) else {
+            return;
+        };
+        let (mx, my, mrx, mry) = layout.rect;
+        self.sel_menu = Some(SelMenu {
+            x: mx as i32,
+            y: my as i32,
+            w: (mrx - mx) as i32,
+            h: (mry - my) as i32,
+            bitmap,
+            buttons: layout.buttons,
+        });
+    }
+
+    /// ¿Trabajo diferido pendiente en el bucle de eventos? (poll con timeout
+    /// de 16 ms → `tick`): animación del sheet, portadas de la biblioteca,
+    /// tap de página diferido por la ventana de doble-tap o aviso breve
+    /// visible. En reposo el poll bloquea sin gastar batería.
+    pub(crate) fn needs_tick(&mut self) -> bool {
+        self.sheet_anim
+            || self.thumbs_pending()
+            || self.toast.is_some()
+            || self.gesture.tap_pending()
+    }
+
+    // ---------------------------------------------------------------------
     // Sheet de ajustes (panel deslizante desde arriba, 2026-08-XX)
     // ---------------------------------------------------------------------
 
-    /// ¿Animación del sheet en vuelo? El bucle de eventos usa esta señal
-    /// para mantener `poll_events(Some(16 ms))` y avanzar `tick` mientras
-    /// tanto (sin ella el loop bloquea y la animación no progresa).
+    /// ¿Animación del sheet en vuelo? La consulta global de trabajo diferido
+    /// es `needs_tick` (incluye esta señal + portadas + tap diferido +
+    /// aviso breve); `sheet_animating` ya no se usa desde `lib` (2026-08-XX).
+    #[allow(dead_code)]
     pub(crate) fn sheet_animating(&self) -> bool {
         self.sheet_anim
     }
@@ -1166,11 +1556,23 @@ impl Reader {
     }
 
     /// Tick del bucle de eventos (timeout ~16 ms): avanza la animación del
-    /// sheet y renderiza un lote de portadas pendientes de la biblioteca.
-    /// `lib::android_main` lo invoca en los eventos Wake/Timeout, que solo
-    /// ocurren mientras `sheet_animating()` o `thumbs_pending()` (sin
+    /// sheet, dispara el tap de página diferido por la ventana de doble-tap,
+    /// expira el aviso breve (toast) y renderiza un lote de portadas
+    /// pendientes de la biblioteca. `lib::android_main` lo invoca en los
+    /// eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
     /// despertar el loop en reposo).
     pub(crate) fn tick(&mut self, app: &AndroidApp) {
+        // Tap diferido (ventana de doble-tap): si expiró sin un segundo down,
+        // se ejecuta el tap de página (`input::tick_gestures`).
+        crate::input::tick_gestures(self, app);
+        // Aviso breve: expira a los TOAST_MS (libera también su bitmap).
+        if let Some((_, at)) = &self.toast
+            && at.elapsed() >= TOAST_MS
+        {
+            self.toast = None;
+            self.toast_bitmap = None;
+            self.redraw();
+        }
         if self.sheet_anim {
             let target = if self.sheet_open { 1.0 } else { 0.0 };
             // Ease exponencial: ~10 ticks (≈ 150 ms) para recorrer el 95 %.
@@ -1467,12 +1869,9 @@ impl Reader {
     /// n = nº de anotaciones; se llama solo en acciones de usuario, nunca por
     /// frame). Best-effort: un fallo solo se loguea, no rompe el dibujo.
     ///
-    /// `dead_code` intencional (2026-08-XX): la UI de dibujo se quitó (no se
-    /// pueden CREAR trazos desde el visor), pero el camino de guardado se
-    /// conserva intacto para que el modelo de anotaciones siga siendo
-    /// persistible cuando una fase futura reintroduzca la creación (el
-    /// usuario no pierde la capacidad de exportar/sincronizar trazos).
-    #[allow(dead_code)]
+    /// Caller actual: `highlight_sel` (subrayar la selección). El camino de
+    /// guardado es el mismo que usaba el modo dibujo eliminado; el modelo de
+    /// anotaciones sigue siendo persistible y exportable.
     fn save_annotations(&self) {
         let Some(sidecar) = self.annot_sidecar.as_ref() else {
             return;
@@ -1537,6 +1936,7 @@ impl Reader {
                 self.doc_path = Some(path.to_string());
                 self.page_badge = None;
                 self.sheet_hide_now(); // sheet del visor anterior: fuera (libera también el frame)
+                self.clear_selection(); // selección del documento anterior: fuera
                 self.thumbs.clear(); // portadas de otra biblioteca: no sirven
                 self.thumb_failed.clear();
                 self.list_dirty = true;
@@ -1566,6 +1966,7 @@ impl Reader {
         self.list_dirty = true;
         self.bitmap = None;
         self.sheet_hide_now(); // fuera del visor: el sheet no pinta en biblioteca
+        self.clear_selection(); // selección del visor: fuera (no pinta en biblioteca)
         self.picker_drag = None;
         self.rescan_library(app);
     }
@@ -1580,6 +1981,7 @@ impl Reader {
         self.list_dirty = true;
         self.bitmap = None;
         self.sheet_hide_now();
+        self.clear_selection(); // selección del visor: fuera (no pinta en el picker)
         self.picker_drag = None;
         self.redraw();
     }

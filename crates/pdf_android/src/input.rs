@@ -30,6 +30,24 @@
 //!
 //! El modo dibujo (trazo con un dedo) se ELIMINÓ con la barra superior
 //! (2026-08-XX): no queda ningún gesto de dibujo en el visor.
+//!
+//! ## Selección de texto: doble-tap + arrastre (2026-08-XX, Parte 1)
+//!
+//! Un tap simple en el área de PÁGINA (fuera del sheet, del indicador y del
+//! menú) se DIFIERE (`GestureState::pending_tap`, ventana `DOUBLE_TAP_MS`):
+//! si llega un segundo down en el mismo sitio y dentro de la ventana, es un
+//! DOBLE-TAP y se inicia la selección por arrastre — `GestureKind::Selecting`
+//! (ancla = punto del doble-tap; al moverse > `SELECT_SLOP` se materializa
+//! el rect en `Reader::sel`, que sigue al dedo; al levantar, `end_sel` fija
+//! la selección y abre el menú Copiar/Subrayar/IA). Si la ventana expira sin
+//! segundo tap, `tick_gestures` (desde `Reader::tick`, poll con timeout de
+//! `Reader::needs_tick`) ejecuta el tap de página — el tap simple espera
+//! ~300 ms, el precio estándar del doble-tap. El tap izq/der de página NO se
+//! dispara nunca mientras hay selección/menú abierto (`sel_menu_tap`
+//! consume esos taps); tocar fuera del menú lo cierra y descarta la
+//! selección. Los taps del sheet, del indicador y del menú no se difieren.
+
+use std::time::Instant;
 
 use android_activity::input::{InputEvent, MotionAction};
 use android_activity::{AndroidApp, InputStatus};
@@ -42,7 +60,7 @@ use crate::reader::{
     grid_visible_rows, page_badge_rect, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
     picker_visible_rows, sheet_h,
 };
-use crate::{PINCH_MAX, PINCH_MIN, TAP_SLOP};
+use crate::{DOUBLE_TAP_MS, PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 
 /// Gesto multitáctil en curso (máquina de gestos).
 #[derive(Clone, Copy, Debug)]
@@ -73,12 +91,39 @@ enum GestureKind {
         start_dist: f32,
         start_zoom: f32,
     },
+    /// Segundo down de un doble-tap (selección de texto por arrastre): el
+    /// ancla es el punto del doble-tap; al moverse > `SELECT_SLOP` se
+    /// materializa la selección (`Reader::begin_sel`) y el rect sigue al
+    /// dedo (`Reader::update_sel`); al soltar se fija (`Reader::end_sel`) y
+    /// se abre el menú Copiar/Subrayar/IA. Un segundo dedo cancela la
+    /// selección en curso y pasa al pinch.
+    Selecting {
+        anchor: (f32, f32),
+    },
 }
 
-/// Estado de los gestos: pointers activos (pointer_id, x, y) + gesto en curso.
+/// Tap simple del área de página en espera de confirmación de doble-tap: si
+/// llega un segundo down en el mismo sitio y dentro de `DOUBLE_TAP_MS`, es el
+/// comienzo de la selección y el tap NUNCA se dispara; si la ventana expira
+/// sin segundo tap, `tick_gestures` ejecuta el tap de página. Almacena la
+/// posición del tap y el momento del Up.
+#[derive(Clone, Copy, Debug)]
+struct TapPending {
+    x: f32,
+    y: f32,
+    at: Instant,
+}
+
+/// Estado de los gestos: pointers activos (pointer_id, x, y) + gesto en curso
+/// + tap diferido por la ventana de doble-tap.
 pub(crate) struct GestureState {
     pointers: Vec<(i32, f32, f32)>,
     kind: GestureKind,
+    /// Tap simple del área de página a la espera de un posible segundo tap
+    /// (doble-tap → selección). Some mientras la ventana de 300 ms esté
+    /// abierta; `Reader::needs_tick` mantiene el poll con timeout para que
+    /// `tick_gestures` lo resuelva aunque no llegue más input.
+    pending_tap: Option<TapPending>,
 }
 
 impl GestureState {
@@ -86,7 +131,14 @@ impl GestureState {
         Self {
             pointers: Vec::new(),
             kind: GestureKind::None,
+            pending_tap: None,
         }
+    }
+
+    /// ¿Hay un tap diferido esperando la ventana de doble-tap? (el bucle de
+    /// eventos mantiene el poll con timeout mientras tanto).
+    pub(crate) fn tap_pending(&self) -> bool {
+        self.pending_tap.is_some()
     }
 }
 
@@ -135,6 +187,72 @@ fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 }
 
+/// Tap con el menú de selección abierto: dentro de un botón → acción
+/// (Copiar → portapapeles; Subrayar → highlight persistido; "IA" → aviso
+/// breve: hueco visual de la Parte 2); fuera → cerrar el menú y descartar la
+/// selección. NUNCA cambia de página: el tap izq/der no se dispara mientras
+/// hay selección activa.
+fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
+    let Some(menu) = &reader.sel_menu else {
+        return;
+    };
+    let inside = x >= menu.x as f32
+        && x < (menu.x + menu.w) as f32
+        && y >= menu.y as f32
+        && y < (menu.y + menu.h) as f32;
+    if !inside {
+        reader.clear_selection(); // tocar fuera: cierra y descarta
+        return;
+    }
+    let hit: Option<&'static str> = menu
+        .buttons
+        .iter()
+        .find(|(_, (l, t, r, b))| x >= *l && x < *r && y >= *t && y < *b)
+        .map(|(label, _)| *label);
+    match hit {
+        Some("Copiar") => reader.copy_sel(app),
+        Some("Subrayar") => reader.highlight_sel(),
+        Some(_) => reader.show_toast("IA: next part"), // hueco visual de la Parte 2
+        None => reader.clear_selection(),
+    }
+}
+
+/// Ejecuta la acción de un tap simple en `(x, y)` — la MISMA lógica que el
+/// Up del gesto Tap, compartida con el tap diferido del doble-tap
+/// (`tick_gestures`/Down): menú de selección abierto → botón o cerrar;
+/// sheet visible → botón o cerrar; si no, indicador de página o tap de
+/// página.
+fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
+    if reader.sel_menu.is_some() {
+        sel_menu_tap(reader, app, x, y);
+    } else if reader.sheet_progress > 0.0 {
+        if y < sheet_h(reader.win_h) as f32 {
+            sheet_tap(reader, app, x, y);
+        } else {
+            reader.hide_sheet();
+        }
+    } else if page_badge_tap(reader, x, y) {
+        // Indicador de página: siguiente (consumido).
+    } else {
+        tap_page(reader, x);
+    }
+}
+
+/// Avanza la máquina de gestos desde el bucle de eventos (timeout ~16 ms,
+/// `Reader::tick`): dispara el tap de página diferido cuando expira la
+/// ventana de doble-tap (`DOUBLE_TAP_MS`) sin un segundo down. Si el tap se
+/// confirmó como segundo tap (selección en curso), `pending_tap` ya fue
+/// tomado por el Down y aquí no hay nada que hacer.
+pub(crate) fn tick_gestures(reader: &mut Reader, app: &AndroidApp) {
+    if let Some(p) = reader.gesture.pending_tap.take() {
+        if p.at.elapsed() >= DOUBLE_TAP_MS {
+            fire_tap_action(reader, app, p.x, p.y);
+        } else {
+            reader.gesture.pending_tap = Some(p);
+        }
+    }
+}
+
 /// Procesa un `MotionEvent` del VISOR: actualiza la máquina de gestos y actúa
 /// sobre el reader. En modo picker/biblioteca se delega en
 /// `handle_picker_motion` (arrastre + tap de lista, sin pinch).
@@ -161,13 +279,38 @@ fn handle_motion(
     }
     match action {
         MotionAction::Down => {
-            // Primer dedo: arranca un posible tap (página, indicador o sheet).
+            // Primer dedo: arranca un posible tap (página, indicador o
+            // sheet), salvo que sea el SEGUNDO down de un doble-tap (tap
+            // previo en el mismo sitio dentro de DOUBLE_TAP_MS): entonces
+            // empieza la selección por arrastre (ancla = punto del doble-tap;
+            // el rect se materializa al moverse > SELECT_SLOP).
             reader.gesture.pointers = pts;
             if let Some(&(_, x, y)) = reader.gesture.pointers.first() {
-                reader.gesture.kind = GestureKind::Tap {
-                    start_x: x,
-                    start_y: y,
+                let is_double_tap = match reader.gesture.pending_tap.take() {
+                    Some(p) if p.at.elapsed() < DOUBLE_TAP_MS => {
+                        let moved = ((x - p.x).powi(2) + (y - p.y).powi(2)).sqrt();
+                        moved <= TAP_SLOP
+                    }
+                    Some(p) => {
+                        // Fuera de la ventana o en otro sitio: el tap previo
+                        // era un tap simple y se ejecuta ahora (no llegó a
+                        // expirar en `tick_gestures`).
+                        fire_tap_action(reader, app, p.x, p.y);
+                        false
+                    }
+                    None => false,
                 };
+                if is_double_tap {
+                    // Descartar selección/menú anterior y empezar el gesto de
+                    // selección (un doble-tap no dispara el tap de página).
+                    reader.clear_selection();
+                    reader.gesture.kind = GestureKind::Selecting { anchor: (x, y) };
+                } else {
+                    reader.gesture.kind = GestureKind::Tap {
+                        start_x: x,
+                        start_y: y,
+                    };
+                }
             }
         }
         MotionAction::PointerDown => {
@@ -177,6 +320,11 @@ fn handle_motion(
             // como ancla del zoom (`begin_pinch`): el punto de documento bajo
             // los dedos permanece fijo en pantalla durante el gesto.
             if reader.gesture.pointers.len() >= 2 {
+                // Segundo dedo durante la selección: se cancela la selección
+                // en curso (no fijada) y se pasa al pinch.
+                if matches!(reader.gesture.kind, GestureKind::Selecting { .. }) {
+                    reader.clear_selection();
+                }
                 let (_, ax, ay) = reader.gesture.pointers[0];
                 let (_, bx, by) = reader.gesture.pointers[1];
                 let d = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
@@ -242,6 +390,20 @@ fn handle_motion(
                         reader.set_zoom_fast(zoom);
                     }
                 }
+                GestureKind::Selecting { anchor } if reader.gesture.pointers.len() == 1 => {
+                    // Arrastre de selección: al superar SELECT_SLOP desde el
+                    // ancla (punto del doble-tap) se materializa el rect
+                    // (`begin_sel`); después el rect sigue al dedo
+                    // (`update_sel`, blit directo de la página cacheada).
+                    let (_, cx, cy) = reader.gesture.pointers[0];
+                    let moved = ((cx - anchor.0).powi(2) + (cy - anchor.1).powi(2)).sqrt();
+                    if reader.sel.is_none() && moved > SELECT_SLOP {
+                        reader.begin_sel(anchor.0, anchor.1);
+                    }
+                    if reader.sel.is_some() {
+                        reader.update_sel(cx, cy);
+                    }
+                }
                 _ => {}
             }
         }
@@ -259,7 +421,13 @@ fn handle_motion(
                     if let Some((_, x, y)) = up {
                         let moved = ((x - start_x).powi(2) + (y - start_y).powi(2)).sqrt();
                         if moved <= TAP_SLOP {
-                            if reader.sheet_progress > 0.0 {
+                            if reader.sel_menu.is_some() {
+                                // Menú de selección abierto: el tap va al menú
+                                // (botón o cerrar/descartar la selección);
+                                // NUNCA cambia de página (el tap izq/der no
+                                // se dispara mientras hay selección).
+                                sel_menu_tap(reader, app, x, y);
+                            } else if reader.sheet_progress > 0.0 {
                                 // Sheet visible: tap DENTRO → botones; tap
                                 // FUERA → cerrar el panel (sin cambiar de
                                 // página: cerrar el sheet no debe avanzar).
@@ -271,7 +439,20 @@ fn handle_motion(
                             } else if page_badge_tap(reader, x, y) {
                                 // Indicador de página: siguiente (consumido).
                             } else {
-                                tap_page(reader, x);
+                                // Tap de página en el área del documento: se
+                                // DIFIERE para detectar el doble-tap de
+                                // selección. Si llega un segundo down en el
+                                // mismo sitio y dentro de DOUBLE_TAP_MS,
+                                // empieza la selección y el tap NUNCA se
+                                // dispara; si la ventana expira,
+                                // `tick_gestures` ejecuta el cambio de
+                                // página (coste: el tap simple espera
+                                // ~300 ms, el precio estándar del doble-tap).
+                                reader.gesture.pending_tap = Some(TapPending {
+                                    x,
+                                    y,
+                                    at: Instant::now(),
+                                });
                             }
                         }
                     }
@@ -280,6 +461,12 @@ fn handle_motion(
                     // Fin del arrastre del sheet: animar hasta el objetivo
                     // más cercano (abierto si pasó de la mitad).
                     reader.end_sheet_drag();
+                }
+                GestureKind::Selecting { .. } => {
+                    // Fin del arrastre de selección: fija la selección y abre
+                    // el menú Copiar/Subrayar/IA (un doble-tap sin arrastre
+                    // no fija nada: `end_sel` descarta los rects degenerados).
+                    reader.end_sel();
                 }
                 GestureKind::Pinch { .. } | GestureKind::None => {}
             }
@@ -305,6 +492,8 @@ fn handle_motion(
         MotionAction::Cancel => {
             reader.gesture.pointers.clear();
             reader.gesture.kind = GestureKind::None;
+            reader.gesture.pending_tap = None;
+            reader.clear_selection();
         }
         _ => {} // HoverMove, Scroll, Outside, ...: sin gesto definido.
     }
