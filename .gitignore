@@ -10,3 +10,4 @@ docs/.obsidian/workspace.json
 
 # API key de Groq (uso personal, NO commitear)
 crates/pdf_android/groq_key.txt
+crates/pdf_android/google_key.txt

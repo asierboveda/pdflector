@@ -2,16 +2,17 @@
 // Copyright (C) 2026 Asier Bóveda
 
 //! ai module integration tests (Fase 5): chunking against a fake document,
-//! the raw-TCP Ollama client against a local `TcpListener`, and the
+//! the raw-TCP Ollama client against a local `TcpListener`, the
 //! OpenAI-compatible Groq client against a local `TcpListener` (plain HTTP
-//! via the test-only `GroqClient::with_base_url` override) — no real
-//! Ollama/Groq, no MuPDF, no corpus.
+//! via the test-only `GroqClient::with_base_url` override), and the Google
+//! Gemini vision client against the same trick (`GeminiClient::with_base_url`)
+//! — no real Ollama/Groq/Gemini, no MuPDF, no corpus.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
-use pdf_core::ai::{AiError, GroqClient, OllamaClient, chunk_pages};
+use pdf_core::ai::{AiError, GeminiClient, GroqClient, OllamaClient, chunk_pages};
 use pdf_core::{Bitmap, Document, PageText};
 
 // ---------------------------------------------------------------------------
@@ -629,5 +630,149 @@ fn groq_chat_vision_rejects_malformed_json() {
         .chat_vision("s", "p", TINY_PNG_BASE64)
         .expect_err("malformed JSON must fail");
     assert!(matches!(err, AiError::Json(_)), "got {err:?}");
+    server.join().expect("server thread");
+}
+
+// ---------------------------------------------------------------------------
+// GeminiClient
+// ---------------------------------------------------------------------------
+
+/// A canned Gemini `generateContent` 200 response body, matching the real
+/// wire shape: `candidates[0].content.parts[*].text` holds the reply. The
+/// second candidate must be ignored (only `candidates[0]` is read).
+const GEMINI_RESPONSE: &str = r#"{
+    "candidates": [
+        {
+            "content": {
+                "parts": [
+                    { "text": "La función es f(x) = x². " },
+                    { "text": "Su derivada es 2x." }
+                ],
+                "role": "model"
+            },
+            "finishReason": "STOP"
+        },
+        {
+            "content": {
+                "parts": [ { "text": "CANDIDATO IGNORADO" } ],
+                "role": "model"
+            }
+        }
+    ],
+    "usageMetadata": { "promptTokenCount": 10, "candidatesTokenCount": 5 }
+}"#;
+
+/// `explain_image` mounts the Gemini payload: one text part plus one
+/// `inline_data` part (mime_type image/png, raw base64 WITHOUT a data:
+/// prefix), hits `<base>/models/{model}:generateContent`, and carries the
+/// key in the `x-goog-api-key` header (not in the URL).
+#[test]
+fn gemini_explain_image_sends_the_expected_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(listener, GEMINI_RESPONSE);
+
+    let client = GeminiClient::with_base_url(
+        "test-api-key",
+        format!("http://127.0.0.1:{port}"),
+        "test-model",
+    );
+    client
+        .explain_image("¿qué dice la ecuación?", TINY_PNG_BASE64)
+        .expect("explain_image succeeds");
+
+    // The request we actually sent: generateContent endpoint with the model
+    // in the path, the key in a header, and the parts array (text first,
+    // inline_data second). Header names are compared case-insensitively
+    // (reqwest lowercases them); serde_json sorts object keys, so assert
+    // key/value pairs independently.
+    let request = server.join().expect("server thread");
+    let request_lower = request.to_lowercase();
+    assert!(
+        request.starts_with("POST /models/test-model:generateContent HTTP/1.1"),
+        "wrong request line: {request}"
+    );
+    assert!(
+        request_lower.contains("x-goog-api-key: test-api-key"),
+        "request: {request}"
+    );
+    assert!(
+        request_lower.contains("content-type: application/json"),
+        "request: {request}"
+    );
+    assert!(
+        request.contains(r#""text":"¿qué dice la ecuación?""#),
+        "request: {request}"
+    );
+    // Text part comes before the image part.
+    assert!(
+        request.contains(r#"{"text":"¿qué dice la ecuación?"},{"inline_data""#),
+        "request: {request}"
+    );
+    assert!(
+        request.contains(r#""mime_type":"image/png""#),
+        "request: {request}"
+    );
+    // Raw base64, no data: prefix (the contract's input format).
+    assert!(
+        request.contains(&format!(r#""data":"{TINY_PNG_BASE64}""#)),
+        "request: {request}"
+    );
+    assert!(
+        !request.contains("data:image/png;base64,"),
+        "must not prefix the base64 with a data URI: {request}"
+    );
+}
+
+/// `explain_image` parses `candidates[0].content.parts[*].text`, concatenated
+/// in order, and ignores everything after the first candidate.
+#[test]
+fn gemini_explain_image_concatenates_candidate_parts() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(listener, GEMINI_RESPONSE);
+
+    let client = GeminiClient::with_base_url("k", format!("http://127.0.0.1:{port}"), "m");
+    let reply = client
+        .explain_image("¿qué dice la figura?", TINY_PNG_BASE64)
+        .expect("explain_image succeeds");
+
+    // Both parts of candidates[0], concatenated; the second candidate's text
+    // must NOT leak in.
+    assert_eq!(reply, "La función es f(x) = x². Su derivada es 2x.");
+    server.join().expect("server thread");
+}
+
+/// Gemini answers overload with HTTP 503 "high demand"; `explain_image`
+/// maps it to a dedicated retryable error (`AiError::Busy`) so the app can
+/// tell "busy" apart from real failures and offer a retry.
+#[test]
+fn gemini_explain_image_maps_503_to_busy() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("client connects");
+        let _ = read_request(&mut sock);
+        // Gemini's real "high demand" answer: 503 with an error object.
+        let body = r#"{"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}"#;
+        let response = format!(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        sock.write_all(response.as_bytes()).expect("write response");
+    });
+
+    let client = GeminiClient::with_base_url("k", format!("http://127.0.0.1:{port}"), "m");
+    let err = client
+        .explain_image("s", TINY_PNG_BASE64)
+        .expect_err("503 must be an error");
+    match &err {
+        AiError::Busy(body) => assert!(body.contains("overloaded"), "body: {body}"),
+        other => panic!("expected AiError::Busy, got {other:?}"),
+    }
+    assert!(
+        err.to_string().contains("model busy, try again"),
+        "message: {err}"
+    );
     server.join().expect("server thread");
 }

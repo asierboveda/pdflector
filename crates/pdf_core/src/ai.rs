@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Fase 5: consulta a un LLM — local vía Ollama o en la nube vía Groq
-//! (docs/PLAN.md §5).
+//! Fase 5: consulta a un LLM — local vía Ollama o en la nube vía
+//! Groq/Gemini (docs/PLAN.md §5).
 //!
-//! Three pieces, all UI-independent (pdf_core rules §4):
+//! Four pieces, all UI-independent (pdf_core rules §4):
 //!
 //! 1. `chunk_pages` — pure text chunking: turns lazy page text into
 //!    LLM-friendly chunks, each carrying a page-range prefix so the answer
@@ -16,6 +16,10 @@
 //!    (`https://api.groq.com/openai/v1`), the tablet's cloud path (no PC on
 //!    the LAN needed; free tier). HTTPS via `reqwest` + rustls, so it can't
 //!    share Ollama's raw-TCP transport.
+//! 4. `GeminiClient` — Google's vision path (`generativelanguage.googleapis.com`):
+//!    Groq has no vision models anymore, so explaining a page region rendered
+//!    to PNG (equations, figures) goes to Gemini. Same `reqwest` + rustls
+//!    transport as Groq, no new dependencies.
 //!
 //! The app never runs models: it sends the (chunked) text over HTTP and
 //! reads back the assistant's reply. `pdf_app` (Ollama) and `pdf_android`
@@ -47,6 +51,10 @@ pub enum AiError {
     NotReachable { url: String, source: std::io::Error },
     /// The server answered with a non-200 status.
     Http { status: u16, body: String },
+    /// Gemini answered 503 "high demand": the model is overloaded right now.
+    /// The app can show this and offer a retry. Carries the server's error
+    /// body for diagnostics.
+    Busy(String),
     /// Page text extraction failed (e.g. page out of range).
     Text(crate::Error),
     /// Invalid arguments to an ai API (e.g. `max_chars == 0`).
@@ -71,6 +79,7 @@ impl std::fmt::Display for AiError {
                 write!(f, "ollama not reachable at {url}: {source}")
             }
             AiError::Http { status, body } => write!(f, "llm http error {status}: {body}"),
+            AiError::Busy(body) => write!(f, "model busy, try again: {body}"),
             AiError::Text(e) => write!(f, "text extraction failed: {e}"),
             AiError::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
             AiError::Json(e) => write!(f, "invalid llm response: {e}"),
@@ -633,4 +642,181 @@ fn parse_groq_response(body: &str) -> Result<String> {
         .next()
         .map(|choice| choice.message.content)
         .ok_or_else(|| AiError::UnexpectedResponse("response has no choices".to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Gemini HTTP client (Google, vision)
+// ---------------------------------------------------------------------------
+
+/// How long a single Gemini request may take before we give up. Image +
+/// prompt round-trips run on Google's servers and can take tens of seconds;
+/// the timeout mirrors `GROQ_REQUEST_TIMEOUT` (same rationale). Callers must
+/// run `explain_image` off the UI thread (see module docs).
+const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Default Gemini model: alias of the current flash model with vision
+/// (Google keeps the alias pointing at the latest flash generation).
+const DEFAULT_GEMINI_MODEL: &str = "gemini-flash-latest";
+
+/// Vision client for Google Gemini (`generativelanguage.googleapis.com`).
+///
+/// Groq no longer serves vision models, so explaining a cropped page region
+/// rendered to PNG (equations, figures) goes to Gemini. Like `GroqClient` it
+/// speaks HTTPS via `reqwest` + rustls — no new dependencies.
+///
+/// Wire contract: `POST
+/// https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
+/// with the API key in the **`x-goog-api-key` header** (chosen over the
+/// `?key=` query param: the header keeps the key out of server/proxy URL
+/// logs, and Google documents both). Body:
+/// `{"contents":[{"parts":[{"text":"<prompt>"},
+/// {"inline_data":{"mime_type":"image/png","data":"<base64>"}}]}]}`;
+/// the reply text is `candidates[0].content.parts[*].text`, concatenated.
+/// pdf_android builds against exactly these methods — do not change the
+/// public signatures.
+pub struct GeminiClient {
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+impl GeminiClient {
+    /// Gemini with the default model `gemini-flash-latest` (alias of the
+    /// current flash model with vision).
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self::with_model(api_key, DEFAULT_GEMINI_MODEL)
+    }
+
+    /// Gemini with a specific model id (any `models` Gemini serves, e.g.
+    /// `gemini-2.0-flash` or `gemini-2.5-flash`).
+    pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            api_key: api_key.into(),
+            model: model.into(),
+        }
+    }
+
+    /// Test-only constructor: overrides the base URL so integration tests
+    /// can point the client at a local `TcpListener` (plain HTTP, no TLS).
+    /// `#[doc(hidden)]` on purpose — not part of the public contract. It
+    /// must be `pub` (not `pub(crate)`) because tests/ai.rs is a separate
+    /// crate and only sees the public surface.
+    #[doc(hidden)]
+    pub fn with_base_url(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+            model: model.into(),
+        }
+    }
+
+    /// Explica una imagen (PNG base64 SIN prefijo) + prompt de texto.
+    /// Devuelve el texto de la respuesta.
+    ///
+    /// POSTs the Gemini `generateContent` payload (one text part + one
+    /// `inline_data` part with `mime_type: image/png`) to
+    /// `<base>/models/{model}:generateContent` with the `x-goog-api-key`
+    /// header and concatenates `candidates[0].content.parts[*].text`.
+    /// Error mapping: network/TLS failures → `AiError::Request`; the 503
+    /// "high demand" answer → `AiError::Busy` (retryable, the app can
+    /// surface it and retry); other non-200 statuses → `AiError::Http`;
+    /// malformed JSON → `AiError::Json`; a 200 without `candidates` →
+    /// `AiError::UnexpectedResponse`. May block for up to
+    /// `GEMINI_REQUEST_TIMEOUT` — call off the UI thread.
+    pub fn explain_image(&self, prompt: &str, image_png_base64: &str) -> Result<String> {
+        let payload = serde_json::json!({
+            "contents": [
+                {
+                    "parts": [
+                        { "text": prompt },
+                        {
+                            "inline_data": {
+                                "mime_type": "image/png",
+                                "data": image_png_base64,
+                            },
+                        },
+                    ],
+                },
+            ],
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(GEMINI_REQUEST_TIMEOUT)
+            .build()?;
+
+        let response = client
+            .post(format!(
+                "{}/models/{}:generateContent",
+                self.base_url.trim_end_matches('/'),
+                self.model
+            ))
+            .header("x-goog-api-key", &self.api_key)
+            .json(&payload)
+            .send()?;
+
+        let status = response.status().as_u16();
+        // `charset` is not enabled in our reqwest features; bytes + lossy
+        // utf-8 is exactly what a JSON API response needs (same as Groq).
+        let response_body = String::from_utf8_lossy(&response.bytes()?).into_owned();
+        if status == 503 {
+            // Gemini's "high demand" answer: the model is overloaded right
+            // now. Surfaced as a dedicated retryable error, not as a plain
+            // Http status, so the app can tell "busy" apart from real
+            // failures and offer a retry.
+            return Err(AiError::Busy(response_body));
+        }
+        if status != 200 {
+            return Err(AiError::Http {
+                status,
+                body: response_body,
+            });
+        }
+        parse_gemini_response(&response_body)
+    }
+}
+
+/// Parses a Gemini `generateContent` response body into the concatenated
+/// text of `candidates[0].content.parts[*]` (parts without a `text` field
+/// — e.g. `inline_data` echoes — contribute nothing). Error cases are
+/// explicit: invalid JSON → `AiError::Json`; a response with no `candidates`
+/// (or an empty array, e.g. a blocked request) → `AiError::UnexpectedResponse`.
+fn parse_gemini_response(body: &str) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct GenerateContentResponse {
+        candidates: Option<Vec<Candidate>>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Candidate {
+        content: Content,
+    }
+    #[derive(serde::Deserialize)]
+    struct Content {
+        parts: Vec<Part>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Part {
+        // A part may carry no `text` (inline_data, thought, ...); an empty
+        // string contributes nothing to the concatenation.
+        #[serde(default)]
+        text: String,
+    }
+
+    let parsed: GenerateContentResponse = serde_json::from_str(body)?;
+    let candidate = parsed
+        .candidates
+        .as_deref()
+        .and_then(|candidates| candidates.first())
+        .ok_or_else(|| AiError::UnexpectedResponse("response has no candidates".to_string()))?;
+    let text: String = candidate
+        .content
+        .parts
+        .iter()
+        .map(|part| part.text.as_str())
+        .collect();
+    Ok(text)
 }
