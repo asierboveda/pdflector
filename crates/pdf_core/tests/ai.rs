@@ -519,3 +519,115 @@ fn groq_chat_rejects_response_without_choices() {
     assert!(matches!(err, AiError::UnexpectedResponse(_)), "got {err:?}");
     server.join().expect("server thread");
 }
+
+/// A tiny real 1x1 transparent PNG, base64-encoded *without* the
+/// `data:image/png;base64,` prefix (the contract's input format).
+const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+/// `chat_vision` sends the OpenAI multimodal content array (a `text` part
+/// plus an `image_url` part carrying the `data:image/png;base64,` URI),
+/// uses the default vision model (not the text model from the constructor),
+/// and parses `choices[0].message.content` exactly like `chat`.
+#[test]
+fn groq_chat_vision_sends_content_array_and_parses_reply() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(listener, GROQ_RESPONSE);
+
+    let client = GroqClient::with_base_url(
+        "test-api-key",
+        format!("http://127.0.0.1:{port}"),
+        "test-model",
+    );
+    let reply = client
+        .chat_vision("eres un ayudante", "¿qué dice la figura?", TINY_PNG_BASE64)
+        .expect("chat_vision succeeds");
+
+    assert_eq!(reply, "El texto seleccionado explica el bucle for.");
+
+    // Same endpoint/auth as `chat`; serde_json sorts object keys, so assert
+    // key/value pairs independently.
+    let request = server.join().expect("server thread");
+    let request_lower = request.to_lowercase();
+    assert!(
+        request.starts_with("POST /chat/completions HTTP/1.1"),
+        "wrong request line: {request}"
+    );
+    assert!(
+        request_lower.contains("authorization: bearer test-api-key"),
+        "request: {request}"
+    );
+    // The vision model, not the text model passed to with_base_url.
+    assert!(
+        request.contains(r#""model":"llama-3.2-90b-vision-preview""#),
+        "request: {request}"
+    );
+    assert!(
+        request.contains(r#""role":"system""#)
+            && request.contains(r#""content":"eres un ayudante""#),
+        "request: {request}"
+    );
+    // Multimodal content array: text part + image_url part with the data URI.
+    assert!(request.contains(r#""type":"text""#), "request: {request}");
+    assert!(
+        request.contains(r#""text":"¿qué dice la figura?""#),
+        "request: {request}"
+    );
+    assert!(
+        request.contains(r#""type":"image_url""#),
+        "request: {request}"
+    );
+    assert!(
+        request.contains(&format!(
+            r#""url":"data:image/png;base64,{TINY_PNG_BASE64}""#
+        )),
+        "request: {request}"
+    );
+    assert!(request.contains(r#""stream":false"#), "request: {request}");
+}
+
+/// `chat_vision` maps non-200 responses to `AiError::Http` with the body
+/// preserved for diagnostics (same path as `chat`).
+#[test]
+fn groq_chat_vision_reports_non_200_status() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("client connects");
+        let _ = read_request(&mut sock);
+        // Groq answers auth failures with an `error` object in the body.
+        let body = r#"{"error":{"message":"Invalid API Key","type":"authentication_error"}}"#;
+        let response = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        sock.write_all(response.as_bytes()).expect("write response");
+    });
+
+    let client = GroqClient::with_base_url("bad-key", format!("http://127.0.0.1:{port}"), "m");
+    let err = client
+        .chat_vision("s", "p", TINY_PNG_BASE64)
+        .expect_err("401 must be an error");
+    match err {
+        AiError::Http { status: 401, body } => {
+            assert!(body.contains("Invalid API Key"), "body: {body}")
+        }
+        other => panic!("expected AiError::Http(401), got {other:?}"),
+    }
+    server.join().expect("server thread");
+}
+
+/// `chat_vision` surfaces malformed JSON replies as `AiError::Json`.
+#[test]
+fn groq_chat_vision_rejects_malformed_json() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(listener, "esto no es json");
+
+    let client = GroqClient::with_base_url("k", format!("http://127.0.0.1:{port}"), "m");
+    let err = client
+        .chat_vision("s", "p", TINY_PNG_BASE64)
+        .expect_err("malformed JSON must fail");
+    assert!(matches!(err, AiError::Json(_)), "got {err:?}");
+    server.join().expect("server thread");
+}

@@ -458,27 +458,38 @@ const GROQ_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 /// Wire contract is OpenAI's: `POST <base>/chat/completions` with
 /// `Authorization: Bearer <api_key>` and a JSON body
 /// `{"model", "messages":[{system},{user}], "stream":false}`; the reply
-/// is `choices[0].message.content`. pdf_android builds against exactly
-/// these methods — do not change the public signatures.
+/// is `choices[0].message.content`. `chat_vision` extends that with the
+/// OpenAI multimodal content array (text + image_url) for vision models.
+/// pdf_android builds against exactly these methods — do not change the
+/// public signatures.
 pub struct GroqClient {
     base_url: String,
     api_key: String,
     model: String,
+    /// Model used by `chat_vision` (multimodal: text + image).
+    vision_model: String,
 }
 
+/// Default vision model for `chat_vision`. Groq's llama-3.2 vision preview
+/// (accepts text + image input) as of the Fase 5 implementation.
+const DEFAULT_VISION_MODEL: &str = "llama-3.2-90b-vision-preview";
+
 impl GroqClient {
-    /// Groq with the default model `llama-3.3-70b-versatile`.
+    /// Groq with the default model `llama-3.3-70b-versatile` and the
+    /// default vision model `llama-3.2-90b-vision-preview`.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self::with_model(api_key, "llama-3.3-70b-versatile")
     }
 
-    /// Groq with a specific model (any OpenAI-compatible model id Groq
+    /// Groq with a specific text model (any OpenAI-compatible model id Groq
     /// serves, e.g. `llama-3.3-70b-versatile` or `llama-3.1-8b-instant`).
+    /// `chat_vision` keeps the default vision model (see `DEFAULT_VISION_MODEL`).
     pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             base_url: "https://api.groq.com/openai/v1".to_string(),
             api_key: api_key.into(),
             model: model.into(),
+            vision_model: DEFAULT_VISION_MODEL.to_string(),
         }
     }
 
@@ -497,6 +508,7 @@ impl GroqClient {
             base_url: base_url.into(),
             api_key: api_key.into(),
             model: model.into(),
+            vision_model: DEFAULT_VISION_MODEL.to_string(),
         }
     }
 
@@ -509,15 +521,7 @@ impl GroqClient {
     /// URL); non-200 responses as `AiError::Http` (the body, usually Groq's
     /// `{"error":{...}}`, is kept as diagnostic text). May block for up to
     /// `GROQ_REQUEST_TIMEOUT` — call off the UI thread.
-    ///
-    /// A fresh `reqwest::blocking::Client` is built per call: the public
-    /// constructors must stay infallible, and the ~ms runtime setup is
-    /// negligible next to a multi-second LLM round-trip.
     pub fn chat(&self, system: &str, prompt: &str) -> Result<String> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(GROQ_REQUEST_TIMEOUT)
-            .build()?;
-
         let payload = serde_json::json!({
             "model": self.model,
             "messages": [
@@ -526,6 +530,61 @@ impl GroqClient {
             ],
             "stream": false,
         });
+        self.post_chat_completion(payload)
+    }
+
+    /// Envía una petición multimodal: prompt de texto + UNA imagen PNG.
+    /// `image_png_base64` es el base64 del PNG SIN el prefijo "data:image/png;base64,".
+    /// Usa un modelo de visión (por defecto "llama-3.2-90b-vision-preview").
+    ///
+    /// POSTs the OpenAI chat-completions payload with the user message as a
+    /// **content array**: `[{"type":"text","text":prompt},
+    /// {"type":"image_url","image_url":{"url":"data:image/png;base64,<b64>"}}]`
+    /// to `<base>/chat/completions` and parses `choices[0].message.content`
+    /// exactly like `chat` (same error mapping, same timeout). Use it to ask
+    /// about a cropped page region (equations, figures) rendered to PNG at
+    /// screen resolution. May block for up to `GROQ_REQUEST_TIMEOUT` — call
+    /// off the UI thread.
+    pub fn chat_vision(
+        &self,
+        system: &str,
+        prompt: &str,
+        image_png_base64: &str,
+    ) -> Result<String> {
+        let image_url = format!("data:image/png;base64,{image_png_base64}");
+        let payload = serde_json::json!({
+            "model": self.vision_model,
+            "messages": [
+                { "role": "system", "content": system },
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": prompt },
+                        { "type": "image_url", "image_url": { "url": image_url } },
+                    ],
+                },
+            ],
+            "stream": false,
+        });
+        self.post_chat_completion(payload)
+    }
+
+    /// Shared request plumbing for `chat` and `chat_vision`: POSTs an OpenAI
+    /// chat-completions payload to `<base>/chat/completions` with
+    /// `Authorization: Bearer <api_key>` and parses `choices[0].message.content`
+    /// from the JSON response. Network/TLS failures surface as
+    /// `AiError::Request` (Display includes the failing URL); non-200 responses
+    /// as `AiError::Http` (the body, usually Groq's `{"error":{...}}`, is kept
+    /// as diagnostic text). May block for up to `GROQ_REQUEST_TIMEOUT` — call
+    /// off the UI thread.
+    ///
+    /// A fresh `reqwest::blocking::Client` is built per call: the public
+    /// constructors must stay infallible, and the ~ms runtime setup is
+    /// negligible next to a multi-second LLM round-trip.
+    fn post_chat_completion(&self, payload: serde_json::Value) -> Result<String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(GROQ_REQUEST_TIMEOUT)
+            .build()?;
 
         let response = client
             .post(format!(

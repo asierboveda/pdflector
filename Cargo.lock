@@ -2801,10 +2801,12 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "android_logger",
+ "base64 0.22.1",
  "jni",
  "log",
  "ndk",
  "pdf_core",
+ "png",
  "serde",
  "serde_json",
 ]

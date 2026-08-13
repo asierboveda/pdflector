@@ -395,8 +395,15 @@ pub(crate) const TOAST_MS: std::time::Duration = std::time::Duration::from_milli
 // El modelo por defecto es llama-3.3-70b-versatile: buen equilibrio de
 // calidad/velocidad en Groq (el usuario del panel es "explícame este
 // párrafo/ecuación", así que la latencia importa).
-pub(crate) const GROQ_API_KEY: &str = "PEGA_AQUI_TU_API_KEY_DE_GROQ";
+pub(crate) const GROQ_API_KEY: &str = include_str!("../groq_key.txt");
 pub(crate) const GROQ_MODEL: &str = "llama-3.3-70b-versatile";
+/// Modelo de VISIÓN para "Preguntar a la IA" cuando la selección es una
+/// ecuación/gráfico (Fase 5): en ese caso se manda el PNG del crop de la
+/// selección a `GroqClient::chat_vision`, que usa ESTE modelo (multimodal,
+/// texto + imagen). Coincide con el default de pdf_core
+/// (`DEFAULT_VISION_MODEL`); se declara aquí para que la llamada de
+/// `Reader::ask_ai` no lleve el literal suelto (mismo patrón que `GROQ_MODEL`).
+pub(crate) const GROQ_VISION_MODEL: &str = "llama-3.2-90b-vision-preview";
 /// Límites del factor de zoom continuo (1.0 = página completa a pantalla).
 /// `PINCH_MIN = 1.0`: SIN zoom hacia fuera — la página no se puede ver más
 /// pequeña que a pantalla completa (cover); el pan queda limitado a los

@@ -35,6 +35,18 @@ android_logger = "0.14"
 # compilacion ni tamano al .so. MIT/Apache-2.0.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# PNG en memoria del crop de la selección para "Preguntar a la IA" con
+# visión (Fase 5, `Reader::sel_image_png_base64`): `png` 0.18 es el encoder
+# PNG puro en Rust (RGBA8 -> PNG) SIN el grafo de formatos de `image` (la
+# opción más ligera de las dos que barajó el autor: solo codificación, sin
+# decodificación ni metadatos que no usamos). Ya está en el Cargo.lock del
+# workspace vía `image` (grafo de pdf_app), así que no añade paquetes nuevos
+# a la compilación Android. MIT/Apache-2.0.
+png = "0.18"
+# Base64 del PNG (sin prefijo data:) que espera `GroqClient::chat_vision`
+# (el prefijo `data:image/png;base64,` lo añade pdf_core). Crate estándar,
+# puro Rust, sin dependencias. MIT/Apache-2.0.
+base64 = "0.22"
 
 # --- Empaquetado APK con cargo-apk (Fase 1) ---
 # cargo-apk genera el AndroidManifest con una NativeActivity por defecto y el
