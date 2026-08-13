@@ -318,7 +318,8 @@ use crate::reader::{Reader, UiMode};
 /// Color de fondo letterbox (gris oscuro, opaco).
 pub(crate) const BACKGROUND: [u8; 4] = [0x26, 0x26, 0x26, 0xFF];
 /// Fondo letterbox en modo oscuro (negro puro: la página invertida es negra
-/// y el fondo se funde con ella al hacer zoom-out).
+/// y, sin zoom hacia fuera — PINCH_MIN = 1.0 —, la página siempre cubre la
+/// ventana; este fondo solo asoma si el render de la página falla).
 pub(crate) const DARK_BG: [u8; 4] = [0x00, 0x00, 0x00, 0xFF];
 /// Fondo cuando no se pudo abrir el PDF (rojo apagado, visible en pantalla).
 pub(crate) const ERROR_BG: [u8; 4] = [0x5A, 0x12, 0x12, 0xFF];
@@ -326,8 +327,11 @@ pub(crate) const ERROR_BG: [u8; 4] = [0x5A, 0x12, 0x12, 0xFF];
 /// Radio (px) de movimiento máximo entre Down y Up para considerar el gesto un
 /// "tap" (no un swipe). ~20 px a 320 dpi (ViewConfiguration touch slop ≈ 8 dp).
 pub(crate) const TAP_SLOP: f32 = 24.0;
-/// Límites del factor de zoom continuo (1.0 = página completa).
-pub(crate) const PINCH_MIN: f32 = 0.25;
+/// Límites del factor de zoom continuo (1.0 = página completa a pantalla).
+/// `PINCH_MIN = 1.0`: SIN zoom hacia fuera — la página no se puede ver más
+/// pequeña que a pantalla completa (cover); el pan queda limitado a los
+/// bordes de la hoja (ver `Reader::clamp_pan`).
+pub(crate) const PINCH_MIN: f32 = 1.0;
 pub(crate) const PINCH_MAX: f32 = 8.0;
 
 /// Constantes de color y tema para la interfaz (0xAARRGGBB para Canvas JNI).
@@ -372,6 +376,14 @@ pub(crate) mod theme {
     pub(crate) const LIB_TEXT_PRIMARY: u32 = 0xFFEDF0F4;
     pub(crate) const LIB_TEXT_SECONDARY: u32 = 0xFF9AA3B2;
     pub(crate) const LIB_TEXT_MUTED: u32 = 0xFF5C6674;
+
+    // Portadas de la biblioteca (estilo Apple Books)
+    /// Sombra sutil bajo la portada (negro translúcido; se dibuja desplazada
+    /// +2/+3 px detrás de la portada en lugar de un borde llamativo).
+    pub(crate) const LIB_COVER_SHADOW: u32 = 0x38000000;
+    /// Relleno del placeholder de portada mientras carga la miniatura
+    /// (silueta gris oscura sin borde, nada de ruido).
+    pub(crate) const LIB_COVER_PLACEHOLDER: u32 = 0xFF161B26;
 
     // Franja de Estado / Mensajes de Error
     pub(crate) const STATUS_BG: u32 = 0xFF2A1212;

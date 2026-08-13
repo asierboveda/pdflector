@@ -210,14 +210,15 @@ pub(crate) fn sheet_btn_w(win_w: i32) -> f32 {
 /// Columnas de la rejilla de la biblioteca.
 pub(crate) const GRID_COLS: usize = 3;
 
-/// Pad exterior horizontal de la rejilla (px).
-pub(crate) fn grid_pad(win_w: i32) -> f32 {
-    (win_w / 48).max(12) as f32
+/// Pad exterior horizontal de la rejilla (px): margen fijo de 16 px, estilo
+/// Apple Books (e-reader: portadas con aire a los bordes, sin relleno denso).
+pub(crate) fn grid_pad(_win_w: i32) -> f32 {
+    16.0
 }
 
 /// Separación entre celdas de la rejilla (px).
 pub(crate) fn grid_gap() -> f32 {
-    12.0
+    14.0
 }
 
 /// Inset de la portada dentro de la celda (px).
@@ -234,17 +235,18 @@ pub(crate) fn grid_cover_w(win_w: i32) -> f32 {
     grid_cell_w(win_w) - 2.0 * GRID_CELL_PAD
 }
 
-/// Alto (px) del área de portada: proporción A4 (1:√2) para TODAS las celdas
-/// (rejilla uniforme; la portada real, con su propia proporción, se centra
-/// dentro del área).
+/// Alto (px) del área de portada: proporción 2:3 (alto = ancho × 1.5), estilo
+/// Apple Books, para TODAS las celdas (rejilla uniforme). La miniatura real
+/// (con su propia proporción) se recorta en centro al pegarse (`paste_thumb`,
+/// center-crop: escala hasta rellenar y recorta el sobrante, nunca letterbox).
 pub(crate) fn grid_cover_h(win_w: i32) -> f32 {
-    grid_cover_w(win_w) * std::f32::consts::SQRT_2
+    grid_cover_w(win_w) * 1.5
 }
 
-/// Alto (px) de la zona de título de la celda (hasta 2 líneas).
-pub(crate) fn grid_title_h(win_w: i32) -> f32 {
-    let line = (grid_cell_w(win_w) / 14.0).max(16.0);
-    2.0 * line + 10.0
+/// Alto (px) de la zona de título de la celda: 1 línea de título (~13 sp,
+/// ≈ 16 px) + aire generoso hasta la fila siguiente, estilo Apple Books.
+pub(crate) fn grid_title_h(_win_w: i32) -> f32 {
+    40.0
 }
 
 /// Alto (px) total de una celda de la rejilla.
@@ -770,6 +772,36 @@ impl Reader {
         anchor - base - q * z
     }
 
+    /// Clamp del pan de anclaje a los bordes de la hoja (modo UNA HOJA): con
+    /// zoom-in la página se puede mover HASTA sus bordes pero un borde de la
+    /// hoja NUNCA entra dentro de la ventana (nada de fondo visible alrededor
+    /// de la página). `page` es el tamaño de la página en pantalla (`dw·zoom`
+    /// o `dh·zoom`) y `win` el tamaño de la ventana en ese eje (f32).
+    ///
+    /// Geometría real del blit (`blit`): la página ocupa en pantalla
+    /// `[base + pan, base + pan + page]`, con `base` la posición de origen
+    /// del bitmap escalado SIN pan — centrada en X (`centered_base`,
+    /// `align_top = false`) y alineada al borde superior en Y (`base = 0`,
+    /// `align_top = true`; el anclaje Y real del pinch es "arriba",
+    /// confirmado en `blit`: `dy = pan_y`).
+    ///
+    /// - Si `page >= win` (la página es más grande que la ventana): exige
+    ///   cubrirla entera, `base + pan <= 0` y `base + pan + page >= win`, o
+    ///   sea `pan ∈ [win − page − base, −base]`. En Y (`base = 0`) queda
+    ///   `pan.clamp(win − page, 0)`; en X el rango se desplaza por el
+    ///   centrado de `centered_base`: `[(win − page)/2, (page − win)/2]`.
+    /// - Si `page < win` (página más pequeña; solo posible con zoom < 1):
+    ///   centrada en X (el centrado ya lo hace `centered_base` → pan 0) y
+    ///   arriba en Y (pan 0).
+    fn clamp_pan(pan: f32, page: f32, win: f32, align_top: bool) -> f32 {
+        if page >= win {
+            let base = if align_top { 0.0 } else { (win - page) / 2.0 };
+            pan.clamp(win - page - base, -base)
+        } else {
+            0.0
+        }
+    }
+
     /// Garantiza en la caché la página actual + 1 vecina por cada lado
     /// (prefetch simple para que prev/next sea INSTANTÁNEO): renderiza solo
     /// los miss, a `cover × rendered_zoom` (la escala de la caché), y
@@ -1287,9 +1319,11 @@ impl Reader {
     /// (`zoom = z0 × dist / start_dist`, calculado por `input`); aquí solo se
     /// aplica. Además recalcula el pan de ANCLAJE: el punto de documento que
     /// estaba bajo el centro del pinch al iniciar (`begin_pinch`) se mantiene
-    /// fijo en pantalla (ver `anchor_pan`). Al hacer zoom-in solo se ve una
-    /// porción de ESA página, recortada a sus bordes (nunca otra hoja: el
-    /// blit solo dibuja la página actual).
+    /// fijo en pantalla (ver `anchor_pan`) y se CLAMPEA a los bordes de la
+    /// hoja (`clamp_pan`): un borde de la página nunca entra dentro de la
+    /// ventana. Al hacer zoom-in solo se ve una porción de ESA página,
+    /// recortada a sus bordes (nunca otra hoja: el blit solo dibuja la página
+    /// actual).
     pub(crate) fn set_zoom_fast(&mut self, zoom: f32) {
         let zoom = zoom.clamp(PINCH_MIN, PINCH_MAX);
         if (self.zoom - zoom).abs() < 1e-4 {
@@ -1301,16 +1335,27 @@ impl Reader {
                 // X: el bitmap escalado se centra en la ventana → base
                 // dependiente del zoom. Y: el borde superior de la página
                 // actual queda en el borde superior del viewport (modo UNA
-                // HOJA, sin scroll) → base 0.
-                self.pan_x = Self::anchor_pan(
-                    p.ax,
-                    Self::centered_base(self.win_w, dw, p.z0),
-                    Self::centered_base(self.win_w, dw, zoom),
-                    p.z0,
-                    p.pan_x0,
-                    zoom,
+                // HOJA, sin scroll) → base 0. Ambos se clampean después a los
+                // bordes de la hoja (ver `clamp_pan`).
+                self.pan_x = Self::clamp_pan(
+                    Self::anchor_pan(
+                        p.ax,
+                        Self::centered_base(self.win_w, dw, p.z0),
+                        Self::centered_base(self.win_w, dw, zoom),
+                        p.z0,
+                        p.pan_x0,
+                        zoom,
+                    ),
+                    dw * zoom,
+                    self.win_w as f32,
+                    false,
                 );
-                self.pan_y = Self::anchor_pan(p.ay, 0.0, 0.0, p.z0, p.pan_y0, zoom);
+                self.pan_y = Self::clamp_pan(
+                    Self::anchor_pan(p.ay, 0.0, 0.0, p.z0, p.pan_y0, zoom),
+                    dh * zoom,
+                    self.win_h as f32,
+                    true,
+                );
             }
         }
         self.zoom = zoom;
@@ -1342,6 +1387,16 @@ impl Reader {
         // cambia), así que el punto bajo los dedos permanece fijo al soltar.
         self.zoom = zoom;
         self.rendered_zoom = zoom;
+        // Reclamp del pan al zoom FINAL (por si `set_zoom_sharp` llega sin un
+        // `set_zoom_fast` previo, p. ej. pinch sin Moves): `clamp_pan` solo
+        // depende de `page = doc·zoom`, así que un pan ya clampeado no cambia
+        // y el rango cubre la ventana entera también tras el re-render
+        // (`rendered_zoom = zoom` → la escala efectiva `doc·zoom` no cambia).
+        let (dw, dh) = self.page_doc_size_px(self.page);
+        if dw > 0.0 && dh > 0.0 {
+            self.pan_x = Self::clamp_pan(self.pan_x, dw * zoom, self.win_w as f32, false);
+            self.pan_y = Self::clamp_pan(self.pan_y, dh * zoom, self.win_h as f32, true);
+        }
         self.cache.clear();
         self.page_frame = None; // el frame compuesto del sheet tiene el zoom viejo
         info!("zoom {:.3}", self.zoom);

@@ -16,10 +16,10 @@ use log::{error, warn};
 use pdf_core::{Bitmap, Document, Stroke};
 
 use crate::reader::{
-    GRID_CELL_PAD, GRID_COLS, Reader, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h,
-    grid_cover_w, grid_pad, grid_rows_y0, grid_visible_rows, human_size, page_badge_size,
-    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, picker_visible_rows, sheet_btn_h,
-    sheet_btn_w, sheet_h, sheet_pad, sheet_row1_y, sheet_row2_y, truncate_name,
+    GRID_CELL_PAD, GRID_COLS, Reader, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w,
+    grid_pad, grid_rows_y0, grid_visible_rows, human_size, page_badge_size, picker_btn_h,
+    picker_btn_w, picker_header_h, picker_row_h, picker_visible_rows, sheet_btn_h, sheet_btn_w,
+    sheet_h, sheet_pad, sheet_row1_y, sheet_row2_y, truncate_name,
 };
 use crate::theme;
 
@@ -1460,16 +1460,17 @@ pub(crate) fn library_buttons(
 
 /// Renderiza la biblioteca MediaStore a un bitmap RGBA8 de tamaño de ventana:
 /// rejilla de 3 columnas (`GRID_COLS`) donde cada celda muestra la PORTADA
-/// (página 1, perezosa — ver `Reader::thumbs`/`pump_thumbs`) y el título
-/// debajo (1-2 líneas truncadas). Las celdas sin portada todavía cargada se
-/// pintan con un placeholder (rect gris + "…") que se sustituye cuando la
-/// portada llega a la caché (el re-render lo dispara `pump_thumbs`).
+/// (página 1, perezosa — ver `Reader::thumbs`/`pump_thumbs`) con proporción
+/// 2:3 estilo tapa de libro (esquinas 12 px, sombra sutil, sin borde) y el
+/// título debajo (1 línea, 13 sp, truncada con "…"). Las celdas sin portada
+/// todavía cargada se pintan con una silueta placeholder que se sustituye
+/// cuando la portada llega a la caché (el re-render lo dispara `pump_thumbs`).
 ///
-/// El bitmap base (fondo, cabecera, estado, títulos y placeholders) se
-/// dibuja con Canvas+JNI (`jni_text_bitmap`); las portadas CACHEADAS se
-/// pegan después directamente sobre sus bytes RGBA (Canvas no pinta
-/// bitmaps): escala vecino-más-cercano al ancho del área de portada
-/// (`grid_cover_w`), sin pasar por un lock de ventana (el bitmap es nuestro).
+/// El bitmap base (fondo, cabecera, estado, títulos, SOMBRAS y placeholders)
+/// se dibuja con Canvas+JNI (`jni_text_bitmap`); las portadas CACHEADAS se
+/// pegan después directamente sobre sus bytes RGBA (Canvas no pinta bitmaps):
+/// center-crop vecino-más-cercano al área de portada 2:3 (`grid_cover_w` ×
+/// `grid_cover_h`), sin pasar por un lock de ventana (el bitmap es nuestro).
 pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let h = reader.win_h;
@@ -1554,12 +1555,13 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
         ));
     }
 
-    // 3. Celdas visibles (rejilla 3 × N): placeholder de portada + título.
+    // 3. Celdas visibles (rejilla 3 × N): portada estilo tapa de libro
+    // (proporción 2:3, esquinas 12 px, sombra sutil, sin borde) + título de 1
+    // línea debajo. Fondo LIB_BG limpio, sin rellenos alternos por celda.
     let cell_w = grid_cell_w(w);
-    let cell_h = grid_cell_h(w);
     let cover_w = grid_cover_w(w);
     let cover_h = grid_cover_h(w);
-    let title_ts = 14.0f32;
+    let title_ts = 13.0f32;
     let char_w = title_ts * 0.55;
     let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
     let visible = grid_visible_rows(w, h, reader.status.is_some());
@@ -1570,33 +1572,33 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 continue;
             };
             let (cx, cy, _, _) = grid_cell_rect(w, rows_y0, row, col);
-            let bg = if (row + col) % 2 == 0 {
-                theme::LIB_ROW_EVEN
-            } else {
-                theme::LIB_ROW_ODD
-            };
-            rects.push(CanvasRect::sharp(cx, cy, cx + cell_w, cy + cell_h, bg));
 
-            // Área de portada: placeholder mientras no hay thumbnail (esquinas redondeadas 12px + borde 1px LIB_ROW_BORDER).
+            // Área de portada (2:3, centrada en la celda). La SOMBRA se pinta
+            // SIEMPRE (también para el placeholder): rect redondeado negro
+            // translúcido (`LIB_COVER_SHADOW`) desplazado +2/+3 px, que queda
+            // detrás de la portada cacheada cuando `paste_thumb` la pega
+            // sobre este bitmap — sombra sutil en lugar de borde llamativo.
             let cover_x0 = cx + (cell_w - cover_w) / 2.0;
             let cover_y0 = cy + 4.0;
+            let cover_r = 12.0f32;
+            rects.push(CanvasRect::rounded(
+                cover_x0 + 2.0,
+                cover_y0 + 3.0,
+                cover_x0 + 2.0 + cover_w,
+                cover_y0 + 3.0 + cover_h,
+                cover_r,
+                theme::LIB_COVER_SHADOW,
+            ));
+
+            // Placeholder mientras no hay thumbnail: silueta gris sin borde.
             if reader.thumbs.peek(&entry.uri).is_none() {
-                let pr = 12.0f32;
                 rects.push(CanvasRect::rounded(
                     cover_x0,
                     cover_y0,
                     cover_x0 + cover_w,
                     cover_y0 + cover_h,
-                    pr,
-                    theme::LIB_ROW_BORDER,
-                ));
-                rects.push(CanvasRect::rounded(
-                    cover_x0 + 1.0,
-                    cover_y0 + 1.0,
-                    cover_x0 + cover_w - 1.0,
-                    cover_y0 + cover_h - 1.0,
-                    (pr - 1.0).max(0.0),
-                    theme::LIB_ROW_EVEN,
+                    cover_r,
+                    theme::LIB_COVER_PLACEHOLDER,
                 ));
                 texts.push(CanvasText::new(
                     cover_x0 + cover_w / 2.0,
@@ -1609,11 +1611,13 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 ));
             }
 
-            // Título DEBAJO de la portada: 14sp, 1 línea con puntos suspensivos, LIB_TEXT_SECONDARY.
+            // Título DEBAJO de la portada: 13 sp, 1 línea con puntos
+            // suspensivos (`truncate_name`), LIB_TEXT_SECONDARY, alineado a la
+            // izquierda con un pequeño padding horizontal (`GRID_CELL_PAD`).
             let title_text = truncate_name(&entry.name, max_chars);
             texts.push(CanvasText::new(
                 cx + GRID_CELL_PAD,
-                cy + cover_h + 6.0 + title_ts * 0.85,
+                cy + 4.0 + cover_h + 8.0 + title_ts * 0.85,
                 title_ts,
                 theme::LIB_TEXT_SECONDARY,
                 TextAlign::Left,
@@ -1625,7 +1629,9 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
 
     let mut out = jni_text_bitmap(w, h, theme::LIB_BG, &rects, &texts)?;
 
-    // 4. Pegar las portadas CACHEADAS sobre el bitmap base (scale-to-fill, redondeadas 12px, borde 1px LIB_ROW_BORDER).
+    // 4. Pegar las portadas CACHEADAS sobre el bitmap base (center-crop a
+    // 2:3, esquinas redondeadas 12 px, SIN borde: la sombra ya quedó pintada
+    // en el bitmap base en el paso 3).
     for row in 0..visible {
         for col in 0..GRID_COLS {
             let r = reader.list_scroll + row;
@@ -1653,9 +1659,11 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
     Some(out)
 }
 
-/// Pega la portada escalada (scale-to-fill, vecino-más-cercano) dentro del bitmap
-/// base de la rejilla, ajustando el crop al área de la portada con esquinas
-/// redondeadas de 12px y borde de 1px `LIB_ROW_BORDER`.
+/// Pega la portada escalada (center-crop, vecino-más-cercano) dentro del
+/// bitmap base de la rejilla: escala la miniatura hasta RELLENAR el área 2:3
+/// y centra el recorte (el sobrante se recorta, nunca letterbox); fuera de
+/// las esquinas redondeadas de 12 px el píxel no se escribe y queda visible
+/// el fondo con la sombra ya pintada en el bitmap base.
 fn paste_thumb(
     dst: &mut [u8],
     dst_w: usize,
@@ -1675,7 +1683,9 @@ fn paste_thumb(
         return;
     }
 
-    // Scale-to-fill (sin letterbox)
+    // Center-crop (scale-to-fill): escala hasta rellenar el área 2:3 y centra
+    // el recorte con `offset_x`/`offset_y`; el sobrante se recorta — nunca
+    // letterbox.
     let scale = (target_w as f64 / src_w as f64).max(target_h as f64 / src_h as f64);
     let dw = (src_w as f64 * scale).round() as i64;
     let dh = (src_h as f64 * scale).round() as i64;
@@ -1685,10 +1695,8 @@ fn paste_thumb(
     let offset_x = (dw - target_w as i64) / 2;
     let offset_y = (dh - target_h as i64) / 2;
 
-    let border_color: [u8; 4] = [0x1E, 0x25, 0x30, 0xFF]; // theme::LIB_ROW_BORDER
     let r = 12.0f32;
     let r_sq = r * r;
-    let inner_r_sq = (r - 1.0) * (r - 1.0);
 
     let tw_f = target_w as f32;
     let th_f = target_h as f32;
@@ -1730,20 +1738,15 @@ fn paste_thumb(
                 (false, 0.0)
             };
 
-            let is_edge = tx == 0 || tx == target_w - 1 || ty == 0 || ty == target_h - 1;
-
             if is_corner && dist_sq > r_sq {
                 continue;
             }
 
+            // Fuera del radio de las esquinas el píxel no se escribe y queda
+            // visible el fondo con la sombra ya pintada en el bitmap base.
+            let src_x = (((tx as i64 + offset_x) * src_w) / dw).clamp(0, src_w - 1) as usize;
             let d_offset = (py as usize * dst_w + px as usize) * 4;
-
-            if (is_corner && dist_sq >= inner_r_sq) || (!is_corner && is_edge) {
-                dst[d_offset..d_offset + 4].copy_from_slice(&border_color);
-            } else {
-                let src_x = (((tx as i64 + offset_x) * src_w) / dw).clamp(0, src_w - 1) as usize;
-                dst[d_offset..d_offset + 4].copy_from_slice(&srow[src_x * 4..src_x * 4 + 4]);
-            }
+            dst[d_offset..d_offset + 4].copy_from_slice(&srow[src_x * 4..src_x * 4 + 4]);
         }
     }
 }
