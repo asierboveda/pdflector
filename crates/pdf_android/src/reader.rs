@@ -1196,18 +1196,14 @@ impl Reader {
             }
             UiMode::Picker | UiMode::Library => match self.bitmap.as_ref() {
                 Some(bmp) => {
-                    // Bitmap de la lista a 1:1 (zoom relativo 1.0).
-                    blit_fast(
-                        window,
-                        bmp,
-                        1.0,
-                        bg,
-                        (
-                            self.offset_x + self.pan_x.round() as i32,
-                            self.offset_y + self.pan_y.round() as i32,
-                        ),
-                        None,
-                    );
+                    // Bitmap de la lista a 1:1 (zoom relativo 1.0). BUG
+                    // arreglado: el pan (desplazamiento de anclaje del pinch)
+                    // es un concepto del VISOR — sumarlo aquí desplazaba la
+                    // lista/biblioteca con el pan residual del último pinch
+                    // (p. ej. −400 px en Y, con la página cover más alta que
+                    // la ventana, o cientos de px en X a zoom > 1), dejando
+                    // la lista cortada y el fondo al descubierto.
+                    blit_fast(window, bmp, 1.0, bg, (self.offset_x, self.offset_y), None);
                 }
                 None => {
                     // Sin lista: solo el fondo (guard hace unlock_and_post al caer).
@@ -2112,6 +2108,26 @@ impl Reader {
         if (self.zoom - zoom).abs() < 1e-4 {
             return;
         }
+        // De vuelta a zoom 1.0 (PINCH_MIN): la página vuelve a su posición
+        // natural (centrada en X, alineada arriba en Y). BUG: sin este
+        // reset, un pan residual de un zoom previo dejaba la vista
+        // "colgada" en un offset (p. ej. el tercio inferior de la página,
+        // pan_y ≈ −400 px con la página cover más alta que la ventana) sin
+        // forma de corregirlo — la app NO tiene gesto de pan (el arrastre
+        // se eliminó), así que el único "home" posible es el centrado. El
+        // clamp de X ya fuerza ~0 (la página a cover casi iguala la
+        // ventana), pero en Y el rango de `clamp_pan` admite offsets
+        // grandes; por eso el reset es explícito en ambos ejes.
+        if zoom <= PINCH_MIN + 1e-4 {
+            self.pan_x = 0.0;
+            self.pan_y = 0.0;
+            self.zoom = zoom;
+            self.page_frame = None; // el frame compuesto del sheet tiene el zoom viejo
+            if self.window.is_some() {
+                self.blit();
+            }
+            return;
+        }
         if let Some(p) = self.pinch {
             let (dw, dh) = self.page_doc_size_px(self.page);
             if dw > 0.0 && dh > 0.0 {
@@ -2164,22 +2180,56 @@ impl Reader {
     /// y escribir en cada Move de 60-120 Hz llenaría el disco).
     pub(crate) fn set_zoom_sharp(&mut self, zoom: f32) {
         let zoom = zoom.clamp(PINCH_MIN, PINCH_MAX);
-        // El pan de anclaje YA es el del zoom final (último `set_zoom_fast`);
-        // el re-render a la nueva escala (`rendered_zoom = zoom`) mantiene el
-        // mismo mapeo documento→pantalla (la escala efectiva `doc·zoom` no
-        // cambia), así que el punto bajo los dedos permanece fijo al soltar.
-        self.zoom = zoom;
-        self.rendered_zoom = zoom;
-        // Reclamp del pan al zoom FINAL (por si `set_zoom_sharp` llega sin un
-        // `set_zoom_fast` previo, p. ej. pinch sin Moves): `clamp_pan` solo
-        // depende de `page = doc·zoom`, así que un pan ya clampeado no cambia
-        // y el rango cubre la ventana entera también tras el re-render
-        // (`rendered_zoom = zoom` → la escala efectiva `doc·zoom` no cambia).
+        // Sin cambio REAL de zoom (p. ej. dos dedos tocando sin Moves, o un
+        // pinch-in que se quedó en el mínimo): no re-renderizar — evita
+        // limpiar la caché y pagar el render (~20-40 ms) por un no-op.
+        if (self.zoom - zoom).abs() < 1e-4 && (self.rendered_zoom - zoom).abs() < 1e-4 {
+            return;
+        }
         let (dw, dh) = self.page_doc_size_px(self.page);
         if dw > 0.0 && dh > 0.0 {
+            if zoom <= PINCH_MIN + 1e-4 {
+                // De vuelta a zoom 1.0: posición natural (ver `set_zoom_fast`).
+                self.pan_x = 0.0;
+                self.pan_y = 0.0;
+            } else {
+                // Transición fast→sharp SIN salto: durante el pinch el bitmap
+                // VIEJO se dibuja con tamaño `round(bmp.width × zoom/rendered_zoom)`
+                // px (vecino-más-cercano) y tras el re-render el NUEVO a
+                // `round(dw × zoom)` px 1:1 — la diferencia (≤ 1 px, por el
+                // redondeo de píxeles del render) desplazaría el borde
+                // izquierdo de la página al soltar. Corregimos el pan para
+                // que el borde DIBUJADO quede en el mismo píxel: en `blit`,
+                // `dx = round((win − w)/2 + pan)`, así que para que el nuevo
+                // dx iguale al dibujado en fast basta
+                // `pan_nuevo = dx_fast − (win − w_nuevo)/2` (la corrección es
+                // solo en X: en Y el borde superior es `dy = round(pan_y)`,
+                // independiente del tamaño del bitmap).
+                let old_blit = self.zoom / self.rendered_zoom.max(1e-4);
+                let old_w = match self.cache.peek(self.page) {
+                    Some(b) => b.width as f32 * old_blit,
+                    None => dw * zoom, // sin bitmap (defensa): sin corrección
+                };
+                let new_w = (dw as f64 * zoom as f64).round() as f32;
+                let dx_fast = ((self.win_w as f32 - old_w) / 2.0 + self.pan_x).round();
+                self.pan_x = dx_fast - (self.win_w as f32 - new_w) / 2.0;
+            }
+            // El pan de anclaje YA es el del zoom final (último
+            // `set_zoom_fast`); el re-render a la nueva escala
+            // (`rendered_zoom = zoom`) mantiene el mismo mapeo
+            // documento→pantalla (la escala efectiva `doc·zoom` no cambia),
+            // así que el punto bajo los dedos permanece fijo al soltar.
+            // Reclamp del pan al zoom FINAL (por si `set_zoom_sharp` llega
+            // sin un `set_zoom_fast` previo, p. ej. pinch sin Moves):
+            // `clamp_pan` solo depende de `page = doc·zoom`, así que un pan
+            // ya clampeado no cambia y el rango cubre la ventana entera
+            // también tras el re-render (`rendered_zoom = zoom` → la escala
+            // efectiva `doc·zoom` no cambia).
             self.pan_x = Self::clamp_pan(self.pan_x, dw * zoom, self.win_w as f32, false);
             self.pan_y = Self::clamp_pan(self.pan_y, dh * zoom, self.win_h as f32, true);
         }
+        self.zoom = zoom;
+        self.rendered_zoom = zoom;
         self.cache.clear();
         self.page_frame = None; // el frame compuesto del sheet tiene el zoom viejo
         info!("zoom {:.3}", self.zoom);
