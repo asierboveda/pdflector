@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Background prefetch with a priority queue (visible pages first).
 //!
 //! Actor model: the single worker thread owns `(engine, doc, cache)` for its

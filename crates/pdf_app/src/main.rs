@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! pdf_app — egui desktop prototype (docs/PLAN.md: final Android UI decided in
 //! Phase 6; this app never holds logic, it only asks pdf_core and paints).
 //!

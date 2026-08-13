@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Fase 5: consulta a un LLM local vía Ollama (docs/PLAN.md §5).
 //!
 //! Two pieces, both UI-independent (pdf_core rules §4):

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Caché LRU de páginas renderizadas (`struct PageCache`, página → `Bitmap`)
 //! para el scroll vertical continuo del visor: guarda los bitmaps de pdf_core
 //! y los reutiliza al volver atrás o al desplazarse, evitando el re-render de

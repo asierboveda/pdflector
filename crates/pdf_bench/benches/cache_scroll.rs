@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Fase 1 B1 cache benchmark — NEW BASELINE (no desktop comparison, no
 //! regression against previous builds).
 //!

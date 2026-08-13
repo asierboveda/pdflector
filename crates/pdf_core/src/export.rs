@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Export of annotations (docs/PLAN.md §5, Fase 3):
 //!
 //! - **Markdown**: `export_markdown` returns a `String`; `export_markdown_to_file`

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Caché de portadas (thumbnails) de la biblioteca MediaStore en rejilla 3×3.
 //!
 //! La rejilla muestra la página 1 de cada PDF como portada. Renderizar las

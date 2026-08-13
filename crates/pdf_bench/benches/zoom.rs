@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Fase 1 B3 zoom benchmark: cost of the two zoom paths on a rendered page of
 //! large_document.pdf (page 0), plus the cache-invalidation cost.
 //!

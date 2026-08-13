@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! pdf_android — spike de Fase 1: ver un PDF renderizado en la tablet.
 //!
 //! App Android nativa mínima (backend `native-activity` de android-activity;

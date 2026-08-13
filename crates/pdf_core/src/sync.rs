@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Syncthing-friendly library layout and local change detection (Fase 4,
 //! docs/PLAN.md §3.5).
 //!

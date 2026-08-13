@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Dark mode support (PLAN Fase 2): page negation for a black background with
 //! light text.
 //!

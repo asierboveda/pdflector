@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Real-engine cache tests (Fase 1, B1): byte-bounded LRU cache over MuPDF and
 //! REAL corpus PDFs. No mocks: every miss is an actual MuPDF render and every
 //! byte figure is measured from real bitmap dimensions.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Pure scroll-math tests (Fase 1, B1): `visible_and_prefetch_pages` needs no
 //! engine, so every case here is a pure assertion on the returned Range.
 

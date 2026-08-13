@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! pdf_bench — engine sweep binary (single engine since ADR-001: MuPDF).
 //!
 //! For every PDF in the corpus: measures the open cost, then renders three

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Rendering engine abstraction (docs/PLAN.md §3.2). The single backend
 //! (MuPDF, chosen in ADR-001) implements these traits, so callers never
 //! depend on the concrete engine.

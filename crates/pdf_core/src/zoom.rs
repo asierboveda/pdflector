@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Zoom support (Fase 1 B3): the immediate software-scaled (blurry) path and
 //! the continuous-zoom → ladder-level mapping that drives the crisp re-render.
 //!

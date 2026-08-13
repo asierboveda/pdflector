@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Dibujo a bajo nivel: blit de buffers (`fill_buffer`, `copy_*`, `rgb565`,
 //! `copy_region`) y render de listas/botones con `android.graphics.Canvas` vía
 //! JNI (`jni_text_bitmap`).

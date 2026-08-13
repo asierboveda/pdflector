@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Frame timing and memory metrics for the debug overlay (docs/PLAN.md §3.5).
 //!
 //! `FrameTimer` keeps a ring buffer of the last frame durations and answers

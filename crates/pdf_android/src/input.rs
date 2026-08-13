@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Input multitáctil: máquina de gestos del visor (tap/pinch/pull del sheet)
 //! y taps/arrastre de las listas (picker interno y biblioteca MediaStore).
 //!

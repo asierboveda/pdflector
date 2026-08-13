@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Estado de la app y lógica del visor/picker/biblioteca (`struct Reader`).
 //!
 //! Módulo resultante de la partición de `lib.rs` (2026-08-13): aquí vive TODO

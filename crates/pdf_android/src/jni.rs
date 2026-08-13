@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Toda la interacción Java vía JNI: Intent de lanzamiento ("abrir con"),
 //! MediaStore (biblioteca de PDFs del sistema), ContentResolver (copiar
 //! bytes de una content:// URI) y Ajustes del permiso "All files access".

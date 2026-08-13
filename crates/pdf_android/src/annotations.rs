@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Anotaciones a mano (Stroke) en pdf_android: estado del trazo en curso y
 //! paleta de colores.
 //!

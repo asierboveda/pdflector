@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Markdown export integration tests (Fase 3): the export.rs public API
 //! against a fake engine with synthetic text spans — no MuPDF, no corpus
 //! (pattern from tests/zoom.rs, extended with `Document::text`).

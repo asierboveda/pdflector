@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Blit rápido de la página: zoom por vecino-más-cercano en el propio blit,
 //! SIN re-render de MuPDF durante el pinch.
 //!

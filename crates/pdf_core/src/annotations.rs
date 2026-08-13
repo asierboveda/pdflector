@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Vector annotations in page coordinates (Fase 3: annotations as a vector
 //! overlay drawn on top of the cached page bitmap, never rasterized into it —
 //! AGENTS.md §4.3).

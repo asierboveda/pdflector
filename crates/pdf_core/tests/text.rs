@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! pdf_core text extraction tests (docs/PLAN.md §3.2, base for Fase 3
 //! highlight-by-selection and Fase 5 chunking): `Document::text` is lazy —
 //! only invoked on demand, never during render/scroll.

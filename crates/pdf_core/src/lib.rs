@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! pdf_core — PDFLector's core library: document handling, rendering, cache,
 //! annotations, persistence and export. UI-independent by design (see
 //! docs/PLAN.md §3): no egui, no windowing, compiles headless.

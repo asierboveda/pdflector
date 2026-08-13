@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! MuPDF backend: crate `mupdf` 0.8 (messense/mupdf-rs) over MuPDF C
 //! (AGPL-3.0 — chosen in ADR-001, Fase 0.5). Single engine, always compiled.
 //!

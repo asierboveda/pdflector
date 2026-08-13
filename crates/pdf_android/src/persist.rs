@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Persistencia del estado del visor (posición + modo oscuro) en
 //! `internal_data_path()/state.json` (JSON con serde/serde_json — ya en el
 //! grafo de dependencias vía pdf_core, mismas versiones y ya cross-compiladas

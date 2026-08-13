@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! ai module integration tests (Fase 5): chunking against a fake document
 //! and the raw-TCP Ollama client against a local `TcpListener` — no real
 //! Ollama, no MuPDF, no corpus.

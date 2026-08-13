@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! pdf_core acceptance tests (docs/PLAN.md §5, Fase 0 y 0.5): open a PDF,
 //! report page count, render page 1 to a bitmap of the expected dimensions.
 //! The engine under test is MuPDF — single backend since ADR-001 (Fase 0.5).

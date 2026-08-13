@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Real-engine prefetch tests (Fase 1, B2): background prefetch over MuPDF and
 //! REAL corpus PDFs. No mocks, no shared state: every test opens its own
 //! `Prefetcher` and every miss is an actual MuPDF render.

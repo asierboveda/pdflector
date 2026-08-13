@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Escala inicial de apertura de documento: política "cover" (pantalla completa).
 //!
 //! Módulo separado para que otro agente pueda cambiar la política de escala de

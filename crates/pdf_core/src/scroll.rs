@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Virtualized-scroll math (docs/PLAN.md §4, Fase 1 — "solo páginas visibles +
 //! N colindantes"). Pure geometry here, so it is testable without a PDF engine;
 //! the threaded prefetch queue belongs to Fase 1 B2.

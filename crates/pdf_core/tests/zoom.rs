@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Zoom support integration tests (Fase 1 B3): selective cache trimming and
 //! the public API surface. Uses a fake engine with synthetic bitmaps — no
 //! MuPDF, no corpus (see `zoom.rs` unit tests for `scale_bitmap` /

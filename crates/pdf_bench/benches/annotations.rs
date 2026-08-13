@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Fase 3 annotations benchmark: does the vector annotation model (Fase 3,
 //! docs/PLAN.md §3.4) scale to a real document with hundreds of annotations?
 //!

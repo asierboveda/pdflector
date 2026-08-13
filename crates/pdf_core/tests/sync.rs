@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Integration tests for the sync module (Fase 4, PLAN §3.5): the
 //! sync-friendly layout helpers and live change detection with `notify`.
 //! No network involved — Syncthing is external; these tests exercise only

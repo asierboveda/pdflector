@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Engine benchmark harness (criterion) — MuPDF is the only engine since
 //! ADR-001 (Fase 0.5), so `build_engine` is the sole customization point.
 //!

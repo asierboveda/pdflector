@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Asier Bóveda
 """Generate the PDFLector test corpus.
 
 Cases (per PLAN.md 2.2):

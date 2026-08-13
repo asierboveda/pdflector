@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Render perf benchmark for the sole MuPDF backend (ADR-001).
 //! Compares the 4-PDF corpus at 1× and 2× on page 1 and the middle page.
 //! Run with:

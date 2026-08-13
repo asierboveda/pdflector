@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Byte-bounded LRU cache of rendered pages (docs/PLAN.md §3.3 `cache`, Fase 1).
 //!
 //! `RenderCache` wraps a `RenderEngine` document and keeps a least-recently-used

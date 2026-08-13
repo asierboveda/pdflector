@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Integration tests for the SQLite sidecar store (Fase 3, PLAN §3.5):
 //! exact save/load round-trips, id and `next_id` preservation across reload,
 //! empty-file behaviour and the sidecar path convention. No PDF engine

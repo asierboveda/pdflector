@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! SQLite sidecar persistence for [`AnnotationSet`] (Fase 3, docs/PLAN.md
 //! §3.5): one `.db` file per PDF, stored next to the document under
 //! `annotations/`, designed for Syncthing (a sync conflict is contained to a
