@@ -295,6 +295,29 @@ pub(crate) fn tick_gestures(reader: &mut Reader, app: &AndroidApp) {
     }
 }
 
+/// Empieza el gesto de pinch con los punteros actuales (≥ 2): fija el ancla
+/// (centro de los dedos), el zoom y el pan de partida en `Reader` y marca el
+/// gesto con la distancia inicial (base del factor RELATIVO del zoom).
+///
+/// BUG arreglado (antes el código exigía `distancia > 8 px` para empezar el
+/// pinch): con los dedos a ≤ 8 px el gesto se quedaba en `Tap` con 2
+/// punteros, ningún Move actuaba (el arm de `Tap` exige 1 puntero) y al
+/// levantar los dedos se disparaba un CAMBIO DE PÁGINA (el pinch "se
+/// bugeaba"). Ahora el pinch empieza SIEMPRE con el segundo dedo; `start_dist`
+/// nunca es 0 (mínimo 1 px), así que un toque con los dedos casi juntos no
+/// divide por cero en el Move y, si no hay separación, `set_zoom_sharp`
+/// resulta un no-op (zoom sin cambios).
+fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {
+    let (_, ax, ay) = pts[0];
+    let (_, bx, by) = pts[1];
+    let d = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
+    reader.begin_pinch((ax + bx) / 2.0, (ay + by) / 2.0);
+    reader.gesture.kind = GestureKind::Pinch {
+        start_dist: d.max(1.0),
+        start_zoom: reader.zoom,
+    };
+}
+
 /// Procesa un `MotionEvent` del VISOR: actualiza la máquina de gestos y actúa
 /// sobre el reader. En modo picker/biblioteca se delega en
 /// `handle_picker_motion` (arrastre + tap de lista, sin pinch).
@@ -327,7 +350,14 @@ fn handle_motion(
             // empieza la selección por arrastre (ancla = punto del doble-tap;
             // el rect se materializa al moverse > SELECT_SLOP).
             reader.gesture.pointers = pts;
-            if let Some(&(_, x, y)) = reader.gesture.pointers.first() {
+            // Defensa: si los DOS dedos llegan en un único ACTION_DOWN
+            // (algunos dispositivos/API los entregan juntos, sin PointerDown
+            // posterior), empezar el pinch directamente — un "Tap" con 2
+            // punteros no coincide con ningún gesto de Move y al levantar
+            // dispararía un cambio de página (el bug del pinch).
+            if reader.gesture.pointers.len() >= 2 {
+                begin_pinch_gesture(reader, &reader.gesture.pointers.clone());
+            } else if let Some(&(_, x, y)) = reader.gesture.pointers.first() {
                 let is_double_tap = match reader.gesture.pending_tap.take() {
                     Some(p) if p.at.elapsed() < DOUBLE_TAP_MS => {
                         let moved = ((x - p.x).powi(2) + (y - p.y).powi(2)).sqrt();
@@ -371,16 +401,7 @@ fn handle_motion(
                 if matches!(reader.gesture.kind, GestureKind::Selecting { .. }) {
                     reader.clear_selection();
                 }
-                let (_, ax, ay) = reader.gesture.pointers[0];
-                let (_, bx, by) = reader.gesture.pointers[1];
-                let d = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
-                if d > 8.0 {
-                    reader.begin_pinch((ax + bx) / 2.0, (ay + by) / 2.0);
-                    reader.gesture.kind = GestureKind::Pinch {
-                        start_dist: d,
-                        start_zoom: reader.zoom,
-                    };
-                }
+                begin_pinch_gesture(reader, &reader.gesture.pointers.clone());
             }
         }
         MotionAction::Move => {
@@ -426,6 +447,19 @@ fn handle_motion(
                     let (_, bx, by) = reader.gesture.pointers[1];
                     let d = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
                     if d > 1.0 {
+                        // Re-anclar el pinch al centro ACTUAL de los dedos
+                        // ANTES de aplicar el zoom. BUG arreglado: el ancla
+                        // solo se fijaba al caer el segundo dedo, así que si
+                        // el gesto incluía traslación (el pinch real: un dedo
+                        // quieto y el otro que se mueve, o ambos desplazándose)
+                        // el contenido quedaba anclado al centro INICIAL y se
+                        // DERIVABA bajo los dedos (el punto bajo los dedos no
+                        // se quedaba fijo). `begin_pinch` re-captura z0/pan0
+                        // del estado actual, por lo que el pan es continuo (a
+                        // zoom == z0 el pan no cambia) y el factor de zoom
+                        // sigue siendo RELATIVO a la distancia inicial del
+                        // gesto (`start_dist`/`start_zoom` no se tocan).
+                        reader.begin_pinch((ax + bx) / 2.0, (ay + by) / 2.0);
                         // Factor RELATIVO a la distancia inicial del gesto
                         // (no incremental por evento): pinch-out/in sin mover
                         // los dedos devuelve exactamente el zoom de partida.
@@ -514,7 +548,15 @@ fn handle_motion(
                     // no fija nada: `end_sel` descarta los rects degenerados).
                     reader.end_sel();
                 }
-                GestureKind::Pinch { .. } | GestureKind::None => {}
+                GestureKind::Pinch { .. } => {
+                    // Defensa: si los DOS dedos se levantan en un único
+                    // ACTION_UP (sin PointerUp previo), el pinch termina aquí
+                    // y el zoom fast se quedaría sin re-render nítido (vista
+                    // borrosa con el bitmap viejo escalado): asentar el render
+                    // igual que hace `PointerUp`.
+                    reader.set_zoom_sharp(reader.zoom);
+                }
+                GestureKind::None => {}
             }
         }
         MotionAction::PointerUp => {
@@ -536,10 +578,18 @@ fn handle_motion(
             }
         }
         MotionAction::Cancel => {
+            // Un Cancel (p. ej. el sistema roba el gesto) también termina el
+            // pinch: sin esto el zoom fast quedaba sin re-render nítido y la
+            // vista se quedaba con el bitmap viejo escalado (borroso) hasta
+            // el siguiente pinch o cambio de página.
+            let pinch_active = matches!(reader.gesture.kind, GestureKind::Pinch { .. });
             reader.gesture.pointers.clear();
             reader.gesture.kind = GestureKind::None;
             reader.gesture.pending_tap = None;
             reader.clear_selection();
+            if pinch_active {
+                reader.set_zoom_sharp(reader.zoom);
+            }
         }
         _ => {} // HoverMove, Scroll, Outside, ...: sin gesto definido.
     }
