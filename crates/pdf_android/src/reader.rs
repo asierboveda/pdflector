@@ -582,7 +582,7 @@ pub(crate) struct Reader {
     /// cuerpo y el flujo del tap. Separada del panel para que el render
     /// (`draw::render_ai_panel`) la lea sin dependencias circulares.
     pub(crate) ai_phase: AiPhase,
-    /// Receptor del hilo de fondo de Groq (std::thread + mpsc, el patrón de
+    /// Receptor del hilo de fondo de IA (std::thread + mpsc, el patrón de
     /// `pdf_core::prefetch`): Some mientras una consulta está en vuelo.
     /// `tick` lo sondea con `try_recv` (sin bloquear) y lo libera al llegar
     /// el resultado o al cerrar el panel. None = sin consulta activa.
@@ -1483,10 +1483,9 @@ impl Reader {
     /// visión: ecuaciones/gráficos, Fase 5): recorta del bitmap cacheado de
     /// la página actual el rect de selección (px de ventana,
     /// `sel_screen_rect`) y lo codifica a PNG en memoria → base64 SIN
-    /// prefijo (el contrato de `GroqClient::chat_vision`; el prefijo
-    /// `data:image/png;base64,` lo añade pdf_core). None si no hay bitmap,
-    /// escala inválida o el crop queda vacío (zoom/pan raro) — el llamador
-    /// cae al envío solo-texto.
+    /// prefijo (el contrato de `GeminiClient::explain_image`). None si no
+    /// hay bitmap, escala inválida o el crop queda vacío (zoom/pan raro) —
+    /// el llamador cae al envío solo-texto.
     ///
     /// Mapeo ventana → píxeles del bitmap: la MISMA geometría del blit
     /// (`blit`): el bitmap se dibuja en `(dx, dy)` escalado por
@@ -1548,7 +1547,7 @@ impl Reader {
             rgba.extend_from_slice(&bmp.data[start..start + (w as usize) * 4]);
         }
         // Codificación PNG en memoria (encoder `png`, RGBA8 → PNG) y base64
-        // sin prefijo (contrato de `chat_vision`).
+        // sin prefijo (contrato de `GeminiClient::explain_image`).
         let mut png_bytes = Vec::new();
         {
             let mut enc = png::Encoder::new(&mut png_bytes, w, h);
@@ -1619,39 +1618,43 @@ impl Reader {
     }
 
     // ---------------------------------------------------------------------
-    // "Preguntar a la IA" (Parte 2): hilo de fondo + Groq + panel flotante
+    // "Preguntar a la IA" (Parte 2): hilo de fondo + IA híbrida + panel
     // ---------------------------------------------------------------------
     //
     // El tap en "IA" del menú de selección (`input::sel_menu_tap`) llama a
     // `ask_ai`: se cierra el menú, se abre el panel en fase Asking
     // ("preguntando…") y se lanza un hilo de fondo (std::thread + mpsc, el
-    // mismo patrón de `pdf_core::prefetch`) que construye el `GroqClient`
-    // (pdf_core::ai, contrato de la Parte 1) con la key embebida
-    // (`GROQ_API_KEY`/`GROQ_MODEL` de `lib.rs`) y llama a `chat(system,
-    // prompt)` con el texto seleccionado (o `chat_vision` con el PNG de la
-    // selección, Fase 5: ecuaciones/gráficos — ver `ask_ai`) y envía el
+    // mismo patrón de `pdf_core::prefetch`) que llama a la IA y envía el
     // resultado por el canal. El hilo de UI sondea el canal en `tick`
     // (`try_recv`, sin bloquear) y al llegar el mensaje pasa el panel a
     // Answer (texto envuelto con scroll) o Error (mensaje claro en el mismo
     // panel). Decisiones:
     //
+    // - HÍBRIDO (2026-08-XX): con IMAGEN de la selección (crop del bitmap
+    //   cacheado, `sel_image_png_base64`) se llama a
+    //   `GeminiClient::explain_image` (pdf_core::ai) con `GEMINI_MODEL`: el
+    //   modelo de visión de Groq fue RETIRADO (403), así que la imagen va a
+    //   Gemini; la imagen es la fuente principal para ecuaciones/gráficos y
+    //   el texto extraído va como contexto adicional en el prompt (puede ser
+    //   "" en un PDF escaneado). Sin imagen, se cae a `GroqClient::chat`
+    //   solo-texto con `GROQ_MODEL` (el flujo de siempre).
+    // - Reintento: si Gemini falla (p. ej. 503/busy), se intenta UNA vez más
+    //   tras ~1 s DENTRO del hilo de fondo (nunca bloquea el hilo de UI); si
+    //   sigue fallando, el panel muestra un error claro ("modelo ocupado,
+    //   reintenta") con el detalle del error original.
     // - La key va EMBEBIDA en el APK (uso personal, sin telemetría; ver
     //   `lib.rs`). Una consulta no se cancela al cerrar el panel: el hilo
     //   termina solo y el resultado se descarta al soltar el receptor.
     // - El hilo de fondo evita bloquear el hilo de UI durante la red
-    //   (AGENTS.md §4.6): la generación en Groq puede tardar varios segundos.
-    // - Con selección que tenga IMAGEN (crop del bitmap cacheado,
-    //   `sel_image_png_base64`) se llama a `chat_vision` con el modelo de
-    //   visión (`GROQ_VISION_MODEL`): la imagen es la fuente principal para
-    //   ecuaciones/gráficos y el texto extraído va como prompt (puede ser
-    //   "" en PDF escaneado). Sin imagen, se cae al `chat` solo-texto.
+    //   (AGENTS.md §4.6): la generación puede tardar varios segundos.
 
-    /// "IA": lanza la consulta a Groq en un hilo de fondo y abre el panel en
-    /// fase "preguntando…". Si no hay ni texto ni imagen aprovechable avisa
-    /// "no text" y no abre el panel (mismo comportamiento que Copiar; con
-    /// imagen — PDF escaneado — sí abre: la imagen es la fuente principal).
-    /// El texto y la imagen se capturan ANTES de cerrar el menú (`sel_text`
-    /// y `sel_image_png_base64`).
+    /// "IA": lanza la consulta a la IA (Gemini con imagen / Groq solo-texto)
+    /// en un hilo de fondo y abre el panel en fase "preguntando…". Si no hay
+    /// ni texto ni imagen aprovechable avisa "no text" y no abre el panel
+    /// (mismo comportamiento que Copiar; con imagen — PDF escaneado — sí
+    /// abre: la imagen es la fuente principal). El texto y la imagen se
+    /// capturan ANTES de cerrar el menú (`sel_text` y
+    /// `sel_image_png_base64`).
     pub(crate) fn ask_ai(&mut self) {
         let text = self.sel_text();
         // Imagen de la selección (ecuaciones/gráficos): PNG base64 del crop
@@ -1664,11 +1667,11 @@ impl Reader {
             return;
         }
         info!(
-            "ask_ai: {} chars, image {} B PNG -> Groq (text {}, vision {})",
+            "ask_ai: {} chars, image {} B PNG -> text Groq ({}), image Gemini ({})",
             text.chars().count(),
             image.as_ref().map_or(0, String::len),
             crate::GROQ_MODEL,
-            crate::GROQ_VISION_MODEL
+            crate::GEMINI_MODEL
         );
         // Panel en fase Asking ("preguntando…") y hilo de fondo con la
         // llamada HTTP: el UI nunca espera por la red.
@@ -1676,28 +1679,53 @@ impl Reader {
         self.ai_phase = AiPhase::Asking;
         self.rebuild_ai_panel();
         let (tx, rx) = std::sync::mpsc::channel();
-        let prompt = text;
         std::thread::spawn(move || {
             let result = match image {
-                // Con imagen (ecuación/gráfico): chat_vision con el modelo
-                // de visión; el prompt es el texto extraído (puede ser ""
-                // en un PDF escaneado — la imagen es la fuente principal).
+                // Con imagen (ecuación/gráfico): Gemini con `explain_image`;
+                // el prompt es la instrucción + el texto extraído como
+                // contexto adicional (puede ser "" en un PDF escaneado — la
+                // imagen es la fuente principal). El modelo de visión de
+                // Groq está retirado (403), por eso la imagen va a Gemini.
                 Some(b64) => {
-                    let client = pdf_core::ai::GroqClient::with_model(
-                        crate::GROQ_API_KEY,
-                        crate::GROQ_VISION_MODEL,
+                    let client = pdf_core::ai::GeminiClient::with_model(
+                        crate::GOOGLE_API_KEY,
+                        crate::GEMINI_MODEL,
                     );
-                    let system = "Eres un asistente de estudio. Explica de forma clara y concisa lo que se ve en la imagen (ecuación, gráfico o texto).";
-                    client.chat_vision(system, &prompt, &b64)
+                    let mut prompt =
+                        "Explica de forma clara y concisa lo que se ve en la imagen (ecuación, gráfico o texto)."
+                            .to_string();
+                    if !text.is_empty() {
+                        prompt.push_str("\n\nTexto extraído de la página (contexto adicional):\n");
+                        prompt.push_str(&text);
+                    }
+                    match client.explain_image(&prompt, &b64) {
+                        Ok(answer) => Ok(answer),
+                        Err(first_err) => {
+                            // Reintento ÚNICO tras ~1 s: Gemini devuelve
+                            // 503/busy en picos de carga y el segundo intento
+                            // suele pasar. El sleep va en el hilo de fondo
+                            // (el hilo de UI nunca se bloquea).
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            match client.explain_image(&prompt, &b64) {
+                                Ok(answer) => Ok(answer),
+                                Err(second_err) => Err(pdf_core::AiError::Http {
+                                    status: 503,
+                                    body: format!(
+                                        "modelo ocupado, reintenta — error original: {first_err}; tras reintento: {second_err}"
+                                    ),
+                                }),
+                            }
+                        }
+                    }
                 }
-                // Sin imagen: el chat solo-texto de siempre.
+                // Sin imagen: el chat solo-texto de Groq de siempre.
                 None => {
                     let client = pdf_core::ai::GroqClient::with_model(
                         crate::GROQ_API_KEY,
                         crate::GROQ_MODEL,
                     );
                     let system = "Eres un asistente de estudio. Explica de forma clara y concisa el texto que te dan.";
-                    client.chat(system, &prompt)
+                    client.chat(system, &text)
                 }
             };
             // El error también viaja por el canal (`AiError` implementa
@@ -1708,7 +1736,7 @@ impl Reader {
         self.redraw();
     }
 
-    /// Aplica el resultado del hilo de Groq al panel (fase Answer/Error) y
+    /// Aplica el resultado del hilo de IA al panel (fase Answer/Error) y
     /// libera el receptor (deja de sondear el canal y de pedir ticks).
     fn ai_answer(&mut self, text: String, phase: AiPhase) {
         self.ai_text = text;
@@ -1817,7 +1845,7 @@ impl Reader {
             || self.thumbs_pending()
             || self.toast.is_some()
             || self.gesture.tap_pending()
-            // Consulta de Groq en vuelo: `tick` sondea el canal del hilo de
+            // Consulta de IA en vuelo: `tick` sondea el canal del hilo de
             // fondo (sin esto el poll bloquearía y la respuesta tardaría en
             // aparecer hasta el siguiente evento de input).
             || self.ai_rx.is_some()
@@ -1895,7 +1923,7 @@ impl Reader {
         // Tap diferido (ventana de doble-tap): si expiró sin un segundo down,
         // se ejecuta el tap de página (`input::tick_gestures`).
         crate::input::tick_gestures(self, app);
-        // Resultado del hilo de Groq (si hay una consulta en vuelo): `try_recv`
+        // Resultado del hilo de IA (si hay una consulta en vuelo): `try_recv`
         // sondea el canal SIN bloquear; al llegar el mensaje se actualiza el
         // panel (fase Answer/Error) y se libera el receptor. Mientras tanto el
         // poll con timeout se mantiene vivo vía `needs_tick` (ai_rx.is_some).

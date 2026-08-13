@@ -382,28 +382,34 @@ pub(crate) const SEL_MIN_PX: f32 = 2.0;
 pub(crate) const TOAST_MS: std::time::Duration = std::time::Duration::from_millis(1500);
 
 // ---------------------------------------------------------------------------
-// Configuración de "Preguntar a la IA" (Fase 5, Groq)
+// Configuración de "Preguntar a la IA" (Fase 5): Groq (texto) + Gemini (imagen)
 // ---------------------------------------------------------------------------
 //
-// La API key de Groq va EMBEBIDA en el APK: es una app de USO PERSONAL (sin
+// Las API keys van EMBEBIDAS en el APK: es una app de USO PERSONAL (sin
 // telemetría ni servidores propios) y la consulta va directa del dispositivo
-// a api.groq.com por HTTPS. Obtenla gratis en https://console.groq.com/keys
-// (plan free). PRIVACIDAD: la key viaja en el binario — no publiques el APK
-// ni el repo con una key real; el placeholder de abajo compila y muestra el
-// error "no hay red / key inválida" en el panel.
+// al proveedor por HTTPS. Obtenlas gratis en https://console.groq.com/keys
+// (plan free) y en https://aistudio.google.com/apikey. PRIVACIDAD: las keys
+// viajan en el binario — no publiques el APK ni el repo con keys reales; los
+// placeholders de abajo compilan y muestran el error "no hay red / key
+// inválida" en el panel.
 //
-// El modelo por defecto es llama-3.3-70b-versatile: buen equilibrio de
-// calidad/velocidad en Groq (el usuario del panel es "explícame este
-// párrafo/ecuación", así que la latencia importa).
+// HÍBRIDO (2026-08-XX): TEXTO → Groq con llama-3.3-70b-versatile (buen
+// equilibrio de calidad/velocidad: el usuario del panel es "explícame este
+// párrafo", así que la latencia importa); IMAGEN → Gemini con
+// gemini-flash-latest (el modelo de visión de Groq fue RETIRADO y devuelve
+// 403 — ver `GEMINI_MODEL`).
 pub(crate) const GROQ_API_KEY: &str = include_str!("../groq_key.txt");
 pub(crate) const GROQ_MODEL: &str = "llama-3.3-70b-versatile";
-/// Modelo de VISIÓN para "Preguntar a la IA" cuando la selección es una
+pub(crate) const GOOGLE_API_KEY: &str = include_str!("../google_key.txt");
+/// Modelo de GEMINI para "Preguntar a la IA" cuando la selección es una
 /// ecuación/gráfico (Fase 5): en ese caso se manda el PNG del crop de la
-/// selección a `GroqClient::chat_vision`, que usa ESTE modelo (multimodal,
-/// texto + imagen). Coincide con el default de pdf_core
-/// (`DEFAULT_VISION_MODEL`); se declara aquí para que la llamada de
-/// `Reader::ask_ai` no lleve el literal suelto (mismo patrón que `GROQ_MODEL`).
-pub(crate) const GROQ_VISION_MODEL: &str = "llama-3.2-90b-vision-preview";
+/// selección a `GeminiClient::explain_image` (pdf_core::ai), que usa ESTE
+/// modelo (multimodal, texto + imagen). Coincide con el default de pdf_core;
+/// se declara aquí para que la llamada de `Reader::ask_ai` no lleve el
+/// literal suelto (mismo patrón que `GROQ_MODEL`). El modelo de visión de
+/// Groq (`llama-3.2-90b-vision-preview`) se retiró del servicio y devuelve
+/// 403, de ahí el cambio a Gemini.
+pub(crate) const GEMINI_MODEL: &str = "gemini-flash-latest";
 /// Límites del factor de zoom continuo (1.0 = página completa a pantalla).
 /// `PINCH_MIN = 1.0`: SIN zoom hacia fuera — la página no se puede ver más
 /// pequeña que a pantalla completa (cover); el pan queda limitado a los

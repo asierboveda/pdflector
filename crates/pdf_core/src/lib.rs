@@ -18,7 +18,7 @@ pub mod store;
 pub mod sync;
 pub mod zoom;
 
-pub use ai::{AiError, GroqClient, OllamaClient, chunk_pages};
+pub use ai::{AiError, GeminiClient, GroqClient, OllamaClient, chunk_pages};
 pub use annotations::{
     Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote,
 };
