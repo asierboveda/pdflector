@@ -62,6 +62,14 @@ max_sdk_version = 32
 [[package.metadata.android.uses_permission]]
 name = "android.permission.MANAGE_EXTERNAL_STORAGE"
 
+# --- Permiso INTERNET (Fase 5: "Preguntar a la IA" vía Groq) ---
+# `GroqClient` (pdf_core::ai) hace HTTPS a api.groq.com desde el hilo de fondo
+# de la consulta; sin este permiso la llamada de red falla al instante en
+# Android (SocketException: permission denied). No añade nada más: no hay
+# telemetría ni otros usos de red en la app.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
 # --- "Abrir con" (ACTION_VIEW) ---
 # cargo-apk 0.10 serializa estos metadatos TOML directamente al
 # AndroidManifest.xml del APK (ndk_build::manifest::Activity):

@@ -26,9 +26,9 @@ use pdf_core::{
 
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
 use crate::draw::{
-    ButtonRect, PageAnnots, PageBlit, blit_composed, blit_page, compose_frame, render_library_grid,
-    render_page_badge, render_picker_list, render_sel_menu, render_sheet, render_toast,
-    sel_menu_layout,
+    ButtonRect, PageAnnots, PageBlit, ai_panel_layout, blit_composed, blit_page, compose_frame,
+    render_ai_panel, render_library_grid, render_page_badge, render_picker_list, render_sel_menu,
+    render_sheet, render_toast, sel_menu_layout,
 };
 use crate::input::GestureState;
 use crate::jni::{
@@ -380,6 +380,51 @@ pub(crate) struct SelMenu {
     pub(crate) buttons: Vec<(&'static str, ButtonRect)>,
 }
 
+/// Fase del panel de "Preguntar a la IA" (Parte 2): decide el título, el
+/// color del cuerpo y qué muestra el panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AiPhase {
+    /// Consulta en vuelo: el hilo de fondo aún no ha devuelto nada (el panel
+    /// muestra "preguntando…" y `tick` sigue sondeando el canal).
+    Asking,
+    /// Respuesta del modelo lista (texto envuelto en `AiPanel::lines`).
+    Answer,
+    /// La consulta falló (sin red, key inválida, error HTTP/JSON...): el
+    /// panel muestra el error en rojo en el mismo sitio que la respuesta.
+    Error,
+}
+
+/// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta tipo `SelMenu`
+/// con cabecera (título + botones ✕/▲/▼) y cuerpo de texto envuelto en
+/// varias líneas; si el texto desborda el cuerpo, el scroll (▲/▼) muestra
+/// solo una ventana de líneas (`scroll..scroll+visible`) — el render
+/// (`draw::render_ai_panel`) salta las líneas fuera de la ventana, así que
+/// el recorte es gratis. Geometría y bitmaps cacheados mientras esté
+/// abierto; el tap vive en `input::ai_panel_tap` (misma geometría
+/// compartida que `SelMenu`).
+pub(crate) struct AiPanel {
+    /// Esquina superior izquierda del panel en px de ventana.
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    /// Tamaño del panel en px (el del bitmap cacheado).
+    pub(crate) w: i32,
+    pub(crate) h: i32,
+    /// Botones (etiqueta + rect en px de ventana): "×" (cerrar, siempre) y
+    /// "▲"/"▼" (scroll, solo si `scrollable`). Compartidos con el tap.
+    pub(crate) buttons: Vec<(&'static str, ButtonRect)>,
+    /// Bitmap del panel (cabecera + líneas VISIBLES del cuerpo), cacheado
+    /// mientras el panel esté abierto; se re-renderiza al hacer scroll.
+    pub(crate) bitmap: Bitmap,
+    /// Número total de líneas envueltas del texto actual (`ai_text`).
+    pub(crate) lines: usize,
+    /// Primera línea visible en el cuerpo (0 = principio).
+    pub(crate) scroll: usize,
+    /// Máximo de líneas visibles a la vez (alto del cuerpo / alto de línea).
+    pub(crate) visible: usize,
+    /// ¿El texto desborda el cuerpo? (true → botones ▲/▼ y recorte).
+    pub(crate) scrollable: bool,
+}
+
 /// Estado de la app, vivo durante todo el bucle de `android_main`.
 /// `pub(crate)` por la partición de `lib.rs`: `input` y `draw` leen campos,
 /// `lib` llama a los métodos (gestos y listas viven en otros módulos).
@@ -522,6 +567,25 @@ pub(crate) struct Reader {
     /// posición/geometría en px de ventana (ver `SelMenu`). Some mientras el
     /// menú esté abierto; tocar fuera lo cierra y descarta la selección.
     pub(crate) sel_menu: Option<SelMenu>,
+    /// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta tipo
+    /// `SelMenu` con cabecera (título + ✕/▲/▼) y cuerpo de texto envuelto
+    /// con scroll (ver `AiPanel`). Some mientras esté abierto (fase
+    /// Asking/Answer/Error); se abre al tocar "IA" en el menú de selección
+    /// (`ask_ai`) y se cierra con ✕ o tap fuera (`close_ai_panel`).
+    pub(crate) ai_panel: Option<AiPanel>,
+    /// Texto actual del panel de IA: "preguntando…" mientras la consulta
+    /// está en vuelo, la respuesta del modelo o el mensaje de error. Lo
+    /// consume `draw::ai_panel_layout` para envolver las líneas.
+    pub(crate) ai_text: String,
+    /// Fase del panel de IA (`AiPhase`): decide el título, el color del
+    /// cuerpo y el flujo del tap. Separada del panel para que el render
+    /// (`draw::render_ai_panel`) la lea sin dependencias circulares.
+    pub(crate) ai_phase: AiPhase,
+    /// Receptor del hilo de fondo de Groq (std::thread + mpsc, el patrón de
+    /// `pdf_core::prefetch`): Some mientras una consulta está en vuelo.
+    /// `tick` lo sondea con `try_recv` (sin bloquear) y lo libera al llegar
+    /// el resultado o al cerrar el panel. None = sin consulta activa.
+    ai_rx: Option<std::sync::mpsc::Receiver<pdf_core::ai::Result<String>>>,
     /// Aviso breve ("copied", "highlighted", "no text", ...) sobre el
     /// indicador de página: texto + momento de creación; `tick` lo expira a
     /// los `TOAST_MS` (1,5 s) y el bitmap cacheado se invalida con el texto.
@@ -574,6 +638,10 @@ impl Reader {
             annot_sidecar: None,
             sel: None,
             sel_menu: None,
+            ai_panel: None,
+            ai_text: String::new(),
+            ai_phase: AiPhase::Asking,
+            ai_rx: None,
             toast: None,
             toast_bitmap: None,
         };
@@ -1034,17 +1102,21 @@ impl Reader {
                     (b, bx, by)
                 });
                 // Overlays del visor en el MISMO buffer (un solo lock+present):
-                // indicador de página, menú de selección, aviso breve y sheet
-                // de ajustes deslizado desde el borde superior (solo si está
-                // visible; `progress == 1` = abierto del todo). El menú y el
-                // aviso van SIEMPRE (también con el sheet: se añaden al frame
-                // compuesto o como overlays de `blit_composed`).
-                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(4);
+                // indicador de página, menú de selección, panel de IA, aviso
+                // breve y sheet de ajustes deslizado desde el borde superior
+                // (solo si está visible; `progress == 1` = abierto del todo).
+                // El menú, el panel y el aviso van SIEMPRE (también con el
+                // sheet: se añaden al frame compuesto o como overlays de
+                // `blit_composed`).
+                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(5);
                 if let Some((b, bx, by)) = badge {
                     overlays.push((b, bx, by));
                 }
                 if let Some(menu) = self.sel_menu.as_ref() {
                     overlays.push((&menu.bitmap, menu.x, menu.y));
+                }
+                if let Some(panel) = self.ai_panel.as_ref() {
+                    overlays.push((&panel.bitmap, panel.x, panel.y));
                 }
                 if let Some((tb, tx, ty)) = toast_ov {
                     overlays.push((tb, tx, ty));
@@ -1080,9 +1152,12 @@ impl Reader {
                     if let Some(frame) = self.page_frame.as_ref() {
                         // El frame ya incluye el indicador y el rect de
                         // selección: menú, aviso breve y sheet como overlays.
-                        let mut sheet_ov: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(3);
+                        let mut sheet_ov: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(4);
                         if let Some(menu) = self.sel_menu.as_ref() {
                             sheet_ov.push((&menu.bitmap, menu.x, menu.y));
+                        }
+                        if let Some(panel) = self.ai_panel.as_ref() {
+                            sheet_ov.push((&panel.bitmap, panel.x, panel.y));
                         }
                         if let Some((tb, tx, ty)) = toast_ov {
                             sheet_ov.push((tb, tx, ty));
@@ -1461,6 +1536,141 @@ impl Reader {
         self.redraw();
     }
 
+    // ---------------------------------------------------------------------
+    // "Preguntar a la IA" (Parte 2): hilo de fondo + Groq + panel flotante
+    // ---------------------------------------------------------------------
+    //
+    // El tap en "IA" del menú de selección (`input::sel_menu_tap`) llama a
+    // `ask_ai`: se cierra el menú, se abre el panel en fase Asking
+    // ("preguntando…") y se lanza un hilo de fondo (std::thread + mpsc, el
+    // mismo patrón de `pdf_core::prefetch`) que construye el `GroqClient`
+    // (pdf_core::ai, contrato de la Parte 1) con la key embebida
+    // (`GROQ_API_KEY`/`GROQ_MODEL` de `lib.rs`), llama a `chat(system,
+    // prompt)` con el texto seleccionado y envía el resultado por el canal.
+    // El hilo de UI sondea el canal en `tick` (`try_recv`, sin bloquear) y
+    // al llegar el mensaje pasa el panel a Answer (texto envuelto con scroll)
+    // o Error (mensaje claro en el mismo panel). Decisiones:
+    //
+    // - La key va EMBEBIDA en el APK (uso personal, sin telemetría; ver
+    //   `lib.rs`). Una consulta no se cancela al cerrar el panel: el hilo
+    //   termina solo y el resultado se descarta al soltar el receptor.
+    // - El hilo de fondo evita bloquear el hilo de UI durante la red
+    //   (AGENTS.md §4.6): la generación en Groq puede tardar varios segundos.
+
+    /// "IA": lanza la consulta a Groq en un hilo de fondo y abre el panel en
+    /// fase "preguntando…". Si no hay texto seleccionable (PDF escaneado)
+    /// avisa "no text" y no abre el panel (mismo comportamiento que
+    /// Copiar). El texto se captura ANTES de cerrar el menú (`sel_text`).
+    pub(crate) fn ask_ai(&mut self) {
+        let text = self.sel_text();
+        self.clear_selection(); // el panel sustituye al menú de selección
+        if text.is_empty() {
+            self.show_toast("no text");
+            return;
+        }
+        info!(
+            "ask_ai: {} chars -> Groq ({})",
+            text.chars().count(),
+            crate::GROQ_MODEL
+        );
+        // Panel en fase Asking ("preguntando…") y hilo de fondo con la
+        // llamada HTTP: el UI nunca espera por la red.
+        self.ai_text = "preguntando…".to_string();
+        self.ai_phase = AiPhase::Asking;
+        self.rebuild_ai_panel();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let prompt = text;
+        std::thread::spawn(move || {
+            let client =
+                pdf_core::ai::GroqClient::with_model(crate::GROQ_API_KEY, crate::GROQ_MODEL);
+            let system = "Eres un asistente de estudio. Explica de forma clara y concisa el texto que te dan.";
+            // El error también viaja por el canal (`AiError` implementa
+            // Display): el hilo de UI decide si es respuesta o error.
+            let _ = tx.send(client.chat(system, &prompt));
+        });
+        self.ai_rx = Some(rx);
+        self.redraw();
+    }
+
+    /// Aplica el resultado del hilo de Groq al panel (fase Answer/Error) y
+    /// libera el receptor (deja de sondear el canal y de pedir ticks).
+    fn ai_answer(&mut self, text: String, phase: AiPhase) {
+        self.ai_text = text;
+        self.ai_phase = phase;
+        self.ai_rx = None;
+        self.rebuild_ai_panel();
+        self.redraw();
+    }
+
+    /// (Re)construye el panel de IA con el texto y la fase actuales
+    /// (`ai_text`/`ai_phase`): layout (`draw::ai_panel_layout`, incluye el
+    /// envoltorio de líneas y los botones) + render del bitmap
+    /// (`draw::render_ai_panel`). None si la ventana no está lista (se deja
+    /// el panel anterior).
+    fn rebuild_ai_panel(&mut self) {
+        let Some(layout) = ai_panel_layout(self) else {
+            return;
+        };
+        let Some(bitmap) = render_ai_panel(self) else {
+            return;
+        };
+        let (mx, my, mrx, mry) = layout.rect;
+        self.ai_panel = Some(AiPanel {
+            x: mx as i32,
+            y: my as i32,
+            w: (mrx - mx) as i32,
+            h: (mry - my) as i32,
+            buttons: layout.buttons,
+            bitmap,
+            lines: layout.lines.len(),
+            scroll: layout.scroll,
+            visible: layout.visible,
+            scrollable: layout.scrollable,
+        });
+    }
+
+    /// Cierra el panel de IA (✕ o tap fuera): descarta el resultado
+    /// pendiente si la consulta aún está en vuelo (el hilo de fondo termina
+    /// solo y su mensaje se descarta al soltar el receptor).
+    pub(crate) fn close_ai_panel(&mut self) {
+        let had = self.ai_panel.is_some();
+        self.ai_panel = None;
+        self.ai_rx = None;
+        self.ai_text = String::new();
+        self.ai_phase = AiPhase::Asking;
+        if had {
+            self.redraw();
+        }
+    }
+
+    /// Scroll del cuerpo del panel de IA (▲/▼, un paso = una línea): solo
+    /// si el texto desborda (`scrollable`); re-renderiza el bitmap con la
+    /// nueva ventana de líneas visibles.
+    pub(crate) fn ai_scroll(&mut self, delta: i32) {
+        let (scrollable, lines, visible, scroll) = match &self.ai_panel {
+            Some(p) => (p.scrollable, p.lines, p.visible, p.scroll),
+            None => return,
+        };
+        if !scrollable {
+            return;
+        }
+        let max = lines.saturating_sub(visible);
+        let target = (scroll as i32 + delta).clamp(0, max as i32) as usize;
+        if target == scroll {
+            return;
+        }
+        if let Some(p) = self.ai_panel.as_mut() {
+            p.scroll = target;
+        }
+        // Re-render con la nueva ventana de líneas visibles (ambos lados se
+        // evalúan antes de bindear: el bitmap es owned, el préstamo mutable
+        // de `ai_panel` vive solo en el cuerpo).
+        if let (Some(bmp), Some(p)) = (render_ai_panel(self), self.ai_panel.as_mut()) {
+            p.bitmap = bmp;
+        }
+        self.redraw();
+    }
+
     /// Abre el menú flotante de la selección fijada: calcula la geometría
     /// (`draw::sel_menu_layout`, cerca del rect, dentro de la ventana),
     /// renderiza el bitmap (Canvas+JNI) y guarda ambos en `sel_menu`.
@@ -1491,6 +1701,10 @@ impl Reader {
             || self.thumbs_pending()
             || self.toast.is_some()
             || self.gesture.tap_pending()
+            // Consulta de Groq en vuelo: `tick` sondea el canal del hilo de
+            // fondo (sin esto el poll bloquearía y la respuesta tardaría en
+            // aparecer hasta el siguiente evento de input).
+            || self.ai_rx.is_some()
     }
 
     // ---------------------------------------------------------------------
@@ -1565,6 +1779,29 @@ impl Reader {
         // Tap diferido (ventana de doble-tap): si expiró sin un segundo down,
         // se ejecuta el tap de página (`input::tick_gestures`).
         crate::input::tick_gestures(self, app);
+        // Resultado del hilo de Groq (si hay una consulta en vuelo): `try_recv`
+        // sondea el canal SIN bloquear; al llegar el mensaje se actualiza el
+        // panel (fase Answer/Error) y se libera el receptor. Mientras tanto el
+        // poll con timeout se mantiene vivo vía `needs_tick` (ai_rx.is_some).
+        if self.ai_rx.is_some() {
+            let outcome = {
+                let rx = self.ai_rx.as_ref().unwrap();
+                match rx.try_recv() {
+                    Ok(Ok(answer)) => Some((answer, AiPhase::Answer)),
+                    Ok(Err(e)) => Some((format!("Error: {e}"), AiPhase::Error)),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    // El hilo murió sin enviar (defensa): mostrar error en vez
+                    // de quedarse en "preguntando…" para siempre.
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some((
+                        "Error: sin respuesta del servidor".to_string(),
+                        AiPhase::Error,
+                    )),
+                }
+            };
+            if let Some((text, phase)) = outcome {
+                self.ai_answer(text, phase);
+            }
+        }
         // Aviso breve: expira a los TOAST_MS (libera también su bitmap).
         if let Some((_, at)) = &self.toast
             && at.elapsed() >= TOAST_MS
@@ -1937,6 +2174,7 @@ impl Reader {
                 self.page_badge = None;
                 self.sheet_hide_now(); // sheet del visor anterior: fuera (libera también el frame)
                 self.clear_selection(); // selección del documento anterior: fuera
+                self.close_ai_panel(); // panel de IA del documento anterior: fuera
                 self.thumbs.clear(); // portadas de otra biblioteca: no sirven
                 self.thumb_failed.clear();
                 self.list_dirty = true;
@@ -1967,6 +2205,7 @@ impl Reader {
         self.bitmap = None;
         self.sheet_hide_now(); // fuera del visor: el sheet no pinta en biblioteca
         self.clear_selection(); // selección del visor: fuera (no pinta en biblioteca)
+        self.close_ai_panel(); // panel de IA del visor: fuera
         self.picker_drag = None;
         self.rescan_library(app);
     }
@@ -1982,6 +2221,7 @@ impl Reader {
         self.bitmap = None;
         self.sheet_hide_now();
         self.clear_selection(); // selección del visor: fuera (no pinta en el picker)
+        self.close_ai_panel(); // panel de IA del visor: fuera
         self.picker_drag = None;
         self.redraw();
     }

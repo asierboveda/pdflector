@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! ai module integration tests (Fase 5): chunking against a fake document
-//! and the raw-TCP Ollama client against a local `TcpListener` — no real
-//! Ollama, no MuPDF, no corpus.
+//! ai module integration tests (Fase 5): chunking against a fake document,
+//! the raw-TCP Ollama client against a local `TcpListener`, and the
+//! OpenAI-compatible Groq client against a local `TcpListener` (plain HTTP
+//! via the test-only `GroqClient::with_base_url` override) — no real
+//! Ollama/Groq, no MuPDF, no corpus.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
-use pdf_core::ai::{AiError, OllamaClient, chunk_pages};
+use pdf_core::ai::{AiError, GroqClient, OllamaClient, chunk_pages};
 use pdf_core::{Bitmap, Document, PageText};
 
 // ---------------------------------------------------------------------------
@@ -368,4 +370,152 @@ fn new_uses_the_default_localhost_endpoint() {
     assert_eq!(client.base_url(), "http://localhost:11434");
     let client = OllamaClient::with_base_url("http://192.168.1.7:11434", "m");
     assert_eq!(client.base_url(), "http://192.168.1.7:11434");
+}
+
+// ---------------------------------------------------------------------------
+// GroqClient
+// ---------------------------------------------------------------------------
+
+/// A canned Groq (OpenAI chat-completions) 200 response body, matching the
+/// real wire shape: `choices[0].message.content` holds the reply.
+const GROQ_RESPONSE: &str = r#"{
+    "id": "chatcmpl-8x2y3z",
+    "object": "chat.completion",
+    "created": 1736000000,
+    "model": "llama-3.3-70b-versatile",
+    "choices": [
+        {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "El texto seleccionado explica el bucle for."
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+        }
+    ],
+    "usage": { "prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20 }
+}"#;
+
+#[test]
+fn groq_chat_parses_message_content_and_sends_the_right_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(listener, GROQ_RESPONSE);
+
+    let client = GroqClient::with_base_url(
+        "test-api-key",
+        format!("http://127.0.0.1:{port}"),
+        "test-model",
+    );
+    let reply = client
+        .chat("eres un ayudante", "¿qué explica el texto seleccionado?")
+        .expect("chat succeeds");
+
+    assert_eq!(reply, "El texto seleccionado explica el bucle for.");
+
+    // The request we actually sent: OpenAI chat-completions endpoint, Bearer
+    // auth, JSON body with model/messages/stream:false. Header names are
+    // compared case-insensitively (reqwest lowercases them); serde_json
+    // sorts object keys, so assert key/value pairs independently.
+    let request = server.join().expect("server thread");
+    let request_lower = request.to_lowercase();
+    assert!(
+        request.starts_with("POST /chat/completions HTTP/1.1"),
+        "wrong request line: {request}"
+    );
+    assert!(
+        request_lower.contains("authorization: bearer test-api-key"),
+        "request: {request}"
+    );
+    assert!(
+        request_lower.contains("content-type: application/json"),
+        "request: {request}"
+    );
+    assert!(
+        request.contains(r#""model":"test-model""#),
+        "request: {request}"
+    );
+    assert!(
+        request.contains(r#""role":"system""#)
+            && request.contains(r#""content":"eres un ayudante""#),
+        "request: {request}"
+    );
+    assert!(
+        request.contains(r#""role":"user""#)
+            && request.contains(r#""content":"¿qué explica el texto seleccionado?""#),
+        "request: {request}"
+    );
+    assert!(request.contains(r#""stream":false"#), "request: {request}");
+}
+
+#[test]
+fn groq_chat_reports_non_200_status() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("client connects");
+        let _ = read_request(&mut sock);
+        // Groq answers auth failures with an `error` object in the body.
+        let body = r#"{"error":{"message":"Invalid API Key","type":"authentication_error"}}"#;
+        let response = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        sock.write_all(response.as_bytes()).expect("write response");
+    });
+
+    let client = GroqClient::with_base_url("bad-key", format!("http://127.0.0.1:{port}"), "m");
+    let err = client.chat("s", "p").expect_err("401 must be an error");
+    match err {
+        AiError::Http { status: 401, body } => {
+            assert!(body.contains("Invalid API Key"), "body: {body}")
+        }
+        other => panic!("expected AiError::Http(401), got {other:?}"),
+    }
+    server.join().expect("server thread");
+}
+
+#[test]
+fn groq_chat_errors_when_connection_is_rejected() {
+    // Bind an ephemeral port, then drop the listener: nothing listens on it
+    // anymore, so connect() is refused. No network or TLS involved.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+
+    let client = GroqClient::with_base_url("k", format!("http://127.0.0.1:{port}"), "m");
+    let err = client
+        .chat("s", "p")
+        .expect_err("refused connection must fail");
+
+    assert!(matches!(err, AiError::Request(_)), "got {err:?}");
+    assert!(
+        err.to_string().contains("groq request failed"),
+        "message: {err}"
+    );
+}
+
+#[test]
+fn groq_chat_rejects_malformed_json() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(listener, "esto no es json");
+
+    let client = GroqClient::with_base_url("k", format!("http://127.0.0.1:{port}"), "m");
+    let err = client.chat("s", "p").expect_err("malformed JSON must fail");
+    assert!(matches!(err, AiError::Json(_)), "got {err:?}");
+    server.join().expect("server thread");
+}
+
+#[test]
+fn groq_chat_rejects_response_without_choices() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(listener, r#"{"id":"x","choices":[]}"#);
+
+    let client = GroqClient::with_base_url("k", format!("http://127.0.0.1:{port}"), "m");
+    let err = client.chat("s", "p").expect_err("empty choices must fail");
+    assert!(matches!(err, AiError::UnexpectedResponse(_)), "got {err:?}");
+    server.join().expect("server thread");
 }

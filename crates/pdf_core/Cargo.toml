@@ -27,6 +27,14 @@ lru = "0.18"
 # MIT/Apache-2.0, the de-facto standard; no unsafe in our usage.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# OpenAI-compatible HTTPS client for the Groq cloud path (Fase 5, GroqClient
+# in ai.rs). Ollama talks plain HTTP over raw TcpStream; Groq lives in the
+# cloud, so it needs TLS: `rustls-tls` keeps TLS in pure Rust (no OpenSSL,
+# which would complicate the later aarch64-linux-android cross-compile;
+# native-tls would pull in openssl-sys). `blocking` gives a simple
+# synchronous client for a dedicated background thread. MIT/Apache-2.0,
+# the de-facto standard HTTP crate.
+reqwest = { version = "0.11", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 # SQLite sidecar per PDF (Fase 3): persistence of the annotation set, designed
 # for Syncthing (one small .db per document). rusqlite is MIT; the `bundled`
 # feature compiles SQLite from source (no system lib), so cross-compiling to
