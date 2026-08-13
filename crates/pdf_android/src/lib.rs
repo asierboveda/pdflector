@@ -380,6 +380,23 @@ pub(crate) const SEL_MIN_PX: f32 = 2.0;
 /// Duración del aviso breve ("copied", "highlighted", ...) sobre el indicador
 /// de página (`Reader::toast`, expirado en `Reader::tick`).
 pub(crate) const TOAST_MS: std::time::Duration = std::time::Duration::from_millis(1500);
+
+// ---------------------------------------------------------------------------
+// Configuración de "Preguntar a la IA" (Fase 5, Groq)
+// ---------------------------------------------------------------------------
+//
+// La API key de Groq va EMBEBIDA en el APK: es una app de USO PERSONAL (sin
+// telemetría ni servidores propios) y la consulta va directa del dispositivo
+// a api.groq.com por HTTPS. Obtenla gratis en https://console.groq.com/keys
+// (plan free). PRIVACIDAD: la key viaja en el binario — no publiques el APK
+// ni el repo con una key real; el placeholder de abajo compila y muestra el
+// error "no hay red / key inválida" en el panel.
+//
+// El modelo por defecto es llama-3.3-70b-versatile: buen equilibrio de
+// calidad/velocidad en Groq (el usuario del panel es "explícame este
+// párrafo/ecuación", así que la latencia importa).
+pub(crate) const GROQ_API_KEY: &str = "PEGA_AQUI_TU_API_KEY_DE_GROQ";
+pub(crate) const GROQ_MODEL: &str = "llama-3.3-70b-versatile";
 /// Límites del factor de zoom continuo (1.0 = página completa a pantalla).
 /// `PINCH_MIN = 1.0`: SIN zoom hacia fuera — la página no se puede ver más
 /// pequeña que a pantalla completa (cover); el pan queda limitado a los

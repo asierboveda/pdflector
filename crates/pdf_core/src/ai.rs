@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Fase 5: consulta a un LLM local vía Ollama (docs/PLAN.md §5).
+//! Fase 5: consulta a un LLM — local vía Ollama o en la nube vía Groq
+//! (docs/PLAN.md §5).
 //!
-//! Two pieces, both UI-independent (pdf_core rules §4):
+//! Three pieces, all UI-independent (pdf_core rules §4):
 //!
 //! 1. `chunk_pages` — pure text chunking: turns lazy page text into
 //!    LLM-friendly chunks, each carrying a page-range prefix so the answer
@@ -11,10 +12,14 @@
 //! 2. `OllamaClient` — a minimal HTTP client for Ollama's `/api/chat`
 //!    endpoint built on `std::net::TcpStream` only (no new dependencies,
 //!    no TLS: Ollama runs on the same LAN, plain HTTP).
+//! 3. `GroqClient` — an OpenAI-compatible client for Groq's cloud API
+//!    (`https://api.groq.com/openai/v1`), the tablet's cloud path (no PC on
+//!    the LAN needed; free tier). HTTPS via `reqwest` + rustls, so it can't
+//!    share Ollama's raw-TCP transport.
 //!
 //! The app never runs models: it sends the (chunked) text over HTTP and
-//! reads back the assistant's reply. `pdf_app` is expected to call `chat`
-//! from a background task (generation can take minutes).
+//! reads back the assistant's reply. `pdf_app` (Ollama) and `pdf_android`
+//! (Groq) call `chat` from a background task (generation can take minutes).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -50,6 +55,13 @@ pub enum AiError {
     Json(serde_json::Error),
     /// I/O failure mid-request (write or read, including read timeouts).
     Io(std::io::Error),
+    /// The Groq request failed before an HTTP response: DNS, TLS handshake,
+    /// connect, timeout, ... Carries the underlying reqwest error (its
+    /// Display includes the URL that failed).
+    Request(reqwest::Error),
+    /// The server answered 200 but the body was not a chat completion we
+    /// understand (e.g. no `choices`).
+    UnexpectedResponse(String),
 }
 
 impl std::fmt::Display for AiError {
@@ -58,11 +70,13 @@ impl std::fmt::Display for AiError {
             AiError::NotReachable { url, source } => {
                 write!(f, "ollama not reachable at {url}: {source}")
             }
-            AiError::Http { status, body } => write!(f, "ollama http error {status}: {body}"),
+            AiError::Http { status, body } => write!(f, "llm http error {status}: {body}"),
             AiError::Text(e) => write!(f, "text extraction failed: {e}"),
             AiError::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
-            AiError::Json(e) => write!(f, "invalid ollama response: {e}"),
+            AiError::Json(e) => write!(f, "invalid llm response: {e}"),
             AiError::Io(e) => write!(f, "ollama request failed: {e}"),
+            AiError::Request(e) => write!(f, "groq request failed: {e}"),
+            AiError::UnexpectedResponse(msg) => write!(f, "unexpected llm response: {msg}"),
         }
     }
 }
@@ -74,6 +88,7 @@ impl std::error::Error for AiError {
             AiError::Text(e) => Some(e),
             AiError::Json(e) => Some(e),
             AiError::Io(e) => Some(e),
+            AiError::Request(e) => Some(e),
             _ => None,
         }
     }
@@ -88,6 +103,12 @@ impl From<std::io::Error> for AiError {
 impl From<serde_json::Error> for AiError {
     fn from(e: serde_json::Error) -> Self {
         AiError::Json(e)
+    }
+}
+
+impl From<reqwest::Error> for AiError {
+    fn from(e: reqwest::Error) -> Self {
+        AiError::Request(e)
     }
 }
 
@@ -416,4 +437,141 @@ fn parse_content_length(headers: &str) -> Option<usize> {
             None
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// Groq HTTP client (OpenAI-compatible, cloud)
+// ---------------------------------------------------------------------------
+
+/// How long a single Groq request may take before we give up. Groq runs on
+/// fast cloud GPUs, but a long prompt can still take tens of seconds, so
+/// the timeout stays generous and mirrors `REQUEST_TIMEOUT`. Callers must
+/// run `chat` off the UI thread (see module docs).
+const GROQ_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// OpenAI-compatible client for Groq (`https://api.groq.com/openai/v1`).
+///
+/// Groq is the cloud path for Fase 5 (tablet → internet, no local PC
+/// needed, free tier). Unlike `OllamaClient` it speaks HTTPS, so it uses
+/// `reqwest` with rustls instead of a raw `TcpStream`.
+///
+/// Wire contract is OpenAI's: `POST <base>/chat/completions` with
+/// `Authorization: Bearer <api_key>` and a JSON body
+/// `{"model", "messages":[{system},{user}], "stream":false}`; the reply
+/// is `choices[0].message.content`. pdf_android builds against exactly
+/// these methods — do not change the public signatures.
+pub struct GroqClient {
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+impl GroqClient {
+    /// Groq with the default model `llama-3.3-70b-versatile`.
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self::with_model(api_key, "llama-3.3-70b-versatile")
+    }
+
+    /// Groq with a specific model (any OpenAI-compatible model id Groq
+    /// serves, e.g. `llama-3.3-70b-versatile` or `llama-3.1-8b-instant`).
+    pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            base_url: "https://api.groq.com/openai/v1".to_string(),
+            api_key: api_key.into(),
+            model: model.into(),
+        }
+    }
+
+    /// Test-only constructor: overrides the base URL so integration tests
+    /// can point the client at a local `TcpListener` (plain HTTP, no TLS).
+    /// `#[doc(hidden)]` on purpose — not part of the public contract. It
+    /// must be `pub` (not `pub(crate)`) because tests/ai.rs is a separate
+    /// crate and only sees the public surface.
+    #[doc(hidden)]
+    pub fn with_base_url(
+        api_key: impl Into<String>,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+            model: model.into(),
+        }
+    }
+
+    /// Sends a single-turn chat request and returns the assistant's reply.
+    ///
+    /// POSTs the OpenAI chat-completions payload to `<base>/chat/completions`
+    /// with `Authorization: Bearer <api_key>` and parses
+    /// `choices[0].message.content` from the JSON response. Network/TLS
+    /// failures surface as `AiError::Request` (Display includes the failing
+    /// URL); non-200 responses as `AiError::Http` (the body, usually Groq's
+    /// `{"error":{...}}`, is kept as diagnostic text). May block for up to
+    /// `GROQ_REQUEST_TIMEOUT` — call off the UI thread.
+    ///
+    /// A fresh `reqwest::blocking::Client` is built per call: the public
+    /// constructors must stay infallible, and the ~ms runtime setup is
+    /// negligible next to a multi-second LLM round-trip.
+    pub fn chat(&self, system: &str, prompt: &str) -> Result<String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(GROQ_REQUEST_TIMEOUT)
+            .build()?;
+
+        let payload = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": prompt },
+            ],
+            "stream": false,
+        });
+
+        let response = client
+            .post(format!(
+                "{}/chat/completions",
+                self.base_url.trim_end_matches('/')
+            ))
+            .bearer_auth(&self.api_key)
+            .json(&payload)
+            .send()?;
+
+        let status = response.status().as_u16();
+        // `charset` is not enabled in our reqwest features; bytes + lossy
+        // utf-8 is exactly what a JSON API response needs.
+        let response_body = String::from_utf8_lossy(&response.bytes()?).into_owned();
+        if status != 200 {
+            return Err(AiError::Http {
+                status,
+                body: response_body,
+            });
+        }
+        parse_groq_response(&response_body)
+    }
+}
+
+/// Parses a Groq (OpenAI chat-completions) response body into the
+/// assistant's message content. Error cases are explicit: invalid JSON →
+/// `AiError::Json`, missing `choices` → `AiError::UnexpectedResponse`.
+fn parse_groq_response(body: &str) -> Result<String> {
+    #[derive(serde::Deserialize)]
+    struct ChatResponse {
+        choices: Vec<ChatChoice>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ChatChoice {
+        message: ChatMessage,
+    }
+    #[derive(serde::Deserialize)]
+    struct ChatMessage {
+        content: String,
+    }
+
+    let parsed: ChatResponse = serde_json::from_str(body)?;
+    parsed
+        .choices
+        .into_iter()
+        .next()
+        .map(|choice| choice.message.content)
+        .ok_or_else(|| AiError::UnexpectedResponse("response has no choices".to_string()))
 }

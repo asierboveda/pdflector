@@ -188,10 +188,10 @@ fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 }
 
 /// Tap con el menú de selección abierto: dentro de un botón → acción
-/// (Copiar → portapapeles; Subrayar → highlight persistido; "IA" → aviso
-/// breve: hueco visual de la Parte 2); fuera → cerrar el menú y descartar la
-/// selección. NUNCA cambia de página: el tap izq/der no se dispara mientras
-/// hay selección activa.
+/// (Copiar → portapapeles; Subrayar → highlight persistido; "IA" → abre el
+/// panel de IA con la consulta a Groq); fuera → cerrar el menú y descartar
+/// la selección. NUNCA cambia de página: el tap izq/der no se dispara
+/// mientras hay selección activa.
 fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let Some(menu) = &reader.sel_menu else {
         return;
@@ -212,8 +212,44 @@ fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     match hit {
         Some("Copiar") => reader.copy_sel(app),
         Some("Subrayar") => reader.highlight_sel(),
-        Some(_) => reader.show_toast("IA: next part"), // hueco visual de la Parte 2
-        None => reader.clear_selection(),
+        // Parte 2: "IA" abre el panel de "Preguntar a la IA" (hilo de fondo
+        // + Groq; ver `Reader::ask_ai`). El menú se cierra dentro de
+        // `ask_ai` (`clear_selection`), que abre el panel en su lugar.
+        Some("IA") => reader.ask_ai(),
+        // Defensa: botón desconocido (imposible hoy) → cerrar y descartar.
+        Some(_) | None => reader.clear_selection(),
+    }
+}
+
+/// Tap con el panel de "Preguntar a la IA" abierto: dentro de un botón →
+/// acción ("×" → cerrar; "▲"/"▼" → scroll del cuerpo); fuera → cerrar el
+/// panel. Un tap DENTRO del panel pero fuera de sus botones no hace nada
+/// (evita cerrar el panel por accidente mientras se lee la respuesta; se
+/// cierra con ✕ o con tap fuera). NUNCA cambia de página: el tap izq/der no
+/// se dispara mientras el panel está abierto (misma regla que el menú de
+/// selección, ver `fire_tap_action`).
+fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
+    let Some(panel) = &reader.ai_panel else {
+        return;
+    };
+    let inside = x >= panel.x as f32
+        && x < (panel.x + panel.w) as f32
+        && y >= panel.y as f32
+        && y < (panel.y + panel.h) as f32;
+    if !inside {
+        reader.close_ai_panel(); // tap fuera: cerrar el panel
+        return;
+    }
+    let hit: Option<&'static str> = panel
+        .buttons
+        .iter()
+        .find(|(_, (l, t, r, b))| x >= *l && x < *r && y >= *t && y < *b)
+        .map(|(label, _)| *label);
+    match hit {
+        Some("×") => reader.close_ai_panel(),
+        Some("▲") => reader.ai_scroll(-1),
+        Some("▼") => reader.ai_scroll(1),
+        _ => {} // dentro del panel, fuera de los botones: no hacer nada
     }
 }
 
@@ -225,6 +261,12 @@ fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     if reader.sel_menu.is_some() {
         sel_menu_tap(reader, app, x, y);
+    } else if reader.ai_panel.is_some() {
+        // Panel de IA abierto: sus botones (✕/▲/▼) o cerrar con tap fuera.
+        // Va ANTES del sheet y del tap de página: mientras el panel esté
+        // abierto ningún otro gesto de tap actúa (misma regla que el menú
+        // de selección; el pinch sí sigue funcionando).
+        ai_panel_tap(reader, x, y);
     } else if reader.sheet_progress > 0.0 {
         if y < sheet_h(reader.win_h) as f32 {
             sheet_tap(reader, app, x, y);
@@ -303,7 +345,11 @@ fn handle_motion(
                 if is_double_tap {
                     // Descartar selección/menú anterior y empezar el gesto de
                     // selección (un doble-tap no dispara el tap de página).
+                    // También se cierra el panel de IA si estaba abierto: una
+                    // selección nueva implica una consulta nueva (y evita que
+                    // el panel viejo tape el nuevo rect/menú).
                     reader.clear_selection();
+                    reader.close_ai_panel();
                     reader.gesture.kind = GestureKind::Selecting { anchor: (x, y) };
                 } else {
                     reader.gesture.kind = GestureKind::Tap {
