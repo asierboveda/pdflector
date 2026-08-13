@@ -7,3 +7,6 @@ docs/.obsidian/workspace.json
 # skills-lock.json). Project-authored skills go in .opencode/skills/ (tracked).
 /.agents/skills/
 /.claude/skills/
+
+# API key de Groq (uso personal, NO commitear)
+crates/pdf_android/groq_key.txt

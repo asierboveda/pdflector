@@ -16,6 +16,7 @@ use std::time::Instant;
 use android_activity::AndroidApp;
 use android_activity::ndk::hardware_buffer_format::HardwareBufferFormat;
 use android_activity::ndk::native_window::NativeWindow;
+use base64::Engine;
 use log::{error, info, warn};
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::store::{AnnotationStore, sidecar_path};
@@ -1478,6 +1479,87 @@ impl Reader {
             .join("\n")
     }
 
+    /// PNG base64 de la REGIÓN seleccionada (para "Preguntar a la IA" con
+    /// visión: ecuaciones/gráficos, Fase 5): recorta del bitmap cacheado de
+    /// la página actual el rect de selección (px de ventana,
+    /// `sel_screen_rect`) y lo codifica a PNG en memoria → base64 SIN
+    /// prefijo (el contrato de `GroqClient::chat_vision`; el prefijo
+    /// `data:image/png;base64,` lo añade pdf_core). None si no hay bitmap,
+    /// escala inválida o el crop queda vacío (zoom/pan raro) — el llamador
+    /// cae al envío solo-texto.
+    ///
+    /// Mapeo ventana → píxeles del bitmap: la MISMA geometría del blit
+    /// (`blit`): el bitmap se dibuja en `(dx, dy)` escalado por
+    /// `blit_zoom = zoom / rendered_zoom`, así que un px de pantalla `s`
+    /// cae en el px de bitmap `(s − origen) / blit_zoom`. Se usa floor/ceil
+    /// para que el crop cubra al menos la región seleccionada y se recorta
+    /// a los bordes del bitmap (clamp) — el rect de selección ya viene
+    /// recortado a la hoja por `sel_screen_rect`, pero el pan puede dejar
+    /// parte del rect fuera del bitmap.
+    ///
+    /// Modo oscuro: la caché guarda SIEMPRE bitmaps normales (la inversión
+    /// se aplica al blitear, `draw::blit_page`), así que el crop sale con
+    /// los colores del DOCUMENTO — decisión documentada: para explicar una
+    /// ecuación la información es la misma y el modelo de visión no se
+    /// confunde con un fondo negro.
+    fn sel_image_png_base64(&self) -> Option<String> {
+        let bmp = self.cache.peek(self.page)?;
+        let (l, t, r, b) = self.sel_screen_rect()?;
+        // Escala de dibujo del bitmap cacheado (relativa a su render): 1:1
+        // nítido en reposo (`rendered_zoom == zoom`), vecino-más-cercano del
+        // bitmap viejo durante el pinch. Si no es finita (defensa), no hay
+        // imagen que mandar.
+        let blit_zoom = if self.rendered_zoom.is_finite() && self.rendered_zoom > 0.0 {
+            self.zoom / self.rendered_zoom
+        } else {
+            return None;
+        };
+        if !blit_zoom.is_finite() || blit_zoom <= 0.0 {
+            return None;
+        }
+        // Esquina del bitmap escalado en pantalla (misma aritmética que el
+        // blit: centrado horizontal cover + pan de anclaje; Y alineado
+        // arriba).
+        let dx = (((self.win_w as f32 - bmp.width as f32 * blit_zoom) / 2.0) + self.pan_x).round();
+        let dy = self.pan_y.round();
+        // Rect de selección en píxeles del bitmap, cubriendo al menos lo
+        // seleccionado (floor/ceil) y recortado a los bordes del bitmap.
+        let x0 = ((l - dx) / blit_zoom).floor();
+        let y0 = ((t - dy) / blit_zoom).floor();
+        let x1 = ((r - dx) / blit_zoom).ceil();
+        let y1 = ((b - dy) / blit_zoom).ceil();
+        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+            return None; // NaN/inf (defensa): sin imagen
+        }
+        let (x0, y0) = (x0.max(0.0) as u32, y0.max(0.0) as u32);
+        let (x1, y1) = (
+            (x1 as i64).min(bmp.width as i64) as u32,
+            (y1 as i64).min(bmp.height as i64) as u32,
+        );
+        if x0 >= x1 || y0 >= y1 {
+            return None; // crop vacío (rect fuera del bitmap): sin imagen
+        }
+        let (w, h) = (x1 - x0, y1 - y0);
+        // Crop fila a fila del RGBA8 row-major (un rango contiguo por fila:
+        // `start = (row × width + x0) × 4`).
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        for row in y0..y1 {
+            let start = ((row * bmp.width + x0) * 4) as usize;
+            rgba.extend_from_slice(&bmp.data[start..start + (w as usize) * 4]);
+        }
+        // Codificación PNG en memoria (encoder `png`, RGBA8 → PNG) y base64
+        // sin prefijo (contrato de `chat_vision`).
+        let mut png_bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png_bytes, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut writer = enc.write_header().ok()?;
+            writer.write_image_data(&rgba).ok()?;
+        }
+        Some(base64::engine::general_purpose::STANDARD.encode(&png_bytes))
+    }
+
     /// "Copiar": copia el texto de la selección al portapapeles de Android
     /// (`jni::copy_to_clipboard`) y muestra "copied"; si no hay texto (PDF
     /// escaneado) avisa "no text". En ambos casos cierra el menú y descarta
@@ -1545,33 +1627,48 @@ impl Reader {
     // ("preguntando…") y se lanza un hilo de fondo (std::thread + mpsc, el
     // mismo patrón de `pdf_core::prefetch`) que construye el `GroqClient`
     // (pdf_core::ai, contrato de la Parte 1) con la key embebida
-    // (`GROQ_API_KEY`/`GROQ_MODEL` de `lib.rs`), llama a `chat(system,
-    // prompt)` con el texto seleccionado y envía el resultado por el canal.
-    // El hilo de UI sondea el canal en `tick` (`try_recv`, sin bloquear) y
-    // al llegar el mensaje pasa el panel a Answer (texto envuelto con scroll)
-    // o Error (mensaje claro en el mismo panel). Decisiones:
+    // (`GROQ_API_KEY`/`GROQ_MODEL` de `lib.rs`) y llama a `chat(system,
+    // prompt)` con el texto seleccionado (o `chat_vision` con el PNG de la
+    // selección, Fase 5: ecuaciones/gráficos — ver `ask_ai`) y envía el
+    // resultado por el canal. El hilo de UI sondea el canal en `tick`
+    // (`try_recv`, sin bloquear) y al llegar el mensaje pasa el panel a
+    // Answer (texto envuelto con scroll) o Error (mensaje claro en el mismo
+    // panel). Decisiones:
     //
     // - La key va EMBEBIDA en el APK (uso personal, sin telemetría; ver
     //   `lib.rs`). Una consulta no se cancela al cerrar el panel: el hilo
     //   termina solo y el resultado se descarta al soltar el receptor.
     // - El hilo de fondo evita bloquear el hilo de UI durante la red
     //   (AGENTS.md §4.6): la generación en Groq puede tardar varios segundos.
+    // - Con selección que tenga IMAGEN (crop del bitmap cacheado,
+    //   `sel_image_png_base64`) se llama a `chat_vision` con el modelo de
+    //   visión (`GROQ_VISION_MODEL`): la imagen es la fuente principal para
+    //   ecuaciones/gráficos y el texto extraído va como prompt (puede ser
+    //   "" en PDF escaneado). Sin imagen, se cae al `chat` solo-texto.
 
     /// "IA": lanza la consulta a Groq en un hilo de fondo y abre el panel en
-    /// fase "preguntando…". Si no hay texto seleccionable (PDF escaneado)
-    /// avisa "no text" y no abre el panel (mismo comportamiento que
-    /// Copiar). El texto se captura ANTES de cerrar el menú (`sel_text`).
+    /// fase "preguntando…". Si no hay ni texto ni imagen aprovechable avisa
+    /// "no text" y no abre el panel (mismo comportamiento que Copiar; con
+    /// imagen — PDF escaneado — sí abre: la imagen es la fuente principal).
+    /// El texto y la imagen se capturan ANTES de cerrar el menú (`sel_text`
+    /// y `sel_image_png_base64`).
     pub(crate) fn ask_ai(&mut self) {
         let text = self.sel_text();
+        // Imagen de la selección (ecuaciones/gráficos): PNG base64 del crop
+        // del bitmap cacheado. None si el crop no es posible (sin bitmap,
+        // rect vacío) — en ese caso se cae al envío solo-texto de siempre.
+        let image = self.sel_image_png_base64();
         self.clear_selection(); // el panel sustituye al menú de selección
-        if text.is_empty() {
+        if text.is_empty() && image.is_none() {
             self.show_toast("no text");
             return;
         }
         info!(
-            "ask_ai: {} chars -> Groq ({})",
+            "ask_ai: {} chars, image {} B PNG -> Groq (text {}, vision {})",
             text.chars().count(),
-            crate::GROQ_MODEL
+            image.as_ref().map_or(0, String::len),
+            crate::GROQ_MODEL,
+            crate::GROQ_VISION_MODEL
         );
         // Panel en fase Asking ("preguntando…") y hilo de fondo con la
         // llamada HTTP: el UI nunca espera por la red.
@@ -1581,12 +1678,31 @@ impl Reader {
         let (tx, rx) = std::sync::mpsc::channel();
         let prompt = text;
         std::thread::spawn(move || {
-            let client =
-                pdf_core::ai::GroqClient::with_model(crate::GROQ_API_KEY, crate::GROQ_MODEL);
-            let system = "Eres un asistente de estudio. Explica de forma clara y concisa el texto que te dan.";
+            let result = match image {
+                // Con imagen (ecuación/gráfico): chat_vision con el modelo
+                // de visión; el prompt es el texto extraído (puede ser ""
+                // en un PDF escaneado — la imagen es la fuente principal).
+                Some(b64) => {
+                    let client = pdf_core::ai::GroqClient::with_model(
+                        crate::GROQ_API_KEY,
+                        crate::GROQ_VISION_MODEL,
+                    );
+                    let system = "Eres un asistente de estudio. Explica de forma clara y concisa lo que se ve en la imagen (ecuación, gráfico o texto).";
+                    client.chat_vision(system, &prompt, &b64)
+                }
+                // Sin imagen: el chat solo-texto de siempre.
+                None => {
+                    let client = pdf_core::ai::GroqClient::with_model(
+                        crate::GROQ_API_KEY,
+                        crate::GROQ_MODEL,
+                    );
+                    let system = "Eres un asistente de estudio. Explica de forma clara y concisa el texto que te dan.";
+                    client.chat(system, &prompt)
+                }
+            };
             // El error también viaja por el canal (`AiError` implementa
             // Display): el hilo de UI decide si es respuesta o error.
-            let _ = tx.send(client.chat(system, &prompt));
+            let _ = tx.send(result);
         });
         self.ai_rx = Some(rx);
         self.redraw();
