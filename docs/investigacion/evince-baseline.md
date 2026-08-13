@@ -4,7 +4,7 @@
 > 13 GiB RAM, Linux 7.1.4-arch1-1 (Wayland/Hyprland) · **Software**: Evince 48.4,
 > Poppler 26.07.0 · **Corpus**: `corpus/large_document.pdf` (500 páginas A4,
 > 543 kB, texto).
-> **Medición reproducible**: `tools/medir_baseline_evince.sh` (usa `pdftoppm`,
+> **Medición reproducible**: `tools/bench-evince/bench_evince.sh` (usa `pdftoppm`,
 > que comparte exactamente el pipeline de render de Evince: poppler + cairo,
 > single-thread, página completa a la resolución pedida).
 
@@ -45,8 +45,8 @@
    defecto es 50 MB + GTK/GL + document model. Sirve como tope superior a
    superar, no como objetivo.
 4. **Apertura rápida**: página 1 visible en ~0,36 s con poppler puro (sin
-   thumbnails). Cualquier motor de PDFLector (PDFium/MuPDF) debería compararse
-   contra estos números en la Fase 0.5.
+   thumbnails). Cualquier motor de PDFLector (PDFium/MuPDF) se comparó
+   contra estos números en la Fase 0.5 (ver `docs/benchmark-results.md`).
 
 ## 3. Cómo se usa esto en el proyecto
 
@@ -63,7 +63,7 @@
 - **Referencia de fluidez**: 326 ms/página @2x ⇒ el objetivo de 16,6 ms/frame
   en scroll solo es alcanzable si el frame de scroll nunca dispara un render
   (solo composición de texturas). Es exactamente el patrón de Evince analizado
-  en `docs/investigacion/evince-rendimiento.md`.
+  en `docs/research/evince-architecture.md`.
 
 ## 4. Limitaciones de esta medición
 
@@ -73,5 +73,6 @@
 - El RSS GUI de Evince incluye GTK4, GL y el resto del runtime: es el dato de
   "app completa", comparable con `dumpsys meminfo` del apk en Fase 1, no con el
   RSS del motor solo.
-- Hardware de escritorio; la tablet (Lenovo Idea Tab) se medirá en Fase 1 con
-  los mismos criterios vía `adb shell dumpsys meminfo`.
+- Hardware de escritorio; la tablet (TCL NXTPaper 11 Plus) se midió en Fase 1
+  (2026-08-12) con `pdf_bench` cross-compilado vía `adb` (RSS pico 26,7 MB; ver
+  `docs/benchmark-results.md`).

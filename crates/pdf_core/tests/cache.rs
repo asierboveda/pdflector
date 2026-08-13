@@ -230,3 +230,21 @@ fn page_larger_than_budget_is_stored_alone_after_full_eviction() {
     assert_eq!(s.hits, 1);
     assert_eq!(s.misses, 2);
 }
+
+/// `resident_pages` returns distinct page indices even when the same page is
+/// resident at several scale levels (duplicates removed, MRU order kept).
+#[test]
+fn resident_pages_deduplicates_scale_levels() {
+    let mut cache = open_cache("dense_textbook.pdf", 64 * 1024 * 1024);
+
+    cache.get_or_render(0, 0).expect("render 1x");
+    cache.get_or_render(0, 1).expect("render 2x");
+
+    let resident = cache.resident_pages();
+    assert_eq!(
+        resident,
+        vec![0],
+        "page 0 cached at two scale levels must appear once; got {resident:?}"
+    );
+    assert_eq!(cache.stats().entries, 2, "both entries are still cached");
+}

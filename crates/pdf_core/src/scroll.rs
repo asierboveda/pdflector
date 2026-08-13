@@ -25,7 +25,14 @@ pub fn visible_and_prefetch_pages(
         .first_visible_page
         .saturating_sub(prefetch_radius)
         .min(total_pages);
-    let end = (vp.first_visible_page + vp.visible_count + prefetch_radius).min(total_pages);
+    // Saturating: `first_visible_page + visible_count + prefetch_radius` can
+    // overflow usize on degenerate viewports (huge page offsets); saturating
+    // arithmetic keeps the clamp to `total_pages` correct in every case.
+    let end = vp
+        .first_visible_page
+        .saturating_add(vp.visible_count)
+        .saturating_add(prefetch_radius)
+        .min(total_pages);
     start..end
 }
 

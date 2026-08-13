@@ -6,7 +6,7 @@
 
 ## 1. Qué es este proyecto
 
-Lector de PDFs rápido y ligero para tablet Android con lápiz (Lenovo Idea Tab, ~200 €).
+Lector de PDFs rápido y ligero para tablet Android con lápiz (TCL NXTPaper 11 Plus, ~200 €).
 Gratis, sin anuncios, sin pagos, sin telemetría. Proyecto personal de **aprendizaje**:
 es el primer proyecto real del autor en Rust. Desarrollo inicial en escritorio Linux
 (Omarchy/Arch); destino final Android.

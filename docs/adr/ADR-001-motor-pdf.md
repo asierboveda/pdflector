@@ -17,6 +17,8 @@ Benchmark sobre corpus (4 PDFs A4, AMD Ryzen 7 5800H, release build, Rust 1.97.1
 | dense (93)  | MuPDF  | 0,11 ms | 3,53 ms |  8,51 ms | 25 572 KB |
 | scanned (30)| PDFium | 0,09 ms | 20,01 ms| 66,20 ms | 32 520 KB |
 | scanned (30)| MuPDF  | 0,07 ms | 8,93 ms | 35,38 ms | 25 572 KB |
+| paper (12)  | PDFium | 0,08 ms | 1,72 ms | 26,44 ms | 32 520 KB |
+| paper (12)  | MuPDF  | 0,07 ms | 2,18 ms |  6,95 ms | 25 572 KB |
 | large (500) | PDFium | 0,21 ms | 6,86 ms | 35,10 ms | 32 520 KB |
 | large (500) | MuPDF  | 0,09 ms | 3,98 ms | 10,19 ms | 25 572 KB |
 
@@ -34,7 +36,7 @@ Ambos cross-compilan; fricción baja en ambos casos.
 - **Prioridad 1 (fluir)**: MuPDF es 2,7-4× más rápido en render — más fácil
   sostener 120 fps con caché LRU más pequeña.
 - **Prioridad 2 (RAM)**: MuPDF consume 21% menos RSS de pico (25,6 MB vs 32,5
-  KB base, medido en harness sin caché). Más margen para el objetivo de 150 MB
+  MB base, medido en harness sin caché). Más margen para el objetivo de 150 MB
   en la tablet con PDFs grandes.
 - **Android**: MuPDF compila limpio para aarch64 (fricción de 1 env var,
   documentada y replicable vía `tools/`).
@@ -56,8 +58,10 @@ Ambos cross-compilan; fricción baja en ambos casos.
 - Backend PDFium **eliminado** (crates/pdf_core/src/engine/pdfium.rs,
   tests/basic.rs, dep pdfium-render, feature `pdfium`). El linker de Android
   en `.cargo/config.toml` ya no es imprescindible en este punto, pero se
-  conserva comentado (será útil para Fase 1; se repondrá en Fase 6 si la UI
-  Android final lo pide y MuPDF no basta).
-- `vendor/pdfium/` y `tools/fetch_pdfium.sh` quedan obsoletos pero sin
-  tocarlos (gitignored `/vendor`); se limpiarán con un commit aparte si procede.
+  conserva **activo** (linker `aarch64-linux-android24-clang` + comentario de
+  la env var `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`); será útil para
+  Fase 1 y Fase 6.
+- `vendor/pdfium/` y los scripts `tools/fetch_pdfium*.sh` quedaron
+  obsoletos: los scripts se eliminaron con el backend (commit `e56a818`,
+  2026-08-12) y `/vendor` está gitignored (ausente en el repo).
 - Decisiones pendientes (§6 AGENTS.md) actualizadas: motor y licencia resueltas.

@@ -8,6 +8,9 @@ pdf_core = { path = "../pdf_core" }
 
 [dev-dependencies]
 criterion = "0.5"
+# serde_json for the annotations/serialize bench: measures the JSON persist
+# path of AnnotationSet (same crate pdf_core already uses; MIT/Apache-2.0).
+serde_json = "1"
 
 [[bench]]
 name = "open_render"
@@ -15,4 +18,16 @@ harness = false
 
 [[bench]]
 name = "cache_scroll"
+harness = false
+
+[[bench]]
+name = "render_perf"
+harness = false
+
+[[bench]]
+name = "zoom"
+harness = false
+
+[[bench]]
+name = "annotations"
 harness = false

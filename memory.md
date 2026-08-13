@@ -241,3 +241,338 @@
 - **Próximo**: B3 (zoom con escalado rápido del bitmap + re-render nítido async)
   y resto de Fase 1 (entregables 4-7): modo paginado, harness android-activity,
   overlay debug.
+
+## 2026-08-13 — Revisión integral en paralelo (6 workers deepseek-v4-flash) + correcciones
+
+- **Método**: revisión y corrección de TODO el repo con 6 agentes `deepseek-v4-flash` en
+  paralelo (uno por carpeta), coordinados vía Orca orchestration (Run
+  `run_08287002a2a6`). Los 6 workers terminaron `succeeded`.
+- **crates/pdf_core** (3 bugs reales + 3 tests de regresión):
+  - Race en `Prefetcher::cancel_pending()`: no incrementaba el contador `requested`,
+    por lo que tras request→cancel→reissue, `await_idle_timeout()` devolvía `true` sin
+    renderizar el reissue (el test de regresión falla sin el fix: 43 misses vs 50).
+  - Overflow de `usize` en `visible_and_prefetch_pages` (panic en debug, wrap en
+    release) → resuelto con `saturating_add`.
+  - `resident_pages()` documentaba "distinct" pero devolvía duplicados con varios
+    niveles de zoom → deduplicación preservando orden MRU.
+  - Documentado el drop intencional de errores de render por página en el worker.
+- **crates/pdf_app**: render movido a worker de hilo de fondo (patrón actor de
+  `pdf_core::prefetch`; `mupdf::Document` no es `Send`), polling no-bloqueante, estado
+  UI consistente al cambiar de PDF, `MupdfEngine::new` propaga error, escala a
+  resolución de pantalla (`scale_for_level` × `pixels_per_point`).
+- **crates/pdf_bench**: registrado el bench `render_perf` en `Cargo.toml`
+  (`harness=false`; antes autodescubierto ejecutaba 0 benchmarks, no medía nada),
+  eliminadas 4 copias de resolución de corpus en favor de `pdf_core::corpus_dir()`
+  (soporta `PDFLECTOR_CORPUS_DIR`), eliminado `_startup_marker` muerto.
+- **tools/**: bug real en `generate_corpus.py` — `scanned_pages.pdf` embebía 30× la
+  misma imagen (`drawImage` deduplica por *filename*) → `ImageReader(img)` (dedup por
+  contenido, sin PNG temporal); `invariant=1` en los 4 constructores → corpus
+  byte-reproducible. En `bench_evince.sh`: `set -e` ya no aborta si pypdf falla
+  (`pages=0`), y el `pkill -f` global (mataba Evince del usuario) se sustituyó por
+  `kill -- -$pid` con `setsid`.
+- **docs/**: 9 ficheros corregidos — menciones obsoletas a PDFium
+  (ADR-001 = MuPDF/AGPL-3.0), tablet actualizada a TCL NXTPaper 11 Plus con mediciones
+  reales, refs rotas reparadas, aritmética 13/16→14/16 corregida y relato falso del
+  cierre de ADR-001 en tablet corregido.
+- **raíz + .github/**: `actions/checkout@v7` existe (verificado con `git ls-remote`);
+  README corregido (el setup genera corpus antes de `cargo test -p pdf_core`; eliminada
+  la referencia a `tools/fetch_pdfium.sh`).
+- **Coordinador**: AGENTS.md §1 y `.opencode/skills/android-tablet-adb/SKILL.md`
+  actualizados de "Lenovo Idea Tab" a "TCL NXTPaper 11 Plus" (9469X) — hardware real
+  desde la Ola 7.
+- **Verificación final**: `cargo fmt --all -- --check` limpio; `cargo clippy
+  --all-targets -- -D warnings` limpio; `cargo test -p pdf_core` **27/27 OK** (corpus
+  regenerado). Sin commits (regla AGENTS.md).
+- **Pendientes de decisión (no tocados)**:
+  - `show_extras=true` en `mupdf.rs` rasteriza las anotaciones del PDF dentro del
+    bitmap (contradice AGENTS.md §4.3; ligado a Fases 3-4).
+  - El worker de prefetch no expone su muerte al cliente (`send` falla en silencio).
+  - `expect` en `cache.rs` es invariante demostrable (se dejó).
+  - `bench_evince.sh`: `ready_clients` matchea por clase y `/tmp/bench-evince.log` es
+    ruta fija (observaciones menores).
+  - Legal (SPDX, AGPL-3.0-or-later, atribución MuPDF) sigue sin aprobar → push a
+    GitHub sigue bloqueado.
+
+## 2026-08-13 — Fase 1 B3: zoom (escalado rápido + re-render nítido + invalidación selectiva)
+
+- **Método**: 3 workers `deepseek-v4-flash` coordinados vía Orca (Run `run_33e07b6b498d`):
+  B3-core (pdf_core) → luego, en paralelo, B3-app (pdf_app) y B3-bench (pdf_bench).
+  Todos `succeeded`.
+- **pdf_core** (nuevo módulo `src/zoom.rs` + cambios en cache/engine/lib):
+  - `scale_bitmap(&Bitmap, w, h) -> Result<Bitmap>`: escalador bilinear software
+    (std puro, clamp a bordes, determinista, sin deps).
+  - `scale_level_for_zoom(zoom) -> u32`: `max(0, ceil(log2(zoom)))` — el re-render
+    nítido nunca es un upscale; zoom<=0/NaN clampa a nivel 0.
+  - `RenderCache::trim_to_scale_level(keep_level)`: invalida los demás niveles con
+    contabilidad correcta de `current_bytes`/`evictions` (evita thrashing al zoom).
+  - Nuevo `Error::InvalidArgument(String)`. 16 tests nuevos (unit + integración con
+    engine fake).
+- **pdf_app**: zoom continuo (1.0, clamp 0.25–8.0) por ctrl+rueda/pinch (`zoom_delta`)
+  y botones ±; fast path por GPU (textura existente reescalada) + sharp path async
+  (`scale_level_for_zoom` × ppp) con un solo receiver `pending` que descarta renders
+  obsoletos; hilo UI siempre en `try_recv`/`request_repaint_after`.
+- **pdf_bench**: `benches/zoom.rs` (registrado en Cargo.toml, harness=false) con 3
+  grupos: `scale_bitmap` (fast), `rerender` (sharp), `trim_to_scale_level`.
+- **Medición (desktop AMD Ryzen 7 5800H, criterion --quick, 2026-08-13)** — ver
+  `docs/benchmark-results.md`:
+  - `scale_bitmap` a página completa: 31 ms (z1.5) / 55,9 ms (z2) / 215 ms (z4).
+  - re-render MuPDF: 3,4 ms (nivel 1/×2) / 12 ms (nivel 2/×4).
+  - `trim_to_scale_level`: 6,4 ms.
+  - **Hallazgo honesto**: el escalado software es ~16–18× más lento que el re-render
+    nativo → el camino "inmediato" del zoom en la UI es GPU (egui), no `scale_bitmap`;
+    `scale_bitmap` queda como utilidad pura/testeable para contextos headless (harness
+    Android). El re-render nítido es barato (3,4–12 ms, dentro de 60 fps).
+- **Verificación final**: `cargo fmt --all -- --check` limpio; `cargo clippy
+  --all-targets -- -D warnings` limpio; `cargo test -p pdf_core` **43/43 OK**.
+  Sin commits (regla AGENTS.md).
+- **Próximo (Fase 1)**: modo paginado, harness android-activity, overlay de debug.
+  Sigue pendiente la decisión legal (SPDX/AGPL-3.0-or-later/atribución MuPDF) →
+  push a GitHub bloqueado.
+
+## 2026-08-13 — Fase 1 B3 Ola 8: zoom medido en la tablet TCL (fast vs sharp)
+
+- **Método**: 1 worker `deepseek-v4-flash` (Run `run_70ee5801a6ca`). Añadió
+  `run_zoom_section` al sweep de `pdf_bench/src/main.rs` (tras el sweep y tras el
+  print de PEAK_RSS_KB, para no contaminar el RSS), cross-compiló a
+  `aarch64-linux-android` (NDK r28) y midió en la tablet TCL 9469X con pantalla ON
+  (2 corridas, batería 66% cargando, 33 °C).
+- **Zoom en tablet (mediana de 3, 2 corridas)**: `scale_bitmap` (fast) vs re-render
+  nítido (sharp) — ver `docs/benchmark-results.md`:
+  - 2x: 69,4–70,2 ms vs 14,9–16,6 ms (~4,5× más lento el fast).
+  - 4x: 275,8–325,1 ms vs 53,2–59,4 ms (~5,2–5,6× más lento).
+  - **Conclusión**: el escalado software naïve (sin SIMD/NEON) NO es un fast path:
+    supera de largo el presupuesto de 16,6 ms y es más caro que re-renderizar. El
+    camino inmediato correcto es el reescalado de textura por GPU (ya implementado
+    en pdf_app). `scale_bitmap` queda para headless y necesita optimización si se
+    quiere usar en UI.
+- **Comparación Ola 7 vs Ola 8 (sweep)**: render1x/render2x más altos en algunos
+  PDFs, PERO el path de render (`mupdf.rs`) no cambió → NO es regresión de código.
+  Dos causas: (1) **confound del corpus** — el fix de `tools/generate_corpus.py`
+  hizo que scanned_pages.pdf embeba 30 imágenes DISTINTAS (antes 30 refs a la
+  misma), así que render 3 páginas decodifica 3 imágenes distintas → explica el
+  +render de scanned y el RSS +~5 MB (31,9 vs 26,7 MB; 3 pixmaps ~2,2 MB c/u en
+  caché vs 1); (2) **varianza termal/governor** en dense/paper (saltos no
+  reproducibles entre corridas). Para comparación limpia: fijar governor y N≥5
+  corridas.
+- **Verificación**: host build/clippy/fmt limpios; cross-compile Android release
+  OK (19,3 s). Sin commits (regla AGENTS.md).
+
+## 2026-08-13 — Primera versión completa: lectura fluida + anotaciones + export + sync + IA
+
+> Decisión del autor: objetivo = primera versión usable, bajo coste y muy veloz; **se
+> descarta "modo paginado"**. El coordinador (deepseek-v4-pro) dividió en olas paralelas
+> de workers `deepseek-v4-flash` (Run v1: `run_1ba8feb32901`, v2: `run_86302b5a1f5f`,
+> v3: `run_25e783f6a06f`, v4: `run_3ad2046840e2`, v5: `run_38b6e2764ffc`). Todo verificado
+> con tests, clippy -D warnings y fmt; **93 tests** en pdf_core al cierre.
+
+- **Scroll virtualizado en pdf_app (Fase 1)**: el hilo UI traduce viewport →
+  `Prefetcher::request` → `get_page(page,level)` (sondeo try_recv) → textura, pintando
+  solo páginas visibles (±1) y soltando texturas fuera de ventana; byte budget 32 MB,
+  prefetch con radio adaptativo (un radio fijo evictaba las visibles del LRU). RSS plano
+  durante scroll.
+- **pdf_core nuevos módulos**: `zoom` (scale_bitmap + scale_level_for_zoom + trim),
+  `dark::invert_bitmap`, `metrics::{FrameTimer,read_rss_kb}` (p95 ring 600),
+  `Prefetcher::get_page` + `RenderCache::peek_clone` (Bitmap ahora Clone),
+  `annotations` (Stroke/Highlight/TextNote vectoriales en coords de página, AnnotationSet,
+  serde), `store` (SQLite sidecar `annotations/<stem>.db` vía rusqlite bundled),
+  `export` (Markdown con citas+nº página, y PDF con anotaciones estándar /Ink /Highlight
+  /Text vía API de MuPDF — verificado con pypdf), `sync` (layout + `watch_annotations` con
+  notify, debounce 150 ms), `ai` (chunk_pages + OllamaClient HTTP crudo por std::net).
+- **Extracción de texto perezosa**: `Document::text(page) -> PageText{text, spans}` con
+  bbox por línea (mupdf 0.8 stext) — base de subrayado y de los chunks de IA.
+- **pdf_app features**: modo oscuro (inversión solo al subir textura, caché SIEMPRE normal;
+  persistencia en eframe storage), overlay de debug (p95 frame time < 16,6 ms, RSS, cache),
+  capa vectorial de dibujo ✏️ (Stroke; transformación cursor→página = (pos-rect.min)/zoom,
+  verificada a ±2 px con inyección XTEST), panel chat IA 💬 (hilo de fondo, llama3.2 en
+  localhost:11434, error claro si Ollama no responde), persistencia/export/sync integrados
+  (load sidecar al abrir, save al commitear, Export MD/PDF en hilo de fondo, watcher de
+  sidecar para hot-reload de Syncthing).
+- **Dependencias nuevas (justificadas)**: serde+serde_json (modelo/persistencia/export),
+  rusqlite bundled (SQLite sidecar, sin lib de sistema → cross-compila a Android),
+  notify 8 (detección de cambios en disco), eframe feature `persistence` (preferencia dark).
+- **Decisiones tomadas por el coordinador (autorizadas por el autor)**: Ollama en el PC
+  (localhost, la app solo hace HTTP); formato canónico de anotaciones = tabla SQLite
+  (id, page_idx, kind, payload JSON) + serde; sidecar `annotations/<stem>.db`.
+- **Pendiente (NO tocado)**: legal — SPDX headers, AGPL-3.0-or-later y atribución MuPDF
+  (bloquea push a GitHub); y lo que requiere la tablet (harness android-activity, Fase 6
+  Android UI Slint/Tauri, Syncthing en la tablet, medición final). Sin commits (regla
+  AGENTS.md).
+
+## 2026-08-13 — App Android nativa (pdf_android): PDF renderizado en la tablet
+
+- **Gate cross-compile**: pdf_core y pdf_bench con TODAS las deps nuevas (serde, rusqlite
+  bundled, notify) cross-compilan limpios a `aarch64-linux-android` (NDK r28): rusqlite
+  (libsqlite3-sys) usa el clang del NDK vía `cc`; notify compila con backend inotify sobre
+  Android. No hizo falta gatear nada por feature.
+- **Crate nuevo `crates/pdf_android`** (cdylib, `android-activity` 0.6 native-activity +
+  `ndk` 0.9 + pdf_core): `android_main` abre un PDF, renderiza la página con pdf_core a
+  escala contain y la blitea al ANativeWindow fila a fila respetando `stride`, formato
+  forzado R8G8B8A8_UNORM (defensa RGB565); tap derecha/izquierda para pasar página.
+  Añadido a members del workspace pero fuera de `default-members` (es Android-only).
+- **Empaquetado + despliegue**: cargo-apk v0.10.0, package `com.pdflector.app`, APK debug
+  (debuggable) en `target/debug/apk/pdf_android.apk`. SELinux bloquea leer /data/local/tmp
+  a un untrusted_app → la app lee `internal_data_path()/demo.pdf` y el PDF se inyecta con
+  `adb shell run-as com.pdflector.app`.
+- **VERIFICADO en la tablet TCL 9469X**: el PDF (12 pág.) se ve renderizado — pantalla con
+  página blanca + texto sobre letterbox gris, 0 píxeles rojos (screenshot analizado por
+  píxeles: media 236,236,236, ~91% blanco), taps avanzan página, logcat "opened 12 pages".
+- **RSS (build DEBUG con debuginfo)**: TOTAL PSS ~85 MB, TOTAL RSS ~205 MB (`dumpsys
+  meminfo`). El objetivo <150 MB RSS aplica a RELEASE: queda medir el APK release.
+- **Próximo**: build release + medición RSS/frame-time en la tablet; spike Slint vs Tauri
+  (Fase 6) para la UI final; y la decisión legal sigue bloqueando el push.
+
+## 2026-08-13 — Release en tablet + spike Slint/Tauri + skill de medición
+
+- **Release medido en la TCL 9469X** (APK release, LTO+strip): render **18,0–18,2 ms/pág**
+  (<25 ms ✓), blit ~3,8 ms, **TOTAL PSS ~66 MB** (<150 MB ✓). El `dumpsys meminfo` TOTAL RSS
+  da 188 MB pero inflado por librerías compartidas del runtime (Code 86 MB RSS / solo 2,4 MB
+  PSS) → el objetivo <150 MB debe leerse como **PSS**, no RSS bruto (documentado en
+  `benchmark-results.md` pendiente de añadir).
+- **Input en tablet**: con `android-activity::input_events_iter()` el tap SÍ llega a Rust
+  (logcat `page 2` + re-render de la página); queda verificar el refresco visual de la
+  superficie tras avanzar (los screenshots post-tap salieron idénticos: posible stale de
+  `screencap` o de la superficie — pendiente de debug).
+- **ADR-004 (docs/adr/ADR-004-ui-android.md)**: spike Slint 1.17.1 vs Tauri v2 → **Slint
+  recomendado** (APK 6,4 MB, ~62 MB PSS, build 1m20s, sin Node) porque Tauri v2 rompe el
+  presupuesto de RAM (WebView) y añade latencia IPC. HALLAZGO BLOQUEANTE: en esta tablet el
+  input por el looper de android-activity (`InputAvailable`) no llega a Slint (reproducible
+  con cargo-apk/xbuild/android-activity puro) — mitigación conocida: usar el camino directo
+  `input_events_iter()` (que pdf_android demuestra que funciona). ADR queda en estado
+  Propuesto hasta validar input con el lápiz/dedo.
+- **Skill nuevo**: `.opencode/skills/pdflector-rendimiento/SKILL.md` unifica el procedimiento
+  de medición (desktop/bench, cross-compile, app en tablet, dumpsys/screencap).
+- **Próximo**: resolver el input/refresco en la tablet, validar el ADR-004 con el lápiz, y la
+  decisión legal (SPDX/AGPL-or-later/atribución MuPDF) sigue bloqueando el push.
+
+## 2026-08-13 — Tablet: gestos + zoom verificados; ADR-004 (Slint) ACEPTADO
+
+- **“Bug” de refresco = falso positivo**: scientific_paper.pdf tiene las 12 páginas
+  PIXEL-IDÉNTICAS (md5 idéntico con pdftoppm; el generador del corpus no varía el
+  contenido por página). Con large_document.pdf (500 pág.) los screenshots de páginas
+  distintas difieren y correlacionan con logcat → el refresco de la superficie SIEMPRE
+  funcionó. (Nota de corpus: scientific_paper.pdf es malo para probar paso de página.)
+- **pdf_android: gestos implementados y verificados en release** (TCL 9469X): swipe 4
+  direcciones (umbral 25% del eje dominante) → página; pinch 2 dedos → zoom continuo
+  0.25–8x con re-render MuPDF directo (NO scale_bitmap, 4–5,6× más lento); doble-tap →
+  zoom 1x↔2x; tap derecha/izquierda → página. Defensa extra: re-obtener native_window()
+  en WindowResized/RedrawNeeded. Verificado: render ~20 ms, blit ~3,8 ms, PSS 66 MB,
+  doble-tap zoom 2.0/1.0 en logcat con screenshots distintos (E1≠E2, 793.764 px de
+  diff). El pinch físico (2 dedos) no es inyectable por adb (SELinux /dev/input) →
+  pendiente de confirmación manual con el dedo.
+- **ADR-004 (Slint) → ACEPTADO**: el “bloqueo de input” era un artefacto del test (la
+  app pura no dibujaba al ANativeWindow → ventana sin touchableRegion → el sistema no
+  entrega toques). InputAvailable + TouchArea.clicked llegan por el looper estándar;
+  input_events_iter es solo el drenaje posterior. Riesgo nuevo documentado (7.2): Slint
+  1.17.1 no repinta tras cambios de propiedad en esta tablet (upstream #8692/#12687/#12688).
+  Pendientes Fase 6: lápiz real, linker API 26, mediciones finales.
+- **Estado**: primera versión funcional en escritorio (completa) y en tablet (render +
+  gestos + zoom). Próximo natural: port completo a Slint (Fase 6) y validación con lápiz.
+
+## 2026-08-13 — Tablet: selector de PDF + corpus scientific_paper arreglado
+
+- **Selector de archivo en pdf_android (fallback in-app)**: SAF (ACTION_OPEN_DOCUMENT) NO es
+  viable en este stack (android-activity 0.6.1 no expone onActivityResult en ningún backend;
+  cargo-apk/ndk-build no compilan Java → subclasear la Activity exigiría inyectar dex a mano).
+  Implementado en su lugar: botón “Open” → lista de `*.pdf` de internal/external (+ `pdfs/`)
+  dibujada con android.graphics.Canvas vía JNI (jni 0.22) → tap abre con MupdfEngine::open,
+  con Rescan/Back/scroll y franja de error. Verificado en TCL 9469X release: logcat
+  “picker: 5 PDFs found” / “opened: 93 pages” (dense_textbook) / “cannot open” con PDF
+  corrupto; 7 screenshots analizados por píxeles. Cómo añadir PDFs: `adb push` + `run-as` a
+  internal, o copiar a `Android/data/com.pdflector.app/files/pdfs/`.
+- **Corpus**: `tools/generate_corpus.py` arreglado para que scientific_paper.pdf tenga 12
+  páginas DISTINTAS (secciones realistas + figuras vectoriales por página, RNG local seed
+  42+page, reproducible byte a byte). Antes eran 12 páginas pixel-idénticas. Los 4 PDFs
+  siguen generándose (93/30/12/500 pág.).
+- **Pendiente (deferido por el autor)**: lápiz real y legal (SPDX/AGPL-or-later/atribución).
+
+## 2026-08-13 — pdf_android abre PDFs externos vía "abrir con" (ACTION_VIEW)
+
+- **"Abrir con" desde Descargas/gestor de archivos**: intent-filter `ACTION_VIEW` +
+  `application/pdf` declarado por metadatos TOML de cargo-apk 0.10 (sin manifest propio);
+  en android_main se lee `Activity.getIntent().getData()` por JNI (jni 0.22): `content://` →
+  `ContentResolver.openInputStream` → copia a `internal/pdfs/` → `MupdfEngine::open` (nombre
+  vía OpenableColumns.DISPLAY_NAME). La app queda registrada como visor PDF del sistema.
+- **Verificado en TCL 9469X (release)**: content:// con grant abre el PDF externo (logcat
+  "opened: 12/15 pages" + screenshots), incluido flujo real desde Files by Google; `file://`
+  falla por Scoped Storage (Permission denied, esperable en Android 15) y cae al picker.
+- **Pendiente**: decidir si se quiere soporte `file://` (permisos de almacenamiento) — no
+  recomendable; content:// es el estándar. Y sigue diferido lápiz + legal.
+
+## 2026-08-13 — Biblioteca MediaStore en el arranque (carpeta + nombre, tipo Evince)
+
+- **Arranque normal = biblioteca**: al lanzar sin intent, pdf_android consulta `MediaStore.Files`
+  (JNI, jni 0.22) con proyección `[_ID, DISPLAY_NAME, RELATIVE_PATH, _SIZE]`, selección
+  `mime_type='application/pdf'` y orden `RELATIVE_PATH, DISPLAY_NAME`; cada fila → content URI
+  (`ContentUris.withAppendedId(files_uri, _ID)`). La UI reutiliza el dibujo Canvas+JNI del
+  picker: filas con NOMBRE (línea 1) + CARPETA (línea 2, más pequeña) + tamaño; scroll por
+  arrastre, botones Rescan/Grant/Back. Tocar una fila → `openInputStream(uri)` → copia a
+  `internal/pdfs/` → `MupdfEngine::open`. El picker de carpeta interna queda como fallback si
+  MediaStore devuelve vacío.
+- **Permiso (verificado en TCL 9469X, Android 15)**: en Android 13+ la lectura de PDFs ajenos
+  exige el appop **"All files access"** (`MANAGE_EXTERNAL_STORAGE`, concedido en Ajustes;
+  no existe `READ_MEDIA_*` para documentos). `READ_EXTERNAL_STORAGE` (maxSdkVersion=32) se
+  declara solo para Android ≤ 12. La app detecta el estado con
+  `Environment.isExternalStorageManager()`; sin permiso muestra botón **Grant** que abre
+  `Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`; al volver, el `Resume` re-consulta.
+  Testing: `adb shell appops set com.pdflector.app MANAGE_EXTERNAL_STORAGE allow`.
+- **Hallazgo del corpus**: los PDFs metidos con `adb push` quedan `is_pending=1` en MediaStore
+  y son invisibles para otras apps (la query solo devuelve los committed: 3 de 256). Se
+  "commitean" con `adb shell content call --uri content://media/none --method scan_volume
+  --arg external_primary`. Comportamiento correcto de Android, no bug de la app.
+- **Verificado en TCL 9469X (release, APK firmado debug keystore)**: lanzamiento normal →
+  biblioteca con los 256 PDFs reales (screenshot analizado por píxeles: filas con texto, 0 rojo);
+  tap en fila → "library open: … (…) -> files/pdfs/… (N bytes)" + "opened: 328 pages" + página
+  renderizada; scroll y doble-tap-zoom/sin regresión en gestos; "abrir con" content:// sigue
+  abriendo directo (sin biblioteca). Sin permiso → prompt Grant → Ajustes → conceder → Resume
+  re-consulta → 256 PDFs.
+- **Nota rendimiento**: primer render de un PDF 56 MB/442 pág. tarda 369 ms (carga de fuentes
+  del primer open; el render normal sigue ~18-25 ms/pág). La query de 256 filas tarda <1 s en
+  total (incluye el render JNI del primer frame).
+
+## 2026-08-13 — Tablet: pinch rápido + pantalla completa + sin doble-tap (pdf_android modular)
+
+- **Partición previa** (enabler): `crates/pdf_android/src/lib.rs` (2625 l.) partido en 6
+  módulos (lib, reader, input, draw, jni, view, zoom) sin cambiar comportamiento; 3 cambios
+  posteriores en paralelo sobre ficheros disjuntos.
+- **Quitar doble-tap**: eliminado el path de doble-tap (GestureState.last_tap, DOUBLE_TAP_*,
+  toggle_zoom, resets) — el zoom es SOLO pinch con los dedos. Tap simple intacto.
+- **Pinch rápido (optimización)**: `zoom::blit_fast` escala el bitmap por vecino-más-cercano
+  (aritmética entera, tabla x precalculada, sin f32 por píxel, ~memcpy de pantalla) SIN
+  re-render de MuPDF durante el Move; al soltar, `set_zoom_sharp` re-renderiza UNA vez.
+  `Reader.rendered_zoom` + blit con zoom RELATIVO (`zoom/rendered_zoom`) para no doblar el zoom
+  tras el re-render nítido (bug de integración detectado y corregido por el coordinador).
+- **Pantalla completa**: `view::initial_scale` de “contain” (letterbox) a **“cover”**
+  (`max(win_w/page_w, win_h/page_h)`), rellenando toda la pantalla y recortando márgenes;
+  bonus `view::crop_margins(bitmap)` (bbox del contenido no-blanco, sin caller aún).
+- **Verificado en TCL 9469X (release)**: biblioteca con 256 PDFs, tap → “opened: 65 pages”
+  (exámenes anmi 2022-25.pdf), render a escala cover 2.613 → 1556×2200 (llena la pantalla,
+  recorta ancho), screenshot sin barras de letterbox (0 px gris en bordes, media 249 blanco).
+  El pinch (2 dedos) no es inyectable por adb → queda confirmarlo a mano.
+- **Nota build**: `cargo apk build` necesita `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=
+  --sysroot=$ANDROID_NDK_HOME/.../sysroot` + bin del NDK en PATH (ya en el skill
+  pdflector-rendimiento); el error `pthreadtypes-arch.h: regparm` era eso (host glibc vs sysroot).
+
+## 2026-08-13 — Ronda de features (desktop + bench + tablet) en olas paralelas
+
+- **Desktop (pdf_app)**: Highlight (drag sobre texto → rects por línea vía Document::text+spans,
+  amarillo semitransparente), TextNote (clic → input flotante, marcador+tooltip), panel de
+  anotaciones (lista página+tipo+resumen, clic salta/centra, botones ✕ borrar y ✎ editar nota),
+  recientes (últimos 5 PDFs en storage eframe). Todo persistido en el sidecar SQLite.
+- **Bench (pdf_bench)**: `benches/annotations.rs` (add/for_page/serialize/store_roundtrip) para
+  validar que el modelo de anotaciones escala (criterio Fase 3: 200+ trazos sin degradar).
+- **Tablet (pdf_android)**:
+  - Persistencia de posición (state.json: ruta+page+zoom+dark, restaurada al abrir), indicador
+    "N / total" con saltos ±10 y tap=next, modo oscuro (inversión inline en el blit, sin
+    re-render, fondo negro), barra superior con Open/−10/+10/Dark.
+  - **Scroll vertical continuo + caché**: PageCache LRU (48 MiB / 5 páginas), documento como
+    columna de páginas apiladas, viewport visible_pages(), blit_stacked con un solo lock+present
+    y vecino-más-cercano; arrastre vertical=scroll, swipe horizontal/tap=salto de página
+    instantáneo (caché), pinch fast/sharp conservado.
+  - **Anotaciones a mano (Stroke)**: botón ✏️, arrastre crea Stroke en coords de página
+    (transformación inversa del blit), render Bresenham+brocha con recorte Liang-Barsky, sidecar
+    SQLite (carga al abrir, guarda al soltar), undo (↶) y paleta de 3 colores (●).
+  - **Buscador en biblioteca**: índice vertical de letras A-Z+'#' (filtra por inicial normalizada:
+    acentos→base, números/símbolos→'#'); sin IME. La agrupación colapsable por carpeta se descartó
+    (MediaStore ya ordena por relative_path+display_name y cada fila muestra su carpeta).
+- **Verificación**: build release aarch64, clippy y fmt limpios en cada agente; host clippy/fmt
+  verdes. Sin commits (regla AGENTS.md).

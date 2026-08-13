@@ -1,10 +1,12 @@
 # PDFium vs MuPDF — Bench de escritorio (host de desarrollo)
 
 > Bench de la Fase 0.5 ejecutado en **escritorio Linux**, NO en la tablet
-> objetivo. Los datos de la **tablet TCL NXTPaper 11 Plus** (donde se cerró
-> la decisión ADR-001 en el repo principal `~/Projects/pdflector/`) están en
-> el Paso 3 del plan — este doc es **preliminar** y explica por qué los
-> números de escritorio NO deben usarse para decidir el motor.
+> objetivo. ⚠️ **Corrección (2026-08-12)**: ADR-001 **no** se cerró en la
+> tablet — se cerró con datos de escritorio del mismo Ryzen (memory.md Ola 2,
+> 2026-08-05); el spike en la tablet TCL NXTPaper 11 Plus (2026-08-12, ver
+> `docs/benchmark-results.md`) llegó después y solo midió MuPDF. Este doc es
+> **preliminar** (portado de la rama Prueba) y documenta por qué este bench
+> de escritorio contradice los números del repo principal.
 
 ## 1. Disclaimer de rigor
 
@@ -19,15 +21,18 @@ El plan de Fase 0.5 separa explícitamente dos mediciones:
 Este bench de escritorio se ejecutó con `cargo bench -p pdf_bench
 --bench engine_shootout` sobre el mismo corpus que se usará en tablet. Los
 **resultados contradicen** los del repo principal (commit `30b1b4a Fase 0.5`
-del repo `~/Projects/pdflector/`): en escritorio **PDFium gana en 13/16
+del repo `~/Projects/pdflector/`): en este bench **PDFium gana en 14/16
 renders**, mientras que el repo principal reporta MuPDF como ganador.
 
-La causa más probable es que el repo principal midió **en la tablet**
-(MediaTek MT8781, 8× Cortex-A55 eficiencia, 320 dpi, Android 15), no en
-escritorio. La escalabilidad de cada motor es distinta por arquitectura:
-PDFium escala mejor en CPUs grandes (x86_64 Ryzen), MuPDF escala mejor en
-ARM con CPUs pequeñas — patrón conocido en proyectos similares (ver
-discusiones upstream de `pdfium-rs` y `mupdf-rs`).
+⚠️ **Ambas mediciones son de escritorio** (AMD Ryzen 7 5800H): el repo
+principal midió en el mismo host (memory.md Ola 2, 2026-08-05), no en la
+tablet — la hipótesis "tablet vs escritorio" de una versión anterior de este
+doc era incorrecta. La discrepancia entre ambos benches de escritorio queda
+**sin explicar** (probable diferencia de metodología: mediana de 3 runs sobre
+páginas 0/mitad/última en `pdf_bench` vs criterion sample 100 sobre p1/pmid
+aquí, y configuraciones de build distintas). El spike de tablet (TCL
+NXTPaper 11 Plus, 2026-08-12) solo midió MuPDF y no arbitra la comparación
+entre motores.
 
 ## 2. Setup de medición
 
@@ -58,7 +63,7 @@ discusiones upstream de `pdfium-rs` y `mupdf-rs`).
 | dense_textbook | 93 | 82.37 | 245.80 | **2.98×** (P) |
 | large_document | 500 | 186.03 | 384.32 | **2.07×** (P) |
 
-PDFium gana en 3/4 (más páginas ⇒ más差距). El coste de MuPDF crece con
+PDFium gana en 3/4 (más páginas ⇒ más diferencia). El coste de MuPDF crece con
 el tamaño del PDF (~2-3 µs/página extra vs PDFium).
 
 ## 4. Resultados de render (median, 16 mediciones)
@@ -82,9 +87,9 @@ el tamaño del PDF (~2-3 µs/página extra vs PDFium).
 | large_500p | p1 | 2× | 33.263 | 30.487 | 0.92× (M) |
 | large_500p | pmid | 2× | 13.749 | 18.160 | 1.32× (P) |
 
-**PDFium gana en 13/16** (81 %). El factor típico es 2-4× más rápido en
+**PDFium gana en 14/16** (87,5 %). El factor típico es 2-4× más rápido en
 render — coincide con el objetivo tablet de **< 25 ms en render** (PLAN.md
-§8): PDFium cumple en 16/16, MuPDF cumple en 9/16.
+§8): PDFium cumple en 15/16, MuPDF cumple en 10/16.
 
 ## 5. Tamaño binario release
 
@@ -124,9 +129,11 @@ tablet, donde los ratios pueden invertirse por:
   tienen patrones distintos.
 - **Frecuencia**: la TCL puede hacer throttling agresivo bajo carga sostenida.
 
-**Acción**: ejecutar el mismo bench **en la tablet** con el binario
-cross-compilado a `aarch64-linux-android`, vía `adb shell`. Es el Paso 3
-del plan y lo que cierra ADR-001.
+**Acción (ejecutada en parte, 2026-08-12)**: se ejecutó el bench en la tablet
+TCL NXTPaper 11 Plus con MuPDF vía `adb shell` (resultados en
+`docs/benchmark-results.md`); PDFium ya no está disponible para comparar
+(eliminado en ADR-001). Nota: ADR-001 se cerró con datos de escritorio
+(memory.md Ola 2), no con el spike de tablet.
 
 ## 8. Reproducibilidad
 
@@ -135,7 +142,9 @@ del plan y lo que cierra ADR-001.
 git clone https://github.com/asierboveda/pdflector
 cd pdflector
 cargo fetch
-bash tools/fetch_pdfium.sh                 # vendor/pdfium/lib/libpdfium.so
+# (tools/fetch_pdfium.sh fue eliminado con el backend PDFium — ADR-001,
+# commit e56a818; este paso es histórico y no se puede re-ejecutar aquí)
+# bash tools/fetch_pdfium.sh                 # vendor/pdfium/lib/libpdfium.so
 mkdir -p corpus && cp /ruta/a/{paper,scanned,dense,large}*.pdf corpus/
 
 # Build del bench (ambos backends activos durante Fase 0.5):
@@ -149,10 +158,12 @@ LIBCLANG_PATH=/usr/lib cargo build --release -p pdf_bench \
     --bin rss_probe --no-default-features --features pdfium
 LIBCLANG_PATH=/usr/lib cargo build --release -p pdf_bench \
     --bin rss_probe --no-default-features --features mupdf
-# Muestrear VmRSS cada 1 s durante 30 s con el script bash en
-# docs/research/evince-architecture.md §7.
+# Muestrear VmRSS cada 1 s durante 30 s (la referencia a un script en
+# docs/research/evince-architecture.md §7 era incorrecta; usar la sonda
+# VmHWM de pdf_bench o /proc/self/status).
 ```
 
-> **Nota**: este bench es `desktop`. La medición que cierra ADR-001 vive en
-> el Paso 3 del plan (cross-compile + `adb shell` sobre la TCL NXTPaper 11
-> Plus). Ver `docs/benchmarks/android-tablet-shootout.md` cuando se ejecute.
+> **Nota**: este bench es `desktop`. La medición que cierra ADR-001 se hizo
+> en escritorio (memory.md Ola 2, 2026-08-05); el spike en la tablet TCL
+> NXTPaper 11 Plus (2026-08-12, solo MuPDF) está en
+> `docs/benchmark-results.md`. No existe `docs/benchmarks/android-tablet-shootout.md`.

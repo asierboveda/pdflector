@@ -75,7 +75,7 @@ kill_tree() {
 run_one() {
     local pdf=$1
     local pages
-    pages=$(uv run --with pypdf python3 -c "from pypdf import PdfReader; import sys; print(len(PdfReader(sys.argv[1]).pages))" "$pdf" 2>/dev/null)
+    pages=$(uv run --with pypdf python3 -c "from pypdf import PdfReader; import sys; print(len(PdfReader(sys.argv[1]).pages))" "$pdf" 2>/dev/null) || pages=0
     local size_kb
     size_kb=$(($(stat -c %s "$pdf") / 1024))
     local label
@@ -122,20 +122,22 @@ run_one() {
     local rss_baseline_mb=$(( rss_first_kib / 1024 ))
     echo "  rss_baseline=${rss_baseline_mb} MiB  rss_peak=${rss_peak_mb} MiB" >&2
 
-    # Limpiar antes del segundo test.
+    # Limpiar antes del segundo test. Con setsid, el pgid de nuestra instancia
+    # es su propio pid: kill -- -$pid mata solo nuestro árbol (evita pkill -f
+    # global, que también mataría instancias de Evince del usuario).
     kill_tree "$pid" 2>/dev/null || true
     sleep 0.5
-    pkill -f "evince.*$label" 2>/dev/null || true
+    kill -- -"$pid" 2>/dev/null || true
     sleep 0.5
 
     # --- 2) Salto a página lejana (cold cache de páginas) --------------
     # Cerrar y reabrir apuntando a página 75% del documento.
+    local jump_ms=""
     if [[ "$pages" -gt 5 ]]; then
         local target=$(( pages * 3 / 4 ))
         setsid "$EVINCE_BIN" --page-index="$target" "$pdf" </dev/null >>/tmp/bench-evince.log 2>&1 &
         local pid2=$!
         local start2_ns=$(date +%s%N)
-        local jump_ms=""
         while :; do
             if ready_clients >/dev/null; then
                 local now2_ns=$(date +%s%N)
@@ -152,7 +154,7 @@ run_one() {
         echo "  page_jump_ms(${target}/${pages})=$jump_ms" >&2
         kill_tree "$pid2" 2>/dev/null || true
         sleep 0.5
-        pkill -f "evince.*$label" 2>/dev/null || true
+        kill -- -"$pid2" 2>/dev/null || true
     else
         jump_ms="N/A"
     fi

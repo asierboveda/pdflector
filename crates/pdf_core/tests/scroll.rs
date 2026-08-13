@@ -62,3 +62,15 @@ fn viewport_beyond_end_yields_empty_range() {
     };
     assert_eq!(visible_and_prefetch_pages(&vp, 500, 2), 500..500);
 }
+
+/// A degenerate viewport with page offsets near `usize::MAX` must not
+/// overflow: `first + count + radius` would panic in debug builds (and wrap
+/// in release) with plain `+`. The result is the clamped empty range.
+#[test]
+fn degenerate_huge_viewport_does_not_overflow() {
+    let vp = Viewport {
+        first_visible_page: usize::MAX - 1,
+        visible_count: 3,
+    };
+    assert_eq!(visible_and_prefetch_pages(&vp, 500, 2), 500..500);
+}

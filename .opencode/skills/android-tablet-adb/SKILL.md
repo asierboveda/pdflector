@@ -1,6 +1,6 @@
 ---
 name: android-tablet-adb
-description: Despliegue y medición en la tablet Lenovo Idea Tab (9469X) vía adb:
+description: Despliegue y medición en la tablet TCL NXTPaper 11 Plus (9469X) vía adb:
 cross-compile Rust a aarch64-linux-android (NDK r28/API 35), push de binarios y
 corpus, ejecución del harness pdf_bench (timings+RSS), dumpsys meminfo y logcat.
 Úsalo cuando toque medir en la tablet o instalar/verificar algo en ella.
@@ -8,7 +8,7 @@ corpus, ejecución del harness pdf_bench (timings+RSS), dumpsys meminfo y logcat
 
 ## Precondiciones
 
-- Tablet por USB (`adb devices`): Lenovo Idea Tab **9469X**, Android 15,
+- Tablet por USB (`adb devices`): TCL NXTPaper 11 Plus **9469X**, Android 15,
   serial A06B4A8E6774623.
 - NDK r28 en `~/Android/Sdk/ndk/` + target Rust `aarch64-linux-android`
   (`rustup target add aarch64-linux-android`).

@@ -19,3 +19,17 @@ mupdf = { version = "0.8", default-features = false, features = ["base14-fonts"]
 # MIT license (verified with `cargo info lru`), no unsafe. Only the LRU
 # ordering/tracking is used; byte-budget eviction is handled in `cache.rs`.
 lru = "0.18"
+# Serialization for the vector annotation model (Fase 3): canonical JSON for
+# the SQLite sidecar (store.rs) and Markdown/PDF export. serde + serde_json are
+# MIT/Apache-2.0, the de-facto standard; no unsafe in our usage.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# SQLite sidecar per PDF (Fase 3): persistence of the annotation set, designed
+# for Syncthing (one small .db per document). rusqlite is MIT; the `bundled`
+# feature compiles SQLite from source (no system lib), so cross-compiling to
+# aarch64-linux-android later needs no extra system dependency.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Filesystem change detection for Fase 4 sync (hot-reload of annotations changed
+# by Syncthing on another device). notify is MIT/Apache-2.0, std-ish, no unsafe
+# in our usage; only local FS events, no network.
+notify = "8"
