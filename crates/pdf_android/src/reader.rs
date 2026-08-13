@@ -344,8 +344,8 @@ struct PinchAnchor {
     pan_y0: f32,
 }
 
-/// Selección de texto en curso (rectángulo de arrastre del doble-tap): ancla
-/// (punto del doble-tap) y punto actual del dedo, ambos en px de VENTANA
+/// Selección de texto en curso (rectángulo de arrastre del long-press): ancla
+/// (punto del long-press) y punto actual del dedo, ambos en px de VENTANA
 /// (pantalla).
 ///
 /// Decisión documentada: la selección se guarda en coords de PANTALLA (no de
@@ -355,7 +355,7 @@ struct PinchAnchor {
 /// blit, misma `scale = cover × zoom` y `dx/dy` que la capa de anotaciones).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SelState {
-    /// Punto del doble-tap (px de ventana): esquina fija del rect.
+    /// Punto del long-press (px de ventana): esquina fija del rect.
     pub(crate) anchor: (f32, f32),
     /// Posición actual del dedo (px de ventana): esquina móvil del rect.
     pub(crate) cur: (f32, f32),
@@ -558,7 +558,7 @@ pub(crate) struct Reader {
     /// a la copia en `internal/pdfs/` → `internal/pdfs/annotations/<stem>.db`
     /// (ver `open_library_entry`/`jni::launch_intent_pdf`).
     annot_sidecar: Option<PathBuf>,
-    /// Selección de texto en curso (doble-tap + arrastre) en px de ventana
+    /// Selección de texto en curso (long-press + arrastre) en px de ventana
     /// (ver `SelState`): Some durante el arrastre Y mientras está fijada con
     /// su menú abierto (`sel_menu`); se descarta al tocar fuera del menú o al
     /// ejecutar Copiar/Subrayar. None = sin selección activa
@@ -1291,10 +1291,10 @@ impl Reader {
     }
 
     // ---------------------------------------------------------------------
-    // Selección de texto: doble-tap + arrastre, copiar y subrayar (Parte 1)
+    // Selección de texto: long-press + arrastre, copiar y subrayar (Parte 1)
     // ---------------------------------------------------------------------
     //
-    // El gesto vive en `input.rs` (doble-tap sin levantar + arrastre); aquí
+    // El gesto vive en `input.rs` (long-press + arrastre); aquí
     // el estado (`sel`/`sel_menu`), las transformaciones de coords, la
     // extracción de texto y las acciones Copiar/Subrayar. Decisiones
     // documentadas en `SelState` (coords de pantalla) y en el doc de la
@@ -1313,10 +1313,11 @@ impl Reader {
         self.sel.is_some()
     }
 
-    /// Comienza el arrastre de selección: ancla = punto del doble-tap y
-    /// punto actual = el mismo (el rect crece con `update_sel`). Solo se
-    /// llama tras moverse > `SELECT_SLOP` desde el segundo down
-    /// (`input`, `GestureKind::Selecting`). Blit directo (sin re-render):
+    /// Comienza el modo selección: ancla = punto del LONG-PRESS y punto
+    /// actual = el mismo (el rect, un PUNTO aún sin arrastrar, crece con
+    /// `update_sel`). Solo se llama al superar `LONG_PRESS_MS` con el dedo
+    /// quieto (`input::tick_gestures`, `GestureKind::Selecting`). Blit
+    /// directo (sin re-render):
     /// como en el pinch, la página está cacheada y solo cambia la capa.
     pub(crate) fn begin_sel(&mut self, ax: f32, ay: f32) {
         self.sel = Some(SelState {
@@ -1343,14 +1344,14 @@ impl Reader {
 
     /// Fija la selección al levantar el dedo: si el rect es significativo
     /// (≥ `SEL_MIN_PX` por lado) abre el menú Copiar/Subrayar/IA; un
-    /// doble-tap sin arrastre (rect degenerado) se descarta.
+    /// long-press sin arrastre (rect degenerado, el punto) se descarta.
     pub(crate) fn end_sel(&mut self) {
         let Some((l, t, r, b)) = self.sel_screen_rect() else {
             self.clear_selection(); // no hubo arrastre
             return;
         };
         if (r - l).abs() < SEL_MIN_PX || (b - t).abs() < SEL_MIN_PX {
-            self.clear_selection(); // doble-tap sin arrastre: nada que fijar
+            self.clear_selection(); // long-press sin arrastre: nada que fijar
             return;
         }
         self.open_sel_menu();
@@ -1843,13 +1844,13 @@ impl Reader {
 
     /// ¿Trabajo diferido pendiente en el bucle de eventos? (poll con timeout
     /// de 16 ms → `tick`): animación del sheet, portadas de la biblioteca,
-    /// tap de página diferido por la ventana de doble-tap o aviso breve
+    /// long-press del dedo en el documento (modo selección) o aviso breve
     /// visible. En reposo el poll bloquea sin gastar batería.
     pub(crate) fn needs_tick(&mut self) -> bool {
         self.sheet_anim
             || self.thumbs_pending()
             || self.toast.is_some()
-            || self.gesture.tap_pending()
+            || self.gesture.press_pending()
             // Consulta de IA en vuelo: `tick` sondea el canal del hilo de
             // fondo (sin esto el poll bloquearía y la respuesta tardaría en
             // aparecer hasta el siguiente evento de input).
@@ -1861,8 +1862,8 @@ impl Reader {
     // ---------------------------------------------------------------------
 
     /// ¿Animación del sheet en vuelo? La consulta global de trabajo diferido
-    /// es `needs_tick` (incluye esta señal + portadas + tap diferido +
-    /// aviso breve); `sheet_animating` ya no se usa desde `lib` (2026-08-XX).
+    /// es `needs_tick` (incluye esta señal + portadas + long-press + aviso
+    /// breve); `sheet_animating` ya no se usa desde `lib` (2026-08-XX).
     #[allow(dead_code)]
     pub(crate) fn sheet_animating(&self) -> bool {
         self.sheet_anim
@@ -1919,14 +1920,14 @@ impl Reader {
     }
 
     /// Tick del bucle de eventos (timeout ~16 ms): avanza la animación del
-    /// sheet, dispara el tap de página diferido por la ventana de doble-tap,
-    /// expira el aviso breve (toast) y renderiza un lote de portadas
-    /// pendientes de la biblioteca. `lib::android_main` lo invoca en los
-    /// eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
+    /// sheet, detecta el long-press del dedo en el documento (entra en modo
+    /// selección), expira el aviso breve (toast) y renderiza un lote de
+    /// portadas pendientes de la biblioteca. `lib::android_main` lo invoca en
+    /// los eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
     /// despertar el loop en reposo).
     pub(crate) fn tick(&mut self, app: &AndroidApp) {
-        // Tap diferido (ventana de doble-tap): si expiró sin un segundo down,
-        // se ejecuta el tap de página (`input::tick_gestures`).
+        // Long-press: si el dedo lleva quieto > `LONG_PRESS_MS` en el área de
+        // página (sin sheet), `input::tick_gestures` entra en modo selección.
         crate::input::tick_gestures(self, app);
         // Resultado del hilo de IA (si hay una consulta en vuelo): `try_recv`
         // sondea el canal SIN bloquear; al llegar el mensaje se actualiza el
