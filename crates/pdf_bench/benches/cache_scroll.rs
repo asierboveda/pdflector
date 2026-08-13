@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Fase 1 B1 cache benchmark — NEW BASELINE (no desktop comparison, no
 //! regression against previous builds).
 //!
@@ -19,7 +22,7 @@ use std::time::Duration;
 use criterion::{Criterion, black_box};
 use pdf_core::cache::RenderCache;
 use pdf_core::engine::mupdf::MupdfEngine;
-use pdf_core::{Document, RenderEngine};
+use pdf_core::{Document, RenderEngine, corpus_dir};
 
 /// scale_for_level(0) == 1.0 == 72 dpi.
 const SCALE_LEVEL: u32 = 0;
@@ -28,10 +31,8 @@ const PAGE_COUNT: usize = 50;
 const BUDGET_BYTES: usize = 8 * 1024 * 1024;
 
 fn large_path() -> PathBuf {
-    match std::env::var("PDFLECTOR_CORPUS_DIR") {
-        Ok(dir) => PathBuf::from(dir).join("large_document.pdf"),
-        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/large_document.pdf"),
-    }
+    // Directory resolution is shared with pdf_core (`corpus_dir`).
+    corpus_dir().join("large_document.pdf")
 }
 
 fn build_engine() -> MupdfEngine {

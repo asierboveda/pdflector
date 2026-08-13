@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Virtualized-scroll math (docs/PLAN.md §4, Fase 1 — "solo páginas visibles +
 //! N colindantes"). Pure geometry here, so it is testable without a PDF engine;
 //! the threaded prefetch queue belongs to Fase 1 B2.
@@ -25,7 +28,14 @@ pub fn visible_and_prefetch_pages(
         .first_visible_page
         .saturating_sub(prefetch_radius)
         .min(total_pages);
-    let end = (vp.first_visible_page + vp.visible_count + prefetch_radius).min(total_pages);
+    // Saturating: `first_visible_page + visible_count + prefetch_radius` can
+    // overflow usize on degenerate viewports (huge page offsets); saturating
+    // arithmetic keeps the clamp to `total_pages` correct in every case.
+    let end = vp
+        .first_visible_page
+        .saturating_add(vp.visible_count)
+        .saturating_add(prefetch_radius)
+        .min(total_pages);
     start..end
 }
 

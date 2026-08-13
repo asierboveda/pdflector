@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Byte-bounded LRU cache of rendered pages (docs/PLAN.md §3.3 `cache`, Fase 1).
 //!
 //! `RenderCache` wraps a `RenderEngine` document and keeps a least-recently-used
@@ -138,16 +141,72 @@ impl<E: RenderEngine> RenderCache<E> {
         &self.stats
     }
 
-    /// Distinct page indices currently resident, most-recently-used first.
-    /// Useful for the B2 prefetch/invalidation logic and for hit-path benches.
+    /// Distinct page indices currently resident, most-recently-used first
+    /// (a page cached at several scale levels appears once). Useful for the
+    /// B2 prefetch/invalidation logic and for hit-path benches.
     pub fn resident_pages(&self) -> Vec<usize> {
-        self.map.iter().map(|(k, _)| k.page_idx).collect()
+        let mut seen = std::collections::HashSet::new();
+        self.map
+            .iter()
+            .map(|(k, _)| k.page_idx)
+            .filter(|page| seen.insert(*page))
+            .collect()
     }
 
     /// Full resident keys `(page, scale_level)`, most-recently-used first.
     /// Used by the prefetcher's thread-safe `resident_pages` snapshot.
     pub fn resident_keys(&self) -> Vec<PageKey> {
         self.map.iter().map(|(k, _)| *k).collect()
+    }
+
+    /// Deep copy of the bitmap cached at `(page_idx, scale_level)`, if
+    /// resident. A pure peek: does NOT render on a miss and does NOT promote
+    /// LRU recency (unlike `get_or_render`) nor touch the hit counter.
+    ///
+    /// Backs `Prefetcher::get_page` (pdf_app contract): the worker answers
+    /// `Some(bitmap)` for a resident page without moving it out of the cache.
+    pub fn peek_clone(&self, page_idx: usize, scale_level: u32) -> Option<Bitmap> {
+        let key = PageKey {
+            page_idx,
+            scale_level,
+        };
+        self.map.peek(&key).map(|page| Bitmap {
+            width: page.bitmap.width,
+            height: page.bitmap.height,
+            data: page.bitmap.data.clone(),
+        })
+    }
+
+    /// Evicts every resident entry cached at a `scale_level` other than
+    /// `keep_level`, keeping `current_bytes` and the eviction counter in sync.
+    ///
+    /// Why: after a zoom change the old ladder level is dead weight — its
+    /// bitmaps can never be reused (each level is a distinct render) and would
+    /// only consume byte budget that the new level's crisp re-renders need.
+    /// Trimming before populating the new level avoids budget thrashing:
+    /// without it, evicting a page only to re-render it at the new level a
+    /// moment later would churn the LRU and double-render.
+    pub fn trim_to_scale_level(&mut self, keep_level: u32) {
+        // lru 0.18 has no retain(); collect stale keys first (iter is
+        // borrow-free) and pop them with explicit byte accounting.
+        let stale: Vec<PageKey> = self
+            .map
+            .iter()
+            .filter(|(k, _)| k.scale_level != keep_level)
+            .map(|(k, _)| *k)
+            .collect();
+        let mut evicted_bytes = 0usize;
+        let mut evicted = 0u64;
+        for key in stale {
+            if let Some(page) = self.map.pop(&key) {
+                evicted_bytes += page.byte_size;
+                evicted += 1;
+            }
+        }
+        self.current_bytes -= evicted_bytes;
+        self.stats.evictions += evicted;
+        self.stats.current_bytes = self.current_bytes;
+        self.stats.entries = self.map.len();
     }
 
     /// Drops every resident page and resets the byte accounting. The engine and

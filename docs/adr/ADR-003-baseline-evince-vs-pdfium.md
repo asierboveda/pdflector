@@ -19,7 +19,8 @@ pág., paper científico 12 pág.).
 - `evince` (GTK) → `/proc/PID/status` para RSS del visor completo.
 - PDFium benchmark → Rust `std::time::Instant`, mismo PDF, mismas resoluciones.
 
-**Script de medición:** `tools/measure_evince_baseline.sh`.
+**Script de medición:** `tools/bench-evince/bench_evince.sh` (el
+`tools/measure_evince_baseline.sh` citado aquí no llegó a versionarse en el repo).
 
 ---
 
@@ -171,7 +172,9 @@ scroll normal. Solo el primer render de cada página es MISS.
 
 ## 6. Referencias
 
-- Script de medición: `tools/measure_evince_baseline.sh`
-- Resultados raw: `tools/evince_baseline_results.txt`
+- Script de medición: `tools/bench-evince/bench_evince.sh`
+- Resultados raw: **pendiente** — `tools/evince_baseline_results.txt` no está
+  versionado en el repo; solo quedan los datos agregados de este ADR y de
+  `docs/investigacion/evince-baseline.md`
 - Hardware: AMD Ryzen 7 5800H, 13 GiB RAM, Arch Linux (kernel 7.1.4)
 - Software: Evince 48.4, Poppler 26.07, Cairo 1.18.4, PDFium chromium/7988

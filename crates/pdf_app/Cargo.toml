@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Asier Bóveda
+
 [package]
 name = "pdf_app"
 version = "0.1.0"
@@ -6,6 +9,11 @@ edition.workspace = true
 [dependencies]
 pdf_core = { path = "../pdf_core" }
 # Desktop prototype UI only — the final Android UI is chosen in Phase 6.
-eframe = "0.32"
+#
+# The `persistence` feature backs `cc.storage` / `App::save` with a RON file in
+# the XDG data dir (~/.local/share/pdflector/app.ron): the dark-mode preference
+# survives restarts (PLAN Fase 2). It is not a new crate — a feature of the
+# existing dependency (it pulls eframe's own ron/serde/home, no direct dep).
+eframe = { version = "0.32", features = ["persistence"] }
 # Native file dialog (GTK3 on this system).
 rfd = "0.17"

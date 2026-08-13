@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Engine benchmark harness (criterion) — MuPDF is the only engine since
 //! ADR-001 (Fase 0.5), so `build_engine` is the sole customization point.
 //!
@@ -8,7 +11,7 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use pdf_core::engine::mupdf::MupdfEngine;
-use pdf_core::{Document, RenderEngine};
+use pdf_core::{Document, RenderEngine, corpus_dir};
 use std::path::PathBuf;
 
 /// Engine under test: MuPDF (ADR-001).
@@ -20,8 +23,10 @@ fn build_engine() -> MupdfEngine {
 const ENGINE_LABEL: &str = "mupdf";
 
 /// All corpus documents with a stable label, relative to the workspace root.
+/// Directory resolution is shared with pdf_core (`corpus_dir`), so
+/// `PDFLECTOR_CORPUS_DIR` (device/CI) is honored here too.
 fn corpus_files() -> Vec<(&'static str, PathBuf)> {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+    let base = corpus_dir();
     vec![
         ("dense", base.join("dense_textbook.pdf")),
         ("scanned", base.join("scanned_pages.pdf")),

@@ -3,6 +3,12 @@
 > **Origen**: ingeniería inversa de Evince (GNOME PDF viewer).
 > **Objetivo**: extraer patrones de diseño de rendimiento y mapearlos a Android.
 > **Fecha**: 2026-08-10
+>
+> **Nota de motor (2026-08-12)**: este ADR se redactó tomando **PDFium** como
+> implementación de referencia. Desde ADR-001 (Fase 0.5) el motor es **MuPDF**
+> (AGPL-3.0): los patrones de Evince aquí analizados son agnósticos del motor,
+> pero las traducciones concretas de API PDFium (`FPDF_*`, `FPDFBitmap`) son
+> históricas.
 
 ---
 
@@ -147,8 +153,8 @@ Puntos clave:
 
 **Patrón a replicar:**
 - El backend PDF usa `poppler_page_render()` que rasteriza a Cairo. En Android,
-  PDFium hace lo mismo renderizando a un bitmap (`FPDFBitmap`). La envoltura es
-  análoga.
+  el motor elegido (MuPDF, ADR-001) hace lo mismo renderizando a un
+  `fz_pixmap`/bitmap. La envoltura es análoga.
 - El render se hace **a resolución de pantalla** (target_width/height), nunca a
   resolución nativa del PDF. Esto es exactamente lo que ya especifica PLAN.md.
 
@@ -293,7 +299,7 @@ while ((start_page - i > 0 || end_page + i < n_pages) && preload < MAX) {
 
 | Evince | Android |
 |--------|---------|
-| Cairo ARGB32 → GPU | PDFium `FPDFBitmap_BGRA` → `Bitmap` → subir a `Canvas` o `TextureView` |
+| Cairo ARGB32 → GPU | MuPDF `fz_pixmap` → `Bitmap` (RGBA) → subir a `Canvas` o `TextureView` |
 | Sin tiling | Ídem: render de página completa (evita overhead de stitching) |
 | Composicion multi-capa | `Canvas.drawBitmap()` + `drawRect()` + `drawPath()` encima |
 | Selección como textura separada | `Path` con `Paint` de highlight sobre el bitmap base |
@@ -582,7 +588,7 @@ class RenderScheduler(private val renderer: RenderEngine) {
 
 | # | Patrón Evince | Android |
 |---|---------------|---------|
-| 1 | `EvDocument.render()` → `cairo_surface_t*` | PDFium `FPDF_RenderPageBitmap()` → `Bitmap` |
+| 1 | `EvDocument.render()` → `cairo_surface_t*` | MuPDF `fz_run_page()` → `fz_pixmap` → `Bitmap` |
 | 2 | `EvJobScheduler` 4 prioridades | `CoroutineScope` + 2 canales (urgent, low) |
 | 3 | `EvPixbufCache` sliding window + límite bytes | `LruCache`/`LinkedHashMap` + `totalBytes` ≤ 40 MB |
 | 4 | `height_to_page_cache` O(1) | `FloatArray` de alturas acumuladas |
@@ -598,7 +604,7 @@ class RenderScheduler(private val renderer: RenderEngine) {
 - **Tiling de zoom**: Evince no lo usa. Para Android tampoco es necesario:
   renderizar la página completa a la nueva escala es suficientemente rápido
   (< 25 ms objetivo).
-- **Backend Poppler**: usaremos PDFium o MuPDF (ADR-001).
+- **Backend Poppler**: usaremos MuPDF (ADR-001); el backend PDFium se eliminó en la Fase 0.5.
 - **Navegación por enlaces Synctex**: no aplica al caso de uso.
 - **Widgets GTK de anotaciones**: en Android serán vistas nativas o canvas overlay.
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Real-engine prefetch tests (Fase 1, B2): background prefetch over MuPDF and
 //! REAL corpus PDFs. No mocks, no shared state: every test opens its own
 //! `Prefetcher` and every miss is an actual MuPDF render.
@@ -6,6 +9,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use pdf_core::CacheStats;
+use pdf_core::Document;
+use pdf_core::RenderEngine;
 use pdf_core::Viewport;
 use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::prefetch::Prefetcher;
@@ -27,12 +32,10 @@ fn open_prefetcher(name: &str, budget: usize) -> Prefetcher<MupdfEngine> {
 /// known, deterministic number of pages) or `timeout` elapses. Returns the
 /// last snapshot.
 ///
-/// This is deliberately NOT `await_idle_timeout`: that method samples twice
-/// 2ms apart and declares the worker idle if both match — but the worker only
-/// publishes stats after finishing a whole request, so calling it right after
-/// `request()` returns `true` prematurely (~2ms, with 0 misses, while the
-/// render is still running). Waiting for a concrete miss count is the only
-/// robust signal with this API.
+/// Deliberately NOT `await_idle_timeout`: that method only proves the worker
+/// finished its queue ("is it idle yet?"), while these tests need the stronger
+/// guarantee that a concrete, deterministic number of pages was rendered.
+/// Waiting for the miss count is the robust signal here.
 fn wait_misses(prefetcher: &Prefetcher<MupdfEngine>, target: u64, timeout: Duration) -> CacheStats {
     let deadline = Instant::now() + timeout;
     loop {
@@ -195,4 +198,88 @@ fn test_await_idle_realmente_espera() {
         "pages 0..=12 rendered exactly once; got {}",
         s.misses
     );
+}
+
+/// Regression: `cancel_pending` used to skip the `requested` counter, so after
+/// `request -> cancel -> reissue -> await_idle_timeout` the await returned
+/// `true` while the reissued request was still queued (the empty cancel had
+/// already bumped `completed` past the stale `requested` snapshot). Now the
+/// await must cover the reissue too: the far request (radius 20 → 43 pages)
+/// plus the near reissue (radius 2 → 7 pages) all render before idle.
+#[test]
+fn await_idle_after_cancel_reissue_waits_for_the_new_request() {
+    let prefetcher = open_prefetcher("large_document.pdf", 32 * 1024 * 1024);
+
+    // Large request in flight (pages 280..=322), then cancel, then a small
+    // reissue near page 5 — all queued back-to-back while the worker is busy.
+    let far = Viewport {
+        first_visible_page: 300,
+        visible_count: 3,
+    };
+    prefetcher.request(&far, 500, 20, 0);
+    prefetcher.cancel_pending();
+    let near = Viewport {
+        first_visible_page: 5,
+        visible_count: 3,
+    };
+    prefetcher.request(&near, 500, 2, 0);
+
+    assert!(
+        prefetcher.await_idle_timeout(Duration::from_secs(30)),
+        "worker must go idle after draining the reissued request"
+    );
+    let s = prefetcher.stats_snapshot();
+    assert_eq!(
+        s.misses, 50,
+        "far request (43 pages) + reissue (7 pages) must all be rendered \
+         before idle; got {}",
+        s.misses
+    );
+}
+
+/// `get_page` answers `Some(bitmap)` for a resident key — a deep copy whose
+/// dimensions match a direct 72 dpi render of the same page — and `None` for
+/// a key the prefetch never touched. The client polls the returned channel
+/// with `try_recv`; here `recv_timeout` just gives the test a bounded wait.
+#[test]
+fn get_page_returns_resident_bitmap_or_none() {
+    let prefetcher = open_prefetcher("large_document.pdf", 32 * 1024 * 1024);
+    let vp = Viewport {
+        first_visible_page: 5,
+        visible_count: 3,
+    };
+    prefetcher.request(&vp, 500, 2, 0);
+    assert!(
+        prefetcher.await_idle_timeout(Duration::from_secs(30)),
+        "request must render before polling"
+    );
+
+    // Resident page: Some bitmap, deep copy, size consistent with the real
+    // 72 dpi render of page 5 (MuPDF `render_page` at scale 1.0).
+    let rx = prefetcher.get_page(5, 0);
+    let bitmap = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker must answer get_page")
+        .expect("page 5 at level 0 must be resident");
+    let engine = MupdfEngine::new().expect("mupdf init");
+    let doc = engine
+        .open(&corpus("large_document.pdf"))
+        .expect("open doc");
+    let direct = doc.render_page(5, 1.0).expect("direct render");
+    assert_eq!(
+        (bitmap.width, bitmap.height),
+        (direct.width, direct.height),
+        "resident bitmap must match the rendered page size"
+    );
+    assert_eq!(
+        bitmap.data.len(),
+        bitmap.width as usize * bitmap.height as usize * 4
+    );
+
+    // A page no request ever touched: not resident -> None.
+    let rx = prefetcher.get_page(499, 0);
+    let answer = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker must answer get_page");
+    assert!(answer.is_none(), "page 499 was never rendered");
 }

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! MuPDF backend: crate `mupdf` 0.8 (messense/mupdf-rs) over MuPDF C
 //! (AGPL-3.0 — chosen in ADR-001, Fase 0.5). Single engine, always compiled.
 //!
@@ -9,9 +12,9 @@
 
 use std::path::Path;
 
-use mupdf::{Colorspace, Matrix};
+use mupdf::{Colorspace, Matrix, TextBlockContent, TextPageFlags};
 
-use crate::engine::{Bitmap, Document, Error, RenderEngine, Result};
+use crate::engine::{Bitmap, Document, Error, PageText, RenderEngine, Result, TextSpan};
 
 pub struct MupdfEngine;
 
@@ -115,5 +118,38 @@ impl Document for MupdfDocument {
             height: pixmap.height(),
             data,
         })
+    }
+
+    fn text(&self, page: u32) -> Result<PageText> {
+        let page = self.load_page(page)?;
+
+        // `to_text_page` runs MuPDF's structured-text (stext) extractor with
+        // default flags; `to_text` yields the plain text in reading order and
+        // `structured` the per-line spans with bounding boxes in page points
+        // (y grows downward, same space as `page_size`). Both come from the
+        // same stext page, so spans stay consistent with `text`.
+        let stext = page
+            .to_text_page(TextPageFlags::empty())
+            .map_err(|e| Error::Engine(e.to_string()))?;
+        let text = stext.to_text().map_err(|e| Error::Engine(e.to_string()))?;
+        let spans = stext
+            .structured()
+            .blocks
+            .iter()
+            .filter_map(|b| match &b.content {
+                TextBlockContent::Text { lines } => Some(lines),
+                _ => None,
+            })
+            .flatten()
+            .map(|line| TextSpan {
+                text: line.text.clone(),
+                x: line.bounds.x0,
+                y: line.bounds.y0,
+                w: line.bounds.x1 - line.bounds.x0,
+                h: line.bounds.y1 - line.bounds.y0,
+            })
+            .collect();
+
+        Ok(PageText { text, spans })
     }
 }

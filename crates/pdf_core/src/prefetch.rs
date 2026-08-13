@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Background prefetch with a priority queue (visible pages first).
 //!
 //! Actor model: the single worker thread owns `(engine, doc, cache)` for its
@@ -21,7 +24,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::cache::{CacheStats, PageKey, RenderCache};
-use crate::engine::{RenderEngine, Result};
+use crate::engine::{Bitmap, RenderEngine, Result};
 use crate::scroll::Viewport;
 
 /// Commands sent to the worker thread.
@@ -33,6 +36,15 @@ enum Cmd {
     /// Client asks for the worker's resident pages; the worker answers on
     /// `reply` (cross-thread snapshot, used by tests and the debug overlay).
     Snapshot(Sender<Vec<PageKey>>),
+    /// Client asks for a deep copy of a single cached bitmap. The worker
+    /// answers `Some(bitmap)` when `(page_idx, scale_level)` is resident,
+    /// `None` otherwise — never renders, never evicts. See
+    /// `Prefetcher::get_page`.
+    GetPage {
+        page_idx: usize,
+        scale_level: u32,
+        reply: Sender<Option<Bitmap>>,
+    },
 }
 
 /// Prefetch controller: owns the channel to the renderer worker and a
@@ -86,7 +98,10 @@ impl<E: RenderEngine> Prefetcher<E> {
                 match cmd {
                     Cmd::Stop => break,
                     Cmd::Request(visibles, prefetch) => {
-                        // Visible pages first, then prefetch neighbours.
+                        // Visible pages first, then prefetch neighbours. Per-page
+                        // render errors are dropped on purpose: prefetch is
+                        // best-effort, and one failing page must not kill the
+                        // worker or stall the rest of the queue.
                         for key in visibles.iter().chain(prefetch.iter()) {
                             let _ = cache.get_or_render(key.page_idx, key.scale_level);
                         }
@@ -100,6 +115,13 @@ impl<E: RenderEngine> Prefetcher<E> {
                     }
                     Cmd::Snapshot(reply) => {
                         let _ = reply.send(cache.resident_keys());
+                    }
+                    Cmd::GetPage {
+                        page_idx,
+                        scale_level,
+                        reply,
+                    } => {
+                        let _ = reply.send(cache.peek_clone(page_idx, scale_level));
                     }
                 }
             }
@@ -164,7 +186,14 @@ impl<E: RenderEngine> Prefetcher<E> {
 
     /// Discards any pending wishlist. Rendering already in progress is not
     /// interrupted (the worker has no cancellation; see module docs).
+    ///
+    /// Counts as a submitted request (`requested += 1`), so a following
+    /// `await_idle_timeout` waits for the in-flight render to finish and the
+    /// queue to drain instead of returning early: without this, the empty
+    /// request would bump `completed` with no matching `requested`, and a
+    /// reissued `request()` could be observed as "idle" before it rendered.
     pub fn cancel_pending(&self) {
+        self.requested.fetch_add(1, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Request(Vec::new(), Vec::new()));
     }
 
@@ -179,6 +208,30 @@ impl<E: RenderEngine> Prefetcher<E> {
         let (reply_tx, reply_rx) = channel::<Vec<PageKey>>();
         let _ = self.tx.send(Cmd::Snapshot(reply_tx));
         reply_rx.recv().unwrap_or_default()
+    }
+
+    /// Asks the worker whether `(page_idx, scale_level)` is resident in its
+    /// cache. Non-blocking: the answer arrives on the returned channel
+    /// (`Some(bitmap)` if resident, `None` otherwise) and the client polls it
+    /// with `try_recv()` — the same pattern as pdf_app's `RenderWorker`.
+    ///
+    /// The bitmap is a deep copy (`data` cloned) of the worker's entry, so
+    /// the cache keeps ownership and recency; a miss never renders. The
+    /// answer is queued behind whatever the worker is currently rendering, so
+    /// the client must poll, not block. This is the pdf_app contract for
+    /// showing already-rendered pages on top of the prefetch pipeline.
+    pub fn get_page(
+        &self,
+        page_idx: usize,
+        scale_level: u32,
+    ) -> std::sync::mpsc::Receiver<Option<Bitmap>> {
+        let (reply_tx, reply_rx) = channel();
+        let _ = self.tx.send(Cmd::GetPage {
+            page_idx,
+            scale_level,
+            reply: reply_tx,
+        });
+        reply_rx
     }
 
     /// Waits until the worker has processed every `Cmd::Request` submitted up

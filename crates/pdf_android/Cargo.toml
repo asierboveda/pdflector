@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Asier Bóveda
+
+[package]
+name = "pdf_android"
+version = "0.1.0"
+edition.workspace = true
+description = "Minimal native Android app (spike Fase 1): renders a PDF to the ANativeWindow via pdf_core (MuPDF)."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# pdf_core (motor MuPDF, ADR-001) sin features extra: rusqlite/notify ya
+# cross-compilan a aarch64-linux-android (fix del agente de build paralelo).
+pdf_core = { path = "../pdf_core" }
+# Ciclo de vida de la Activity + ANativeWindow + input. Backend clásico
+# NativeActivity (el único que no necesita actividad Java propia; el .so se
+# carga vía android.app.lib_name). MIT.
+android-activity = { version = "0.6", features = ["native-activity"] }
+# ANativeWindow lock/stride/format. Se usa el mismo 0.9 que android-activity,
+# sin features por defecto para no inflar el grafo (native_window es base).
+ndk = { version = "0.9", default-features = false }
+# JNI para el picker de PDFs: dibuja la lista con android.graphics.Canvas
+# (fuente del sistema, antialiasing) y lee los píxeles con Bitmap.getPixels.
+# Misma versión (0.22) que usa android-activity 0.6, así que reutiliza
+# JavaVM::singleton() sin duplicar la crate. MIT/Apache-2.0.
+jni = "0.22"
+# Log a logcat. MIT.
+log = "0.4"
+android_logger = "0.14"
+# Estado del visor (posicion + modo oscuro) en internal/state.json. serde y
+# serde_json ya estan en el grafo via pdf_core (mismas versiones, ya
+# cross-compiladas a aarch64-linux-android): no anaden unidades de
+# compilacion ni tamano al .so. MIT/Apache-2.0.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- Empaquetado APK con cargo-apk (Fase 1) ---
+# cargo-apk genera el AndroidManifest con una NativeActivity por defecto y el
+# meta-data android.app.lib_name=pdf_android. Build DEBUG para que el APK sea
+# debuggable: requisito de `adb shell run-as` para inyectar el PDF en el
+# directorio de archivos interno de la app (SELinux no deja leer
+# /data/local/tmp a untrusted_app).
+[package.metadata.android]
+package = "com.pdflector.app"
+
+# --- Permisos de almacenamiento (biblioteca MediaStore, 2026-08-13) ---
+# La biblioteca consulta MediaStore.Files para listar los PDFs del sistema
+# (Download/Documents). En Android 13+ (API 33+, p. ej. la TCL 9469X con
+# Android 15) la lectura de documentos ajenos exige el appop "All files access"
+# (MANAGE_EXTERNAL_STORAGE), que el usuario concede en Ajustes; NO existe un
+# READ_MEDIA_* para documentos (PDF no es imagen/vídeo/audio). En Android ≤ 12
+# basta READ_EXTERNAL_STORAGE (el sistema la ignora en 13+, por eso va con
+# maxSdkVersion=32). Verificado en la tablet: con READ_EXTERNAL_STORAGE sola la
+# query devuelve 0 filas; con MANAGE_EXTERNAL_STORAGE concedido devuelve todos
+# los PDFs reales de Descargas/Documentos.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+max_sdk_version = 32
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.MANAGE_EXTERNAL_STORAGE"
+
+# --- "Abrir con" (ACTION_VIEW) ---
+# cargo-apk 0.10 serializa estos metadatos TOML directamente al
+# AndroidManifest.xml del APK (ndk_build::manifest::Activity):
+# - application.activity.exported = true: la NativeActivity es lanzable desde
+#   otras apps (requisito de Android 12+ y de recibir intents externos).
+# - intent_filter con ACTION_VIEW + CATEGORY_DEFAULT + data mimeType
+#   application/pdf: Android ofrece PDFLector en el menú "Abrir con" para
+#   PDFs (el sistema concede FLAG_GRANT_READ_URI_PERMISSION al lanzar).
+# cargo-apk añade automáticamente el intent-filter MAIN/LAUNCHER si no hay
+# ninguno con esa action, así que la app sigue teniendo icono de launcher.
+[package.metadata.android.application]
+label = "PDFLector"
+
+[package.metadata.android.application.activity]
+exported = true
+
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.VIEW"]
+categories = ["android.intent.category.DEFAULT"]
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+mime_type = "application/pdf"
+
+# Firma del APK release con el keystore de debug del host (~/.android/debug.keystore,
+# password por defecto "android"): el mismo certificado con el que se firmó el
+# release anterior (verificado con apksigner, CN=Android Debug). Sin esta sección
+# `cargo apk build --release` falla pidiendo un keystore.
+[package.metadata.android.signing.release]
+path = "/home/asierboveda/.android/debug.keystore"
+keystore_password = "android"
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+target_sdk_version = 35

@@ -1,0 +1,47 @@
+PDFLector — Third-party notices
+================================
+
+PDFLector itself is licensed under AGPL-3.0-or-later (see LICENSE).
+This file lists the copyright/licensing notices required for the
+third-party software it links against.
+
+MuPDF (PDF engine)
+------------------
+
+MuPDF is Copyright (C) 2004-2021 Artifex Software, Inc. Licensed under
+AGPL-3.0-or-later. https://mupdf.com
+
+PDFLector links MuPDF statically, via the Rust crates `mupdf` / `mupdf-sys`
+(version 0.8, https://github.com/messense/mupdf-rs). Both crates declare
+AGPL-3.0 in their Cargo.toml; MuPDF's own sources are AGPL-3.0-or-later.
+Choosing AGPL-3.0-or-later for PDFLector keeps the license variant identical
+to MuPDF's (ADR-001, docs/adr/ADR-001-motor-pdf.md).
+
+Third-party dependencies
+------------------------
+
+Direct dependencies of pdf_core / pdf_app / pdf_bench / pdf_android, with
+the licenses declared in their Cargo.toml (verified with `cargo metadata`):
+
+| Crate                | Version | License                       |
+|----------------------|---------|-------------------------------|
+| mupdf / mupdf-sys    | 0.8     | AGPL-3.0 (MuPDF: AGPL-3.0-or-later) |
+| lru                  | 0.18    | MIT                           |
+| notify               | 8.2     | CC0-1.0                       |
+| rusqlite             | 0.37    | MIT                           |
+| serde / serde_json   | 1.x     | MIT OR Apache-2.0             |
+| eframe (egui)        | 0.32    | MIT OR Apache-2.0             |
+| rfd                  | 0.17    | MIT                           |
+| criterion            | 0.5     | Apache-2.0 OR MIT             |
+| android-activity     | 0.6     | MIT OR Apache-2.0             |
+| ndk                  | 0.9     | MIT OR Apache-2.0             |
+| android_logger       | 0.14    | MIT OR Apache-2.0             |
+| jni                  | 0.22    | MIT OR Apache-2.0             |
+| log                  | 0.4     | MIT OR Apache-2.0             |
+
+Notable transitive dependency: `rayon` (MIT OR Apache-2.0), pulled in by
+criterion — benchmark harness only (dev-dependency).
+
+All third-party licenses are compatible with AGPL-3.0 (only MuPDF itself is
+copyleft; the rest are permissive). Repository URLs for each crate are
+available via `cargo metadata`.

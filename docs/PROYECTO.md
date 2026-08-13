@@ -11,9 +11,12 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 
 ## Contexto
 
-- **Tablet objetivo**: Lenovo Idea Tab (Android, ~200€), con lápiz activo.
+- **Tablet objetivo**: TCL NXTPaper 11 Plus (modelo 9469X, Android 15, MediaTek
+  MT8781 8× Cortex-A55, pantalla 1440×2200 @ 320 dpi, con lápiz). Hardware real
+  desde la Fase 1 (spike 2026-08-12, ver `docs/benchmark-results.md`).
 - Plataforma final: **Android**. Desarrollo inicial en escritorio Linux (Omarchy).
-- Stack ya instalado: Rust 1.97.1, cargo, Python 3.14.6, uv.
+- Stack ya instalado: Rust 1.97.1 (rustup), cargo, Python 3.14.6, uv; toolchain
+  Android: adb, JDK 17, Android SDK en `~/Android/Sdk` (NDK r28, platform 35).
 
 ## Funciones
 
@@ -35,15 +38,20 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 - **Pros**: rendimiento nativo, bajo consumo de RAM, sin GC (control total de memoria), gestión de proyectos con cargo (muy fácil), ya instalado.
 - **Contras**: curva inicial; UI de escritorio menos "wysiwyg" que web.
 
-### Motor de renderizado PDF (por decidir)
+### Motor de renderizado PDF (decidido: **MuPDF**, AGPL-3.0 — ADR-001)
+
+> **Decisión (2026-08-05, ADR-001)**: MuPDF es el motor único y por defecto, y el
+> repositorio está licenciado **AGPL-3.0** (LICENSE). El benchmark de la Fase 0.5
+> confirmó las ventajas esperadas: render 2,7-4× más rápido y RSS pico -21% frente
+> a PDFium (detalle en `docs/benchmark-results.md`); el backend PDFium se eliminó.
+
+La tabla siguiente es la comparativa que motivó la decisión (contexto histórico):
 
 | Motor | Licencia | Velocidad/RAM | Pros | Contras |
 |-------|----------|---------------|------|---------|
-| **PDFium** | Apache-2.0 | Media-alta | El de Chrome, muy probado, crate `pdfium-render` fácil | Un poco más pesado que MuPDF |
-| **MuPDF** | AGPL | La más ligera y rápida en bajo rendimiento | Mínimo consumo RAM/CPU, ideal para tablet barata | AGPL (restrictivo si se distribuye modificado; OK para uso personal) |
-| **poppler** | LGPL | Media | Muy usado en Linux | Más pesado, enlazado C/C++ más incómodo en Rust |
-
-> **Nota para tus prioridades**: MuPDF es el más ligero en RAM y CPU (perfecto para tablet de 200€), PDFium el más equilibrado en licencia. Pendiente de validar con un benchmark real en la Fase 1.
+| **MuPDF** (elegido) | AGPL-3.0 | La más ligera y rápida en bajo rendimiento | Mínimo consumo RAM/CPU, ideal para tablet barata | AGPL (copyleft; OK para proyecto público y gratuito) |
+| PDFium | Apache-2.0 | Media-alta | El de Chrome, muy probado, crate `pdfium-render` fácil | Más pesado que MuPDF; descartado en ADR-001 |
+| poppler | LGPL | Media | Muy usado en Linux | Más pesado, enlazado C/C++ más incómodo en Rust |
 
 ### UI (por decidir)
 
@@ -54,6 +62,11 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 | **Qt Quick (C++)** | Buena | Más maduro para táctil/lápiz | Curva dura, Qt pesado, setup Android laborioso |
 | **Tauri v2** (Rust+web) | Variable | Lápiz nativo del navegador (presión/inclinación), 1 código | WebView consume más RAM y es menos predecible |
 
+> **Estado**: la decisión se resuelve en el spike de la **Fase 6** (Slint vs
+> Tauri v2; Qt queda fuera del spike, ver PLAN.md). Como el lápiz **no requiere
+> presión** (PLAN.md §1, decisión 2), el contra de Slint ("presión no expuesta")
+> deja de pesar y vuelve a ser candidato fuerte.
+
 ### Almacenamiento
 - **SQLite** (`rusqlite`): anotaciones, progreso, biblioteca. Ligero, un solo archivo.
 
@@ -62,6 +75,7 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 ```
 pdf_core/   # Biblioteca Rust: abrir PDF, renderizar páginas, anotaciones, caché. Sin UI.
 pdf_app/    # UI (egui ahora; Tauri/Slint en el futuro). Reutiliza pdf_core.
+pdf_bench/  # Benchmarks (criterion) y barridos de rendimiento; escritorio y Android.
 ```
 
 Separar núcleo y UI = poder cambiar de framework sin reescribir la lógica.
@@ -76,21 +90,28 @@ Separar núcleo y UI = poder cambiar de framework sin reescribir la lógica.
 
 ## Hoja de ruta
 
-- **Fase 0**: andamiaje cargo (`pdf_core` + `pdf_app`), abrir PDF y mostrar página 1.
-- **Fase 1**: paginado, zoom, scrolling fluido con caché — validar aquí el criterio de "fluido".
+- **Fase 0** — ✅ completada (2026-08-05): andamiaje cargo (`pdf_core` + `pdf_app`), abrir PDF y mostrar página 1.
+- **Fase 0.5** — ✅ completada (2026-08-05): benchmark de motores y decisión **MuPDF / AGPL-3.0** (ADR-001); backend PDFium eliminado.
+- **Fase 1** — en curso: scroll virtualizado + caché LRU (B1) ✅, prefetch en hilos de fondo (B2) ✅, spike en la tablet TCL NXTPaper 11 Plus ✅ (2026-08-12). Pendientes: zoom (B3), modo paginado, harness android-activity, overlay debug.
 - **Fase 2**: modo oscuro.
 - **Fase 3**: anotaciones + exportar (lápiz).
 - **Fase 4**: sincronización (Syncthing, gratis).
 - **Fase 5**: consulta a IA (Ollama, local).
-- **Fase 6**: personalización y aterrizaje en Android (elegir UI final; spike de 1-2 días con Tauri/Slint).
+- **Fase 6**: personalización y aterrizaje en Android (elegir UI final; spike de 1-2 días con Slint/Tauri).
 
-## Licencias (compatibles con "gratis y sin anuncios")
+## Licencias
 
-PDFium (Apache-2.0) · egui/Slint (MIT/LGPL/Royalty-free) · SQLite (dominio público) · Ollama (MIT) · Tauri (Apache/MIT). Cuidado con MuPDF (AGPL).
+El proyecto está licenciado **AGPL-3.0** (LICENSE), ligado a la elección de
+MuPDF como motor (ADR-001). Compatible con "gratis y sin anuncios" y con la
+publicación pública del código en GitHub. Dependencias: egui/Slint
+(MIT/LGPL/Royalty-free) · SQLite (dominio público) · Ollama (MIT) · Tauri
+(Apache/MIT) · lru (MIT).
 
 ## Decisiones pendientes
 
-1. Motor PDF: PDFium vs MuPDF (validar con benchmark).
-2. UI final para Android: Tauri vs Slint vs Qt (según lápiz y RAM).
-3. Nivel de presión del lápiz: imprescindible o aceptable sin él.
-4. Formato de exportación de notas (Markdown/JSON/incrustado en PDF).
+1. UI final para Android: Slint vs Tauri v2 (spike en Fase 6; Qt descartado).
+2. Ubicación de Ollama: PC por red local vs otra opción (al inicio de Fase 5).
+
+**Resueltas** (PLAN.md §1 / ADR-001): motor PDF = MuPDF (AGPL-3.0); presión del
+lápiz = no necesaria; exportación = Markdown + PDF con anotaciones incrustadas;
+sincronización = Syncthing.

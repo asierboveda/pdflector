@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
 //! Render perf benchmark for the sole MuPDF backend (ADR-001).
 //! Compares the 4-PDF corpus at 1× and 2× on page 1 and the middle page.
 //! Run with:
@@ -6,19 +9,11 @@
 //! verbatim to stdout for easy grep / paste.
 
 use std::path::PathBuf;
-use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use pdf_core::{Document, RenderEngine};
+use pdf_core::{Document, RenderEngine, corpus_dir};
 
 use pdf_core::engine::mupdf::MupdfEngine;
-
-fn corpus_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("corpus")
-}
 
 struct Case {
     file: &'static str,
@@ -52,7 +47,7 @@ fn corpus() -> Vec<Case> {
 }
 
 fn pdf_path(file: &str) -> PathBuf {
-    corpus_root().join(file)
+    corpus_dir().join(file)
 }
 
 fn bench_open(c: &mut Criterion) {
@@ -104,9 +99,3 @@ fn benches(c: &mut Criterion) {
 
 criterion_group!(all, benches);
 criterion_main!(all);
-
-// Touched at startup so `--list` succeeds even before any measurement.
-#[allow(dead_code)]
-fn _startup_marker() -> Instant {
-    Instant::now()
-}

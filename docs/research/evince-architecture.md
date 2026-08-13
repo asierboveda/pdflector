@@ -17,6 +17,18 @@
 > Capturas del código en `/tmp/opencode/evince/` durante esta sesión; volver a
 > descargar con `curl` desde `https://gitlab.gnome.org/GNOME/evince/-/raw/main/<ruta>`
 > si se necesitan.
+>
+> **Actualización 2026-08-12 (tras ADR-001)**: este doc se redactó con el
+> backend **PDFium** como referencia. Desde ADR-001 (Fase 0.5) el motor es
+> **MuPDF** (crate `mupdf` 0.8, AGPL-3.0) y el backend PDFium fue eliminado:
+> `engine/pdfium.rs`, `PDFIUM_LOCK`, `pdfium-render` y la feature `pdfium` ya
+> no existen en `pdf_core`. Los patrones de Evince aquí analizados son
+> agnósticos del motor y siguen vigentes; las menciones a `FPDF_*`,
+> `PdfiumDocument` o `PDFIUM_LOCK` son históricas. En el código actual:
+> `engine::mupdf::MupdfEngine`/`MupdfDocument` (bitmap RGBA), caché LRU por
+> bytes en `cache.rs` y prefetch **actor 1-worker** en `prefetch.rs`
+> (`std::thread` + `mpsc`, no tokio; `MupdfDocument` no es Send-sound: el
+> contexto MuPDF vive en el TLS del hilo creador).
 
 ## 0. Resumen ejecutivo (qué copiar tal cual)
 
@@ -36,9 +48,9 @@ página dentro del documento. Su fórmula es:
    el zoom máximo admisible se acota para que las páginas quepan en el
    presupuesto.
 
-Estos cinco puntos son 1:1 traducibles al stack Android (PDFium NDK +
-Kotlin/Coroutines + OpenGL/Vulkan o Jetpack Canvas) y son el corazón del
-diseño de `pdf_core`.
+Estos cinco puntos son 1:1 traducibles al stack de PDFLector (MuPDF vía el
+crate `mupdf` + hilos de fondo en `std::thread` + composición egui/Android) y
+son el corazón del diseño de `pdf_core`.
 
 ## 1. Motor de renderizado y pipeline
 
@@ -126,10 +138,13 @@ Dos `GMutex` globales en `ev-document.c:83-84`:
 - `ev_fc_mutex` — file cache / font cache de Poppler. Es un mutex separado
   porque su granularidad es distinta.
 
-**Implicación para Android**: PDFium también requiere serialización. Un
-`PdfDocument` NDK **no es thread-safe** (la feature `thread_safe` solo protege
-`FPDF_InitLibrary`, no las llamadas a `FPDF_*Page*`). `pdf_core` ya tiene
-`PDFIUM_LOCK: Mutex<()>` global; este patrón está alineado con Evince.
+**Implicación para Android (actualizada tras ADR-001)**: MuPDF también exige
+serialización, por otra vía: `mupdf::Context` clona un contexto por hilo (TLS)
+y `MupdfDocument` queda ligado al hilo que lo crea (no es Send-sound), así que
+el documento no se puede mover entre hilos. `pdf_core` lo resuelve con un único
+worker de render (actor 1-worker en `prefetch.rs`, `std::thread` + `mpsc`),
+patrón alineado con Evince. En la era PDFium el equivalente era `PDFIUM_LOCK:
+Mutex<()>` global (eliminado con el backend).
 
 ## 2. Gestión de memoria y caché
 
@@ -318,16 +333,16 @@ su propio timing.
 
 ## 5. Mapeo C/C++ → stack Android (PDFLector)
 
-| Concepto Evince                  | Stack Android / PDFium                                    |
+| Concepto Evince                  | Stack Android / PDFLector (desde ADR-001: MuPDF)         |
 |----------------------------------|-----------------------------------------------------------|
-| `EvDocument` (trait C)           | `pdf_core::Document` (Rust trait sobre `PdfiumDocument`)  |
-| `EvDocumentPoppler`              | `pdf_core::engine::pdfium::PdfiumEngine` (`backend` feature flag) |
+| `EvDocument` (trait C)           | `pdf_core::Document` (Rust trait sobre `MupdfDocument`)  |
+| `EvDocumentPoppler`              | `pdf_core::engine::mupdf::MupdfEngine` (motor único, ADR-001) |
 | `EvPixbufCache`                  | `pdf_core::cache::PageCache` (LRU bytes, mutex `tokio::sync::Mutex`) |
 | `EvJob` + `EvJobScheduler`       | `tokio` con `Semaphore::MAX_PERMIT = 1` para la cola de render |
 | `EvJobPriority` (URGENT/HIGH/LOW)| Prioridades de `tokio` o dos colas `VecDeque<RenderJob>` |
 | `GCancellable`                   | `tokio_util::sync::CancellationToken` o `Drop` del job    |
-| `ev_doc_mutex`                   | `PDFIUM_LOCK` (ya existe en `pdf_core`)                   |
-| `cairo_image_surface_t`          | `pdfium_render::Bitmap` (BGRA8888, CPU)                   |
+| `ev_doc_mutex`                   | Contexto MuPDF por hilo (TLS): documento ligado al hilo creador → actor 1-worker (`prefetch.rs`) |
+| `cairo_image_surface_t`          | `pdf_core::Bitmap` (RGBA, CPU)                            |
 | `GdkMemoryTexture` (upload GPU)  | `android.graphics.Bitmap` + `SurfaceTexture` o `Bitmap` directo a `Canvas` |
 | `gtk_snapshot_append_texture`    | `Canvas::drawBitmap()` o GLES `glTexImage2D`             |
 | `MAX_PRELOADED_PAGES = 3`        | Constante configurable por bytes disponibles              |
@@ -352,8 +367,8 @@ su propio timing.
 4. **`preload_cache_size` calculado por bytes**. No hardcodear "N páginas
    antes/después": el coste de una página depende de su resolución efectiva
    (que depende del zoom y del DPI).
-5. **Cancelación cooperativa en cada paso del render**. PDFium
-   (`FPDF_RenderPageBitmap`) no es interrumpible nativamente, pero el job
+5. **Cancelación cooperativa en cada paso del render**. MuPDF
+   (`fz_run_page`) no es interrumpible nativamente, pero el job
    wrapper sí: entre setup y post-process, comprobar `cancel.is_cancelled()`.
 6. **Prefetch direccional**: detectar la dirección del scroll (UP/DOWN) y
    encolar primero las páginas hacia donde va el usuario.
@@ -368,9 +383,10 @@ su propio timing.
 9. **Modo oscuro por blend de GPU**, no por re-render. Una capa blanca con
    `PorterDuff.Mode.DIFFERENCE` invierte la página renderizada a coste
    despreciable.
-10. **Un `Mutex` global del documento**. PDFium NDK requiere
-    serialización. `pdf_core` ya tiene `PDFIUM_LOCK`; mantener ese patrón
-    para `Bitmap` allocation también.
+10. **Serialización del documento**. MuPDF liga el documento al TLS del
+    hilo creador: mantener un único worker de render (actor 1-worker en
+    `prefetch.rs`) y no mover `MupdfDocument` entre hilos. En la era PDFium el
+    equivalente era `PDFIUM_LOCK` (eliminado con el backend).
 11. **No hacer tiling** en v1. Para una tablet de 11" a 200 dpi con A4, una
     página son 1654×2339 px ≈ 15 MB ARGB32; cabe en caché. Tiling añadiría
     complejidad sin ganancia clara en este hardware. Reevaluar si el
@@ -386,7 +402,9 @@ su propio timing.
   todo. En Android esto es un anti-patrón si tenemos CPU de sobra; PDFium
   escala mejor con 2 workers que con 1 serializado, hasta ~3-4 workers
   donde la contención del mutex global empieza a notarse. Medir con
-  `pdf_bench`.
+  `pdf_bench`. Con **MuPDF**, en cambio, `pdf_core` usa un único worker
+  (contexto TLS del hilo creador; ver la nota del encabezado) — la
+  recomendación de 2+ workers era específica de PDFium.
 - **`G_DEFINE_TYPE` / GObject**: Evince arrastra toda la maquinaria de
   tipos GLib. En Rust ya tenemos `trait` + enums; el `RenderEngine` trait
   de AGENTS.md §4 es el equivalente moderno.
@@ -398,6 +416,11 @@ su propio timing.
   ergonomía.
 
 ## 7. Mediciones pendientes (referencia para Fase 0.5 / 1)
+
+> **Estado 2026-08-12**: la mayoría de estos puntos ya se midieron en la tablet
+> TCL NXTPaper 11 Plus (render 1x 11,6-31,3 ms, RSS pico 26,7 MB; ver
+> `docs/benchmark-results.md`). Queda pendiente el frame time p95 de scroll del
+> harness real (android-activity, Fase 1).
 
 Cuando llegue el momento de medir, Evince sugiere estos puntos:
 

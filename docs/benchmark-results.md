@@ -21,7 +21,8 @@ Hardware: AMD Ryzen 7 5800H, 16 hilos. Rust 1.97.1, release build
 - RSS pico: VmHWM de /proc/self/status (cada motor en proceso separado).
 - Build: PDFium host ~0.5 s (lib precompilada `vendor/pdfium/lib/libpdfium.so`,
   solo compilación Rust), MuPDF host 29.96 s la 1ª vez (C de `mupdf-sys` 0.8.0).
-- Android cross (ver memory): PDFium 1 comando; MuPDF pendiente de C2.
+- Android cross (ver memory): PDFium 1 comando / 22 s; MuPDF 17 s + 1 env var
+  (`BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`) — ambos validados en la Fase 0.5.
 
 ## Android (Xiaomi 2412DPC0AG, arm64-v8a, Android 16, 8 cores, 7,5 GB RAM)
 
@@ -152,4 +153,76 @@ Cumple 60 fps en 3/4 PDFs; único fallo: scanned (PDF raster).
 - Pantalla ON durante la medición: `input keyevent KEYCODE_WAKEUP` + `svc power
   stayon true` antes de la prueba, `svc power stayon false` después — evita el
   pesimismo de governor/doze.
+
+## Fase 1 / B3 — Zoom: escala software vs re-render (large_document.pdf pág. 0, desktop)
+
+Benchmark: `crates/pdf_bench/benches/zoom.rs` (criterion, grupo `zoom`).
+Hardware: AMD Ryzen 7 5800H, release bench, criterion `--quick` (2026-08-13).
+
+| Ruta | Escenario | Tiempo |
+|---|---|---|
+| scale_bitmap (software) | z1.5 (→ nivel 1) | 31,2–32,2 ms |
+| scale_bitmap (software) | z2 (→ nivel 1) | 55,9 ms |
+| scale_bitmap (software) | z4 (→ nivel 2) | 214,5–219,9 ms |
+| re-render nítido (MuPDF) | nivel 1 (×2) | 3,3–3,4 ms |
+| re-render nítido (MuPDF) | nivel 2 (×4) | 11,9–12,5 ms |
+| trim_to_scale_level | soltar nivel 0, conservar nivel 1 | 6,3–6,5 ms |
+
+### Hallazgo honesto
+
+- El escalador software `scale_bitmap` NO es un camino "rápido" en CPU: a tamaño
+  de página completa es **~16–18× más lento que el re-render nativo de MuPDF**
+  (55,9 ms vs 3,4 ms a ×2; 215 ms vs 12 ms a ×4). Es correcto y determinista,
+  pero el escalado naïve por píxel en Rust sin SIMD es lento.
+- Consecuencia de diseño: el camino "inmediato" del zoom en `pdf_app` usa el
+  **reescalado de textura por GPU** (egui, ~gratis), NO `scale_bitmap`.
+  `scale_bitmap` queda como utilidad pura y testeable para contextos headless
+  (p. ej. harness Android sin GPU), documentada como tal; si algún día hace
+  falta escalado software rápido, la optimización es SIMD/tiling (fuera de
+  scope actual).
+- El re-render nítido (MuPDF) es barato (3,4 ms ×2; 12 ms ×4), dentro del
+  presupuesto de 60 fps; por eso el diseño "mostrar borroso en GPU + re-render
+  nítido async" es el correcto.
+
+## Fase 1 / B3 — Zoom en tablet TCL NXTPaper 11 Plus (Ola 8, 2026-08-13)
+
+Hardware: TCL NXTPaper 11 Plus (9469X, MT8781 8× Cortex-A55, Android 15,
+pantalla ON, batería 66% cargando a 33 °C). Binario `aarch64-linux-android`
+release (NDK r28). Mediana de 3, 2 corridas.
+
+| Caso | scale_bitmap (fast) | re-render (sharp) | Ratio |
+|---|---|---|---|
+| large p0 → 2x | 69,4–70,2 ms | 14,9–16,6 ms | ~4,5× |
+| large p0 → 4x | 275,8–281,5 ms | 53,2–56,1 ms | ~5,2× |
+| dense p0 → 2x | 69,9 ms | 16,1–16,9 ms | ~4,3× |
+| dense p0 → 4x | 321,4–325,1 ms | 57,3–59,4 ms | ~5,6× |
+
+### Hallazgo (confirma el escritorio, amplificado)
+
+- En la tablet, `scale_bitmap` (software) es **~4–5,6× más lento que el re-render
+  nítido** y muy por encima del presupuesto de 16,6 ms (70 ms a 2x; ~280–325 ms a
+  4x). El escalado software naïve por píxel (sin SIMD/NEON) no es un "fast path"
+  viable: el upscale es el camino CARO y el re-render MuPDF el barato.
+- Consecuencia: en `pdf_app` el camino inmediato es el reescalado de textura por
+  GPU (ya implementado). `scale_bitmap` queda solo para contextos headless y
+  requiere optimización (SIMD/NEON, aritmética entera) o replanteo antes de
+  cualquier uso en UI.
+
+### Nota sobre la comparación con Ola 7 (para no malinterpretar)
+
+- El sweep render1x/render2x de Ola 8 da valores más altos que Ola 7 en algunos
+  PDFs, PERO el path de render (`mupdf.rs`) no cambió. Dos causas lo explican:
+  1. **Confound del corpus**: entre Ola 7 y Ola 8 se corrigió el bug de
+     `tools/generate_corpus.py` (scanned_pages.pdf ahora embebe 30 imágenes
+     DISTINTAS en vez de 30 referencias a la misma). Render 3 páginas de scanned
+     ahora decodifica 3 imágenes distintas (antes 1 + 2 cache hits), lo que
+     explica el aumento de render de scanned (+65–104%) y del RSS (~+5 MB:
+     3 pixmaps decodificados ~2,2 MB c/u en la caché de imágenes de MuPDF frente
+     a 1).
+  2. **Varianza termal/governor**: dense/paper muestran saltos no reproducibles
+     entre corridas (p. ej. scanned render2x 128→186 ms, +45%); la tablet estaba
+     cargando a 33 °C. No es regresión de código.
+- Conclusión: no hay evidencia de regresión de render por el código de B3; el RSS
+  estable se explica por el corpus corregido (más realista). Para una comparación
+  limpia haría falta fijar governor y repetir N≥5 corridas.
 

@@ -40,13 +40,13 @@ npx skills add obra/superpowers     # tdd, systematic-debugging, verification-be
 **B) Skills propios del proyecto** — se crean en `.opencode/skills/` (versionado)
 al arrancar su fase (un skill documenta un procedimiento que ya existe; no antes):
 
-| Skill | Se crea en |
-|-------|------------|
-| `pdflector-rendimiento` | Fase 0.5-1 |
-| `android-tablet-adb` | Fase 0.5 |
-| `benchmark-motores` | Fase 0.5 (temporal; archivable tras ADR-001) |
-| `exportar-anotaciones` | Fase 3 |
-| `syncthing-sync` | Fase 4 |
+| Skill | Se crea en | Estado |
+|-------|------------|--------|
+| `pdflector-rendimiento` | Fase 0.5-1 | No creado — los procedimientos de medición viven en `docs/benchmark-results.md` y ADR-001 (pendiente de decisión) |
+| `android-tablet-adb` | Fase 0.5 | ✅ Creado (`.opencode/skills/android-tablet-adb/`) |
+| `benchmark-motores` | Fase 0.5 (temporal; archivable tras ADR-001) | No creado — absorbido por ADR-001 / `docs/benchmark-results.md` |
+| `exportar-anotaciones` | Fase 3 | — |
+| `syncthing-sync` | Fase 4 | — |
 
 ### 2.2 Herramientas del sistema
 
@@ -56,14 +56,14 @@ Estado 2026-08-05 (actualización §2): rustup + target Android instalados; `adb
 - [x] Instalar `adb` → `sudo pacman -S android-tools`
 - [x] Instalar **rustup** + toolchain estable + `rustup target add aarch64-linux-android` (el Rust de pacman no gestiona targets Android)
 - [x] Android SDK (cmdline-tools) + NDK → necesarios en Fase 0.5/1; instalar ya para no bloquear
-- [ ] Tablet Lenovo Idea Tab: activar opciones de desarrollador + depuración USB
+- [x] Tablet **TCL NXTPaper 11 Plus** (modelo 9469X, hardware objetivo final): opciones de desarrollador + depuración USB activadas (2026-08-12, ver `memory.md` Ola 7)
 - [x] Reunir **corpus de PDFs de prueba**: `corpus/` dentro del repo → `dense_textbook.pdf` (93 pág.), `scanned_pages.pdf` (30 pág., imágenes), `scientific_paper.pdf` (12 pág., gráficos vectoriales), `large_document.pdf` (500 pág.). Regenerable con `tools/generate_corpus.py` (uv + reportlab + pillow)
 - [ ] (Fase 4) Syncthing en tablet, PC y móvil
 - [ ] (Fase 5) Ollama instalado en el PC
 
 ### 2.3 Verificación de «entorno listo» → puerta de entrada a Fase 0
 
-- [ ] `adb devices` muestra la tablet  ← pendiente: **tablet aún no comprada** (anotado 2026-08-05). No bloquea Fase 0 ni el benchmark de escritorio de Fase 0.5 (compilar para Android solo requiere SDK/NDK, ya instalados); solo bloquea las métricas en hardware real (harness de Fase 1 y validación de Fase 6)
+- [x] `adb devices` muestra la tablet (TCL NXTPaper 11 Plus, 2026-08-12). Las métricas en hardware real ya se tomaron con `pdf_bench` vía `adb push` (ver `docs/benchmark-results.md`); el harness android-activity de Fase 1 sigue pendiente
 - [x] `rustup target list --installed` incluye `aarch64-linux-android`
 - [x] Skills del grupo A visibles para el agente (se cargan al iniciar una nueva sesión de opencode)
 - [x] Corpus de PDFs en `corpus/` dentro del repo (añadir a `.gitignore` en Fase 0; regenerable con `tools/generate_corpus.py`)
@@ -76,7 +76,7 @@ Estado 2026-08-05 (actualización §2): rustup + target Android instalados; `adb
 ~/Projects/pdflector/
 ├── AGENTS.md               # Reglas del agente (ya creado)
 ├── Cargo.toml              # workspace
-├── .agents/skills/         # skills propios del proyecto (sección 2.1B)
+├── .opencode/skills/       # skills propios del proyecto (sección 2.1B)
 ├── corpus/                 # PDFs de prueba para benchmarks (gitignored)
 ├── tools/                  # Scripts auxiliares (generate_corpus.py, ...)
 ├── crates/
@@ -86,7 +86,7 @@ Estado 2026-08-05 (actualización §2): rustup + target Android instalados; `adb
 └── docs/                   # Vault de Obsidian dentro del repo (ya existe)
     ├── PROYECTO.md         # Visión del proyecto
     ├── PLAN.md             # Este documento
-    └── adr/                # ADR-001 motor PDF, ADR-002 licencia, ...
+    └── adr/                # ADR-001 motor PDF, ADR-002 arquitectura Evince, ADR-003 baseline
 ```
 
 ### 3.2 Reglas de dependencia (innegociables)
@@ -112,7 +112,7 @@ trait RenderEngine {
 ```
 
 Backends durante Fase 0.5: `PdfiumEngine` y `MupdfEngine`. Tras ADR-001 queda
-uno solo (**MuPDF**); el perdedor se eliminó sin deuda (Fase 0.5).
+uno solo (**MuPDF**, ✅ Fase 0.5); el perdedor se eliminó sin deuda.
 
 ### 3.3 Módulos internos de `pdf_core`
 
@@ -167,13 +167,19 @@ seguridad.
 | 200 trazos de anotación visibles | Sin degradar frame time | Test de estrés Fase 3 |
 | Sync tablet → PC | < 1 min sin intervención | Fase 4 |
 
+> **Estado 2026-08-12 (TCL NXTPaper 11 Plus, pantalla ON)**: render 1x < 25 ms en
+> 3/4 PDFs y RSS pico 26,7 MB → ambos umbrales verificados en hardware real;
+> detalle en `docs/benchmark-results.md`. El único fallo es `scanned` (PDF
+> raster, 31 ms) — worst case esperable, candidato a optimización (B3 zoom /
+> tile-render cache).
+
 ## 5. Fases
 
 ### Fase 0 — Andamiaje (semana 1, ~20 h)
 
 > Requiere haber completado el **Primer paso** (§2, verificación 2.3).
 
-> ✅ **Completada el 2026-08-05** (salvo `git init`, pendiente de confirmación del autor).
+> ✅ **Completada el 2026-08-05** (`git init` y repo en GitHub incluidos).
 > Verificación: `cargo build --workspace` OK · `cargo test -p pdf_core` 4/4 OK · clippy limpio · fmt limpio · `pdf_app corpus/scientific_paper.pdf` lanza ventana (proceso vivo 6 s, log sin panic/error). Detalle en `memory.md`.
 
 - `git init` en `~/Projects/pdflector/` (ya contiene `AGENTS.md`), README, `.gitignore`, workspace con 3 crates.
@@ -215,11 +221,27 @@ seguridad.
 - **Harness Android mínimo** (`android-activity` + surface): renderiza páginas en bucle y vuelca timings y memoria. Despliegue por `adb` en la tablet real.
 - Overlay de debug opcional: frame time, RSS, estado de caché.
 
-**Criterio de aceptación**: scroll a 60 fps sostenidos en escritorio con PDF de 500 páginas; en tablet, render/página < 25 ms y RSS < 150 MB (umbral revisable con la primera medición real).
+**Criterio de aceptación**: scroll a 60 fps sostenidos en escritorio con PDF de 500 páginas; en tablet, render/página < 25 ms y RSS < 150 MB (verificado en la TCL NXTPaper 11 Plus el 2026-08-12: 3/4 PDFs < 25 ms, RSS 26,7 MB — ver `docs/benchmark-results.md`).
 
 > **Progreso (2026-08-05)**: B1 (scroll virtualizado + caché LRU) ✅ — ver `docs/benchmark-results.md` (reducción 5× RAM: 105 MB → 20,6 MB en escritorio, cumple objetivo < 150 MB con margen) y `memory.md` Ola 5. Pendientes de Fase 1: B2 (prefetch en hilos de fondo), zoom, modo paginado, harness android-activity y overlay debug.
 >
 > **Progreso (2026-08-05)**: B2 ✅ (prefetch hilos de fondo, actor model 1-worker) — ver memory.md Ola 6.
+>
+> **Progreso (2026-08-12)**: spike en la tablet objetivo **TCL NXTPaper 11 Plus** ✅
+> (hardware real, pantalla ON) — ver `docs/benchmark-results.md`: render 1x < 25 ms
+> en 3/4 PDFs (dense 14,5 · paper 11,6 · large 15,4 ms; scanned 31 ms = worst case
+> raster), RSS pico 26,7 MB (< 150 MB con ~6× de margen), 60 fps sostenidos en 3/4
+> PDFs.
+>
+> **Progreso (2026-08-13)**: B3 (zoom) ✅ — `pdf_core::zoom` (`scale_bitmap` bilinear
+> software + `scale_level_for_zoom` ceil-log2 + `RenderCache::trim_to_scale_level`),
+> zoom continuo en `pdf_app` (fast path por GPU + re-render nítido async) y bench
+> `pdf_bench/benches/zoom.rs`. Ver `docs/benchmark-results.md` (escala software
+> 55,9 ms vs re-render 3,4 ms a ×2 → el camino inmediato es GPU, no CPU) y
+> `memory.md` (2026-08-13). Pendientes de Fase 1: overlay debug ✅ (2026-08-13);
+> modo paginado DESCARTADO por el autor; harness android-activity ✅ (2026-08-13:
+> `crates/pdf_android` renderiza un PDF en la tablet — ver `memory.md`). Fase 1
+> funcionalmente completa (queda el spike de UI final Slint/Tauri en Fase 6).
 
 ### Fase 2 — Modo oscuro (semana 6, ~20 h)
 
@@ -228,6 +250,10 @@ seguridad.
 - Persistencia de la preferencia; tests de la transformación de color.
 
 **Criterio**: conmutar al instante sin recargar el documento; caché coherente (bitmaps invertidos no se mezclan con los normales).
+
+> ✅ **Completada el 2026-08-13**: modo oscuro (`Visuals::dark` + inversión de página
+> solo al subir textura con `pdf_core::invert_bitmap`; la caché guarda SIEMPRE bitmaps
+> normales) + persistencia de la preferencia en eframe storage. Ver `memory.md`.
 
 ### Fase 3 — Anotaciones y exportación (semanas 7–10, ~80 h)
 
@@ -243,6 +269,14 @@ seguridad.
 
 **Criterio**: mapa mental en un margen nítido a zoom 3x y scroll sin degradación; el Markdown se abre bien en Obsidian y el PDF anotado en un lector externo.
 
+> ✅ **Completada el 2026-08-13**: modelo vectorial `Stroke`/`Highlight`/`TextNote` en
+> coordenadas de página + serde; extracción de texto perezosa (mupdf stext con bbox);
+> capa vectorial de dibujo ✏️ en `pdf_app` (transformación cursor→página verificada a
+> ±2 px); persistencia SQLite sidecar (`rusqlite` bundled); export Markdown (citas con
+> nº de página) y PDF con anotaciones estándar `/Ink` `/Highlight` `/Text` (verificado
+> con pypdf). Pendiente: test de estrés de 200+ trazos en tablet (Fase 6) y UI de
+> Highlight/TextNote (por ahora solo Stroke). Ver `memory.md`.
+
 ### Fase 4 — Sincronización (semanas 11–12, ~40 h)
 
 - Estructura sincronizable: `PDFs/` + `annotations/<id-pdf>.db` (sidecar) + `library.db`.
@@ -251,6 +285,12 @@ seguridad.
 - Política de conflictos: escritura en un dispositivo a la vez (uso personal), last-writer-wins + versionado de Syncthing (`.stversions`) como red de seguridad.
 
 **Criterio**: anotar en la tablet → visible en el PC en < 1 min sin tocar nada; conflicto simulado no corrompe datos.
+
+> ✅ **(lado app) Completada el 2026-08-13**: layout sync-friendly
+> (`annotations/<stem>.db` + `library.db`) y `watch_annotations` con `notify`
+> (debounce 150 ms) para hot-reload del sidecar. Syncthing es EXTERNO (la app no hace
+> red); su instalación en tablet/PC/móvil queda pendiente (requiere tablet). Ver
+> `memory.md`.
 
 ### Fase 5 — Consulta a IA con Ollama (semanas 13–14, ~40 h)
 
@@ -261,12 +301,18 @@ seguridad.
 
 **Criterio**: pregunta sobre un paper responde con contenido real del documento.
 
+> ✅ **(lado app) Completada el 2026-08-13**: `ai::chunk_pages` (chunks con prefijo
+> `[págs N-M]`) + `ai::OllamaClient` HTTP crudo (`std::net`, sin deps) + panel chat 💬 en
+> `pdf_app` (hilo de fondo, modelo por defecto `llama3.2` en `localhost:11434`, error
+> claro si no responde). Decisión: Ollama en el PC (localhost). Pendiente: probar contra
+> Ollama real instalado. Ver `memory.md`.
+
 ### Fase 6 — Aterrizaje Android (semanas 15–17, ~60 h)
 
 - **Spike de UI final (1–2 días)**: Slint vs Tauri v2. Al no necesitarse presión de lápiz, **Slint vuelve a ser candidato fuerte** (un solo stack, Skia, bajo consumo). Criterios: fluidez de input táctil/lápiz, RAM, integración con `pdf_core`.
 - Port completo a la UI elegida reutilizando `pdf_core` intacto.
 - Gestos táctiles de tablet: pellizco para zoom, swipe, zonas de tap.
-- Medición final en la Lenovo Idea Tab: RSS < 150 MB, 60 fps, consumo de batería razonable.
+- Medición final en la TCL NXTPaper 11 Plus: RSS < 150 MB, 60 fps, consumo de batería razonable.
 
 **Criterio**: una semana de uso real diario en la tablet sin cuelgues ni tirones.
 
