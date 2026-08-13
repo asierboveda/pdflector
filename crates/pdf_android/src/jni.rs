@@ -791,6 +791,80 @@ impl ContentFd {
     }
 }
 
+/// Copia `text` al portapapeles del sistema con el contexto de la Activity:
+/// `ClipboardManager.setPrimaryClip(ClipData.newPlainText("text", text))`.
+/// Lo llama el botón "Copiar" del menú de selección (`Reader::copy_sel`); un
+/// fallo solo se loguea (el texto no se pierde: el usuario puede volver a
+/// seleccionar).
+///
+/// JNI: `getSystemService(Context.CLIPBOARD_SERVICE)` devuelve un
+/// `java.lang.Object` cuyo tipo real es `android.content.ClipboardManager`;
+/// JNI resuelve el método por nombre+firma sobre el objeto real, así que no
+/// hace falta un cast explícito. `ClipData.newPlainText` es estático.
+pub(crate) fn copy_to_clipboard(app: &AndroidApp, text: &str) {
+    let vm = match JavaVM::singleton() {
+        Ok(v) => v,
+        Err(e) => {
+            error!("copy_to_clipboard: JVM no disponible: {e}");
+            return;
+        }
+    };
+    let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
+    let res: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+        env.with_local_frame(16, |env| {
+            // SAFETY: ref global no owned, válida mientras viva `app` (mismo
+            // patrón que `launch_intent_pdf`).
+            let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
+            let svc = env.new_string("clipboard")?;
+            let cm = env
+                .call_method(
+                    activity.as_ref(),
+                    jni_str!("getSystemService"),
+                    jni_sig!(sig = (java.lang.String) -> java.lang.Object),
+                    &[JValue::Object(svc.as_ref())],
+                )?
+                .l()?;
+            if cm.is_null() {
+                error!("copy_to_clipboard: getSystemService(clipboard) null");
+                return Ok(());
+            }
+            let label = env.new_string("text")?;
+            let jtext = env.new_string(text)?;
+            let cd_class = env.find_class(jni_str!("android/content/ClipData"))?;
+            let clip = env
+                .call_static_method(
+                    &cd_class,
+                    jni_str!("newPlainText"),
+                    jni_sig!(
+                        sig = (java.lang.String, java.lang.String) -> android.content.ClipData
+                    ),
+                    &[
+                        JValue::Object(label.as_ref()),
+                        JValue::Object(jtext.as_ref()),
+                    ],
+                )?
+                .l()?;
+            env.call_method(
+                cm.as_ref(),
+                jni_str!("setPrimaryClip"),
+                jni_sig!(sig = (android.content.ClipData) -> void),
+                &[JValue::Object(clip.as_ref())],
+            )?;
+            Ok(())
+        })
+    });
+    match res {
+        Ok(()) => info!("clipboard: {} chars", text.chars().count()),
+        Err(e) => {
+            let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+                env.exception_clear();
+                Ok(())
+            });
+            error!("copy_to_clipboard: {e}");
+        }
+    }
+}
+
 /// Abre una content:// URI con `ContentResolver.openFileDescriptor(uri, "r")`
 /// y devuelve el fd nativo + el PFD como `Global`. `None` si falla (URI
 /// inválida, permiso, proveedor sin fd). El caller debe llamar a `close`.

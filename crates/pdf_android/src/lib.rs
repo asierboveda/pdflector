@@ -235,6 +235,43 @@
 //!   defecto como antes (`PDFLECTOR_PDF` → internal/demo.pdf → fallback); si
 //!   no hay ninguno, la app arranca directamente en el picker.
 
+//! ## Selección de texto: doble-tap + arrastre, copiar y subrayar (2026-08-XX)
+//!
+//! Selección de texto con doble-tap (sin levantar) + arrastre, con menú
+//! flotante Copiar/Subrayar/IA (la Parte 2 —IA— la añadirá otro agente):
+//!
+//! - **Gesto** (`input.rs`): un tap simple en el área de página se DIFIERE
+//!   (300 ms, `DOUBLE_TAP_MS`): si llega un segundo down en el mismo sitio y
+//!   dentro de la ventana, es un doble-tap y se inicia la selección por
+//!   arrastre (ancla = punto del doble-tap; al moverse > `SELECT_SLOP` se
+//!   materializa el rect); si la ventana expira sin segundo tap, el tap
+//!   simple de página se dispara (`input::tick_gestures`, resuelto en
+//!   `Reader::tick` con el poll con timeout de `needs_tick`). El tap izq/der
+//!   de página NO se dispara nunca mientras haya selección/menú abierto.
+//! - **Estado** (`reader.rs`): `Reader::sel` guarda la selección en coords de
+//!   PANTALLA (px de ventana, `anchor`/`cur`) — decisión documentada: el
+//!   gesto, el render del rect y el menú viven en pantalla; la conversión a
+//!   página se hace UNA sola vez al extraer texto (`sel_text`) o subrayar
+//!   (`highlight_sel`) con `Reader::screen_to_page`, la INVERSA exacta del
+//!   mapeo del blit (misma `scale = cover × zoom` y `dx/dy` que `PageAnnots`).
+//! - **Render** (`draw.rs`): el rect de selección se dibuja translúcido con
+//!   borde sobre la página, RECORTADO a los bordes de la hoja
+//!   (`Reader::sel_screen_rect`); el menú flotante se renderiza con el
+//!   Canvas+JNI como overlay cacheado (`Reader::sel_menu`).
+//! - **Copiar** (`jni.rs`): `ClipboardManager.setPrimaryClip(
+//!   ClipData.newPlainText("text", sel))` con el contexto de la Activity;
+//!   aviso breve "copied" en un toast sobre el indicador (`Reader::toast`).
+//! - **Subrayar** (`reader.rs`): añade un `Annotation::Highlight` con el rect
+//!   de selección en página (amarillo) al `AnnotationSet` y PERSISTE con
+//!   `AnnotationStore::save` (sidecar SQLite); el render de highlights ya
+//!   existente (`draw::draw_highlight`, relleno translúcido bajo los trazos)
+//!   lo muestra al re-redibujar.
+//!
+//! La extracción de texto (`sel_text`) llama a `doc.text(page)` UNA vez y
+//! concatena el texto de los spans cuyo bbox INTERSECTA el rect de selección,
+//! ordenados por (y, luego x) — orden de lectura; si no hay texto (PDF
+//! escaneado) devuelve cadena vacía y "Copiar" avisa "no text".
+
 //!
 //! ## Partición en módulos (2026-08-13)
 //!
@@ -327,6 +364,22 @@ pub(crate) const ERROR_BG: [u8; 4] = [0x5A, 0x12, 0x12, 0xFF];
 /// Radio (px) de movimiento máximo entre Down y Up para considerar el gesto un
 /// "tap" (no un swipe). ~20 px a 320 dpi (ViewConfiguration touch slop ≈ 8 dp).
 pub(crate) const TAP_SLOP: f32 = 24.0;
+/// Ventana de doble-tap para iniciar la selección de texto: entre el primer
+/// tap (Up) y el segundo down deben pasar menos de `DOUBLE_TAP_MS` y caer
+/// dentro de `TAP_SLOP` px para considerar el gesto un doble-tap (el primer
+/// tap de página se DIFIERE mientras tanto, ver `input::GestureState`).
+pub(crate) const DOUBLE_TAP_MS: std::time::Duration = std::time::Duration::from_millis(300);
+/// Umbral de movimiento (px) tras el segundo down del doble-tap para entrar
+/// en MODO SELECCIÓN: si el dedo se mueve más de esto se materializa el rect
+/// de selección (ancla = punto del doble-tap, actual = dedo); antes no se
+/// selecciona nada (un doble-tap sin arrastre no fija selección).
+pub(crate) const SELECT_SLOP: f32 = 8.0;
+/// Tamaño mínimo (px) del rect de selección para fijarla y mostrar el menú
+/// Copiar/Subrayar/IA: un rect degenerado (doble-tap sin arrastre) se descarta.
+pub(crate) const SEL_MIN_PX: f32 = 2.0;
+/// Duración del aviso breve ("copied", "highlighted", ...) sobre el indicador
+/// de página (`Reader::toast`, expirado en `Reader::tick`).
+pub(crate) const TOAST_MS: std::time::Duration = std::time::Duration::from_millis(1500);
 /// Límites del factor de zoom continuo (1.0 = página completa a pantalla).
 /// `PINCH_MIN = 1.0`: SIN zoom hacia fuera — la página no se puede ver más
 /// pequeña que a pantalla completa (cover); el pan queda limitado a los
@@ -404,9 +457,11 @@ pub fn android_main(app: AndroidApp) {
 
     while running {
         // Timeout del poll SOLO mientras hay trabajo diferido: animación del
-        // sheet de ajustes o portadas de la biblioteca pendientes (`tick` los
-        // avanza). En reposo el poll bloquea sin timeout (sin batería extra).
-        let timeout = if reader.sheet_animating() || reader.thumbs_pending() {
+        // sheet de ajustes, portadas de la biblioteca pendientes, tap de
+        // página diferido por la ventana de doble-tap o aviso breve (toast)
+        // visible (`Reader::needs_tick`; `tick` los avanza). En reposo el
+        // poll bloquea sin timeout (sin batería extra).
+        let timeout = if reader.needs_tick() {
             Some(std::time::Duration::from_millis(16))
         } else {
             None

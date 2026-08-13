@@ -13,7 +13,7 @@ use android_activity::ndk::native_window::NativeWindow;
 use jni::objects::JValue;
 use jni::{JavaVM, jni_sig, jni_str};
 use log::{error, warn};
-use pdf_core::{Bitmap, Document, Stroke};
+use pdf_core::{Bitmap, Document, Highlight, Stroke};
 
 use crate::reader::{
     GRID_CELL_PAD, GRID_COLS, Reader, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w,
@@ -147,19 +147,21 @@ pub(crate) struct PageBlit<'a> {
     pub(crate) zoom: f32,
 }
 
-/// Capa de anotaciones de una página visible: trazos (coordenadas de página,
-/// puntos PDF) + transformación página→ventana (`× scale` + `(dx, dy)`), con
-/// `dx`/`dy`/`scale` EXACTAMENTE los del blit de la página (`PageBlit`). Se
-/// dibuja como capa vectorial SOBRE el bitmap ya bliteado — nunca se
-/// rasteriza dentro del bitmap cacheado (AGENTS.md §4.3): así la anotación
-/// permanece nítida a cualquier zoom y el coste del render es ∝ trazos
-/// visibles, no ∝ área de página. Solo trazos YA GUARDADOS: el trazo en curso
-/// (modo dibujo) se eliminó con la barra superior (2026-08-XX).
+/// Capa de anotaciones de una página visible: trazos y highlights guardados
+/// (coordenadas de página, puntos PDF) + transformación página→ventana
+/// (`× scale` + `(dx, dy)`), con `dx`/`dy`/`scale` EXACTAMENTE los del blit
+/// de la página (`PageBlit`). Se dibuja como capa vectorial SOBRE el bitmap
+/// ya bliteado — nunca se rasteriza dentro del bitmap cacheado (AGENTS.md
+/// §4.3): así la anotación permanece nítida a cualquier zoom y el coste del
+/// render es ∝ anotaciones visibles, no ∝ área de página. Los highlights se
+/// dibujan DEBAJO de los trazos (orden de dibujo: rellenos primero).
 pub(crate) struct PageAnnots<'a> {
     pub(crate) dx: i32,
     pub(crate) dy: i32,
     /// px de ventana por punto PDF (cover × zoom).
     pub(crate) scale: f32,
+    /// Highlights guardados de la página (subrayados, relleno translúcido).
+    pub(crate) highlights: Vec<&'a Highlight>,
     /// Trazos guardados de la página, en orden de dibujo (z).
     pub(crate) strokes: Vec<&'a Stroke>,
 }
@@ -192,6 +194,7 @@ pub(crate) fn blit_page(
     dark: bool,
     page: Option<&PageBlit>,
     anns: Option<&PageAnnots>,
+    sel: Option<(f32, f32, f32, f32)>,
     overlays: &[(&Bitmap, i32, i32)],
 ) {
     // El guard se cae al final del scope: ANativeWindow_unlockAndPost.
@@ -219,7 +222,9 @@ pub(crate) fn blit_page(
 
     // La página actual, escalada al zoom relativo pedido y recortada a la
     // ventana (la posición la calcula `reader`: centrado cover + pan). Tras
-    // ella, su capa de anotaciones (trazos sobre el bitmap, en orden z).
+    // ella, su capa de anotaciones (trazos y highlights sobre el bitmap, en
+    // orden z) y el rect de selección en vivo/fijado (translúcido, ya
+    // recortado a los bordes de la página por el caller).
     if let Some(page) = page {
         blit_page_scaled(
             dst,
@@ -235,6 +240,9 @@ pub(crate) fn blit_page(
         );
         if let Some(layer) = anns {
             draw_annotations(dst, dst_w, dst_h, dst_stride, bpp, layer);
+        }
+        if let Some((l, t, r, b)) = sel {
+            draw_sel_rect(dst, dst_w, dst_h, dst_stride, bpp, l, t, r, b);
         }
     }
 
@@ -255,7 +263,13 @@ pub(crate) fn blit_page(
 /// causa del lag del sheet; ver `Reader::page_frame`).
 ///
 /// `page = None` si la página actual no tiene bitmap en la caché: el frame
-/// queda con solo fondo + indicador.
+/// queda con solo fondo + indicador. `sel` es el rect de selección en px de
+/// ventana (ya recortado a la página) que se dibuja como capa translúcida
+/// sobre la página, igual que en `blit_page`.
+//
+// 8 parámetros posicionales de un blit (raw pointer + dimensiones + piezas):
+// mismo patrón que `blit_page` y `copy_region`; se acepta el allow.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compose_frame(
     w: i32,
     h: i32,
@@ -263,6 +277,7 @@ pub(crate) fn compose_frame(
     dark: bool,
     page: Option<&PageBlit>,
     anns: Option<&PageAnnots>,
+    sel: Option<(f32, f32, f32, f32)>,
     badge: Option<(&Bitmap, i32, i32)>,
 ) -> Bitmap {
     let (fw, fh) = (w.max(0) as usize, h.max(0) as usize);
@@ -288,6 +303,9 @@ pub(crate) fn compose_frame(
         );
         if let Some(layer) = anns {
             draw_annotations(dst, fw, fh, fw, 4, layer);
+        }
+        if let Some((l, t, r, b)) = sel {
+            draw_sel_rect(dst, fw, fh, fw, 4, l, t, r, b);
         }
     }
     if let Some((b, bx, by)) = badge {
@@ -462,12 +480,162 @@ fn draw_annotations(
     if !scale.is_finite() || scale <= 0.0 {
         return;
     }
+    // Los highlights (rellenos translúcidos) se dibujan PRIMERO, debajo de
+    // los trazos: el orden de dibujo es por capas (subrayado bajo la tinta).
+    for h in &layer.highlights {
+        draw_highlight(
+            dst, dst_w, dst_h, dst_stride, bpp, h, scale, layer.dx, layer.dy,
+        );
+    }
     for s in &layer.strokes {
         draw_stroke(
             dst, dst_w, dst_h, dst_stride, bpp, &s.points, s.width, s.color, scale, layer.dx,
             layer.dy,
         );
     }
+}
+
+/// Dibuja un highlight (rect o rects en coordenadas de página) como relleno
+/// translúcido (el alfa del color) sobre el bitmap, con la MISMA
+/// transformación que los trazos (`pt × scale + (dx, dy)`): el subrayado
+/// queda pegado al texto a cualquier zoom y nunca se rasteriza en el bitmap
+/// cacheado (AGENTS.md §4.3). El color se pasa tal cual: las anotaciones no
+/// se invierten en modo oscuro (ver `blit_page`).
+#[allow(clippy::too_many_arguments)]
+fn draw_highlight(
+    dst: *mut u8,
+    dst_w: usize,
+    dst_h: usize,
+    dst_stride: usize,
+    bpp: usize,
+    h: &Highlight,
+    scale: f32,
+    dx: i32,
+    dy: i32,
+) {
+    let color = [h.color.r, h.color.g, h.color.b, h.color.a];
+    for r in &h.rects {
+        let l = r.x * scale + dx as f32;
+        let t = r.y * scale + dy as f32;
+        let w = r.w * scale;
+        let hh = r.h * scale;
+        fill_rect(
+            dst,
+            dst_w,
+            dst_h,
+            dst_stride,
+            bpp,
+            l,
+            t,
+            l + w,
+            t + hh,
+            color,
+        );
+    }
+}
+
+/// Rellena un rectángulo (px de ventana, f32) con `color` RGBA8, recortado a
+/// la ventana. Reutiliza `stamp` (alfa-blend en bpp 4, opaco en bpp 2/otros),
+/// así que el relleno respeta la transparencia del color. Se usa para los
+/// highlights (subrayados) y para el rect de selección (`fill_rect_bordered`).
+#[allow(clippy::too_many_arguments)]
+fn fill_rect(
+    dst: *mut u8,
+    dst_w: usize,
+    dst_h: usize,
+    dst_stride: usize,
+    bpp: usize,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    color: [u8; 4],
+) {
+    fill_rect_bordered(
+        dst, dst_w, dst_h, dst_stride, bpp, x0, y0, x1, y1, color, None,
+    );
+}
+
+/// Rellena un rectángulo (px de ventana, f32) recortado a la ventana; con
+/// `border = Some(color)` dibuja además un borde de 2 px (píxeles a menos de
+/// 2 del borde del rect) con ese color, sobre el relleno. Reutiliza `stamp`
+/// para la escritura (alfa-blend bpp 4 / opaco bpp 2).
+#[allow(clippy::too_many_arguments)]
+fn fill_rect_bordered(
+    dst: *mut u8,
+    dst_w: usize,
+    dst_h: usize,
+    dst_stride: usize,
+    bpp: usize,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    fill: [u8; 4],
+    border: Option<[u8; 4]>,
+) {
+    // Enteros con recorte a la ventana: el rect se extiende de floor(x0) a
+    // ceil(x1) (cubre el área f32 completa; el borde queda en la frontera).
+    let ix0 = x0.floor().max(0.0) as i32;
+    let iy0 = y0.floor().max(0.0) as i32;
+    let ix1 = x1.ceil().min(dst_w as f32) as i32;
+    let iy1 = y1.ceil().min(dst_h as f32) as i32;
+    if ix1 <= ix0 || iy1 <= iy0 {
+        return;
+    }
+    const BORDER_W: i32 = 2;
+    let disc = [(0, 0)];
+    for y in iy0..iy1 {
+        for x in ix0..ix1 {
+            let edge = match border {
+                Some(_) => {
+                    x - ix0 < BORDER_W
+                        || ix1 - 1 - x < BORDER_W
+                        || y - iy0 < BORDER_W
+                        || iy1 - 1 - y < BORDER_W
+                }
+                None => false,
+            };
+            let c = if edge { border.unwrap() } else { fill };
+            stamp(dst, dst_w, dst_h, dst_stride, bpp, x, y, &disc, c);
+        }
+    }
+}
+
+/// Color del relleno del rect de selección (azul accent, alfa ~30 %: 77/255).
+const SEL_FILL: [u8; 4] = [0x4D, 0xA3, 0xFF, 0x4D];
+/// Color del borde del rect de selección (1-2 px, alfa completo).
+const SEL_BORDER: [u8; 4] = [0x4D, 0xA3, 0xFF, 0xFF];
+
+/// Dibuja el rect de selección en vivo/fijado (px de ventana, ya recortado a
+/// los bordes de la página por `Reader::sel_screen_rect`): relleno
+/// translúcido azul/accent (~30 %) con borde de 2 px, sobre la página (y las
+/// anotaciones), antes de los overlays.
+#[allow(clippy::too_many_arguments)]
+fn draw_sel_rect(
+    dst: *mut u8,
+    dst_w: usize,
+    dst_h: usize,
+    dst_stride: usize,
+    bpp: usize,
+    l: f32,
+    t: f32,
+    r: f32,
+    b: f32,
+) {
+    fill_rect_bordered(
+        dst,
+        dst_w,
+        dst_h,
+        dst_stride,
+        bpp,
+        l,
+        t,
+        r,
+        b,
+        SEL_FILL,
+        Some(SEL_BORDER),
+    );
 }
 
 /// Transforma un trazo (coordenadas de página) a px de ventana
@@ -1749,4 +1917,165 @@ fn paste_thumb(
             dst[d_offset..d_offset + 4].copy_from_slice(&srow[src_x * 4..src_x * 4 + 4]);
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// Selección de texto: menú flotante (Copiar/Subrayar/IA) y aviso breve
+// ---------------------------------------------------------------------
+//
+// Geometría COMPARTIDA entre el render (Canvas+JNI) y el tap de `input`
+// (`Reader::sel_menu.buttons`): el menú se coloca cerca del rect de
+// selección (centrado en su x, encima si hay sitio y si no debajo), siempre
+// dentro de la ventana.
+
+/// Layout del menú de selección calculado por `sel_menu_layout`: rect del
+/// menú en px de ventana (left, top, right, bottom) + botones (etiqueta +
+/// rect en px de ventana). Lo consumen `render_sel_menu` (dibujo) y
+/// `Reader::open_sel_menu` (estado para el tap de `input`).
+pub(crate) struct SelMenuLayout {
+    pub(crate) rect: (f32, f32, f32, f32),
+    pub(crate) buttons: Vec<(&'static str, ButtonRect)>,
+}
+
+/// Layout del menú de selección: rectángulo del menú en px de ventana
+/// (`rect`) + botones (etiqueta + rect en px de ventana), compartido por
+/// `render_sel_menu` y el tap de `input::sel_menu_tap`. `None` sin selección
+/// fijada. Decisión documentada: el menú "flota" cerca del rect (anclado a
+/// su centro x), arriba si cabe y si no debajo — nunca tapa el rect si se
+/// puede evitar, y nunca se sale de la ventana.
+pub(crate) fn sel_menu_layout(reader: &Reader) -> Option<SelMenuLayout> {
+    let (sl, st, sr, sb) = reader.sel_screen_rect()?;
+    let win_w = reader.win_w as f32;
+    let win_h = reader.win_h as f32;
+    let pad = 10.0f32;
+    let gap = 8.0f32;
+    let bw = (win_w / 6.0).clamp(64.0, 120.0);
+    let bh = (win_h / 28.0).clamp(36.0, 48.0);
+    let menu_w = 3.0 * bw + 2.0 * gap + 2.0 * pad;
+    let menu_h = bh + 2.0 * pad;
+    let cx = (sl + sr) / 2.0;
+    let x = (cx - menu_w / 2.0).clamp(8.0, (win_w - menu_w - 8.0).max(8.0));
+    // Encima del rect si cabe (margen de 12 px); si no, debajo.
+    let mut y = st - menu_h - 12.0;
+    if y < 8.0 {
+        y = sb + 12.0;
+    }
+    let y = y.clamp(8.0, (win_h - menu_h - 8.0).max(8.0));
+    let mut buttons = Vec::with_capacity(3);
+    for (i, label) in ["Copiar", "Subrayar", "IA"].into_iter().enumerate() {
+        let bx = x + pad + i as f32 * (bw + gap);
+        buttons.push((label, (bx, y + pad, bx + bw, y + pad + bh)));
+    }
+    Some(SelMenuLayout {
+        rect: (x, y, x + menu_w, y + menu_h),
+        buttons,
+    })
+}
+
+/// Renderiza el menú de selección (tarjeta oscura redondeada + 3 botones
+/// píldora: Copiar, Subrayar, IA) a un bitmap RGBA8 del tamaño del menú con
+/// fondo transparente, usando la MISMA geometría que `sel_menu_layout` (las
+/// coordenadas de los botones se desplazan al origen local del bitmap). "IA"
+/// va atenuado: es el hueco visual que rellenará la Parte 2 (otro agente).
+pub(crate) fn render_sel_menu(reader: &Reader) -> Option<Bitmap> {
+    let layout = sel_menu_layout(reader)?;
+    let (mx, my, mrx, mry) = layout.rect;
+    let w = (mrx - mx) as i32;
+    let h = (mry - my) as i32;
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let mut rects: Vec<CanvasRect> = Vec::new();
+    let mut texts: Vec<CanvasText> = Vec::new();
+    // Tarjeta: rect redondeado oscuro semitransparente (borde + relleno).
+    let r = (h as f32) * 0.5;
+    rects.push(CanvasRect::rounded(
+        0.0, 0.0, w as f32, h as f32, r, 0xFF232B3A,
+    ));
+    rects.push(CanvasRect::rounded(
+        1.0,
+        1.0,
+        w as f32 - 1.0,
+        h as f32 - 1.0,
+        r,
+        0xE6101216,
+    ));
+    for (label, (l, t, rr, b)) in &layout.buttons {
+        let (fill, border, text_color) = match *label {
+            "Subrayar" => (
+                theme::ACCENT_AMBER_BG,
+                theme::ACCENT_AMBER_BORDER,
+                0xFF0B0D12,
+            ),
+            // Hueco visual de la Parte 2 (IA): atenuado, sin acción aún.
+            "IA" => (0xFF161B26, 0xFF2A3444, theme::LIB_TEXT_MUTED),
+            _ => (
+                theme::DARK_BTN_BG,
+                theme::DARK_BTN_BORDER,
+                theme::DARK_BTN_TEXT,
+            ),
+        };
+        draw_button(
+            &mut rects,
+            &mut texts,
+            *l - mx,
+            *t - my,
+            *rr - mx,
+            *b - my,
+            fill,
+            border,
+            text_color,
+            (*b - *t) * 0.38,
+            true,
+            label,
+        );
+    }
+    jni_text_bitmap(w, h, 0x00000000, &rects, &texts)
+}
+
+/// Renderiza el aviso breve ("copied", "highlighted", "no text", ...) como
+/// badge pequeño centrado sobre el indicador de página (mismo estilo que
+/// `render_page_badge`). Cacheado en `Reader::toast_bitmap`; se expira en
+/// `Reader::tick` a los `TOAST_MS`.
+pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
+    let msg = reader.toast.as_ref()?.0.clone();
+    let (bw, bh) = ((reader.win_w / 6).max(140), (reader.win_h / 60).max(30));
+    let (bg, border, text) = if reader.dark {
+        (
+            theme::DARK_BADGE_BG,
+            theme::DARK_BADGE_BORDER,
+            theme::DARK_BADGE_TEXT,
+        )
+    } else {
+        (
+            theme::LIGHT_BADGE_BG,
+            theme::LIGHT_BADGE_BORDER,
+            theme::LIGHT_BADGE_TEXT,
+        )
+    };
+    let mut rects = Vec::new();
+    let mut texts = Vec::new();
+    let r = 999.0f32;
+    rects.push(CanvasRect::rounded(
+        0.0, 0.0, bw as f32, bh as f32, r, border,
+    ));
+    rects.push(CanvasRect::rounded(
+        1.0,
+        1.0,
+        bw as f32 - 1.0,
+        bh as f32 - 1.0,
+        r,
+        bg,
+    ));
+    let ts = 12.0f32;
+    texts.push(CanvasText::new(
+        bw as f32 / 2.0,
+        bh as f32 * 0.5 + ts * 0.35,
+        ts,
+        text,
+        TextAlign::Center,
+        true,
+        msg,
+    ));
+    jni_text_bitmap(bw, bh, 0x00000000, &rects, &texts)
 }
