@@ -16,10 +16,12 @@ use log::{error, warn};
 use pdf_core::{Bitmap, Document, Highlight, Stroke};
 
 use crate::reader::{
-    AiPhase, GRID_CELL_PAD, GRID_COLS, Reader, grid_cell_rect, grid_cell_w, grid_cover_h,
-    grid_cover_w, grid_pad, grid_rows_y0, grid_visible_rows, human_size, page_badge_size,
-    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, picker_visible_rows, sheet_btn_h,
-    sheet_btn_w, sheet_h, sheet_pad, sheet_row1_y, sheet_row2_y, truncate_name,
+    AiPhase, GRID_CELL_PAD, GRID_COLS, Reader, grid_cell_h, grid_cell_w, grid_cover_h,
+    grid_cover_w, grid_pad, human_size, lib_carousel_cover_h, lib_carousel_cover_w,
+    lib_carousel_cover_x, lib_chips, lib_content_y0, lib_filter_h, lib_grid_cell_rect,
+    lib_recents_block_h, lib_section_title_h, page_badge_size, picker_btn_h, picker_btn_w,
+    picker_header_h, picker_row_h, picker_visible_rows, sheet_btn_h, sheet_btn_w, sheet_h,
+    sheet_pad, sheet_row1_y, sheet_row2_y, truncate_name,
 };
 use crate::theme;
 
@@ -1298,10 +1300,12 @@ pub(crate) fn render_page_badge(reader: &Reader) -> Option<Bitmap> {
 /// Rectángulo de botón (left, top, right, bottom) en px.
 pub(crate) type ButtonRect = (f32, f32, f32, f32);
 
-/// Botones del sheet de ajustes del visor (2 filas × 3): fila 1 = Back |
-/// Open | Dark/Light (la etiqueta del tercero cambia con el modo); fila 2 =
-/// −10 | "N / total" (tap = página siguiente) | +10. La geometría se comparte
-/// con `input::sheet_tap` (mismas fórmulas `sheet_*` de `reader`).
+/// Botones del sheet de ajustes del visor (2 filas × 3): fila 1 = "← Library"
+/// (biblioteca MediaStore) | Dark/Light (la etiqueta cambia con el modo) |
+/// Search (biblioteca con la búsqueda lista para empezar, sin teclado = la
+/// barra de filtros de la biblioteca); fila 2 = −10 | "N / total" (tap =
+/// página siguiente) | +10. La geometría se comparte con `input::sheet_tap`
+/// (mismas fórmulas `sheet_*` de `reader`).
 pub(crate) fn sheet_buttons(
     reader: &Reader,
     win_w: f32,
@@ -1313,7 +1317,11 @@ pub(crate) fn sheet_buttons(
     let r1 = sheet_row1_y(win_h as i32);
     let r2 = sheet_row2_y(win_h as i32);
     let mut out = Vec::with_capacity(6);
-    let row1: [&'static str; 3] = ["Back", "Open", if reader.dark { "Light" } else { "Dark" }];
+    let row1: [&'static str; 3] = [
+        "← Library",
+        if reader.dark { "Light" } else { "Dark" },
+        "Search",
+    ];
     for (i, label) in row1.into_iter().enumerate() {
         let x0 = pad + i as f32 * (bw + pad);
         out.push((label, (x0, r1, x0 + bw, r1 + bh)));
@@ -1326,10 +1334,11 @@ pub(crate) fn sheet_buttons(
 }
 
 /// Renderiza el sheet de ajustes del visor a un bitmap RGBA8 de tamaño
-/// `win_w × sheet_h(win_h)` (la mitad de la ventana): panel deslizante desde
-/// el borde superior con Back (biblioteca), Open (picker), Dark/Light, saltos
-/// −10/+10 y el indicador de página. Cacheado en `Reader::sheet_bitmap`
-/// (invalida al cambiar ventana, página o modo oscuro; se libera al cerrar).
+/// `win_w × sheet_h(win_h)` (la mitad de la ventana): tarjeta deslizante desde
+/// el borde superior con título, un asa central, los botones de `sheet_buttons`
+/// ("← Library" / Dark-Light / Search y −10 / "N / total" / +10) y la pista de
+/// cierre. Cacheado en `Reader::sheet_bitmap` (invalida al cambiar ventana,
+/// página o modo oscuro; se libera al cerrar).
 pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let h = sheet_h(reader.win_h);
@@ -1361,8 +1370,9 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
             )
         };
 
-    // Card deslizable desde arriba: esquinas inferiores redondeadas (16px) y borde de 1px.
-    let card_r = 16.0f32;
+    // Tarjeta deslizable desde arriba: esquinas inferiores redondeadas (18 px)
+    // y borde de 1 px.
+    let card_r = 18.0f32;
     rects.push(CanvasRect::rounded(
         0.0, -16.0, w as f32, h as f32, card_r, bar_border,
     ));
@@ -1375,16 +1385,25 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
         bar_bg,
     ));
 
-    // Etiqueta "SETTINGS" en mayúsculas (11sp) en la esquina superior izquierda.
+    // Asa central (pista visual de "deslizable") + título de la tarjeta.
     let pad = sheet_pad(w);
+    let handle_w = (w / 10).max(48) as f32;
+    rects.push(CanvasRect::rounded(
+        (w as f32 - handle_w) / 2.0,
+        10.0,
+        (w as f32 + handle_w) / 2.0,
+        16.0,
+        3.0,
+        bar_border,
+    ));
     texts.push(CanvasText::new(
         pad,
-        20.0 + 11.0 * 0.85,
-        11.0,
-        theme::LIB_TEXT_SECONDARY,
+        26.0 + 14.0 * 0.85,
+        14.0,
+        btn_text,
         TextAlign::Left,
         true,
-        "SETTINGS",
+        "Settings",
     ));
     texts.push(CanvasText::new(
         pad,
@@ -1396,24 +1415,30 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
         "Swipe up or tap outside to close",
     ));
 
-    // Botones estilo píldora.
+    // Botones estilo píldora con acento dorado en los estados activos.
     let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
     for (label, (l, t, r, b)) in sheet_buttons(reader, w as f32, reader.win_h as f32) {
-        let (fill, border, text_color, bold) = match label {
+        let (fill, border, text_color) = match label {
+            // "← Library" y "Search": acción principal → acento dorado.
+            "← Library" | "Search" => (
+                theme::ACCENT_AMBER_BG,
+                theme::ACCENT_AMBER_BORDER,
+                0xFF0B0D12,
+            ),
+            // Dark/Light: dorado SOLO cuando el modo oscuro está activo.
             "Dark" | "Light" => {
                 if reader.dark {
                     (
                         theme::ACCENT_AMBER_BG,
                         theme::ACCENT_AMBER_BORDER,
                         0xFF0B0D12,
-                        true,
                     )
                 } else {
-                    (btn_bg, btn_border, btn_text, true)
+                    (btn_bg, btn_border, btn_text)
                 }
             }
-            "N / total" => (badge_bg, badge_border, badge_text, true),
-            _ => (btn_bg, btn_border, btn_text, true),
+            "N / total" => (badge_bg, badge_border, badge_text),
+            _ => (btn_bg, btn_border, btn_text),
         };
         let label_str = if label == "N / total" {
             format!("{} / {}", reader.page + 1, pages)
@@ -1431,7 +1456,7 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
             border,
             text_color,
             (b - t) * 0.38,
-            bold,
+            true,
             &label_str,
         );
     }
@@ -1647,12 +1672,16 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
     let btn_h = picker_btn_h(h);
     let btn_y = (header_h - btn_h) as f32 / 2.0;
     let pad = grid_pad(w);
-    let rows_y0 = grid_rows_y0(h, reader.status.is_some());
+    let filter_h = lib_filter_h(h);
+    let content_y0 = lib_content_y0(h, reader.status.is_some());
+    let scroll = reader.lib_scroll;
+    let has_recents = !reader.lib_recents().is_empty();
+    let recents_block_h = lib_recents_block_h(w, h, has_recents);
 
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
 
-    // 1. Cabecera + borde inferior (mismo layout que la lista).
+    // 1. Cabecera + borde inferior (título + botones, mismo layout que antes).
     rects.push(CanvasRect::sharp(
         0.0,
         0.0,
@@ -1695,26 +1724,65 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
         );
     }
 
-    // 2. Franja de estado.
+    // 2. Barra de FILTROS (búsqueda SIN teclado): fila 0 = carpetas, fila 1 =
+    // letras A-Z / #. Chips píldora, activo = acento dorado. Cada fila scrollea
+    // en horizontal (`lib_folders_x` / `lib_letters_x`); los chips fuera de la
+    // ventana se saltan (el Canvas no recorta, así que el clipping es manual).
+    for row in 0..2usize {
+        for (label, (l, t, r, b), active) in lib_chips(reader, row) {
+            if r < 0.0 || l > w as f32 {
+                continue;
+            }
+            let (fill, border, tc) = if active {
+                (
+                    theme::ACCENT_AMBER_BG,
+                    theme::ACCENT_AMBER_BORDER,
+                    0xFF0B0D12,
+                )
+            } else {
+                (
+                    theme::DARK_BTN_BG,
+                    theme::DARK_BTN_BORDER,
+                    theme::DARK_BTN_TEXT,
+                )
+            };
+            draw_button(
+                &mut rects,
+                &mut texts,
+                l,
+                t,
+                r,
+                b,
+                fill,
+                border,
+                tc,
+                (b - t) * 0.42,
+                active,
+                &label,
+            );
+        }
+    }
+
+    // 3. Franja de estado (si la hay), entre la barra de filtros y el contenido.
     if let Some(status) = reader.status.as_deref() {
         rects.push(CanvasRect::sharp(
             0.0,
-            header_h as f32,
+            header_h as f32 + filter_h,
             w as f32,
-            rows_y0 as f32,
+            content_y0 as f32,
             theme::STATUS_BG,
         ));
         rects.push(CanvasRect::sharp(
             0.0,
-            rows_y0 as f32 - 1.0,
+            content_y0 as f32 - 1.0,
             w as f32,
-            rows_y0 as f32,
+            content_y0 as f32,
             theme::STATUS_BORDER,
         ));
         let ts = picker_row_h(h) as f32 * 0.36;
         texts.push(CanvasText::new(
             pad,
-            header_h as f32 + picker_row_h(h) as f32 * 0.62,
+            header_h as f32 + filter_h + picker_row_h(h) as f32 * 0.62,
             ts,
             theme::STATUS_TEXT,
             TextAlign::Left,
@@ -1723,29 +1791,122 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
         ));
     }
 
-    // 3. Celdas visibles (rejilla 3 × N): portada estilo tapa de libro
-    // (proporción 2:3, esquinas 12 px, sombra sutil, sin borde) + título de 1
-    // línea debajo. Fondo LIB_BG limpio, sin rellenos alternos por celda.
+    // 4. CONTENIDO scrolleable (desplazado `scroll` px hacia arriba desde
+    // `content_y0`): sección RECIENTES (carousel horizontal) + título de
+    // ARCHIVOS + rejilla 3×3 filtrada.
+    let ctop = content_y0 as f32 - scroll;
+
+    // 4a. Sección RECIENTES: título + fila de portadas (carousel). Las portadas
+    // se recortan a la ventana en X (scroll horizontal `lib_carousel_x`) y la
+    // fila entera scrollea en vertical con el contenido. Sin recientes → la
+    // sección se OCULTA (`recents_block_h` = 0; ver `lib_recents_block_h`).
+    if has_recents {
+        texts.push(CanvasText::new(
+            pad,
+            ctop + lib_section_title_h(h) * 0.72,
+            12.0,
+            theme::LIB_TEXT_SECONDARY,
+            TextAlign::Left,
+            true,
+            "RECIENTES",
+        ));
+        let car_top = ctop + lib_section_title_h(h);
+        let cw = lib_carousel_cover_w(w);
+        let ch = lib_carousel_cover_h(w);
+        let cover_r = 10.0f32;
+        let recents = reader.lib_recents();
+        for (i, r) in recents.iter().enumerate() {
+            let cx = lib_carousel_cover_x(w, i) - reader.lib_carousel_x;
+            if cx + cw < 0.0 || cx > w as f32 {
+                continue;
+            }
+            // Sombra sutil (siempre) + placeholder mientras carga la portada.
+            rects.push(CanvasRect::rounded(
+                cx + 2.0,
+                car_top + 3.0,
+                cx + 2.0 + cw,
+                car_top + 3.0 + ch,
+                cover_r,
+                theme::LIB_COVER_SHADOW,
+            ));
+            if reader.thumbs.peek(&r.path).is_none() {
+                rects.push(CanvasRect::rounded(
+                    cx,
+                    car_top,
+                    cx + cw,
+                    car_top + ch,
+                    cover_r,
+                    theme::LIB_COVER_PLACEHOLDER,
+                ));
+                texts.push(CanvasText::new(
+                    cx + cw / 2.0,
+                    car_top + ch / 2.0 + 8.0,
+                    16.0,
+                    theme::LIB_TEXT_MUTED,
+                    TextAlign::Center,
+                    true,
+                    "…",
+                ));
+            }
+            // Nombre del PDF bajo la portada (1 línea, truncado).
+            let name = truncate_name(&r.name, 12);
+            texts.push(CanvasText::new(
+                cx,
+                car_top + ch + 8.0 + 10.0 * 0.85,
+                10.0,
+                theme::LIB_TEXT_SECONDARY,
+                TextAlign::Left,
+                false,
+                name,
+            ));
+        }
+    }
+
+    // 4b. Título de ARCHIVOS con el resumen del filtro activo ("Download/ · A").
+    let mut summary = String::new();
+    if let Some(f) = &reader.lib_folder {
+        summary.push_str(f);
+    }
+    if let Some(l) = reader.lib_letter {
+        if !summary.is_empty() {
+            summary.push_str(" · ");
+        }
+        summary.push(l);
+    }
+    let arch_label = if summary.is_empty() {
+        "ARCHIVOS".to_string()
+    } else {
+        format!("ARCHIVOS — {summary}")
+    };
+    texts.push(CanvasText::new(
+        pad,
+        ctop + recents_block_h + lib_section_title_h(h) * 0.72,
+        12.0,
+        theme::LIB_TEXT_SECONDARY,
+        TextAlign::Left,
+        true,
+        arch_label,
+    ));
+
+    // 4c. Rejilla 3×3 (lista FILTRADA): portada 2:3 + título, igual que antes
+    // pero con la geometría de `lib_grid_cell_rect` (scroll vertical en px).
     let cell_w = grid_cell_w(w);
     let cover_w = grid_cover_w(w);
     let cover_h = grid_cover_h(w);
     let title_ts = 13.0f32;
     let char_w = title_ts * 0.55;
     let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
-    let visible = grid_visible_rows(w, h, reader.status.is_some());
-    for row in 0..visible {
+    let (row0, rows) = reader.lib_visible_grid_rows();
+    for row in row0..row0 + rows {
         for col in 0..GRID_COLS {
-            let r = reader.list_scroll + row;
-            let Some(entry) = reader.grid_entry_at(r, col) else {
+            let Some(entry) = reader.grid_entry_at(row, col) else {
                 continue;
             };
-            let (cx, cy, _, _) = grid_cell_rect(w, rows_y0, row, col);
-
-            // Área de portada (2:3, centrada en la celda). La SOMBRA se pinta
-            // SIEMPRE (también para el placeholder): rect redondeado negro
-            // translúcido (`LIB_COVER_SHADOW`) desplazado +2/+3 px, que queda
-            // detrás de la portada cacheada cuando `paste_thumb` la pega
-            // sobre este bitmap — sombra sutil en lugar de borde llamativo.
+            let (cx, cy, _, _) =
+                lib_grid_cell_rect(w, h, content_y0, has_recents, scroll, row, col);
+            if cy + grid_cell_h(w) < content_y0 as f32 || cy > h as f32 {
+                continue; // celda fuera de la ventana (por el scroll vertical)
+            }
             let cover_x0 = cx + (cell_w - cover_w) / 2.0;
             let cover_y0 = cy + 4.0;
             let cover_r = 12.0f32;
@@ -1757,8 +1918,6 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 cover_r,
                 theme::LIB_COVER_SHADOW,
             ));
-
-            // Placeholder mientras no hay thumbnail: silueta gris sin borde.
             if reader.thumbs.peek(&entry.uri).is_none() {
                 rects.push(CanvasRect::rounded(
                     cover_x0,
@@ -1778,10 +1937,6 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                     "…",
                 ));
             }
-
-            // Título DEBAJO de la portada: 13 sp, 1 línea con puntos
-            // suspensivos (`truncate_name`), LIB_TEXT_SECONDARY, alineado a la
-            // izquierda con un pequeño padding horizontal (`GRID_CELL_PAD`).
             let title_text = truncate_name(&entry.name, max_chars);
             texts.push(CanvasText::new(
                 cx + GRID_CELL_PAD,
@@ -1795,21 +1950,66 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
         }
     }
 
+    // 4d. Aviso de "sin resultados" cuando hay filtro activo y nada coincide.
+    if reader.lib_filtered.is_empty()
+        && (reader.lib_letter.is_some() || reader.lib_folder.is_some())
+    {
+        texts.push(CanvasText::new(
+            w as f32 / 2.0,
+            ctop + recents_block_h + lib_section_title_h(h) + 24.0,
+            13.0,
+            theme::LIB_TEXT_MUTED,
+            TextAlign::Center,
+            false,
+            "No matches — tap All to clear",
+        ));
+    }
+
     let mut out = jni_text_bitmap(w, h, theme::LIB_BG, &rects, &texts)?;
 
-    // 4. Pegar las portadas CACHEADAS sobre el bitmap base (center-crop a
-    // 2:3, esquinas redondeadas 12 px, SIN borde: la sombra ya quedó pintada
-    // en el bitmap base en el paso 3).
-    for row in 0..visible {
+    // 5. Pegar las portadas CACHEADAS sobre el bitmap base: primero las del
+    // carousel (clave = ruta local), después las de la rejilla (clave = URI).
+    if has_recents {
+        let car_top = ctop + lib_section_title_h(h);
+        let cw = lib_carousel_cover_w(w);
+        let ch = lib_carousel_cover_h(w);
+        for (i, r) in reader.lib_recents().iter().enumerate() {
+            let Some(thumb) = reader.thumbs.peek(&r.path) else {
+                continue;
+            };
+            let cx = (lib_carousel_cover_x(w, i) - reader.lib_carousel_x).round() as i32;
+            // Fuera de la ventana: saltar (el Canvas no recorta; el clipping es
+            // manual). Ojo: `cx + cw as i32 < 0 || ...` confunde al parser de
+            // rustc (un `as` antes de `<` en una cadena con `||` se lee como
+            // argumento genérico), por eso el borde derecho va en variable.
+            let cover_right = cx + cw as i32;
+            if cover_right < 0 || cx > w {
+                continue;
+            }
+            paste_thumb(
+                &mut out.data,
+                out.width as usize,
+                thumb,
+                cx,
+                car_top.round() as i32,
+                cw as i32,
+                ch as i32,
+            );
+        }
+    }
+    for row in row0..row0 + rows {
         for col in 0..GRID_COLS {
-            let r = reader.list_scroll + row;
-            let Some(entry) = reader.grid_entry_at(r, col) else {
+            let Some(entry) = reader.grid_entry_at(row, col) else {
                 continue;
             };
             let Some(thumb) = reader.thumbs.peek(&entry.uri) else {
                 continue;
             };
-            let (cx, cy, _, _) = grid_cell_rect(w, rows_y0, row, col);
+            let (cx, cy, _, _) =
+                lib_grid_cell_rect(w, h, content_y0, has_recents, scroll, row, col);
+            if cy + grid_cell_h(w) < content_y0 as f32 || cy > h as f32 {
+                continue;
+            }
             let cover_x0 = (cx + (cell_w - cover_w) / 2.0).round() as i32;
             let cover_y0 = (cy + 4.0).round() as i32;
             paste_thumb(

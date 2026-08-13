@@ -60,9 +60,10 @@ use log::warn;
 use crate::draw::{library_buttons, sheet_buttons};
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
-    GRID_COLS, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap, grid_pad, grid_rows_y0,
-    grid_visible_rows, page_badge_rect, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
-    picker_visible_rows, sheet_h,
+    GRID_COLS, ListDrag, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap, grid_pad,
+    lib_carousel_cover_w, lib_chip_h, lib_chips, lib_chips_y0, lib_content_y0, lib_filter_h,
+    lib_grid_y0, lib_recents_block_h, lib_section_title_h, page_badge_rect, picker_btn_h,
+    picker_btn_w, picker_header_h, picker_row_h, picker_visible_rows, sheet_h,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 
@@ -176,17 +177,19 @@ fn page_badge_tap(reader: &mut Reader, x: f32, y: f32) -> bool {
 }
 
 /// Tap DENTRO del sheet de ajustes: botones (misma geometría que
-/// `draw::sheet_buttons`): Back (biblioteca MediaStore), Open (picker
-/// interno), Dark/Light, −10/+10 y "N / total" (página siguiente). Un tap en
-/// el hueco del sheet (fuera de los botones) no hace nada: el panel se cierra
-/// con un tap FUERA del sheet o con un arrastre hacia arriba.
+/// `draw::sheet_buttons`): "← Library" (biblioteca MediaStore), Dark/Light,
+/// Search (biblioteca con la búsqueda lista para empezar — sin teclado, la
+/// búsqueda ES la barra de filtros de la biblioteca), −10/+10 y "N / total"
+/// (página siguiente). Un tap en el hueco del sheet (fuera de los botones) no
+/// hace nada: el panel se cierra con un tap FUERA del sheet o con un arrastre
+/// hacia arriba.
 fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     for (label, (l, t, r, b)) in sheet_buttons(reader, reader.win_w as f32, reader.win_h as f32) {
         if x >= l && x < r && y >= t && y < b {
             match label {
-                "Back" => reader.enter_library(app),
-                "Open" => reader.open_picker(app),
+                "← Library" => reader.enter_library(app),
                 "Dark" | "Light" => reader.toggle_dark(),
+                "Search" => reader.enter_library_search(app),
                 "-10" => reader.jump_page(-10),
                 "+10" => reader.jump_page(10),
                 _ => reader.next_page(), // "N / total"
@@ -597,10 +600,13 @@ fn list_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 }
 
-/// Tap de la biblioteca MediaStore (rejilla 3×3): botones de la cabecera
-/// (Back/Grant/Rescan) o celda de la rejilla (abrir PDF). La geometría DEBE
-/// reflejar exactamente la de `render_library_grid` (mismas fórmulas de
-/// layout: `grid_cell_rect`, `grid_rows_y0`, `grid_visible_rows`).
+/// Tap de la biblioteca MediaStore (rejilla 3×3 + carousel de recientes +
+/// chips de filtro): botones de la cabecera (Back/Grant/Rescan), chips de la
+/// barra de filtros (fila 0 = carpetas, fila 1 = letras A-Z/#), portada del
+/// carousel de RECIENTES (abre el PDF local) o celda de la rejilla (abre el
+/// PDF por content://). La geometría DEBE reflejar exactamente la de
+/// `render_library_grid` (mismas fórmulas: `lib_chips`, `lib_content_y0`,
+/// `lib_grid_cell_rect`, `lib_recents_block_h`).
 fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let header_h = picker_header_h(reader.win_h) as f32;
     let btn_w = picker_btn_w(reader.win_w) as f32;
@@ -628,17 +634,83 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         return;
     }
 
-    // Franja de estado: no es seleccionable.
-    let rows_y0 = grid_rows_y0(reader.win_h, reader.status.is_some()) as f32;
-    if y < rows_y0 {
+    // Barra de FILTROS (búsqueda sin teclado): fila 0 = carpetas, fila 1 =
+    // letras. "All" limpia el filtro de su fila; un chip activo se vuelve a
+    // pulsar para desactivarlo (toggle implícito al pulsar otro).
+    let filter_top = header_h;
+    let filter_h = lib_filter_h(reader.win_h);
+    if y >= filter_top && y < filter_top + filter_h {
+        // Misma geometría que `lib_chips` (filas en `lib_chips_y0`/`y1`).
+        let row = if y < lib_chips_y0(reader.win_h) + lib_chip_h(reader.win_h) {
+            0
+        } else {
+            1
+        };
+        for (label, (l, t, r, b), _active) in lib_chips(reader, row) {
+            if x >= l && x < r && y >= t && y < b {
+                if row == 0 {
+                    if label == "All" {
+                        reader.lib_set_folder(None);
+                    } else {
+                        reader.lib_set_folder(Some(label.clone()));
+                    }
+                } else if label == "All" {
+                    reader.lib_set_letter(None);
+                } else {
+                    reader.lib_set_letter(label.chars().next());
+                }
+                return;
+            }
+        }
         return;
     }
 
-    // Celda de la rejilla: fila = (y − rows_y0) / cell_h + scroll; columna
-    // por x (misma geometría que `grid_cell_rect`).
-    let row = ((y - rows_y0) / grid_cell_h(reader.win_w)) as usize + reader.list_scroll;
-    let cell_w = grid_cell_w(reader.win_w);
-    let pad = grid_pad(reader.win_w);
+    // Franja de estado: no es seleccionable.
+    let content_y0 = lib_content_y0(reader.win_h, reader.status.is_some()) as f32;
+    if y < content_y0 {
+        return;
+    }
+
+    // Contenido scrolleable: pasar a coordenadas de CONTENIDO (y del Down +
+    // scroll vertical).
+    let yc = y - content_y0 + reader.lib_scroll;
+    let win_w = reader.win_w;
+    let has_recents = !reader.lib_recents().is_empty();
+
+    // Sección RECIENTES: tap en la fila del carousel (portada o nombre) abre
+    // el PDF local directamente.
+    let recents_block_h = lib_recents_block_h(win_w, reader.win_h, has_recents);
+    if yc < recents_block_h {
+        if has_recents && yc >= lib_section_title_h(reader.win_h) {
+            let cw = lib_carousel_cover_w(win_w);
+            let i = ((x - grid_pad(win_w) + reader.lib_carousel_x) / (cw + grid_gap())).floor();
+            if i >= 0.0
+                && let Some(r) = reader.lib_recents().get(i as usize)
+            {
+                // Clonar ruta+nombre: `open_pdf` necesita &mut self.
+                let path = r.path.clone();
+                let name = r.name.clone();
+                if !reader.open_pdf(&path) {
+                    reader.status = Some(format!("Cannot open {name}"));
+                    reader.list_dirty = true;
+                    reader.redraw();
+                }
+            }
+        }
+        return;
+    }
+
+    // Título de ARCHIVOS: no es seleccionable.
+    let grid_y0 = lib_grid_y0(win_w, reader.win_h, has_recents);
+    if yc < grid_y0 {
+        return;
+    }
+
+    // Celda de la rejilla (lista FILTRADA): fila por y, columna por x (misma
+    // geometría que `lib_grid_cell_rect`).
+    let row = ((yc - grid_y0) / grid_cell_h(win_w)) as usize;
+    let cell_w = grid_cell_w(win_w);
+    let pad = grid_pad(win_w);
     let col = ((x - pad) / (cell_w + grid_gap())).floor() as usize;
     if col < GRID_COLS
         && let Some(entry) = reader.grid_entry_at(row, col)
@@ -695,10 +767,38 @@ fn picker_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 }
 
-/// Input del picker/biblioteca (un solo dedo): arrastre vertical = scroll de
-/// la lista o rejilla (filas de `picker_row_h` o `grid_cell_h` según el modo),
-/// tap (sin arrastre) = selección. Reemplaza a la máquina de gestos del visor
-/// (sin pinch).
+/// Zona de la biblioteca donde cayó el Down (qué arrastra en HORIZONTAL):
+/// 0 = contenido (scroll vertical), 1 = carousel de recientes, 2 = chips de
+/// carpetas, 3 = chips de letras. Misma geometría que `library_tap` y
+/// `render_library_grid`.
+fn library_down_zone(reader: &Reader, y: f32) -> u8 {
+    let header_h = picker_header_h(reader.win_h) as f32;
+    let filter_h = lib_filter_h(reader.win_h);
+    if y < header_h {
+        return 0;
+    }
+    if y < lib_chips_y0(reader.win_h) + lib_chip_h(reader.win_h) {
+        return 2; // fila de chips de carpetas
+    }
+    if y < header_h + filter_h {
+        return 3; // fila de chips de letras
+    }
+    // Contenido: ¿la fila del carousel de recientes (bajo su título)?
+    let content_y0 = lib_content_y0(reader.win_h, reader.status.is_some()) as f32;
+    let yc = y - content_y0 + reader.lib_scroll;
+    let recents_h =
+        lib_recents_block_h(reader.win_w, reader.win_h, !reader.lib_recents().is_empty());
+    if yc >= lib_section_title_h(reader.win_h) && yc < recents_h {
+        return 1;
+    }
+    0
+}
+
+/// Input del picker/biblioteca (un solo dedo): arrastre VERTICAL = scroll de
+/// la lista (picker: por filas; biblioteca: por PÍXELES del contenido
+/// completo, recientes + rejilla); arrastre HORIZONTAL = scroll del carousel
+/// de recientes o de las filas de chips (biblioteca); tap (sin arrastre) =
+/// selección. Reemplaza a la máquina de gestos del visor (sin pinch).
 fn handle_picker_motion(
     reader: &mut Reader,
     app: &AndroidApp,
@@ -709,48 +809,96 @@ fn handle_picker_motion(
     match action {
         MotionAction::Down => {
             if let Some(&(_, x, y)) = pts.first() {
-                reader.picker_drag = Some((x, y, reader.list_scroll));
+                let (zone, h0) = if reader.mode == UiMode::Picker {
+                    (0, 0.0)
+                } else {
+                    let z = library_down_zone(reader, y);
+                    let h = match z {
+                        1 => reader.lib_carousel_x,
+                        2 => reader.lib_folders_x,
+                        3 => reader.lib_letters_x,
+                        _ => 0.0,
+                    };
+                    (z, h)
+                };
+                let v0 = if reader.mode == UiMode::Picker {
+                    reader.list_scroll as f32
+                } else {
+                    reader.lib_scroll
+                };
+                reader.list_drag = Some(ListDrag {
+                    sx: x,
+                    sy: y,
+                    v0,
+                    h0,
+                    zone,
+                });
             }
         }
         MotionAction::Move => {
-            if let Some((sx, sy, sscroll)) = reader.picker_drag
+            if let Some(drag) = reader.list_drag.as_ref()
                 && let Some(&(_, x, y)) = pts.first()
             {
-                let moved = ((x - sx).powi(2) + (y - sy).powi(2)).sqrt();
-                if moved > TAP_SLOP {
-                    // Alto de fila y nº de filas visibles según el modo
-                    // (picker: filas de lista; biblioteca: filas de celdas).
-                    let row_h = if reader.mode == UiMode::Picker {
-                        picker_row_h(reader.win_h) as f32
+                let dx = x - drag.sx;
+                let dy = y - drag.sy;
+                let moved = (dx * dx + dy * dy).sqrt();
+                if moved > TAP_SLOP && dx.abs() > dy.abs() {
+                    // Arrastre HORIZONTAL (solo biblioteca): el scroll de
+                    // partida se guardó en `h0` según la zona del Down.
+                    if reader.mode == UiMode::Library {
+                        let max = match drag.zone {
+                            1 => reader.lib_carousel_max_x(),
+                            2 => reader.lib_chips_max_x(0),
+                            3 => reader.lib_chips_max_x(1),
+                            _ => 0.0,
+                        };
+                        let s = (drag.h0 - dx).clamp(0.0, max);
+                        let changed = match drag.zone {
+                            1 => reader.lib_carousel_x != s,
+                            2 => reader.lib_folders_x != s,
+                            3 => reader.lib_letters_x != s,
+                            _ => false,
+                        };
+                        if changed {
+                            match drag.zone {
+                                1 => reader.lib_carousel_x = s,
+                                2 => reader.lib_folders_x = s,
+                                3 => reader.lib_letters_x = s,
+                                _ => {}
+                            }
+                            reader.list_dirty = true;
+                            reader.redraw();
+                        }
+                    }
+                } else if moved > TAP_SLOP {
+                    // Arrastre VERTICAL: picker por filas, biblioteca por px.
+                    if reader.mode == UiMode::Picker {
+                        let row_h = picker_row_h(reader.win_h) as f32;
+                        let visible = picker_visible_rows(reader.win_h, reader.status.is_some());
+                        let max_scroll = reader.pdf_list.len().saturating_sub(visible);
+                        let s =
+                            (drag.v0 - dy / row_h).round().clamp(0.0, max_scroll as f32) as usize;
+                        if s != reader.list_scroll {
+                            reader.list_scroll = s;
+                            reader.list_dirty = true;
+                            reader.redraw();
+                        }
                     } else {
-                        grid_cell_h(reader.win_w)
-                    };
-                    let visible = if reader.mode == UiMode::Picker {
-                        picker_visible_rows(reader.win_h, reader.status.is_some())
-                    } else {
-                        grid_visible_rows(reader.win_w, reader.win_h, reader.status.is_some())
-                    };
-                    let list_len = if reader.mode == UiMode::Picker {
-                        reader.pdf_list.len()
-                    } else {
-                        reader.grid_total_rows()
-                    };
-                    let max_scroll = list_len.saturating_sub(visible);
-                    let s = (sscroll as f32 - (y - sy) / row_h)
-                        .round()
-                        .clamp(0.0, max_scroll as f32) as usize;
-                    if s != reader.list_scroll {
-                        reader.list_scroll = s;
-                        reader.list_dirty = true;
-                        reader.redraw();
+                        let max_v = reader.lib_max_scroll();
+                        let s = (drag.v0 - dy).clamp(0.0, max_v);
+                        if s != reader.lib_scroll {
+                            reader.lib_scroll = s;
+                            reader.list_dirty = true;
+                            reader.redraw();
+                        }
                     }
                 }
             }
         }
         MotionAction::Up => {
-            let drag = reader.picker_drag.take();
-            if let (Some((sx, sy, _)), Some(&(_, x, y))) = (drag, pts.first()) {
-                let moved = ((x - sx).powi(2) + (y - sy).powi(2)).sqrt();
+            let drag = reader.list_drag.take();
+            if let (Some(d), Some(&(_, x, y))) = (drag, pts.first()) {
+                let moved = ((x - d.sx).powi(2) + (y - d.sy).powi(2)).sqrt();
                 if moved <= TAP_SLOP {
                     list_tap(reader, app, x, y);
                 }
@@ -758,7 +906,7 @@ fn handle_picker_motion(
             reader.gesture.pointers.clear();
         }
         MotionAction::Cancel => {
-            reader.picker_drag = None;
+            reader.list_drag = None;
             reader.gesture.pointers.clear();
         }
         // PointerUp: se ignora un segundo dedo (el picker no tiene pinch).

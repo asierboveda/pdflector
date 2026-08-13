@@ -36,7 +36,7 @@ use crate::jni::{
     android_sdk_int, launch_intent_pdf, open_content_fd, query_media_store, read_content_uri_bytes,
     sanitize_pdf_name,
 };
-use crate::persist;
+use crate::persist::{self, RecentEntry};
 use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, THUMB_W, ThumbCache};
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
@@ -254,13 +254,201 @@ pub(crate) fn grid_title_h(_win_w: i32) -> f32 {
     40.0
 }
 
-/// Alto (px) total de una celda de la rejilla.
+/// Alto (px) de una celda de la rejilla.
 pub(crate) fn grid_cell_h(win_w: i32) -> f32 {
     grid_cover_h(win_w) + grid_title_h(win_w)
 }
 
+/// --- Biblioteca rediseñada: secciones (Recientes/Archivos) + filtros (2026-08-XX) ---
+///
+/// El rediseño añade dos secciones al contenido scrolleable de la biblioteca:
+/// una fila de RECIENTES (carousel horizontal) y la rejilla 3×3 de ARCHIVOS,
+/// más una barra de FILTROS fija (2 filas de chips: carpetas y letras) bajo la
+/// cabecera. Toda la geometría de abajo es COMPARTIDA por el render
+/// (`draw::render_library_grid`), el tap y el arrastre (`input`) y el pump de
+/// portadas (`Reader::pump_thumbs`).
+///
+/// Modelo de scroll: el CONTENIDO (recientes + título de archivos + rejilla)
+/// scrollea en vertical por píxeles (`Reader::lib_scroll`); la cabecera, la
+/// barra de filtros y la franja de estado son fijas. El carousel y las filas
+/// de chips scrollean en horizontal por píxeles (`lib_carousel_x`,
+/// `lib_folders_x`, `lib_letters_x`).
+/// Alto (px) de una fila de chips de la barra de filtros (carpetas/letras).
+pub(crate) fn lib_chip_h(win_h: i32) -> f32 {
+    (win_h as f32 / 56.0).clamp(32.0, 44.0)
+}
+
+/// Alto (px) de la barra de filtros completa (2 filas de chips + huecos).
+pub(crate) fn lib_filter_h(win_h: i32) -> f32 {
+    lib_chip_h(win_h) * 2.0 + 8.0
+}
+
+/// Y (px) del borde superior de la fila 0 de chips (carpetas) y fila 1 (letras).
+pub(crate) fn lib_chips_y0(win_h: i32) -> f32 {
+    picker_header_h(win_h) as f32 + 8.0
+}
+
+pub(crate) fn lib_chips_y1(win_h: i32) -> f32 {
+    lib_chips_y0(win_h) + lib_chip_h(win_h) + 6.0
+}
+
+/// Y (px) del borde superior del contenido scrolleable (cabecera + barra de
+/// filtros + franja de estado si la hay).
+pub(crate) fn lib_content_y0(win_h: i32, has_status: bool) -> i32 {
+    let status_h = if has_status { picker_row_h(win_h) } else { 0 };
+    picker_header_h(win_h) + lib_filter_h(win_h) as i32 + status_h
+}
+
+/// Alto (px) de un título de sección ("RECIENTES"/"ARCHIVOS").
+pub(crate) fn lib_section_title_h(win_h: i32) -> f32 {
+    (win_h as f32 / 64.0).clamp(24.0, 32.0)
+}
+
+/// Ancho (px) de una portada del carousel de recientes (más pequeña que la de
+/// la rejilla, estilo tira de libros).
+pub(crate) fn lib_carousel_cover_w(win_w: i32) -> f32 {
+    grid_cover_w(win_w) * 0.62
+}
+
+/// Alto (px) de una portada del carousel (proporción 2:3, igual que la rejilla).
+pub(crate) fn lib_carousel_cover_h(win_w: i32) -> f32 {
+    lib_carousel_cover_w(win_w) * 1.5
+}
+
+/// Alto (px) de la fila del carousel (portada + nombre bajo ella).
+pub(crate) fn lib_carousel_h(win_w: i32, _win_h: i32) -> f32 {
+    lib_carousel_cover_h(win_w) + 26.0
+}
+
+/// X (px) en coords de CONTENIDO de la portada `i` del carousel (sin el
+/// scroll horizontal aplicado).
+pub(crate) fn lib_carousel_cover_x(win_w: i32, i: usize) -> f32 {
+    grid_pad(win_w) + i as f32 * (lib_carousel_cover_w(win_w) + grid_gap())
+}
+
+/// Alto (px) del bloque de RECIENTES (título de sección + fila del carousel)
+/// en coords de contenido; 0 si no hay recientes (la sección se OCULTA, no se
+/// pinta un hueco vacío).
+pub(crate) fn lib_recents_block_h(win_w: i32, win_h: i32, has_recents: bool) -> f32 {
+    if !has_recents {
+        0.0
+    } else {
+        lib_section_title_h(win_h) + lib_carousel_h(win_w, win_h)
+    }
+}
+
+/// Y (px) del borde superior de la rejilla en coords de CONTENIDO (tras el
+/// bloque de recientes y el título de ARCHIVOS).
+pub(crate) fn lib_grid_y0(win_w: i32, win_h: i32, has_recents: bool) -> f32 {
+    lib_recents_block_h(win_w, win_h, has_recents) + lib_section_title_h(win_h)
+}
+
+/// Alto total (px) del contenido scrolleable de la biblioteca (recientes +
+/// título de archivos + rejilla + aire inferior).
+pub(crate) fn lib_content_h(win_w: i32, win_h: i32, has_recents: bool, grid_rows: usize) -> f32 {
+    lib_grid_y0(win_w, win_h, has_recents) + grid_rows as f32 * grid_cell_h(win_w) + 24.0
+}
+
+/// Rectángulo (left, top, right, bottom) en px de VENTANA de la celda
+/// `(row, col)` de la rejilla de la biblioteca, con el scroll vertical
+/// aplicado (compartido por `draw::render_library_grid` e `input::library_tap`).
+pub(crate) fn lib_grid_cell_rect(
+    win_w: i32,
+    win_h: i32,
+    content_y0: i32,
+    has_recents: bool,
+    scroll: f32,
+    row: usize,
+    col: usize,
+) -> (f32, f32, f32, f32) {
+    let (l, t, r, b) = grid_cell_rect(
+        win_w,
+        lib_grid_y0(win_w, win_h, has_recents) as i32,
+        row,
+        col,
+    );
+    let dy = content_y0 as f32 - scroll;
+    (l, t + dy, r, b + dy)
+}
+
+/// Ancho (px) de un chip de la barra de filtros según el nº de caracteres de
+/// su etiqueta (los de carpetas llevan la ruta, p. ej. "Download/").
+pub(crate) fn lib_chip_w(win_w: i32, chars: usize) -> f32 {
+    (10.0 + chars as f32 * 7.0).clamp(40.0, (win_w / 3) as f32)
+}
+
+/// Ancho fijo (px) de los chips de letras (etiquetas de 1-3 caracteres).
+pub(crate) fn lib_letter_chip_w(win_w: i32) -> f32 {
+    (win_w as f32 / 26.0).clamp(40.0, 56.0)
+}
+
+/// Chips de la barra de filtros de la biblioteca, fila `row` (0 = carpetas,
+/// 1 = letras): etiqueta + rect en px de VENTANA (con el scroll horizontal de
+/// la fila ya aplicado) + si el chip está ACTIVO. Geometría COMPARTIDA por
+/// `draw::render_library_grid` e `input::library_tap`. La fila de carpetas se
+/// construye de `[All]` + las carpetas distintas de MediaStore; la de letras
+/// de `[All] [A]..[Z] [#]` (esta es la búsqueda SIN teclado: el teclado del
+/// sistema no entrega texto al backend native-activity de android-activity —
+/// ver la cabecera del módulo y `worker_done` —, así que el filtro es por
+/// inicial y por carpeta).
+pub(crate) fn lib_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonRect, bool)> {
+    let win_w = reader.win_w;
+    let gap = grid_gap();
+    let x0 = grid_pad(win_w);
+    let y = if row == 0 {
+        lib_chips_y0(reader.win_h)
+    } else {
+        lib_chips_y1(reader.win_h)
+    };
+    let scroll = if row == 0 {
+        reader.lib_folders_x
+    } else {
+        reader.lib_letters_x
+    };
+    let mut out = Vec::new();
+    let mut x = x0;
+    let mut push =
+        |label: String, chars: usize, active: bool, out: &mut Vec<(String, ButtonRect, bool)>| {
+            let w = if row == 0 {
+                lib_chip_w(win_w, chars)
+            } else {
+                lib_letter_chip_w(win_w)
+            };
+            let l = x - scroll;
+            let r = l + w;
+            out.push((label, (l, y, r, y + lib_chip_h(reader.win_h)), active));
+            x += w + gap;
+        };
+    if row == 0 {
+        push("All".to_string(), 3, reader.lib_folder.is_none(), &mut out);
+        for f in reader.lib_folders() {
+            let active = reader.lib_folder.as_deref() == Some(f.as_str());
+            let n = f.chars().count();
+            push(f, n, active, &mut out);
+        }
+    } else {
+        push("All".to_string(), 3, reader.lib_letter.is_none(), &mut out);
+        for c in 'A'..='Z' {
+            push(c.to_string(), 1, reader.lib_letter == Some(c), &mut out);
+        }
+        push("#".to_string(), 1, reader.lib_letter == Some('#'), &mut out);
+    }
+    out
+}
+
+/// Ancho total (px) de la fila de chips `row` (para el clamp del scroll
+/// horizontal).
+pub(crate) fn lib_chips_row_w(reader: &Reader, row: usize) -> f32 {
+    let chips = lib_chips(reader, row);
+    match chips.last() {
+        Some((_, (_, _, r, _), _)) => *r + grid_pad(reader.win_w),
+        None => grid_pad(reader.win_w),
+    }
+}
+
 /// Nº de filas de celdas visibles en la biblioteca (cabecera + franja de
 /// estado restan de la ventana; mínimo 1 fila para que siempre haya algo).
+#[allow(dead_code)] // geometría pre-rediseño; la biblioteca usa `lib_visible_grid_rows` (px)
 pub(crate) fn grid_visible_rows(win_w: i32, win_h: i32, has_status: bool) -> usize {
     let status_h = if has_status { picker_row_h(win_h) } else { 0 };
     let usable = (win_h - picker_header_h(win_h) - status_h) as f32;
@@ -268,6 +456,7 @@ pub(crate) fn grid_visible_rows(win_w: i32, win_h: i32, has_status: bool) -> usi
 }
 
 /// Y del borde superior de la zona de rejilla (cabecera + franja de estado).
+#[allow(dead_code)] // geometría pre-rediseño; la biblioteca usa `lib_content_y0` (px)
 pub(crate) fn grid_rows_y0(win_h: i32, has_status: bool) -> i32 {
     picker_header_h(win_h) + if has_status { picker_row_h(win_h) } else { 0 }
 }
@@ -426,6 +615,28 @@ pub(crate) struct AiPanel {
     pub(crate) scrollable: bool,
 }
 
+/// Estado del arrastre de las listas (picker interno y biblioteca) en el
+/// Down: punto de partida + scrolls de partida + zona de la biblioteca.
+/// El picker solo scrollea en vertical por filas; la biblioteca scrollea en
+/// vertical por píxeles y, según la zona donde cayó el dedo, en horizontal
+/// (carousel de recientes o filas de chips).
+pub(crate) struct ListDrag {
+    /// X del Down (px de ventana).
+    pub(crate) sx: f32,
+    /// Y del Down (px de ventana).
+    pub(crate) sy: f32,
+    /// Scroll vertical de partida: fila (`list_scroll` como f32) en el
+    /// picker, píxeles (`lib_scroll`) en la biblioteca.
+    pub(crate) v0: f32,
+    /// Scroll horizontal de partida (px): carousel o fila de chips en la
+    /// biblioteca; 0 en el picker.
+    pub(crate) h0: f32,
+    /// Zona de la biblioteca donde cayó el Down: 0 = contenido (scroll
+    /// vertical), 1 = carousel de recientes (scroll horizontal), 2 = chips de
+    /// carpetas, 3 = chips de letras. 0 en el picker.
+    pub(crate) zone: u8,
+}
+
 /// Estado de la app, vivo durante todo el bucle de `android_main`.
 /// `pub(crate)` por la partición de `lib.rs`: `input` y `draw` leen campos,
 /// `lib` llama a los métodos (gestos y listas viven en otros módulos).
@@ -503,8 +714,34 @@ pub(crate) struct Reader {
     pub(crate) sdk_int: i32,
     /// ¿Pendiente de volver de Ajustes tras pulsar Grant? (re-consultar en Resume).
     pub(crate) grant_pending: bool,
-    /// Desplazamiento del picker/biblioteca en filas (scroll).
+    /// Desplazamiento del picker en filas (scroll; la BIBLIOTECA usa ahora
+    /// `lib_scroll` en píxeles — ver abajo).
     pub(crate) list_scroll: usize,
+    /// Scroll VERTICAL del contenido de la biblioteca en PÍXELES (recientes +
+    /// título de archivos + rejilla; la cabecera, la barra de filtros y el
+    /// estado son fijos). Sustituye al scroll en filas de `list_scroll` para
+    /// el modo Library (las secciones tienen alturas distintas, así que el
+    /// scroll en filas ya no vale).
+    pub(crate) lib_scroll: f32,
+    /// Scroll horizontal (px) del carousel de RECIENTES.
+    pub(crate) lib_carousel_x: f32,
+    /// Scroll horizontal (px) de la fila de chips de carpetas.
+    pub(crate) lib_folders_x: f32,
+    /// Scroll horizontal (px) de la fila de chips de letras.
+    pub(crate) lib_letters_x: f32,
+    /// Filtro de letra inicial activo ('A'..='Z', '#' = dígito/otro); None =
+    /// sin filtro de letra. Es la búsqueda por NOMBRE SIN teclado (ver la
+    /// cabecera del módulo y `lib_chips`).
+    pub(crate) lib_letter: Option<char>,
+    /// Filtro de carpeta activo (RELATIVE_PATH, p. ej. "Download/"); None =
+    /// sin filtro de carpeta. Es la búsqueda por CARPETA SIN teclado.
+    pub(crate) lib_folder: Option<String>,
+    /// Índices de `library_list` que pasan el filtro actual (cache del
+    /// filtrado): la rejilla y las portadas resuelven sobre esta lista.
+    pub(crate) lib_filtered: Vec<usize>,
+    /// Lista de recientes persistida (los últimos ~10 PDFs abiertos, más
+    /// reciente primero; `persist::load_recents`/`touch_recent`).
+    pub(crate) recents: Vec<RecentEntry>,
     /// La lista del picker necesita re-render (rescan, scroll, resize).
     pub(crate) list_dirty: bool,
     /// Mensaje de estado del picker (bajo la cabecera; p. ej. error de open).
@@ -546,8 +783,10 @@ pub(crate) struct Reader {
     /// página 1 vacía): no se reintentan — evita un bucle de timeout del
     /// bucle de eventos (`thumbs_pending` las excluye).
     thumb_failed: HashSet<String>,
-    /// Estado del arrastre del picker: (x, y, scroll) en el Down.
-    pub(crate) picker_drag: Option<(f32, f32, usize)>,
+    /// Estado del arrastre de las listas (picker y biblioteca): punto del
+    /// Down + scrolls de partida + zona de la biblioteca (qué arrastra en
+    /// horizontal). Ver `ListDrag`.
+    pub(crate) list_drag: Option<ListDrag>,
     /// Anotaciones del documento abierto: se cargan del sidecar SQLite al
     /// abrir (`load_annotations`) y se guardan al añadir/quitar un trazo
     /// (`save_annotations`). El modelo vive en pdf_core (AGENTS.md §4.3).
@@ -622,6 +861,14 @@ impl Reader {
             sdk_int: android_sdk_int(),
             grant_pending: false,
             list_scroll: 0,
+            lib_scroll: 0.0,
+            lib_carousel_x: 0.0,
+            lib_folders_x: 0.0,
+            lib_letters_x: 0.0,
+            lib_letter: None,
+            lib_folder: None,
+            lib_filtered: Vec::new(),
+            recents: persist::load_recents(app.internal_data_path().as_deref()),
             list_dirty: true,
             status: None,
             doc_path: None,
@@ -634,7 +881,7 @@ impl Reader {
             page_badge: None,
             thumbs: ThumbCache::new(THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES),
             thumb_failed: HashSet::new(),
-            picker_drag: None,
+            list_drag: None,
             annotations: AnnotationSet::new(),
             annot_sidecar: None,
             sel: None,
@@ -673,6 +920,9 @@ impl Reader {
                         // Registrar también el "abrir con": el próximo arranque
                         // sin intent restaurará este PDF en su última posición.
                         reader.save_state();
+                        // Y añadirlo a los RECIENTES de la biblioteca (el
+                        // "abrir con" no pasa por `open_pdf`).
+                        reader.touch_recent(&lp.path);
                     }
                     Err(e) => {
                         error!("cannot open {}: {e}", lp.path);
@@ -811,36 +1061,43 @@ impl Reader {
                     self.page_frame = None; // liberar el frame al cerrar del todo
                 }
             }
-            UiMode::Picker | UiMode::Library => {
-                // Clamp del scroll si la lista menguó (rescan) o cambió la ventana.
-                // Picker: filas de `picker_row_h`; biblioteca: filas de celdas
-                // de la rejilla 3×3 (`grid_cell_h`).
-                let list_len = if self.mode == UiMode::Picker {
-                    self.pdf_list.len()
-                } else {
-                    self.grid_total_rows()
-                };
-                let visible = if self.mode == UiMode::Picker {
-                    picker_visible_rows(self.win_h, self.status.is_some())
-                } else {
-                    grid_visible_rows(self.win_w, self.win_h, self.status.is_some())
-                };
-                let max_scroll = list_len.saturating_sub(visible);
+            UiMode::Picker => {
+                // Clamp del scroll si la lista menguó (rescan) o cambió la
+                // ventana (picker: filas de `picker_row_h`).
+                let visible = picker_visible_rows(self.win_h, self.status.is_some());
+                let max_scroll = self.pdf_list.len().saturating_sub(visible);
                 if self.list_scroll > max_scroll {
                     self.list_scroll = max_scroll;
                 }
-                if self.list_dirty {
-                    let bmp = if self.mode == UiMode::Picker {
-                        render_picker_list(self)
-                    } else {
-                        render_library_grid(self)
-                    };
-                    if let Some(bmp) = bmp {
-                        self.bitmap = Some(bmp);
-                        self.offset_x = 0;
-                        self.offset_y = 0;
-                        self.list_dirty = false;
-                    }
+                if self.list_dirty
+                    && let Some(bmp) = render_picker_list(self)
+                {
+                    self.bitmap = Some(bmp);
+                    self.offset_x = 0;
+                    self.offset_y = 0;
+                    self.list_dirty = false;
+                }
+            }
+            UiMode::Library => {
+                // Clamp del scroll VERTICAL (px) si el contenido menguó
+                // (filtro, rescan, ventana): la cabecera + barra de filtros +
+                // estado son fijas; el contenido (recientes + rejilla)
+                // scrollea bajo ellas. Los scrolls HORIZONTALES (carousel y
+                // filas de chips) se clampean igual contra su ancho total.
+                let max_v = self.lib_max_scroll();
+                if self.lib_scroll > max_v {
+                    self.lib_scroll = max_v;
+                }
+                self.lib_carousel_x = self.lib_carousel_x.min(self.lib_carousel_max_x());
+                self.lib_folders_x = self.lib_folders_x.min(self.lib_chips_max_x(0));
+                self.lib_letters_x = self.lib_letters_x.min(self.lib_chips_max_x(1));
+                if self.list_dirty
+                    && let Some(bmp) = render_library_grid(self)
+                {
+                    self.bitmap = Some(bmp);
+                    self.offset_x = 0;
+                    self.offset_y = 0;
+                    self.list_dirty = false;
                 }
             }
         }
@@ -1984,15 +2241,27 @@ impl Reader {
     // Portadas de la biblioteca (perezosas, bajo demanda — ver `thumbs`)
     // ---------------------------------------------------------------------
 
-    /// ¿Hay portadas pendientes entre las celdas VISIBLES de la biblioteca?
-    /// El bucle de eventos la usa para mantener el poll con timeout mientras
-    /// `pump_thumbs` tiene trabajo (sin batería extra cuando no hay nada).
+    /// ¿Hay portadas pendientes entre las celdas VISIBLES de la biblioteca
+    /// (carousel de recientes + rejilla)? El bucle de eventos la usa para
+    /// mantener el poll con timeout mientras `pump_thumbs` tiene trabajo.
     pub(crate) fn thumbs_pending(&mut self) -> bool {
         if self.mode != UiMode::Library || self.win_w <= 0 || self.win_h <= 0 {
             return false;
         }
-        let visible = grid_visible_rows(self.win_w, self.win_h, self.status.is_some());
-        for row in self.list_scroll..self.list_scroll + visible {
+        // Carousel de recientes (clave = ruta local), solo si está visible.
+        if self.lib_carousel_visible() {
+            // Clonar las rutas: `thumbs.get` (mutable) no convive con el
+            // préstamo de `lib_recents()` (inmutable).
+            let paths: Vec<String> = self.lib_recents().iter().map(|r| r.path.clone()).collect();
+            for path in paths {
+                if self.thumbs.get(&path).is_none() && !self.thumb_failed.contains(&path) {
+                    return true;
+                }
+            }
+        }
+        // Rejilla (clave = content:// URI), solo filas visibles.
+        let (row0, rows) = self.lib_visible_grid_rows();
+        for row in row0..row0 + rows {
             for col in 0..GRID_COLS {
                 // Clonar la URI: `thumbs.get` promueve la recencia (necesita
                 // &mut self) y no puede convivir con el préstamo de
@@ -2008,19 +2277,81 @@ impl Reader {
         false
     }
 
-    /// Renderiza bajo demanda un lote de portadas de las celdas VISIBLES
-    /// (máx. 3 por tick, ~1-3 ms cada una): solo las que no están en caché ni
-    /// fallaron. Devuelve true si entró alguna portada nueva (→ re-render de
-    /// la rejilla). Nunca renderiza las 256 de golpe: por frame se procesa
-    /// un lote pequeño y el resto queda pendiente para los ticks siguientes.
+    /// ¿La fila del carousel de recientes está dentro de la ventana (con el
+    /// scroll vertical actual)? Solo entonces se renderizan sus portadas.
+    fn lib_carousel_visible(&self) -> bool {
+        if !self.lib_has_recents() {
+            return false;
+        }
+        let content_y0 = lib_content_y0(self.win_h, self.status.is_some()) as f32;
+        let block_h = lib_recents_block_h(self.win_w, self.win_h, true);
+        let top = content_y0 - self.lib_scroll;
+        let bottom = top + block_h;
+        bottom > content_y0 && top < self.win_h as f32
+    }
+
+    /// Rango de filas de la rejilla VISIBLES (o a punto de serlo) con el
+    /// scroll vertical actual: (primera fila, nº de filas con 1 de margen de
+    /// prefetch por abajo). Coords compartidas con el render y el tap.
+    pub(crate) fn lib_visible_grid_rows(&self) -> (usize, usize) {
+        let content_y0 = lib_content_y0(self.win_h, self.status.is_some()) as f32;
+        let grid_y0_screen = content_y0
+            + lib_grid_y0(self.win_w, self.win_h, self.lib_has_recents())
+            - self.lib_scroll;
+        if grid_y0_screen >= self.win_h as f32 {
+            return (0, 0); // la rejilla está por debajo de la ventana
+        }
+        let row0 = ((content_y0 - grid_y0_screen) / grid_cell_h(self.win_w)).max(0.0) as usize;
+        let below = ((self.win_h as f32 - grid_y0_screen) / grid_cell_h(self.win_w))
+            .ceil()
+            .max(0.0) as usize;
+        (row0, below + 1)
+    }
+
+    /// Renderiza bajo demanda un lote de portadas de la biblioteca (máx. 3 por
+    /// tick, ~1-3 ms cada una): primero el carousel de RECIENTES (clave =
+    /// ruta local) y después las celdas VISIBLES de la rejilla (clave =
+    /// content:// URI). Solo las que no están en caché ni fallaron. Devuelve
+    /// true si entró alguna portada nueva (→ re-render de la biblioteca).
     fn pump_thumbs(&mut self, app: &AndroidApp) -> bool {
         if self.win_w <= 0 || self.win_h <= 0 {
             return false;
         }
-        let visible = grid_visible_rows(self.win_w, self.win_h, self.status.is_some());
         let mut budget = 3usize;
         let mut changed = false;
-        for row in self.list_scroll..self.list_scroll + visible {
+        // Carousel de recientes primero (portadas de rutas LOCALES).
+        if self.lib_carousel_visible() {
+            // Clonar rutas + nombres: `thumbs.insert` (mutable) no convive con
+            // el préstamo de `lib_recents()` (inmutable).
+            let recents: Vec<(String, String)> = self
+                .lib_recents()
+                .iter()
+                .map(|r| (r.path.clone(), r.name.clone()))
+                .collect();
+            for (path, name) in recents {
+                if budget == 0 {
+                    return changed;
+                }
+                if self.thumbs.get(&path).is_some() || self.thumb_failed.contains(&path) {
+                    continue;
+                }
+                match self.render_thumb_path(&path) {
+                    Some(bmp) => {
+                        self.thumbs.insert(path.clone(), bmp);
+                        info!("recent thumb cached: {name}");
+                        changed = true;
+                    }
+                    None => {
+                        self.thumb_failed.insert(path.clone());
+                        warn!("recent thumb failed: {path}");
+                    }
+                }
+                budget -= 1;
+            }
+        }
+        // Rejilla (clave = content:// URI).
+        let (row0, rows) = self.lib_visible_grid_rows();
+        for row in row0..row0 + rows {
             for col in 0..GRID_COLS {
                 if budget == 0 {
                     return changed;
@@ -2076,6 +2407,27 @@ impl Reader {
             doc.render_page(0, THUMB_W as f32 / pw)
         })();
         fd.close();
+        match result {
+            Ok(bmp) if bmp.width > 0 && bmp.height > 0 => Some(bmp),
+            _ => None,
+        }
+    }
+
+    /// Renderiza la portada (página 1) de un PDF LOCAL por ruta (los
+    /// recientes de la biblioteca): abre con `MupdfEngine::open` directo, sin
+    /// pasar por un fd content:// (a diferencia de `render_thumb`).
+    fn render_thumb_path(&self, path: &str) -> Option<Bitmap> {
+        let result: pdf_core::Result<Bitmap> = (|| {
+            let engine = MupdfEngine::new()?;
+            let doc = engine.open(Path::new(path))?;
+            let (pw, _ph) = doc.page_size(0)?;
+            if !pw.is_finite() || pw <= 0.0 {
+                return Err(pdf_core::Error::InvalidArgument(
+                    "page 1 width invalid".into(),
+                ));
+            }
+            doc.render_page(0, THUMB_W as f32 / pw)
+        })();
         match result {
             Ok(bmp) if bmp.width > 0 && bmp.height > 0 => Some(bmp),
             _ => None,
@@ -2382,7 +2734,7 @@ impl Reader {
                 self.thumbs.clear(); // portadas de otra biblioteca: no sirven
                 self.thumb_failed.clear();
                 self.list_dirty = true;
-                self.picker_drag = None;
+                self.list_drag = None;
                 // Anotaciones del documento (sidecar; set vacío si no existe
                 // o está corrupto — nunca impide abrir el PDF).
                 self.load_annotations(path);
@@ -2390,6 +2742,9 @@ impl Reader {
                 // Nuevo documento: actualizar la posición persistida (el
                 // modo oscuro es una preferencia global y se conserva).
                 self.save_state();
+                // Y la lista de RECIENTES de la biblioteca (dedup por ruta,
+                // más reciente primero, máx. 10 — persist::push_recent).
+                self.touch_recent(path);
                 true
             }
             Err(e) => {
@@ -2410,12 +2765,16 @@ impl Reader {
         self.sheet_hide_now(); // fuera del visor: el sheet no pinta en biblioteca
         self.clear_selection(); // selección del visor: fuera (no pinta en biblioteca)
         self.close_ai_panel(); // panel de IA del visor: fuera
-        self.picker_drag = None;
+        self.list_drag = None;
         self.rescan_library(app);
     }
 
-    /// Abre el picker interno (botón "Open" del sheet del visor): PDFs de
-    /// los directorios de la app (el fallback cuando MediaStore no sirve).
+    /// Abre el picker interno (PDFs de los directorios de la app; el fallback
+    /// cuando MediaStore no sirve). Con el sheet rediseñado (2026-08-XX) ya no
+    /// hay botón "Open" en el visor: el picker queda accesible solo por el
+    /// fallback de `rescan_library` (MediaStore vacía). Se conserva el método
+    /// por si una fase futura reintroduce la entrada.
+    #[allow(dead_code)]
     pub(crate) fn open_picker(&mut self, app: &AndroidApp) {
         self.mode = UiMode::Picker;
         self.pdf_list = scan_pdfs(app);
@@ -2426,7 +2785,7 @@ impl Reader {
         self.sheet_hide_now();
         self.clear_selection(); // selección del visor: fuera (no pinta en el picker)
         self.close_ai_panel(); // panel de IA del visor: fuera
-        self.picker_drag = None;
+        self.list_drag = None;
         self.redraw();
     }
 
@@ -2435,7 +2794,7 @@ impl Reader {
         self.mode = UiMode::Viewer;
         self.list_dirty = true;
         self.bitmap = None; // lista del picker (las páginas siguen en la caché)
-        self.picker_drag = None;
+        self.list_drag = None;
         self.redraw();
     }
 
@@ -2447,11 +2806,17 @@ impl Reader {
         self.grant_pending = false;
         let scan = query_media_store(app, self.sdk_int);
         self.library_list = scan.entries;
-        // Datos nuevos: el scroll vuelve al principio y la lista visible son
-        // TODAS las entradas (la rejilla 3×3 no tiene filtro por letra; ver
-        // la nota en la cabecera del módulo).
+        // Datos nuevos: el scroll vuelve al principio (vertical y horizontales)
+        // y se recalcula la lista filtrada (los filtros activos se CONSERVAN:
+        // si el usuario está viendo "Download/", el rescan no le cambia el
+        // filtro, solo refresca los datos).
+        self.refresh_lib_filtered();
         self.permission_granted = scan.permission_granted;
         self.list_scroll = 0;
+        self.lib_scroll = 0.0;
+        self.lib_carousel_x = 0.0;
+        self.lib_folders_x = 0.0;
+        self.lib_letters_x = 0.0;
         self.list_dirty = true;
         if !self.permission_granted {
             self.status = Some("All files access not granted — tap Grant".to_string());
@@ -2477,17 +2842,203 @@ impl Reader {
         self.redraw();
     }
 
-    /// Nº de filas de celdas de la rejilla de la biblioteca (3 columnas).
+    /// Nº de filas de celdas de la rejilla de la biblioteca (3 columnas) con
+    /// el filtro actual aplicado (`lib_filtered`).
     pub(crate) fn grid_total_rows(&self) -> usize {
-        self.library_list.len().div_ceil(GRID_COLS)
+        self.lib_filtered.len().div_ceil(GRID_COLS)
     }
 
     /// Entrada de la rejilla en la fila `row` (0-based) y columna `col`
-    /// (0..GRID_COLS) — resolución directa sobre `library_list` (sin filtro:
-    /// la rejilla muestra TODAS las entradas en orden de MediaStore). None si
-    /// la celda está fuera de rango (fila incompleta de la última fila).
+    /// (0..GRID_COLS) — resolución sobre la lista FILTRADA (`lib_filtered`,
+    /// que sin filtros equivale a TODAS las entradas en orden de MediaStore).
+    /// None si la celda está fuera de rango (fila incompleta de la última).
     pub(crate) fn grid_entry_at(&self, row: usize, col: usize) -> Option<&LibraryEntry> {
-        self.library_list.get(row * GRID_COLS + col)
+        let idx = row.checked_mul(GRID_COLS)?.checked_add(col)?;
+        self.lib_filtered
+            .get(idx)
+            .and_then(|&i| self.library_list.get(i))
+    }
+
+    // ---------------------------------------------------------------------
+    // Biblioteca rediseñada: filtros SIN teclado + recientes (2026-08-XX)
+    // ---------------------------------------------------------------------
+    //
+    // Búsqueda: el enunciado pedía un campo de texto con el teclado del
+    // sistema vía JNI (InputMethodManager + InputConnection). VERIFICADO en el
+    // código de android-activity 0.6.1 (el backend `native-activity` de este
+    // proyecto): `NativeActivity::set_text_input_state` es un NOP
+    // ("Unsupported") y `InputEvent::TextEvent` SOLO lo produce el backend
+    // game-activity (GameTextInput, que exige una Activity Java compilada —
+    // y cargo-apk/ndk-build no compilan fuentes Java, ver cabecera de lib.rs).
+    // Sin un `onCreateInputConnection` que entregue `commitText`, el teclado
+    // blando NO puede mandar texto a una NativeActivity. Por eso el filtro es
+    // SIN teclado: letra inicial (A-Z / #) + carpeta, vía los chips de
+    // `lib_chips` (ver el worker_done de la sesión).
+
+    /// ¿La entrada pasa el filtro activo (carpeta + letra inicial)?
+    fn entry_passes(&self, e: &LibraryEntry) -> bool {
+        if let Some(f) = &self.lib_folder
+            && !e.folder.eq_ignore_ascii_case(f)
+        {
+            return false;
+        }
+        if let Some(l) = self.lib_letter {
+            let first = e
+                .name
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_uppercase())
+                .unwrap_or('#');
+            let ok = if l == '#' {
+                !first.is_ascii_alphabetic()
+            } else {
+                first == l
+            };
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Reconstruye la caché `lib_filtered` (índices de `library_list` que
+    /// pasan el filtro actual). Se llama al cambiar filtro o al re-consultar
+    /// MediaStore; sin filtros equivale a todas las entradas.
+    fn refresh_lib_filtered(&mut self) {
+        self.lib_filtered = self
+            .library_list
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| self.entry_passes(e))
+            .map(|(i, _)| i)
+            .collect();
+    }
+
+    /// Aplica un cambio de filtro: recalcula la lista, clampa el scroll y
+    /// re-renderiza.
+    fn apply_filter(&mut self) {
+        self.refresh_lib_filtered();
+        let max_v = self.lib_max_scroll();
+        if self.lib_scroll > max_v {
+            self.lib_scroll = max_v;
+        }
+        self.list_dirty = true;
+        self.redraw();
+    }
+
+    /// Fija el filtro de letra inicial (None = todas; chip "All" o ✕).
+    pub(crate) fn lib_set_letter(&mut self, letter: Option<char>) {
+        if self.lib_letter != letter {
+            self.lib_letter = letter;
+            self.apply_filter();
+        }
+    }
+
+    /// Fija el filtro de carpeta (None = todas; chip "All").
+    pub(crate) fn lib_set_folder(&mut self, folder: Option<String>) {
+        if self.lib_folder != folder {
+            self.lib_folder = folder;
+            self.apply_filter();
+        }
+    }
+
+    /// Recientes que pasan el filtro de LETRA (la carpeta no aplica a los
+    /// recientes: son rutas locales, sin RELATIVE_PATH).
+    pub(crate) fn lib_recents(&self) -> Vec<&RecentEntry> {
+        let Some(l) = self.lib_letter else {
+            return self.recents.iter().collect();
+        };
+        self.recents
+            .iter()
+            .filter(|r| {
+                let first = r
+                    .name
+                    .chars()
+                    .next()
+                    .map(|c| c.to_ascii_uppercase())
+                    .unwrap_or('#');
+                if l == '#' {
+                    !first.is_ascii_alphabetic()
+                } else {
+                    first == l
+                }
+            })
+            .collect()
+    }
+
+    /// Carpetas distintas de la biblioteca (orden de MediaStore, dedup
+    /// case-insensitive) para la fila de chips de carpetas.
+    pub(crate) fn lib_folders(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for e in &self.library_list {
+            if e.folder.is_empty() {
+                continue;
+            }
+            if !out.iter().any(|f| f.eq_ignore_ascii_case(&e.folder)) {
+                out.push(e.folder.clone());
+            }
+        }
+        out
+    }
+
+    /// ¿Hay recientes visibles (tras el filtro de letra)?
+    fn lib_has_recents(&self) -> bool {
+        !self.lib_recents().is_empty()
+    }
+
+    /// Alto total (px) del contenido scrolleable de la biblioteca.
+    pub(crate) fn lib_content_h(&self) -> f32 {
+        lib_content_h(
+            self.win_w,
+            self.win_h,
+            self.lib_has_recents(),
+            self.grid_total_rows(),
+        )
+    }
+
+    /// Scroll vertical máximo (px) del contenido de la biblioteca.
+    pub(crate) fn lib_max_scroll(&self) -> f32 {
+        let viewport = (self.win_h - lib_content_y0(self.win_h, self.status.is_some())) as f32;
+        (self.lib_content_h() - viewport).max(0.0)
+    }
+
+    /// Scroll horizontal máximo (px) del carousel de recientes.
+    pub(crate) fn lib_carousel_max_x(&self) -> f32 {
+        let n = self.lib_recents().len();
+        if n == 0 {
+            return 0.0;
+        }
+        let last_right = lib_carousel_cover_x(self.win_w, n - 1) + lib_carousel_cover_w(self.win_w);
+        (last_right + grid_pad(self.win_w) - self.win_w as f32).max(0.0)
+    }
+
+    /// Scroll horizontal máximo (px) de la fila de chips `row` (0 = carpetas,
+    /// 1 = letras).
+    pub(crate) fn lib_chips_max_x(&self, row: usize) -> f32 {
+        (lib_chips_row_w(self, row) - self.win_w as f32).max(0.0)
+    }
+
+    /// Registra un PDF abierto en la lista de recientes (persistida en
+    /// `internal/recents.json`; ver `persist`): dedup por ruta, más reciente
+    /// primero, máx. `RECENTS_MAX`. Se llama desde `open_pdf` y desde el
+    /// "abrir con" del arranque (que no pasa por `open_pdf`).
+    fn touch_recent(&mut self, path: &str) {
+        let name = Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string());
+        self.recents = persist::push_recent(&self.recents, path.to_string(), name);
+        persist::save_recents(self.internal_dir.as_deref(), &self.recents);
+    }
+
+    /// Entra en la biblioteca y deja la búsqueda LISTA PARA EMPEZAR (limpia
+    /// los filtros activos): es el botón "Search" del sheet — sin teclado,
+    /// la búsqueda ES la barra de filtros de la biblioteca, así que "buscar"
+    /// equivale a saltar a ella con los filtros en cero.
+    pub(crate) fn enter_library_search(&mut self, app: &AndroidApp) {
+        self.lib_letter = None;
+        self.lib_folder = None;
+        self.enter_library(app);
     }
 
     /// Abre un documento de la biblioteca: copia los bytes de su content://
