@@ -632,3 +632,14 @@
   cumplimiento AGPL al distribuir, y checklist de 8 pasos para ejecutar cuando haya versión.
 - Sin commits (regla AGENTS.md: pendiente de que el autor lo pida).
 
+## 2026-08-13 — Diagnóstico: "Activity no resuelve" en release APK (NO reproducible)
+
+- **Síntoma reportado**: tras las olas Groq/Gemini/zoom, `am start -n com.pdflector.app/android.app.NativeActivity` daba "Error type 3: Activity class does not exist", `cmd package resolve-activity --brief com.pdflector.app` daba "No activity found", y ActivityTaskManager devolvía -92, pese a un AndroidManifest.xml correcto (aapt2 dump xmltree) y el .so en lib/arm64-v8a.
+- **Bisección realizada (worktree 681b618, cargo-apk 0.10, NDK r28, aapt v1)**: el ÚNICO diff de manifest entre el commit conocido-bueno 681b618 y HEAD es el permiso INTERNET (`uses_permission android.permission.INTERNET`). Todo lo demás idéntico: hasCode=false, debuggable=false, exported=true, meta-data android.app.lib_name="pdf_android", intent-filters VIEW/application/pdf + MAIN/LAUNCHER.
+- **Verificado en la tablet TCL 9469X (Android 15), USB**:
+  - APK 681b618: `adb install -r` + `am start` → PID 8523, logcat "opened: 12 pages / restored / Resume / InitWindow".
+  - APK HEAD con INTERNET (recompilado desde cero del Cargo.toml actual): → PID 8279, "opened: 328 pages / restored".
+  - APK HEAD sin INTERNET (el instalado en target/release, byte-idéntico al que reportaba el fallo): uninstall+install limpio → PID 8116, arranca.
+  - `cmd package resolve-activity` (paquete, MAIN/LAUNCHER y VIEW con content-URI) resuelve siempre; `monkey -p com.pdflector.app 1` → PID 8687.
+- **Conclusión**: el fallo reportado NO se reproduce con el APK actual ni con el commit anterior; la activity se resuelve y arranca en todas las configuraciones probadas (con/sin INTERNET, install limpio). Sin cambio de metadatos necesario: `crates/pdf_android/Cargo.toml` intacto. El -92 (START_APP_STILL_STARTING) es un código de arranque diferido, no de actividad inexistente.
+- **Verificación final**: `cargo build -p pdf_android --target aarch64-linux-android --release` 0 warnings, `cargo fmt --all -- --check` limpio. APK HEAD reinstalado en la tablet y arrancando (PID 8758). Sin commits (regla AGENTS.md).
