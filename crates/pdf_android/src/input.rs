@@ -63,9 +63,9 @@ use crate::reader::{
     BookStatus, GRID_COLS, LibSort, ListDrag, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap,
     grid_pad, lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w, lib_cont_gap,
     lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
-    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
-    lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h, picker_row_h,
-    picker_visible_rows, sheet_h,
+    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_field_h, lib_search_field_y,
+    lib_search_panel_h, lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h,
+    picker_row_h, picker_visible_rows, sheet_h,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 
@@ -236,13 +236,14 @@ fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 }
 
 /// Tap con el panel de "Preguntar a la IA" abierto: dentro de un botón →
-/// acción ("×" → cerrar; "▲"/"▼" → scroll del cuerpo); fuera → cerrar el
-/// panel. Un tap DENTRO del panel pero fuera de sus botones no hace nada
-/// (evita cerrar el panel por accidente mientras se lee la respuesta; se
-/// cierra con ✕ o con tap fuera). NUNCA cambia de página: el tap izq/der no
-/// se dispara mientras el panel está abierto (misma regla que el menú de
-/// selección, ver `fire_tap_action`).
-fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
+/// acción ("×" → cerrar; "▲"/"▼" → scroll del cuerpo; "Copiar" → respuesta
+/// al portapapeles; "Regenerar"/"Reintentar" → relanzar la última consulta);
+/// fuera → cerrar el panel. Un tap DENTRO del panel pero fuera de sus
+/// botones no hace nada (evita cerrar el panel por accidente mientras se lee
+/// la respuesta; se cierra con ✕ o con tap fuera). NUNCA cambia de página:
+/// el tap izq/der no se dispara mientras el panel está abierto (misma regla
+/// que el menú de selección, ver `fire_tap_action`).
+fn ai_panel_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let Some(panel) = &reader.ai_panel else {
         return;
     };
@@ -263,6 +264,8 @@ fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
         Some("×") => reader.close_ai_panel(),
         Some("▲") => reader.ai_scroll(-1),
         Some("▼") => reader.ai_scroll(1),
+        Some("Copiar") => reader.copy_ai(app),
+        Some("Regenerar") | Some("Reintentar") => reader.regen_ai(),
         _ => {} // dentro del panel, fuera de los botones: no hacer nada
     }
 }
@@ -280,7 +283,7 @@ fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         // Va ANTES del sheet y del tap de página: mientras el panel esté
         // abierto ningún otro gesto de tap actúa (misma regla que el menú
         // de selección; el pinch sí sigue funcionando).
-        ai_panel_tap(reader, x, y);
+        ai_panel_tap(reader, app, x, y);
     } else if reader.sheet_progress > 0.0 {
         if y < sheet_h(reader.win_h) as f32 {
             sheet_tap(reader, app, x, y);
@@ -612,9 +615,8 @@ fn list_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 /// `lib_cont_block_h`, `lib_grid_cell_rect`, `lib_org_chips`).
 fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let header_h = lib_header_h(reader.win_h);
-    let search_h = lib_search_h();
-    let search_y = header_h + 6.0;
-    let search_hh = search_h - 12.0;
+    let search_y = lib_search_field_y(reader.win_h);
+    let search_hh = lib_search_field_h();
 
     // CABECERA: botón "＋ Add book" (a la derecha; rescan + toast).
     if y < header_h {
@@ -834,10 +836,8 @@ fn picker_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 /// (búsqueda), 4 = fila de chips de SORT, 5 = fila de chips de FILTER.
 /// Misma geometría que `library_tap` y `render_library_grid`.
 fn library_down_zone(reader: &Reader, y: f32) -> u8 {
-    let header_h = lib_header_h(reader.win_h);
-    let search_h = lib_search_h();
-    let search_y = header_h + 6.0;
-    let search_hh = search_h - 12.0;
+    let search_y = lib_search_field_y(reader.win_h);
+    let search_hh = lib_search_field_h();
     if y < search_y + search_hh {
         return 0; // cabecera + campo de búsqueda: sin arrastre horizontal
     }

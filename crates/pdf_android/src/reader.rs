@@ -267,7 +267,7 @@ pub(crate) fn sheet_h(win_h: i32) -> i32 {
 
 /// Pad horizontal del sheet (px).
 pub(crate) fn sheet_pad(win_w: i32) -> f32 {
-    (win_w / 48).max(12) as f32
+    (win_w / 56).max(20) as f32
 }
 
 /// Alto (px) de los botones del sheet.
@@ -277,13 +277,13 @@ pub(crate) fn sheet_btn_h(win_h: i32) -> f32 {
 
 /// Separación vertical entre filas de botones del sheet (px).
 pub(crate) fn sheet_gap(win_h: i32) -> f32 {
-    (win_h / 64).max(24) as f32
+    (win_h / 48).max(28) as f32
 }
 
 /// Y del borde superior de la fila 1 de botones del sheet (Back/Open/Dark):
-/// debajo del título "Settings" (ver `render_sheet`).
+/// debajo del título "SETTINGS" (ver `render_sheet`).
 pub(crate) fn sheet_row1_y(win_h: i32) -> f32 {
-    (win_h / 48).max(44) as f32
+    (win_h / 40).max(72) as f32
 }
 
 /// Y del borde superior de la fila 2 de botones del sheet (−10/N/+10).
@@ -301,19 +301,19 @@ pub(crate) fn sheet_btn_w(win_w: i32) -> f32 {
 /// Columnas de la rejilla de la biblioteca.
 pub(crate) const GRID_COLS: usize = 3;
 
-/// Pad exterior horizontal de la rejilla (px): margen fijo de 16 px, estilo
+/// Pad exterior horizontal de la rejilla (px): margen fijo de 24 px, estilo
 /// Apple Books (e-reader: portadas con aire a los bordes, sin relleno denso).
 pub(crate) fn grid_pad(_win_w: i32) -> f32 {
-    16.0
+    24.0
 }
 
 /// Separación entre celdas de la rejilla (px).
 pub(crate) fn grid_gap() -> f32 {
-    14.0
+    20.0
 }
 
 /// Inset de la portada dentro de la celda (px).
-pub(crate) const GRID_CELL_PAD: f32 = 8.0;
+pub(crate) const GRID_CELL_PAD: f32 = 4.0;
 
 /// Ancho (px) de una celda de la rejilla.
 pub(crate) fn grid_cell_w(win_w: i32) -> f32 {
@@ -334,10 +334,11 @@ pub(crate) fn grid_cover_h(win_w: i32) -> f32 {
     grid_cover_w(win_w) * 1.5
 }
 
-/// Alto (px) de la zona de texto de la celda: título (1 línea, ~13 sp) +
-/// autor (1 línea, secundaria) + barra de progreso fina + aire generoso.
+/// Alto (px) de la zona de texto de la celda: título (1 línea, ~15 sp
+/// semibold) + autor (1 línea, ~12 sp muted) + barra de progreso fina + aire
+/// generoso.
 pub(crate) fn grid_title_h(_win_w: i32) -> f32 {
-    62.0
+    76.0
 }
 
 /// Alto (px) de una celda de la rejilla.
@@ -371,12 +372,23 @@ pub(crate) fn grid_cell_h(win_w: i32) -> f32 {
 /// negrita + botón "＋ Add book" a la derecha. Más alta que la del picker:
 /// es la pieza editorial de la pantalla (mucho espacio negativo).
 pub(crate) fn lib_header_h(win_h: i32) -> f32 {
-    (win_h as f32 / 12.0).clamp(88.0, 120.0)
+    (win_h as f32 / 12.0).clamp(96.0, 132.0)
 }
 
-/// Alto (px) del campo de búsqueda (fila fija bajo la cabecera).
+/// Alto (px) de la fila del campo de búsqueda (bajo la cabecera; la PÍLDORA
+/// visible mide `lib_search_field_h`, con 8 px de aire arriba y abajo).
 pub(crate) fn lib_search_h() -> f32 {
-    46.0
+    54.0
+}
+
+/// Y (px) del borde superior de la píldora del campo de búsqueda.
+pub(crate) fn lib_search_field_y(win_h: i32) -> f32 {
+    lib_header_h(win_h) + 8.0
+}
+
+/// Alto (px) de la píldora del campo de búsqueda.
+pub(crate) fn lib_search_field_h() -> f32 {
+    lib_search_h() - 16.0
 }
 
 /// Alto (px) del panel de búsqueda desplegado (2 filas de chips: letras y
@@ -396,7 +408,7 @@ pub(crate) fn lib_chip_h(win_h: i32) -> f32 {
 
 /// Y (px) del borde superior de la fila 0 (letras) del panel de búsqueda.
 pub(crate) fn lib_search_chips_y0(reader: &Reader) -> f32 {
-    lib_header_h(reader.win_h) + lib_search_h() + 6.0
+    lib_search_field_y(reader.win_h) + lib_search_field_h() + 6.0
 }
 
 /// Y (px) del borde superior de la fila 1 (carpetas) del panel de búsqueda.
@@ -412,15 +424,15 @@ pub(crate) fn lib_content_y0(win_h: i32, search_open: bool, has_status: bool) ->
         + status_h
 }
 
-/// Alto (px) de un título de sección ("CONTINUE READING"/"My Library").
+/// Alto (px) de un título de sección ("Continue Reading"/"My Library").
 pub(crate) fn lib_section_title_h(win_h: i32) -> f32 {
-    (win_h as f32 / 64.0).clamp(24.0, 32.0)
+    (win_h as f32 / 64.0).clamp(30.0, 38.0)
 }
 
 /// Ancho (px) de la portada de una tarjeta de "Continue Reading" (grande,
 /// 2:3; algo menor que la de la rejilla para que el carousel respire).
 pub(crate) fn lib_cont_cover_w(win_w: i32) -> f32 {
-    grid_cover_w(win_w) * 0.72
+    grid_cover_w(win_w) * 0.78
 }
 
 /// Alto (px) de la portada de una tarjeta (proporción 2:3).
@@ -431,7 +443,7 @@ pub(crate) fn lib_cont_cover_h(win_w: i32) -> f32 {
 /// Alto (px) de la zona de texto de la tarjeta (título + autor + barra de
 /// progreso + "Page X of Y · Z%" + botón Read).
 pub(crate) fn lib_cont_text_h() -> f32 {
-    106.0
+    124.0
 }
 
 /// Alto (px) de la tarjeta completa (portada + zona de texto).
@@ -470,7 +482,7 @@ pub(crate) fn lib_cont_block_h(win_w: i32, win_h: i32, has_cont: bool) -> f32 {
 /// Alto (px) de un chip de organización: más pequeño que los del panel de
 /// búsqueda — discretos, no dominan sobre las portadas.
 pub(crate) fn lib_org_chip_h(win_h: i32) -> f32 {
-    (win_h as f32 / 62.0).clamp(24.0, 30.0)
+    (win_h as f32 / 62.0).clamp(26.0, 32.0)
 }
 
 /// Separación entre las filas de chips de sort y filter (px).
@@ -845,13 +857,14 @@ pub(crate) enum AiPhase {
 }
 
 /// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta tipo `SelMenu`
-/// con cabecera (título + botones ✕/▲/▼) y cuerpo de texto envuelto en
-/// varias líneas; si el texto desborda el cuerpo, el scroll (▲/▼) muestra
-/// solo una ventana de líneas (`scroll..scroll+visible`) — el render
-/// (`draw::render_ai_panel`) salta las líneas fuera de la ventana, así que
-/// el recorte es gratis. Geometría y bitmaps cacheados mientras esté
-/// abierto; el tap vive en `input::ai_panel_tap` (misma geometría
-/// compartida que `SelMenu`).
+/// con cabecera (título + botones ✕/▲/▼), cuerpo de texto envuelto en
+/// varias líneas y fila de acciones al pie ("Copiar" + "Regenerar"/
+/// "Reintentar", solo en fase Answer/Error; ver `copy_ai`/`regen_ai`); si el
+/// texto desborda el cuerpo, el scroll (▲/▼) muestra solo una ventana de
+/// líneas (`scroll..scroll+visible`) — el render (`draw::render_ai_panel`)
+/// salta las líneas fuera de la ventana, así que el recorte es gratis.
+/// Geometría y bitmaps cacheados mientras esté abierto; el tap vive en
+/// `input::ai_panel_tap` (misma geometría compartida que `SelMenu`).
 pub(crate) struct AiPanel {
     /// Esquina superior izquierda del panel en px de ventana.
     pub(crate) x: i32,
@@ -1105,6 +1118,11 @@ pub(crate) struct Reader {
     /// `tick` lo sondea con `try_recv` (sin bloquear) y lo libera al llegar
     /// el resultado o al cerrar el panel. None = sin consulta activa.
     ai_rx: Option<std::sync::mpsc::Receiver<pdf_core::ai::Result<String>>>,
+    /// Última consulta enviada a la IA (texto extraído, imagen PNG base64),
+    /// para "Regenerar"/"Reintentar" (relanzar la MISMA consulta sin volver
+    /// a seleccionar). None si nunca se ha consultado nada. La captura
+    /// `ask_ai` ANTES de cerrar el menú de selección.
+    ai_last: Option<(String, Option<String>)>,
     /// Aviso breve ("copied", "highlighted", "no text", ...) sobre el
     /// indicador de página: texto + momento de creación; `tick` lo expira a
     /// los `TOAST_MS` (1,5 s) y el bitmap cacheado se invalida con el texto.
@@ -1175,6 +1193,7 @@ impl Reader {
             ai_text: String::new(),
             ai_phase: AiPhase::Asking,
             ai_rx: None,
+            ai_last: None,
             toast: None,
             toast_bitmap: None,
         };
@@ -2261,11 +2280,24 @@ impl Reader {
             crate::GROQ_MODEL,
             crate::GEMINI_MODEL
         );
+        // Guardar la consulta para "Regenerar"/"Reintentar" y lanzarla.
+        self.ai_last = Some((text, image));
+        self.ask_ai_start();
+    }
+
+    /// (Re)lanza la consulta guardada en `ai_last` en un hilo de fondo y
+    /// deja el panel en fase "preguntando…". Compartido por `ask_ai`
+    /// (primera consulta) y `regen_ai` (relanzar la MISMA selección sin
+    /// volver a seleccionar). El hilo de UI nunca espera por la red.
+    fn ask_ai_start(&mut self) {
         // Panel en fase Asking ("preguntando…") y hilo de fondo con la
-        // llamada HTTP: el UI nunca espera por la red.
+        // llamada HTTP.
         self.ai_text = "preguntando…".to_string();
         self.ai_phase = AiPhase::Asking;
         self.rebuild_ai_panel();
+        let Some((text, image)) = self.ai_last.clone() else {
+            return;
+        };
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let result = match image {
@@ -2364,6 +2396,32 @@ impl Reader {
     /// Cierra el panel de IA (✕ o tap fuera): descarta el resultado
     /// pendiente si la consulta aún está en vuelo (el hilo de fondo termina
     /// solo y su mensaje se descarta al soltar el receptor).
+    /// "Copiar" (fila de acciones del panel de IA): copia la respuesta
+    /// actual (`ai_text`) al portapapeles y avisa "copied" (el panel queda
+    /// abierto para seguir leyendo). No copia la fase Asking (texto
+    /// transitorio "preguntando…").
+    pub(crate) fn copy_ai(&mut self, app: &AndroidApp) {
+        if self.ai_text.is_empty()
+            || matches!(self.ai_phase, AiPhase::Asking)
+            || self.ai_panel.is_none()
+        {
+            return;
+        }
+        crate::jni::copy_to_clipboard(app, &self.ai_text);
+        self.show_toast("copied");
+    }
+
+    /// "Regenerar"/"Reintentar" (fila de acciones del panel de IA):
+    /// relanza la ÚLTIMA consulta (`ai_last`, texto+imagen de la selección
+    /// original) en un hilo de fondo; el panel vuelve a fase Asking. Si ya
+    /// hay una consulta en vuelo, no hace nada (evita consultas duplicadas).
+    pub(crate) fn regen_ai(&mut self) {
+        if self.ai_rx.is_some() || self.ai_last.is_none() {
+            return;
+        }
+        self.ask_ai_start();
+    }
+
     pub(crate) fn close_ai_panel(&mut self) {
         let had = self.ai_panel.is_some();
         self.ai_panel = None;

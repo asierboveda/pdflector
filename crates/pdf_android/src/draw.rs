@@ -21,9 +21,10 @@ use crate::reader::{
     grid_cover_h, grid_cover_w, grid_pad, human_size, lib_chips, lib_cont_block_h, lib_cont_card_h,
     lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h, lib_cont_cover_w, lib_content_y0,
     lib_empty_state_geom, lib_grid_cell_rect, lib_header_h, lib_org_chip_h, lib_org_chips,
-    lib_org_y, lib_search_h, lib_search_panel_h, lib_section_title_h, page_badge_size,
-    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, picker_visible_rows, sheet_btn_h,
-    sheet_btn_w, sheet_h, sheet_pad, sheet_row1_y, sheet_row2_y, title_from_name, truncate_name,
+    lib_org_y, lib_search_field_h, lib_search_field_y, lib_search_h, lib_search_panel_h,
+    lib_section_title_h, page_badge_size, picker_btn_h, picker_btn_w, picker_header_h,
+    picker_row_h, picker_visible_rows, sheet_btn_h, sheet_btn_w, sheet_h, sheet_pad, sheet_row1_y,
+    sheet_row2_y, title_from_name, truncate_name,
 };
 use crate::theme;
 
@@ -1594,9 +1595,9 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
             )
         };
 
-    // Tarjeta deslizable desde arriba: esquinas inferiores redondeadas (18 px)
+    // Tarjeta deslizable desde arriba: esquinas inferiores redondeadas (20 px)
     // y borde de 1 px.
-    let card_r = 18.0f32;
+    let card_r = 20.0f32;
     rects.push(CanvasRect::rounded(
         0.0, -16.0, w as f32, h as f32, card_r, bar_border,
     ));
@@ -1609,42 +1610,46 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
         bar_bg,
     ));
 
-    // Asa central (pista visual de "deslizable") + título de la tarjeta.
+    // Asa central (pista visual de "deslizable") + etiqueta de la tarjeta en
+    // versalitas discretas (jerarquía: los BOTONES son lo principal, el
+    // título solo etiqueta el panel).
     let pad = sheet_pad(w);
-    let handle_w = (w / 10).max(48) as f32;
+    let handle_w = (w / 6).max(64) as f32;
     rects.push(CanvasRect::rounded(
         (w as f32 - handle_w) / 2.0,
-        10.0,
+        12.0,
         (w as f32 + handle_w) / 2.0,
-        16.0,
+        18.0,
         3.0,
         bar_border,
     ));
     texts.push(CanvasText::new(
         pad,
-        26.0 + 14.0 * 0.85,
-        14.0,
-        btn_text,
+        44.0 + 11.0 * 0.85,
+        11.0,
+        theme::LIB_TEXT_SECONDARY,
         TextAlign::Left,
         true,
-        "Settings",
+        "SETTINGS",
     ));
     texts.push(CanvasText::new(
         pad,
         h as f32 - 16.0,
-        11.0,
+        10.0,
         theme::LIB_TEXT_MUTED,
         TextAlign::Left,
         false,
         "Swipe up or tap outside to close",
     ));
 
-    // Botones estilo píldora con acento dorado en los estados activos.
+    // Botones estilo píldora. UNA sola acción destacada ("← Library", acento
+    // dorado): jerarquía visual clara; el resto neutro, y Dark/Light con
+    // relleno dorado SOLO en estado activo (es un toggle, no una acción).
     let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
     for (label, (l, t, r, b)) in sheet_buttons(reader, w as f32, reader.win_h as f32) {
         let (fill, border, text_color) = match label {
-            // "← Library" y "Search": acción principal → acento dorado.
-            "← Library" | "Search" => (
+            // "← Library": acción principal → acento dorado (única destacada).
+            "← Library" => (
                 theme::ACCENT_AMBER_BG,
                 theme::ACCENT_AMBER_BORDER,
                 0xFF0B0D12,
@@ -1922,8 +1927,8 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
     );
 
     // ---- 2. CAMPO de búsqueda (píldora; al tocarla abre el panel de chips) ----
-    let search_y = header_h + 6.0;
-    let search_hh = search_h - 12.0;
+    let search_y = lib_search_field_y(h);
+    let search_hh = lib_search_field_h();
     let field_r = search_hh / 2.0;
     rects.push(CanvasRect::rounded(
         pad,
@@ -1945,16 +1950,16 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
     if has_filter {
         // Resumen del filtro activo + "✕" (limpia filtros y cierra el panel).
         texts.push(CanvasText::new(
-            pad + 14.0,
+            pad + 16.0,
             search_y + search_hh * 0.64,
-            13.0,
+            14.0,
             theme::LIB_TEXT_PRIMARY,
             TextAlign::Left,
             false,
             summary,
         ));
         let xw = search_hh - 8.0;
-        let xx = w as f32 - pad - 14.0 - xw;
+        let xx = w as f32 - pad - 16.0 - xw;
         rects.push(CanvasRect::rounded(
             xx,
             search_y + 4.0,
@@ -1974,9 +1979,9 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
         ));
     } else {
         texts.push(CanvasText::new(
-            pad + 14.0,
+            pad + 16.0,
             search_y + search_hh * 0.64,
-            13.0,
+            14.0,
             theme::LIB_TEXT_MUTED,
             TextAlign::Left,
             false,
@@ -2064,18 +2069,18 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
             texts.push(CanvasText::new(
                 pad,
                 ctop + lib_section_title_h(h) * 0.72,
-                13.0,
-                theme::LIB_TEXT_SECONDARY,
+                16.0,
+                theme::LIB_TEXT_PRIMARY,
                 TextAlign::Left,
                 true,
-                "CONTINUE READING",
+                "Continue Reading",
             ));
             let cont_top = ctop + lib_section_title_h(h);
             let cw = lib_cont_cover_w(w);
             let chh = lib_cont_cover_h(w);
             let card_w = lib_cont_card_w(w);
             let card_h = lib_cont_card_h(w);
-            let cover_r = 12.0f32;
+            let cover_r = 14.0f32;
             for (i, book) in reader.lib_continue_reading().iter().enumerate() {
                 let cx = lib_cont_card_x(w, i) - reader.lib_carousel_x;
                 if cx + card_w < 0.0 || cx > w as f32 {
@@ -2098,8 +2103,8 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                     11.0,
                     theme::LIB_CARD_BG,
                 ));
-                let cover_x = cx + 10.0;
-                let cover_y = cont_top + 10.0;
+                let cover_x = cx + 12.0;
+                let cover_y = cont_top + 12.0;
                 // Sombra sutil + portada (o placeholder elegante con el título).
                 rects.push(CanvasRect::rounded(
                     cover_x + 2.0,
@@ -2121,7 +2126,7 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                     texts.push(CanvasText::new(
                         cover_x + cw / 2.0,
                         cover_y + chh / 2.0 + 7.0,
-                        13.0,
+                        14.0,
                         theme::LIB_TEXT_SECONDARY,
                         TextAlign::Center,
                         true,
@@ -2133,30 +2138,30 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 let ty = cover_y + chh;
                 texts.push(CanvasText::new(
                     tx,
-                    ty + 8.0 + 13.0 * 0.85,
-                    13.0,
+                    ty + 10.0 + 15.0 * 0.85,
+                    15.0,
                     theme::LIB_TEXT_PRIMARY,
                     TextAlign::Left,
                     true,
-                    truncate_name(&title_from_name(&book.name), 16),
+                    truncate_name(&title_from_name(&book.name), 18),
                 ));
                 texts.push(CanvasText::new(
                     tx,
-                    ty + 8.0 + 20.0 + 10.0 * 0.85,
-                    10.0,
+                    ty + 10.0 + 23.0 + 12.0 * 0.85,
+                    12.0,
                     theme::LIB_TEXT_MUTED,
                     TextAlign::Left,
                     false,
-                    truncate_name(&book.author, 16),
+                    truncate_name(&book.author, 18),
                 ));
                 // Barra de progreso (track + relleno dorado).
-                let bar_y = ty + 8.0 + 36.0;
+                let bar_y = ty + 10.0 + 44.0;
                 rects.push(CanvasRect::rounded(
                     tx,
                     bar_y,
                     tx + cw,
-                    bar_y + 3.0,
-                    1.5,
+                    bar_y + 4.0,
+                    2.0,
                     theme::LIB_PROGRESS_TRACK,
                 ));
                 let fill_w = (cw * book.pct).max(0.0);
@@ -2165,8 +2170,8 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                         tx,
                         bar_y,
                         tx + fill_w,
-                        bar_y + 3.0,
-                        1.5,
+                        bar_y + 4.0,
+                        2.0,
                         theme::LIB_ACCENT,
                     ));
                 }
@@ -2179,18 +2184,18 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 );
                 texts.push(CanvasText::new(
                     tx,
-                    ty + 8.0 + 48.0 + 9.0 * 0.85,
-                    9.0,
+                    ty + 10.0 + 58.0 + 11.0 * 0.85,
+                    11.0,
                     theme::LIB_TEXT_MUTED,
                     TextAlign::Left,
                     false,
                     meta,
                 ));
                 // Acción clara "Read" (tocar la tarjeta también abre).
-                let rbw = (cw * 0.52).clamp(64.0, 120.0);
-                let rbh = 24.0;
+                let rbw = (cw * 0.52).clamp(72.0, 140.0);
+                let rbh = 30.0;
                 let rbx = tx + (cw - rbw) / 2.0;
-                let rby = ty + 8.0 + 62.0;
+                let rby = ty + 10.0 + 78.0;
                 draw_button(
                     &mut rects,
                     &mut texts,
@@ -2201,7 +2206,7 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                     theme::LIB_ACCENT,
                     theme::ACCENT_AMBER_BORDER,
                     theme::LIB_ACCENT_DARK,
-                    11.0,
+                    12.0,
                     true,
                     "Read",
                 );
@@ -2212,8 +2217,8 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
         texts.push(CanvasText::new(
             pad,
             ctop + cont_block_h + lib_section_title_h(h) * 0.72,
-            13.0,
-            theme::LIB_TEXT_SECONDARY,
+            16.0,
+            theme::LIB_TEXT_PRIMARY,
             TextAlign::Left,
             true,
             "My Library",
@@ -2267,8 +2272,10 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
         }
 
         // 5d. REJILLA 3×3 ("My Library", lista FILTRADA): portada 2:3
-        // dominante + título + autor + barra fina de progreso si empezado.
-        let title_ts = 13.0f32;
+        // dominante + título (15 px semibold) + autor (12 px muted) + barra
+        // fina de progreso si empezado. Texto alineado a la IZQUIERDA de la
+        // portada (no centrado): lectura más natural, estilo estantería.
+        let title_ts = 15.0f32;
         let char_w = title_ts * 0.55;
         let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
         for row in row0..row0 + rows {
@@ -2283,7 +2290,7 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 }
                 let cover_x0 = cx + (cell_w - cover_w) / 2.0;
                 let cover_y0 = cy + 4.0;
-                let cover_r = 12.0f32;
+                let cover_r = 14.0f32;
                 rects.push(CanvasRect::rounded(
                     cover_x0 + 2.0,
                     cover_y0 + 3.0,
@@ -2313,20 +2320,21 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                         truncate_name(&entry_title(entry), 12),
                     ));
                 }
-                // Título (primario) + autor (secundario/muted).
+                // Título (primario, semibold) + autor (muted), bajo la portada.
+                let text_top = cy + 4.0 + cover_h + 14.0;
                 texts.push(CanvasText::new(
                     cx + GRID_CELL_PAD,
-                    cy + 4.0 + cover_h + 10.0 + title_ts * 0.85,
+                    text_top + title_ts * 0.85,
                     title_ts,
                     theme::LIB_TEXT_PRIMARY,
                     TextAlign::Left,
-                    false,
+                    true,
                     truncate_name(&entry_title(entry), max_chars),
                 ));
                 texts.push(CanvasText::new(
                     cx + GRID_CELL_PAD,
-                    cy + 4.0 + cover_h + 10.0 + 19.0 + 10.0 * 0.85,
-                    10.0,
+                    text_top + 24.0 + 12.0 * 0.85,
+                    12.0,
                     theme::LIB_TEXT_MUTED,
                     TextAlign::Left,
                     false,
@@ -2336,14 +2344,14 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 // de `library.json`; los nunca abiertos no llevan barra).
                 if let Some(p) = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
                 {
-                    let bar_y = cy + 4.0 + cover_h + 10.0 + 34.0;
+                    let bar_y = text_top + 52.0;
                     let track_w = cell_w - 2.0 * GRID_CELL_PAD;
                     rects.push(CanvasRect::rounded(
                         cx + GRID_CELL_PAD,
                         bar_y,
                         cx + GRID_CELL_PAD + track_w,
-                        bar_y + 3.0,
-                        1.5,
+                        bar_y + 4.0,
+                        2.0,
                         theme::LIB_PROGRESS_TRACK,
                     ));
                     let fill_w = (track_w * p.pct()).max(0.0);
@@ -2352,8 +2360,8 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                             cx + GRID_CELL_PAD,
                             bar_y,
                             cx + GRID_CELL_PAD + fill_w,
-                            bar_y + 3.0,
-                            1.5,
+                            bar_y + 4.0,
+                            2.0,
                             theme::LIB_ACCENT,
                         ));
                     }
@@ -2392,7 +2400,7 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
             let Some(thumb) = reader.thumbs.peek(&book.path) else {
                 continue;
             };
-            let cx = (lib_cont_card_x(w, i) - reader.lib_carousel_x + 10.0).round() as i32;
+            let cx = (lib_cont_card_x(w, i) - reader.lib_carousel_x + 12.0).round() as i32;
             // Fuera de la ventana: saltar (el Canvas no recorta; el clipping
             // es manual). Ojo: `cx + cw as i32 < 0 || ...` confunde al parser
             // de rustc (un `as` antes de `<` en una cadena con `||` se lee
@@ -2406,7 +2414,7 @@ pub(crate) fn render_library_grid(reader: &Reader) -> Option<Bitmap> {
                 out.width as usize,
                 thumb,
                 cx,
-                cont_top + 10,
+                cont_top + 12,
                 cw as i32,
                 chh as i32,
             );
@@ -2512,7 +2520,7 @@ fn draw_empty_state(reader: &Reader, rects: &mut Vec<CanvasRect>, texts: &mut Ve
     texts.push(CanvasText::new(
         reader.win_w as f32 / 2.0,
         g.title_y,
-        18.0,
+        20.0,
         theme::LIB_TEXT_PRIMARY,
         TextAlign::Center,
         true,
@@ -2521,7 +2529,7 @@ fn draw_empty_state(reader: &Reader, rects: &mut Vec<CanvasRect>, texts: &mut Ve
     texts.push(CanvasText::new(
         reader.win_w as f32 / 2.0,
         g.subtitle_y,
-        13.0,
+        14.0,
         theme::LIB_TEXT_MUTED,
         TextAlign::Center,
         false,
@@ -2580,7 +2588,7 @@ fn paste_thumb(
     let offset_x = (dw - target_w as i64) / 2;
     let offset_y = (dh - target_h as i64) / 2;
 
-    let r = 12.0f32;
+    let r = 14.0f32;
     let r_sq = r * r;
 
     let tw_f = target_w as f32;
@@ -2882,13 +2890,15 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     out
 }
 
-/// Layout del panel de IA: tarjeta centrada (margen 16 px, ancho ≤ 560 px),
-/// cabecera fija de 44 px (título + botones a la derecha) y cuerpo cuyo alto
+/// Layout del panel de IA: tarjeta centrada (margen 24 px, ancho ≤ 640 px),
+/// cabecera fija de 56 px (título + botones a la derecha) y cuerpo cuyo alto
 /// se ajusta al texto: si cabe entero, panel corto SIN scroll; si desborda,
-/// cuerpo limitado a ~55 % de la ventana y botones ▲/▼. El scroll actual se
-/// lee de `Reader::ai_panel` (0 al abrir) y se devuelve recortado al rango
-/// válido para que `Reader::rebuild_ai_panel` lo guarde. None si la ventana
-/// es demasiado pequeña para un panel.
+/// cuerpo limitado a ~60 % de la ventana y botones ▲/▼. Bajo el cuerpo, una
+/// fila de ACCIONES ("Copiar" + "Regenerar"/"Reintentar", solo en fase
+/// Answer/Error) separada por un divisor. El scroll actual se lee de
+/// `Reader::ai_panel` (0 al abrir) y se devuelve recortado al rango válido
+/// para que `Reader::rebuild_ai_panel` lo guarde. None si la ventana es
+/// demasiado pequeña para un panel.
 pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
     let win_w = reader.win_w as f32;
     let win_h = reader.win_h as f32;
@@ -2896,15 +2906,16 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
         return None;
     }
     // Constantes del panel (las MISMAS en layout y render).
-    let ts = 13.0f32; // cuerpo
-    let line_h = (ts * 1.5).round(); // 20 px
-    let pad = 14.0f32;
-    let header_h = 44.0f32;
-    let btn = 30.0f32;
-    let gap = 6.0f32;
-    let margin = 16.0f32;
-    let panel_w = (win_w - 2.0 * margin).clamp(200.0, 560.0);
-    let max_body_h = (win_h * 0.55).clamp(120.0, 340.0);
+    let ts = 16.0f32; // cuerpo (tipografía de lectura, generosa)
+    let line_h = (ts * 1.6).round(); // 26 px (interlineado aireado)
+    let pad = 20.0f32;
+    let header_h = 56.0f32;
+    let btn = 36.0f32;
+    let gap = 8.0f32;
+    let margin = 24.0f32;
+    let footer_h = 64.0f32;
+    let panel_w = (win_w - 2.0 * margin).clamp(280.0, 640.0);
+    let max_body_h = (win_h * 0.60).clamp(200.0, 560.0);
     // Envolver el texto (estimación de caracteres por línea para latino).
     let content_w = panel_w - 2.0 * pad;
     let max_chars = ((content_w / (ts * 0.52)).floor() as usize).max(8);
@@ -2920,12 +2931,16 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
     } else {
         (total as f32 * line_h).max(line_h)
     };
-    let panel_h = header_h + body_h + pad;
+    // Fila de acciones (Copiar + Regenerar/Reintentar): solo con la consulta
+    // resuelta (Answer/Error); en Asking el panel queda corto, sin acciones.
+    let has_actions = !matches!(reader.ai_phase, AiPhase::Asking);
+    let actions_h = if has_actions { footer_h } else { 0.0 };
+    let panel_h = header_h + body_h + pad + actions_h;
     let x = (win_w - panel_w) / 2.0;
-    let y = ((win_h - panel_h) / 2.0).max(8.0);
+    let y = ((win_h - panel_h) / 2.0).max(16.0);
     // Botones de la cabecera, alineados a la derecha: [▲][▼][×] (▲/▼ solo
     // si `scrollable`). Misma geometría para render y tap.
-    let mut buttons: Vec<(&'static str, ButtonRect)> = Vec::with_capacity(3);
+    let mut buttons: Vec<(&'static str, ButtonRect)> = Vec::with_capacity(5);
     let btn_top = y + (header_h - btn) / 2.0;
     let btn_bottom = btn_top + btn;
     let mut bx = x + panel_w - pad - btn; // el más a la derecha: ✕
@@ -2935,6 +2950,22 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
         buttons.push(("▼", (bx, btn_top, bx + btn, btn_bottom)));
         bx -= btn + gap;
         buttons.push(("▲", (bx, btn_top, bx + btn, btn_bottom)));
+    }
+    // Fila de acciones al pie: "Copiar" (neutral) + "Regenerar" (accent,
+    // "Reintentar" en fase Error). Dos píldoras de igual ancho centradas.
+    if has_actions {
+        let action_label = if matches!(reader.ai_phase, AiPhase::Error) {
+            "Reintentar"
+        } else {
+            "Regenerar"
+        };
+        let row_w = panel_w - 2.0 * pad;
+        let ab_w = (row_w - gap) / 2.0;
+        let ab_h = 40.0f32;
+        let ab_top = y + header_h + body_h + pad + (footer_h - ab_h) / 2.0;
+        buttons.push(("Copiar", (x + pad, ab_top, x + pad + ab_w, ab_top + ab_h)));
+        let rx = x + pad + ab_w + gap;
+        buttons.push((action_label, (rx, ab_top, rx + ab_w, ab_top + ab_h)));
     }
     // Recortar el scroll actual al rango válido (0..total−visible).
     let max_scroll = total.saturating_sub(visible);
@@ -2956,10 +2987,13 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
 
 /// Renderiza el panel de IA (tarjeta oscura redondeada + cabecera con título
 /// y botones + cuerpo con las líneas VISIBLES, saltando las que quedan fuera
-/// de la ventana de scroll) a un bitmap RGBA8 del tamaño del panel con fondo
-/// transparente. Título y color del cuerpo según la fase (`AiPhase`):
-/// Asking = "Preguntando a la IA…" en gris (estado transitorio), Answer =
-/// texto claro, Error = "IA — error" con texto rojizo (`STATUS_*`).
+/// de la ventana de scroll + fila de acciones al pie en fase Answer/Error) a
+/// un bitmap RGBA8 del tamaño del panel con fondo transparente. Título y color
+/// del cuerpo según la fase (`AiPhase`): Asking = "Consultando la IA…" en
+/// gris (estado transitorio), Answer = texto claro, Error = "IA — error" con
+/// texto rojizo (`STATUS_*`). Las acciones son píldoras: "Copiar" neutral y
+/// "Regenerar"/"Reintentar" en acento dorado (misma geometría que
+/// `ai_panel_layout`).
 pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
     let layout = ai_panel_layout(reader)?;
     let (mx, my, mrx, mry) = layout.rect;
@@ -2968,16 +3002,16 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
     if w <= 0 || h <= 0 {
         return None;
     }
-    let ts = 13.0f32;
-    let line_h = (ts * 1.5).round();
-    let pad = 14.0f32;
-    let header_h = 44.0f32;
+    let ts = 16.0f32;
+    let line_h = (ts * 1.6).round();
+    let pad = 20.0f32;
+    let header_h = 56.0f32;
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
     // Tarjeta: rect redondeado oscuro semitransparente (borde + relleno).
-    let r = 16.0f32;
+    let r = 20.0f32;
     rects.push(CanvasRect::rounded(
-        0.0, 0.0, w as f32, h as f32, r, 0xFF232B3A,
+        0.0, 0.0, w as f32, h as f32, r, 0xFF2A3444,
     ));
     rects.push(CanvasRect::rounded(
         1.0,
@@ -2985,32 +3019,52 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
         w as f32 - 1.0,
         h as f32 - 1.0,
         (r - 1.0).max(0.0),
-        0xF2101216,
-    ));
-    // Divisor bajo la cabecera.
-    rects.push(CanvasRect::sharp(
-        1.0,
-        header_h,
-        w as f32 - 1.0,
-        header_h + 1.0,
-        0xFF2A3444,
+        0xF20F1319,
     ));
     // Cabecera: título según la fase + botones ✕/▲/▼ (draw_button).
     let (title, body_color) = match reader.ai_phase {
-        AiPhase::Asking => ("Preguntando a la IA…", theme::LIB_TEXT_MUTED),
-        AiPhase::Answer => ("Preguntar a la IA", theme::DARK_BTN_TEXT),
+        AiPhase::Asking => ("Consultando la IA…", theme::LIB_TEXT_MUTED),
+        AiPhase::Answer => ("Respuesta de la IA", theme::DARK_BTN_TEXT),
         AiPhase::Error => ("IA — error", theme::STATUS_TEXT),
     };
     texts.push(CanvasText::new(
         pad,
-        header_h * 0.5 + 14.0 * 0.35,
-        14.0,
+        header_h * 0.5 + 16.0 * 0.35,
+        16.0,
         theme::DARK_BTN_TEXT,
         TextAlign::Left,
         true,
         title,
     ));
     for (label, (l, t, rr, b)) in &layout.buttons {
+        // Cabecera (✕/▲/▼): botones discretos; fila de acciones: "Copiar"
+        // neutral y "Regenerar"/"Reintentar" en acento dorado (acción
+        // principal: relanza la consulta con la misma selección).
+        let is_action = matches!(*label, "Copiar" | "Regenerar" | "Reintentar");
+        let (fill, border, text_color, ts_btn) = if is_action {
+            if *label == "Copiar" {
+                (
+                    theme::DARK_BTN_BG,
+                    theme::DARK_BTN_BORDER,
+                    theme::DARK_BTN_TEXT,
+                    14.0,
+                )
+            } else {
+                (
+                    theme::ACCENT_AMBER_BG,
+                    theme::ACCENT_AMBER_BORDER,
+                    theme::LIB_ACCENT_DARK,
+                    14.0,
+                )
+            }
+        } else {
+            (
+                theme::DARK_BTN_BG,
+                theme::DARK_BTN_BORDER,
+                theme::DARK_BTN_TEXT,
+                16.0,
+            )
+        };
         draw_button(
             &mut rects,
             &mut texts,
@@ -3018,10 +3072,10 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
             *t - my,
             *rr - mx,
             *b - my,
-            theme::DARK_BTN_BG,
-            theme::DARK_BTN_BORDER,
-            theme::DARK_BTN_TEXT,
-            14.0,
+            fill,
+            border,
+            text_color,
+            ts_btn,
             false,
             label,
         );
@@ -3045,6 +3099,17 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
             TextAlign::Left,
             false,
             line.clone(),
+        ));
+    }
+    // Divisor sobre la fila de acciones (solo si hay acciones: fase
+    // Answer/Error — la MISMA condición del layout).
+    if !matches!(reader.ai_phase, AiPhase::Asking) {
+        rects.push(CanvasRect::sharp(
+            pad,
+            h as f32 - 64.0,
+            w as f32 - pad,
+            h as f32 - 64.0 + 1.0,
+            0xFF232B3A,
         ));
     }
     jni_text_bitmap(w, h, 0x00000000, &rects, &texts)

@@ -655,3 +655,49 @@ Rediseño de la pantalla **Library** (`UiMode::Library`) como biblioteca PERSONA
 - **Constantes de tema nuevas (`lib.rs` `mod theme`)**: `LIB_ACCENT`/`LIB_ACCENT_DARK` (dorado + texto oscuro), `LIB_CARD_BG`/`LIB_CARD_BORDER`, `LIB_SEARCH_BG`/`LIB_SEARCH_BORDER`, `LIB_PROGRESS_TRACK`. Reutiliza `LIB_COVER_SHADOW`/`LIB_COVER_PLACEHOLDER`/`LIB_TEXT_*`/`ACCENT_AMBER_*` existentes.
 - **Rect de selección MÁS RÁPIDO** (petición del autor; medible con el log de `Reader::blit` durante el arrastre): `draw::fill_rect_bordered` usa ahora un camino bpp 4 con alfa-blend por LUT (`fill_rect_lut`, 2 tablas de 256 construidas una vez por llamada — sin división ni llamada por píxel, relleno por filas, borde como 4 rectas) en vez del `stamp` por píxel con división por 255; y `draw::blit_page_scaled` tiene un camino 1:1 (zoom == 1.0) que copia la página FILA a FILA (memcpy) sin la tabla x ni el bucle de vecino-más-cercano — el arrastre de selección re-blitea la página en cada Move. Sin regresión visual (el blend LUT se desvía ±1 por canal en overlays translúcidos).
 - **Verificación**: `cargo build -p pdf_android --target aarch64-linux-android --release` 0 warnings (NDK r28 + `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`), `cargo clippy -p pdf_android --target aarch64-linux-android --release` limpio, `cargo fmt --all -- --check` limpio, `cargo check -p pdf_android --target aarch64-linux-android --release --tests` OK, host check de pdf_core/pdf_app/pdf_bench OK. Pendiente: medición en tablet del frame time del rect de selección y del render de la biblioteca (hook: log `blit ... ms` de `Reader::blit`).
+
+## 2026-08-18 — Reestilo Apple HIG de tres zonas de la UI (panel IA, sheet, Library)
+
+Rediseño estético (dirección Apple HIG: minimalismo, blanco, jerarquía tipográfica, UNA acción
+destacada por vista) de las tres zonas pedidas por el autor. Solo se tocó `crates/pdf_android/`
+(`draw.rs`, `reader.rs`, `input.rs`); pdf_core/pdf_app/pdf_bench intactos. Sin commits (AGENTS.md).
+
+- **Panel de respuesta IA** (`draw::ai_panel_layout`/`render_ai_panel`): tarjeta mayor (margen 24,
+  ancho ≤ 640 px, cuerpo hasta 60 % de la ventana), tipografía de lectura 13→16 px con interlineado
+  1,6, cabecera 56 px y título por fase ("Consultando la IA…"/"Respuesta de la IA"/"IA — error").
+  NUEVA fila de acciones al pie (solo fases Answer/Error, divisor sutil): **"Copiar"** (respuesta al
+  portapapeles + toast, panel abierto) y **"Regenerar"/"Reintentar"** (relanza la última consulta:
+  `Reader::ai_last` guarda texto+imagen de la selección; `ask_ai` se refactorea en
+  `ask_ai_start` compartido; `regen_ai` no duplica consultas en vuelo). "Guardar" NO se implementa:
+  no hay modelo de notas/anotaciones de texto y queda como decisión pendiente (AGENTS.md §6).
+- **Sheet de ajustes** (`draw::render_sheet` + geometría `sheet_*`): más aire (pad 12→20+, gap
+  24→28+, fila 1 baja a y≥72), título "Settings" → etiqueta "SETTINGS" en versalitas 11 px
+  secundaria (los botones son los protagonistas), asa más ancha (w/6, mín. 64), radio de tarjeta 20,
+  y jerarquía de color: UNA acción dorada ("← Library"); Search pasa a neutro; Dark/Light dorado
+  solo en estado activo.
+- **Library** (`render_library_grid` + geometría `lib_*`/`grid_*`): rejilla con más blanco (pad
+  16→24, gap 14→20, inset de portada 8→4, radios 12→14 px), tipografía de celda escalada (título 13
+  →15 px semibold, autor 10→12 px, barra de progreso 3→4 px), cabeceras de sección "Continue
+  Reading"/"My Library" 13 px gris → 16 px bold primario, cabecera más alta (88-120 → 96-132 px),
+  campo de búsqueda más alto (46→54 px; fórmulas de la píldora extraídas a `lib_search_field_y/_h`
+  compartidas por render E input — antes duplicadas con riesgo de divergencia), tarjetas de
+  Continue Reading con portada 0,78× y textos 15/12/11 px + Read 30 px, empty state 20/14 px.
+- **Rendimiento (medido en tablet, sin regresión)**: misma secuencia de gestos (animación de sheet
+  + 3 scrolls de biblioteca), blits del log de `Reader::blit`: BASELINE (APK del merge base)
+  n=70, p50=3,70 ms, p95=8,39 ms, max=11,59; REDISEÑO n=72, p50=3,74 ms, p95=8,15 ms, max=9,34 —
+  idéntico dentro del ruido y muy por debajo del presupuesto de 16,6 ms. El camino de render no
+  cambia (bitmap único Canvas+JNI por cambio de estado, cero re-render por frame; no se añaden
+  animaciones). RAM tras sesión de prueba (biblioteca + visor + panel IA): RSS 363 MB / PSS 237 MB
+  (dominado por PageCache 39 MB + MuPDF + bitmap de biblioteca; sin cambio estructural — el panel
+  IA pasa de ~0,8 a ~1,8 MB transitorios).
+- **Verificación en tablet (TCL 9469X, USB, release)**: build cargo-apk + `adb install -r`.
+  Comprobación por píxeles sobre screencaps reales (el agente no ve imágenes: muestreo de colores
+  en coordenadas esperadas): sheet (solo "← Library" dorado, SETTINGS discreto, botones en y=72/185),
+  Library (Add book dorado, píldora de búsqueda 0x141922, portadas con canal oscuro de 20 px, gutter
+  correcto), panel IA (tarjeta ~640 px, footer con Copiar neutro + Regenerar dorado) y flujos
+  funcionales conducidos con `input motionevent` (long-press+drag → menú → IA): Copiar (toast
+  "copied") y Regenerar (Answer→Asking sin footer→Answer con footer) verificados. Nota: durante la
+  sesión se detectó input externo sobre la tablet (Destroy/relaunch y cambios de página no
+  inyectados por el agente); las mediciones finales se tomaron en sesiones limpias.
+- **Checks**: clippy cross -D warnings 0, fmt limpio, `cargo check --tests` (target android) OK,
+  `cargo test -p pdf_core` 100 % (tras enlazar `corpus/` desde ~/Projects/pdflector, gitignored).
