@@ -1,0 +1,9 @@
+# API key de Groq (opcional, gitignored)
+
+Copia este fichero a `groq_key.txt` con tu API key de Groq (sin saltos de
+línea), o define la variable de entorno `GROQ_API_KEY` al compilar.
+
+Sin clave, la app compila igualmente: `build.rs` genera una clave vacía y la
+funcionalidad de IA ("Explain selection") queda deshabilitada en runtime.
+
+Ver `build.rs` en este crate.

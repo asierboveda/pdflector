@@ -75,9 +75,9 @@ cargo build -p pdf_android --target aarch64-linux-android
 ```
 
 > The AI assistant needs API keys: create `crates/pdf_android/groq_key.txt` and
-> `crates/pdf_android/google_key.txt` (gitignored). Without them the Android
-> crate does not compile — a graceful fallback (placeholder keys + runtime
-> disable) is planned for Phase 2.
+> `crates/pdf_android/google_key.txt` (gitignored), or set `GROQ_API_KEY` /
+> `GOOGLE_API_KEY` at build time. Without keys the crate **still compiles** —
+> the AI feature is disabled at runtime (see `build.rs` and the `.example` files).
 
 Test PDFs are generated with `python3 tools/generate_corpus.py` (pillow +
 reportlab) into `corpus/` (gitignored).
