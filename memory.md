@@ -16,11 +16,11 @@
   - Target Android añadido: `aarch64-linux-android`.
   - `~/.bashrc` carga `$HOME/.cargo/env` (persistente en shells nuevos).
 - **Herramientas de sistema (pacman, sudo)**: `android-tools` (adb 1.0.41) y `jdk17-openjdk` (17.0.19).
-- **Android SDK en `~/Android/Sdk`** (sin sdkmanager-managed platform-tools; adb vía pacman):
+- **Android SDK en `$ANDROID_HOME`** (sin sdkmanager-managed platform-tools; adb vía gestor de paquetes):
   - `cmdline-tools` latest (build 11076708), licencias aceptadas.
   - NDK `r28` (extraído en `ndk/android-ndk-r28`).
   - Platform `android-35`, build-tools `35.0.0`.
-  - `~/.profile` exporta `ANDROID_HOME`, `ANDROID_NDK_HOME` y PATH del cmdline-tools.
+  - `~/.profile` exporta `ANDROID_HOME`, `ANDROID_NDK_HOME` y PATH del cmdline-tools (entorno del usuario).
 - **Corpus de pruebas** en `corpus/` (dentro del repo, gitignored; 4 PDFs, validados con pypdf):
   - `dense_textbook.pdf` — 93 páginas de texto denso.
   - `scanned_pages.pdf` — 30 páginas a imagen (simula PDF escaneado).
