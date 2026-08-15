@@ -1,0 +1,9 @@
+# API key de Google AI (Gemini) (opcional, gitignored)
+
+Copia este fichero a `google_key.txt` con tu API key de Google AI Studio (sin
+saltos de línea), o define la variable de entorno `GOOGLE_API_KEY` al compilar.
+
+Sin clave, la app compila igualmente: `build.rs` genera una clave vacía y la
+funcionalidad de IA ("Explain selection") queda deshabilitada en runtime.
+
+Ver `build.rs` en este crate.
