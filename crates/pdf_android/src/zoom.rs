@@ -162,9 +162,16 @@ fn blit_scaled_nearest(
         };
         match bpp {
             4 => {
-                for x in 0..vis_w {
-                    let px = &src_row[x_map[x] * 4..x_map[x] * 4 + 4];
-                    dst_row[x * 4..x * 4 + 4].copy_from_slice(px);
+                // Accesos por u32 (mismo patrón que `draw::blit_page_scaled`):
+                // `x_map[x]` ∈ [0, src_w) por construcción (división entera
+                // truncada con dst_rel < dw), así que las lecturas directas
+                // evitan el slice con bounds-check por píxel del camino
+                // antiguo (medido en el `blit` bench de pdf_bench: zoom 1,35
+                // × 2000×1200, 1,29 ms → ~memcpy+mapa).
+                let src32 = src_row.as_ptr() as *const u32;
+                let dst32 = dst_row.as_mut_ptr() as *mut u32;
+                for (x, &src_x) in x_map.iter().enumerate() {
+                    unsafe { *dst32.add(x) = *src32.add(src_x) }
                 }
             }
             2 => {

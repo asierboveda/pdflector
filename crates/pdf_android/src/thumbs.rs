@@ -13,11 +13,13 @@
 //!
 //! ## Presupuesto de memoria (documentado)
 //!
-//! - Ancho de portada: `THUMB_W` = 200 px (alto proporcional a la página:
-//!   A4 → 200×283 px ≈ 226 KiB RGBA8).
+//! - Ancho de portada: `THUMB_W` = 240 px (alto proporcional a la página:
+//!   A4 → 240×339 px ≈ 326 KiB RGBA8). A 200 px el vecino-más-cercano del
+//!   pegado (celda ≈ 365 px) se veía blocky; 240 px + bilinear suavizan la
+//!   portada sin duplicar el presupuesto.
 //! - Tope de entradas: `THUMB_MAX_ENTRIES` = 36 (≈ 3 filas de celdas visibles
 //!   en la tablet, suficiente para volver arriba/abajo sin re-render).
-//! - Tope de bytes: `THUMB_BYTE_BUDGET` = 9 MiB (36 × 226 KiB ≈ 8,1 MiB;
+//! - Tope de bytes: `THUMB_BYTE_BUDGET` = 12 MiB (36 × 326 KiB ≈ 11,7 MiB;
 //!   margen para páginas de proporción más alta). Frente al objetivo RSS
 //!   < 150 MB de la tablet, las portadas quedan en ~6 % del presupuesto y
 //!   NO compiten con la `PageCache` del visor (48 MiB): son estados mutuamente
@@ -42,13 +44,13 @@ use pdf_core::Bitmap;
 /// escala del blit de la rejilla (celda ≈ 365 px en la tablet) se escala con
 /// vecino-más-cercano (~1,8×, ligeramente escalonado — aceptado como portada
 /// funcional; el agente de estilos puede subir `THUMB_W` o añadir bilinear).
-pub(crate) const THUMB_W: u32 = 200;
+pub(crate) const THUMB_W: u32 = 240;
 
 /// Tope de entradas de la caché (LRU).
 pub(crate) const THUMB_MAX_ENTRIES: usize = 36;
 
 /// Presupuesto máximo de bytes de las portadas residentes (≈ 36 × 226 KiB).
-pub(crate) const THUMB_BYTE_BUDGET: usize = 9 * 1024 * 1024;
+pub(crate) const THUMB_BYTE_BUDGET: usize = 12 * 1024 * 1024;
 
 /// Bytes que ocupa un `Bitmap` RGBA8 (cifra real, nunca estimada).
 fn bitmap_bytes(bmp: &Bitmap) -> usize {

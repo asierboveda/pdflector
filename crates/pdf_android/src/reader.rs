@@ -21,15 +21,19 @@ use log::{error, info, warn};
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::store::{AnnotationStore, sidecar_path};
 use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Highlight, Rect, RenderEngine, Stroke,
-    TextSpan,
+    Annotated, Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, Rect,
+    RenderEngine, Stroke, TextSpan,
 };
 
+use crate::annotations::{DEFAULT_INK_COLOR, INK_PALETTE, STROKE_WIDTH_PT, ToolGesture, ToolKind};
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
 use crate::draw::{
-    ButtonRect, PageAnnots, PageBlit, ai_panel_layout, blit_composed, blit_page, compose_frame,
-    render_ai_panel, render_library_grid, render_page_badge, render_picker_list, render_sel_menu,
-    render_sheet, render_toast, sel_menu_layout,
+    ButtonRect, PageAnnots, PageBlit, ai_panel_layout, blit_composed, blit_lib_fade, blit_library,
+    blit_page, compose_frame, compose_library_snapshot, paste_lib_thumbs, raster_tool_layer,
+    render_ai_panel, render_carousel_row, render_library_header, render_library_zone,
+    render_org_chip_row, render_page_badge, render_picker_list, render_search_chip_row,
+    render_sel_menu, render_sheet, render_toast, render_tool_fab, render_toolbar, sel_menu_layout,
+    splice_row, tool_fab_rect, toolbar_rect,
 };
 use crate::input::GestureState;
 use crate::jni::{
@@ -40,7 +44,7 @@ use crate::persist::{self, BookProgress, RecentEntry};
 use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, THUMB_W, ThumbCache};
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
-use crate::{BACKGROUND, DARK_BG, ERROR_BG, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS};
+use crate::{BACKGROUND, DARK_BG, ERROR_BG, LIB_FADE_MS, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS};
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
 /// Construido en `jni::launch_intent_pdf`, consumido en `Reader::new`.
@@ -355,7 +359,7 @@ pub(crate) fn grid_cell_h(win_w: i32) -> f32 {
 // "Read") es el punto de entrada; y "My Library" es la rejilla principal
 // de portadas con título/autor/progreso y sus chips discretos de
 // organización (sort/filter). Toda la geometría de abajo es COMPARTIDA
-// por el render (`draw::render_library_grid`), el tap y el arrastre
+// por el render (`draw::render_library_zone` + `render_library_header`), el tap y el arrastre
 // (`input`) y el pump de portadas (`Reader::pump_thumbs`).
 //
 // Estructura vertical FIJA (no scrollea): cabecera (título + Add book) +
@@ -509,23 +513,6 @@ pub(crate) fn lib_content_h(win_w: i32, win_h: i32, has_cont: bool, grid_rows: u
     lib_grid_y0(win_w, win_h, has_cont) + grid_rows as f32 * grid_cell_h(win_w) + 28.0
 }
 
-/// Rectángulo (left, top, right, bottom) en px de VENTANA de la celda
-/// `(row, col)` de la rejilla de la biblioteca, con el scroll vertical
-/// aplicado (compartido por `draw::render_library_grid` e `input::library_tap`).
-pub(crate) fn lib_grid_cell_rect(
-    win_w: i32,
-    win_h: i32,
-    content_y0: i32,
-    has_cont: bool,
-    scroll: f32,
-    row: usize,
-    col: usize,
-) -> (f32, f32, f32, f32) {
-    let (l, t, r, b) = grid_cell_rect(win_w, lib_grid_y0(win_w, win_h, has_cont) as i32, row, col);
-    let dy = content_y0 as f32 - scroll;
-    (l, t + dy, r, b + dy)
-}
-
 /// Ancho (px) de un chip del panel de búsqueda según el nº de caracteres de
 /// su etiqueta (los de carpetas llevan la ruta, p. ej. "Download/").
 pub(crate) fn lib_chip_w(win_w: i32, chars: usize) -> f32 {
@@ -540,7 +527,7 @@ pub(crate) fn lib_letter_chip_w(win_w: i32) -> f32 {
 /// Chips del panel de BÚSQUEDA de la biblioteca, fila `row` (0 = letras
 /// A-Z/#, 1 = carpetas): etiqueta + rect en px de VENTANA (con el scroll
 /// horizontal de la fila ya aplicado) + si el chip está ACTIVO. Geometría
-/// COMPARTIDA por `draw::render_library_grid` e `input::library_tap`. Es la
+/// COMPARTIDA por `draw::render_library_zone` + `render_library_header` e `input::library_tap`. Es la
 /// búsqueda SIN teclado presentada como un campo de búsqueda: el teclado
 /// del sistema no entrega texto al backend native-activity de
 /// android-activity (ver la cabecera del módulo), así que el filtro es por
@@ -603,7 +590,7 @@ pub(crate) fn lib_chips_row_w(reader: &Reader, row: usize) -> f32 {
 /// Chips de ORGANIZACIÓN de "My Library", fila `row` (0 = sort, 1 = filter):
 /// etiqueta + rect en px de VENTANA (con el scroll vertical de la página y
 /// el horizontal de la fila aplicados) + si el chip está ACTIVO. Geometría
-/// COMPARTIDA por `draw::render_library_grid` e `input::library_tap`. Los
+/// COMPARTIDA por `draw::render_library_zone` + `render_library_header` e `input::library_tap`. Los
 /// chips empiezan tras la etiqueta discreta de la fila ("SORT"/"FILTER",
 /// `lib_org_label_w`, que dibuja el render y no es tappable).
 pub(crate) fn lib_org_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonRect, bool)> {
@@ -665,7 +652,7 @@ fn lib_org_row_w(reader: &Reader, row: usize) -> f32 {
 
 /// Geometría del EMPTY STATE de la biblioteca (sin PDFs): ilustración de un
 /// libro + título + subtítulo + botón ("Add PDF" o "Grant access"). La
-/// comparten el render (`draw::render_library_grid`) y el tap
+/// comparten el render (`draw::render_library_zone` + `render_library_header`) y el tap
 /// (`input::library_tap`). `None` si la biblioteca tiene libros (no aplica).
 pub(crate) struct EmptyStateGeom {
     /// Rect de la ilustración (portada del libro) en px de VENTANA.
@@ -722,7 +709,7 @@ pub(crate) fn grid_rows_y0(win_h: i32, has_status: bool) -> i32 {
 }
 
 /// Rectángulo (left, top, right, bottom) en px de ventana de la celda
-/// `(row, col)` de la rejilla (compartido por `draw::render_library_grid` e
+/// `(row, col)` de la rejilla (compartido por `draw::render_library_zone` + `render_library_header` e
 /// `input::library_tap`).
 pub(crate) fn grid_cell_rect(
     win_w: i32,
@@ -1062,6 +1049,39 @@ pub(crate) struct Reader {
     /// página 1 vacía): no se reintentan — evita un bucle de timeout del
     /// bucle de eventos (`thumbs_pending` las excluye).
     thumb_failed: HashSet<String>,
+    /// Bitmap CACHEADO de la zona FIJA de la biblioteca (cabecera editorial +
+    /// campo de búsqueda + panel de chips + franja de estado): alto =
+    /// `lib_content_y0`, origen = borde superior de la ventana. Se
+    /// re-renderiza SÓLO cuando cambia la estructura (datos, filtros, panel
+    /// de búsqueda, estado, tamaño de ventana), NUNCA por frame de scroll
+    /// (el blit copia la zona fija + la banda de contenido, ver `lib_band`).
+    /// Es el análogo de `page_frame` del visor para la biblioteca.
+    pub(crate) lib_header: Option<Bitmap>,
+    /// Bitmap CACHEADO del contenido scrolleable de la biblioteca (Continue
+    /// Reading + My Library + rejilla o empty state): una BANDA de alto =
+    /// viewport de contenido + margen de prefetch (1 celda arriba/abajo),
+    /// origen en coordenadas de CONTENIDO (`.1` = contenido-y del borde
+    /// superior de la banda). El scroll vertical solo cambia DE DÓNDE se
+    /// copia la banda al buffer (memcpy por fila, ~1-3 ms), en vez de
+    /// re-renderizar toda la pantalla por Canvas+JNI en cada frame
+    /// (~20-60 ms → el lag/parpadeo del scroll que se reportó). La banda se
+    /// re-renderiza cuando el scroll sale de su rango o cambia el contenido
+    /// (datos, filtros, sort, search, thumbs nuevos, ventana).
+    pub(crate) lib_band: Option<(Bitmap, i32)>,
+    /// Zona cuya fila HORIZONTAL necesita re-render (1 = carousel de Continue
+    /// Reading, 2 = chips de letras, 3 = chips de carpetas, 4 = chips de
+    /// SORT, 5 = chips de FILTER): el input la fija al arrastrar una fila en
+    /// horizontal y `redraw` re-renderiza SOLO esa fila (bitmap pequeño,
+    /// Canvas+JNI barato) y la remienda sobre su contenedor (cabecera o
+    /// banda). None = sin fila pendiente.
+    pub(crate) lib_row_dirty: Option<u8>,
+    /// Transición visual al ABRIR un libro (desde la biblioteca o el picker):
+    /// snapshot de la pantalla de lista capturado justo antes del cambio de
+    /// modo + momento de la captura. Durante `LIB_FADE_MS` el visor lo funde
+    /// sobre la página (alfa decreciente) — una transición breve y barata
+    /// (blend RGB por filas, ~1-5 ms/frame en la tablet; ~12 frames). Se
+    /// libera al terminar; None = sin transición.
+    pub(crate) lib_fade: Option<(Instant, Bitmap)>,
     /// Estado del arrastre de las listas (picker y biblioteca): punto del
     /// Down + scrolls de partida + zona de la biblioteca (qué arrastra en
     /// horizontal). Ver `ListDrag`.
@@ -1112,6 +1132,41 @@ pub(crate) struct Reader {
     /// Bitmap cacheado del aviso breve (`draw::render_toast`), None sin
     /// aviso o con texto nuevo (se re-renderiza al cambiarlo).
     toast_bitmap: Option<Bitmap>,
+    /// Herramienta de anotación activa en el visor (Fase 3.5): Navegar
+    /// (gestos normales) / Resaltar / Boli. Con una herramienta distinta de
+    /// Navegar el arrastre de UN dedo (o el lápiz de la tablet) dibuja en
+    /// vez de navegar; el tap simple no cambia de página (`input`), y la
+    /// selección de texto (long-press) queda desactivada mientras esté
+    /// activa (`input::tick_gestures`).
+    pub(crate) tool: ToolKind,
+    /// ¿La barra de herramientas del visor está visible? La muestra/oculta el
+    /// botón flotante "✎" (esquina superior derecha); el botón "→" de la
+    /// barra la cierra. Ocultar la barra **vuelve a modo navegación**
+    /// (decisión documentada: una herramienta activa sin barra visible
+    /// dejaría el visor en un modo invisible difícil de revertir).
+    pub(crate) toolbar_open: bool,
+    /// Bitmap cacheado de la barra de herramientas (píldora con los botones
+    /// Resaltar/Boli/↶/●/→, `draw::render_toolbar`). Se invalida al alternar
+    /// herramienta/color, al cambiar el modo oscuro o al redimensionar.
+    toolbar_bitmap: Option<Bitmap>,
+    /// Bitmap cacheado del botón flotante de toggle de la barra ("✎"/"✕",
+    /// `draw::render_tool_fab`). Se invalida igual que la barra.
+    tool_fab: Option<Bitmap>,
+    /// Color actual de la tinta del boli (cicla con el botón "●" de la
+    /// barra; arranca en `DEFAULT_INK_COLOR`).
+    pub(crate) ink_color: Color,
+    /// Gesto de herramienta EN CURSO (dedo/lápiz bajado con una herramienta
+    /// activa): puntos y ancla en coordenadas de PÁGINA (ver `ToolGesture`).
+    /// `Some` mientras el dedo está abajo; se convierte en una anotación
+    /// guardada al levantar (`end_tool_gesture`) o se descarta al cancelar.
+    /// Mientras es `Some`, `blit` usa el frame compuesto + la capa temporal
+    /// del trazo (sin re-blitear la página por Move — requisito 5).
+    pub(crate) tool_gesture: Option<ToolGesture>,
+    /// ids de las anotaciones CREADAS EN ESTA SESIÓN (dedo/lápiz, en orden
+    /// de creación): el botón "↶" de la barra deshace la última. Solo
+    /// anotaciones nuevas de la sesión (no las cargadas del sidecar): el
+    /// undo no toca trabajo de otras sesiones (decisión documentada).
+    pub(crate) session_ids: Vec<u64>,
 }
 
 impl Reader {
@@ -1166,6 +1221,10 @@ impl Reader {
             page_badge: None,
             thumbs: ThumbCache::new(THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES),
             thumb_failed: HashSet::new(),
+            lib_header: None,
+            lib_band: None,
+            lib_row_dirty: None,
+            lib_fade: None,
             list_drag: None,
             annotations: AnnotationSet::new(),
             annot_sidecar: None,
@@ -1177,6 +1236,13 @@ impl Reader {
             ai_rx: None,
             toast: None,
             toast_bitmap: None,
+            tool: ToolKind::Navigate,
+            toolbar_open: false,
+            toolbar_bitmap: None,
+            tool_fab: None,
+            ink_color: DEFAULT_INK_COLOR,
+            tool_gesture: None,
+            session_ids: Vec::new(),
         };
         match launch_intent_pdf(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
@@ -1283,6 +1349,8 @@ impl Reader {
     pub(crate) fn init_window(&mut self, window: NativeWindow) {
         self.set_window(window);
         self.bitmap = None;
+        self.lib_header = None;
+        self.lib_band = None;
         self.page_badge = None;
         self.sheet_bitmap = None;
         self.page_frame = None;
@@ -1316,11 +1384,15 @@ impl Reader {
             self.win_w = w;
             self.win_h = h;
             self.bitmap = None; // lista del picker → re-render
+            self.lib_header = None; // zona fija de la biblioteca: tamaño nuevo
+            self.lib_band = None; // banda de contenido: tamaño nuevo
             self.cache.clear(); // nueva escala cover → los bitmaps viejos no sirven
             self.list_dirty = true;
             self.page_badge = None;
             self.sheet_bitmap = None;
             self.page_frame = None;
+            self.toolbar_bitmap = None; // la barra reescala con la ventana
+            self.tool_fab = None;
         }
         match self.mode {
             UiMode::Viewer => {
@@ -1379,18 +1451,202 @@ impl Reader {
                 self.lib_folders_x = self.lib_folders_x.min(self.lib_chips_max_x(1));
                 self.lib_sort_x = self.lib_sort_x.min(self.lib_org_max_x(0));
                 self.lib_filter_x = self.lib_filter_x.min(self.lib_org_max_x(1));
-                if self.list_dirty
-                    && let Some(bmp) = render_library_grid(self)
-                {
-                    self.bitmap = Some(bmp);
-                    self.offset_x = 0;
-                    self.offset_y = 0;
-                    self.list_dirty = false;
+
+                if self.list_dirty {
+                    // Cambio ESTRUCTURAL (datos/filtros/sort/search/estado/
+                    // ventana/entrada): re-renderizar cabecera + banda de
+                    // contenido + filas horizontales + portadas. Es el
+                    // render CARO (Canvas+JNI), pagado una vez por cambio,
+                    // nunca por frame de scroll.
+                    self.rebuild_library();
+                } else if let Some(zone) = self.lib_row_dirty {
+                    // Solo una fila HORIZONTAL se arrastró (carousel o
+                    // chips): re-renderizar ESA fila y remendarla sobre su
+                    // contenedor — barato (área pequeña), sin tocar el resto.
+                    self.rebuild_library_row(zone);
+                } else if !self.lib_band_covers() {
+                    // El scroll salió de la banda actual: re-bandear
+                    // (render de la banda en la nueva posición; cabecera
+                    // intacta).
+                    self.rebuild_library_band();
                 }
             }
         }
         if self.window.is_some() {
             self.blit();
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Biblioteca: render CACHEADO en dos planos (zona fija + banda de
+    // contenido). El scroll vertical por frame es un memcpy (blit_library),
+    // no un re-render Canvas+JNI (~20-60 ms): el mismo patrón que
+    // compose_frame/blit_composed del visor aplicado a la biblioteca
+    // (2026-08-22, fix del lag/parpadeo del scroll reportado).
+    // ---------------------------------------------------------------------
+
+    /// Rebuild COMPLETO de la biblioteca: cabecera (zona fija) + banda de
+    /// contenido + filas horizontales + portadas. Se llama solo cuando
+    /// cambia la ESTRUCTURA (datos, filtros, sort, panel de búsqueda,
+    /// status, ventana, entrada), nunca por frame de scroll.
+    fn rebuild_library(&mut self) {
+        self.list_dirty = false;
+        self.lib_row_dirty = None;
+        // 1) Zona fija (cabecera editorial + campo de búsqueda + panel +
+        //    franja de estado).
+        self.lib_header = render_library_header(self);
+        // 2) Banda de contenido en la posición actual del scroll.
+        self.rebuild_library_band();
+        // 3) Filas horizontales dentro de sus contenedores (carousel,
+        //    chips del panel de búsqueda y de organización).
+        self.splice_library_rows();
+    }
+
+    /// Re-renderiza SOLO la banda de contenido (sin tocar la cabecera): se
+    /// llama al entrar/salir de una banda (scroll lejos del rango actual) o
+    /// al rebuild completo. El render es Canvas+JNI UNA vez por banda; el
+    /// scroll dentro de la banda es memcpy.
+    fn rebuild_library_band(&mut self) {
+        let content_y0 =
+            lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
+        let viewport = (self.win_h - content_y0).max(0) as i32;
+        let content_h = self.lib_content_h() as i32;
+        let margin = grid_cell_h(self.win_w) as i32;
+        let band_h = (viewport + 2 * margin).min(content_h.max(viewport));
+        let band_origin =
+            ((self.lib_scroll as i32) - margin).max(0).min((content_h - band_h).max(0));
+        if let Some(bmp) = render_library_zone(self, band_origin, band_h) {
+            let mut band = bmp;
+            paste_lib_thumbs(self, &mut band, band_origin);
+            self.lib_band = Some((band, band_origin));
+            self.splice_band_rows();
+        } else {
+            self.lib_band = None;
+        }
+    }
+
+    /// ¿La banda actual cubre la ventana de contenido con el scroll actual?
+    /// false → hay que re-bandear (render de la banda en la nueva posición).
+    fn lib_band_covers(&self) -> bool {
+        match &self.lib_band {
+            None => false,
+            Some((bmp, origin)) => {
+                let content_y0 =
+                    lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
+                let viewport = (self.win_h - content_y0).max(0) as i32;
+                let s = self.lib_scroll as i32;
+                s >= *origin && s + viewport <= *origin + bmp.height as i32
+            }
+        }
+    }
+
+    /// Re-renderiza SOLO la fila horizontal `zone` (pequeña, Canvas+JNI
+    /// barato) y la remienda sobre su contenedor: el arrastre horizontal del
+    /// carousel o de chips no re-renderiza la pantalla completa.
+    fn rebuild_library_row(&mut self, zone: u8) {
+        self.lib_row_dirty = None;
+        match zone {
+            1 => {
+                // Carousel de Continue Reading → banda, bajo su título.
+                let row = render_carousel_row(self);
+                let x = self.lib_carousel_x as i32;
+                let y = lib_section_title_h(self.win_h) as i32;
+                if let (Some(row), Some((band, origin))) = (row, self.lib_band.as_mut()) {
+                    splice_row(band, &row, -x, y - *origin);
+                }
+            }
+            2 | 3 => {
+                // Chips del panel de búsqueda → cabecera (zona fija).
+                let row = render_search_chip_row(self, (zone - 2) as usize);
+                let x = if zone == 2 {
+                    self.lib_letters_x as i32
+                } else {
+                    self.lib_folders_x as i32
+                };
+                let y = if zone == 2 {
+                    lib_search_chips_y0(self)
+                } else {
+                    lib_search_chips_y1(self)
+                };
+                if let (Some(row), Some(h)) = (row, self.lib_header.as_mut()) {
+                    splice_row(h, &row, -x, y as i32);
+                }
+            }
+            4 | 5 => {
+                // Chips de organización (sort/filter) → banda.
+                let row = render_org_chip_row(self, (zone - 4) as usize);
+                let x = if zone == 4 {
+                    self.lib_sort_x as i32
+                } else {
+                    self.lib_filter_x as i32
+                };
+                let y = lib_org_y(
+                    self.win_w,
+                    self.win_h,
+                    self.lib_has_cont(),
+                    (zone - 4) as usize,
+                ) as i32;
+                if let (Some(row), Some((band, origin))) = (row, self.lib_band.as_mut()) {
+                    splice_row(band, &row, -x, y - *origin);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Remienda todas las filas horizontales sobre sus contenedores
+    /// (cabecera: chips de búsqueda; banda: carousel + chips de organización).
+    /// Se llama tras un rebuild completo (los contenedores acaban de
+    /// renderizarse SIN las filas, que se leen de `lib_*_x`).
+    fn splice_library_rows(&mut self) {
+        let letters_row = if self.lib_search_open {
+            render_search_chip_row(self, 0)
+        } else {
+            None
+        };
+        let folders_row = if self.lib_search_open {
+            render_search_chip_row(self, 1)
+        } else {
+            None
+        };
+        let lx = self.lib_letters_x as i32;
+        let fx = self.lib_folders_x as i32;
+        let cy0 = lib_search_chips_y0(self) as i32;
+        let cy1 = lib_search_chips_y1(self) as i32;
+        if let Some(header) = self.lib_header.as_mut() {
+            if let Some(row) = letters_row {
+                splice_row(header, &row, -lx, cy0);
+            }
+            if let Some(row) = folders_row {
+                splice_row(header, &row, -fx, cy1);
+            }
+        }
+        self.splice_band_rows();
+    }
+
+    /// Remienda las filas horizontales de la BANDA (carousel + chips de
+    /// sort/filter) sobre la banda actual.
+    fn splice_band_rows(&mut self) {
+        let has_cont = self.lib_has_cont();
+        let cont_row = if has_cont { render_carousel_row(self) } else { None };
+        let sort_row = render_org_chip_row(self, 0);
+        let filter_row = render_org_chip_row(self, 1);
+        let carousel_x = self.lib_carousel_x as i32;
+        let sort_x = self.lib_sort_x as i32;
+        let filter_x = self.lib_filter_x as i32;
+        let cont_y = lib_section_title_h(self.win_h) as i32;
+        let sort_y = lib_org_y(self.win_w, self.win_h, has_cont, 0) as i32;
+        let filter_y = lib_org_y(self.win_w, self.win_h, has_cont, 1) as i32;
+        if let Some((band, origin)) = self.lib_band.as_mut() {
+            if let Some(row) = cont_row {
+                splice_row(band, &row, -carousel_x, cont_y - *origin);
+            }
+            if let Some(row) = sort_row {
+                splice_row(band, &row, -sort_x, sort_y - *origin);
+            }
+            if let Some(row) = filter_row {
+                splice_row(band, &row, -filter_x, filter_y - *origin);
+            }
         }
     }
 
@@ -1657,13 +1913,31 @@ impl Reader {
                     (b, bx, by)
                 });
                 // Overlays del visor en el MISMO buffer (un solo lock+present):
+                // botón flotante de herramientas + barra de herramientas,
                 // indicador de página, menú de selección, panel de IA, aviso
                 // breve y sheet de ajustes deslizado desde el borde superior
                 // (solo si está visible; `progress == 1` = abierto del todo).
                 // El menú, el panel y el aviso van SIEMPRE (también con el
                 // sheet: se añaden al frame compuesto o como overlays de
                 // `blit_composed`).
-                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(5);
+                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(7);
+                // Barra de herramientas (píldora) + botón flotante "✎": se
+                // cachean como bitmaps (Canvas+JNI) y se invalidan al
+                // alternar tool/color/modo oscuro o al redimensionar.
+                if self.toolbar_open && self.toolbar_bitmap.is_none() {
+                    self.toolbar_bitmap = render_toolbar(self);
+                }
+                if self.tool_fab.is_none() {
+                    self.tool_fab = render_tool_fab(self);
+                }
+                if let Some(tb) = self.toolbar_bitmap.as_ref() {
+                    let (tx, ty, _, _) = toolbar_rect(self.win_w, self.win_h);
+                    overlays.push((tb, tx as i32, ty as i32));
+                }
+                if let Some(fb) = self.tool_fab.as_ref() {
+                    let (fx, fy, _, _) = tool_fab_rect(self.win_w, self.win_h);
+                    overlays.push((fb, fx as i32, fy as i32));
+                }
                 if let Some((b, bx, by)) = badge {
                     overlays.push((b, bx, by));
                 }
@@ -1683,7 +1957,18 @@ impl Reader {
                         (sheet_h(self.win_h) as f32 * (1.0 - self.sheet_progress)).round() as i32;
                     overlays.push((s, 0, -slide));
                 }
-                if self.sheet_progress > 0.0 {
+                // Capa temporal del gesto de herramienta EN CURSO (trazo del
+                // boli / rect del resaltador): rasterizada por Move en un
+                // bitmap del bbox del trazo (pdf_core::overlay) y copiada con
+                // alfa-blend sobre el frame en `blit_composed` — el visor NO
+                // re-blitea la página por evento de movimiento (req. 5).
+                let tool_layer: Option<(Bitmap, i32, i32)> = if self.tool_gesture.is_some() {
+                    self.tool_overlay()
+                } else {
+                    None
+                };
+                let use_frame = self.sheet_progress > 0.0 || self.tool_gesture.is_some();
+                if use_frame {
                     // Sheet visible: frame compuesto + overlay del sheet. El
                     // frame (fondo + página + anotaciones + indicador) se
                     // compone UNA vez al empezar a deslizar y se reutiliza
@@ -1706,8 +1991,18 @@ impl Reader {
                     }
                     if let Some(frame) = self.page_frame.as_ref() {
                         // El frame ya incluye el indicador y el rect de
-                        // selección: menú, aviso breve y sheet como overlays.
-                        let mut sheet_ov: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(4);
+                        // selección: la capa temporal del trazo en curso
+                        // (blend), la barra de herramientas, el menú, el
+                        // aviso breve y el sheet como overlays opacos.
+                        let mut sheet_ov: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(6);
+                        if let Some(tb) = self.toolbar_bitmap.as_ref() {
+                            let (tx, ty, _, _) = toolbar_rect(self.win_w, self.win_h);
+                            sheet_ov.push((tb, tx as i32, ty as i32));
+                        }
+                        if let Some(fb) = self.tool_fab.as_ref() {
+                            let (fx, fy, _, _) = tool_fab_rect(self.win_w, self.win_h);
+                            sheet_ov.push((fb, fx as i32, fy as i32));
+                        }
                         if let Some(menu) = self.sel_menu.as_ref() {
                             sheet_ov.push((&menu.bitmap, menu.x, menu.y));
                         }
@@ -1722,7 +2017,12 @@ impl Reader {
                                 .round() as i32;
                             sheet_ov.push((s, 0, -slide));
                         }
-                        blit_composed(window, frame, &sheet_ov);
+                        blit_composed(
+                            window,
+                            frame,
+                            &sheet_ov,
+                            tool_layer.as_ref().map(|(b, x, y)| (b, *x, *y)),
+                        );
                     } else {
                         // Defensa: frame no disponible (compose falló) → blit
                         // normal con el sheet como overlay.
@@ -1747,53 +2047,42 @@ impl Reader {
                         &overlays,
                     );
                 }
+                // Transición al abrir un libro: fundir el snapshot de la
+                // biblioteca/picker sobre la página durante `LIB_FADE_MS`
+                // (segundo present TRANSITORIO ~12 frames, alfa decreciente;
+                // la biblioteca ya no se pinta, solo se funde).
+                if let Some((started, snap)) = &self.lib_fade {
+                    let t = started.elapsed().as_secs_f32();
+                    let alpha = (1.0 - t / LIB_FADE_MS).clamp(0.0, 1.0);
+                    if alpha > 0.0 {
+                        blit_lib_fade(window, snap, (alpha * 255.0).round() as u8);
+                    }
+                }
             }
-            UiMode::Library => match self.bitmap.as_ref() {
-                Some(bmp) => {
-                    // Bitmap de la biblioteca a 1:1 (zoom relativo 1.0). BUG
-                    // arreglado: el pan (desplazamiento de anclaje del pinch)
-                    // es un concepto del VISOR — sumarlo aquí desplazaba la
-                    // lista/biblioteca con el pan residual del último pinch
-                    // (p. ej. −400 px en Y, con la página cover más alta que
-                    // la ventana, o cientos de px en X a zoom > 1), dejando
-                    // la lista cortada y el fondo al descubierto.
-                    blit_fast(window, bmp, 1.0, bg, (self.offset_x, self.offset_y), None);
-                    // Aviso breve (toast, p. ej. el de "＋ Add book") como
-                    // overlay: el bitmap de la biblioteca está cacheado y no
-                    // se toca; se usa un SEGUNDO lock+present solo mientras
-                    // el aviso esté visible (~1,5 s, ~1-2 ms por frame).
-                    if self.toast.is_some() && self.toast_bitmap.is_none() {
-                        self.toast_bitmap = render_toast(self);
-                    }
-                    if let Some(tb) = self.toast_bitmap.as_ref() {
-                        let tx = (self.win_w - tb.width as i32) / 2;
-                        let ty = self.win_h - tb.height as i32 - 16;
-                        crate::draw::blit_overlay(window, tb, tx, ty);
-                    }
+            UiMode::Library => {
+                // Zona fija (`lib_header`) + banda de contenido (`lib_band`)
+                // CACHEADAS: el frame por scroll es memcpy de los dos
+                // rectángulos (misma idea que compose_frame/blit_composed
+                // del visor), NO un re-render Canvas+JNI por frame. El
+                // scroll solo cambia de dónde se copia la banda (`.1` =
+                // contenido-y de su borde superior).
+                let content_y0 =
+                    lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
+                let header = self.lib_header.as_ref();
+                let band = self.lib_band.as_ref().map(|(b, o)| (b, *o));
+                // Aviso breve (toast) integrado en el MISMO lock+present
+                // que la biblioteca (antes: un segundo present por frame
+                // durante ~1,5 s — innecesario).
+                if self.toast.is_some() && self.toast_bitmap.is_none() {
+                    self.toast_bitmap = render_toast(self);
                 }
-                None => {
-                    // Sin lista: solo el fondo (guard hace unlock_and_post al caer).
-                    let Ok(mut guard) = window.lock(None) else {
-                        warn!("ANativeWindow_lock failed");
-                        return;
-                    };
-                    let bpp = match guard.format().bytes_per_pixel() {
-                        Some(b) => b,
-                        None => {
-                            warn!(
-                                "buffer format without bytes_per_pixel: {:?}",
-                                guard.format()
-                            );
-                            return;
-                        }
-                    };
-                    let dst_w = guard.width();
-                    let dst_h = guard.height();
-                    let dst_stride = guard.stride(); // en píxeles
-                    let dst = guard.bits() as *mut u8;
-                    crate::draw::fill_buffer(dst, dst_w, dst_h, dst_stride, bpp, bg);
-                }
-            },
+                let toast_ov: Option<(&Bitmap, i32, i32)> = self.toast_bitmap.as_ref().map(|tb| {
+                    let tx = (self.win_w - tb.width as i32) / 2;
+                    let ty = self.win_h - tb.height as i32 - 16;
+                    (tb, tx, ty)
+                });
+                blit_library(window, header, band, content_y0, self.lib_scroll, toast_ov);
+            }
             UiMode::Picker => match self.bitmap.as_ref() {
                 Some(bmp) => blit_fast(window, bmp, 1.0, bg, (self.offset_x, self.offset_y), None),
                 None => {
@@ -2186,7 +2475,11 @@ impl Reader {
                 a: 110,
             },
         });
-        if self.annotations.add(self.page as usize, ann).is_some() {
+        if let Some(id) = self.annotations.add(self.page as usize, ann) {
+            // El id devuelto va a la pila de la sesión: el "↶" de la barra
+            // de herramientas deshace también los subrayados hechos con la
+            // selección de texto (misma sesión).
+            self.session_ids.push(id);
             self.save_annotations();
             self.page_frame = None; // el frame compuesto tendría el highlight viejo
             self.show_toast("highlighted");
@@ -2433,6 +2726,8 @@ impl Reader {
             || self.thumbs_pending()
             || self.toast.is_some()
             || self.gesture.press_pending()
+            // Transición al abrir un libro: el tick expira el fade.
+            || self.lib_fade.is_some()
             // Consulta de IA en vuelo: `tick` sondea el canal del hilo de
             // fondo (sin esto el poll bloquearía y la respuesta tardaría en
             // aparecer hasta el siguiente evento de input).
@@ -2542,6 +2837,17 @@ impl Reader {
             self.toast_bitmap = None;
             self.redraw();
         }
+        // Transición al abrir un libro: expirada → se libera (el visor ya
+        // muestra solo la página). Durante la transición, cada tick redibuja
+        // con un alfa decreciente (el fade se anima en `blit`).
+        if let Some((started, _)) = self.lib_fade {
+            if started.elapsed().as_secs_f32() >= LIB_FADE_MS {
+                self.lib_fade = None;
+                self.redraw();
+            } else {
+                self.redraw(); // un frame más de la transición
+            }
+        }
         if self.sheet_anim {
             let target = if self.sheet_open { 1.0 } else { 0.0 };
             // Ease exponencial: ~10 ticks (≈ 150 ms) para recorrer el 95 %.
@@ -2557,8 +2863,18 @@ impl Reader {
             self.redraw();
         }
         if self.mode == UiMode::Library && self.pump_thumbs(app) {
-            self.list_dirty = true;
-            self.redraw();
+            if let Some((mut band, origin)) = self.lib_band.take() {
+                // Pegar las portadas nuevas sobre la banda EXISTENTE (memcpy
+                // por celda): sin re-render del canvas (antes un rebuild
+                // completo de la pantalla por cada lote de portadas).
+                paste_lib_thumbs(self, &mut band, origin);
+                self.lib_band = Some((band, origin));
+                self.redraw();
+            } else {
+                // Sin banda aún: el primer rebuild la crea con las portadas.
+                self.list_dirty = true;
+                self.redraw();
+            }
         }
     }
 
@@ -2947,6 +3263,8 @@ impl Reader {
         self.page_badge = None; // colores del indicador cambian
         self.sheet_bitmap = None; // colores del sheet cambian (Dark/Light)
         self.page_frame = None; // el frame compuesto cambia de modo
+        self.toolbar_bitmap = None; // los colores de la barra cambian
+        self.tool_fab = None; // y los del botón flotante
         info!("dark mode: {}", self.dark);
         self.save_state();
         self.redraw();
@@ -3014,6 +3332,303 @@ impl Reader {
             },
             Err(e) => error!("annotations open {}: {e}", sidecar.display()),
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Barra de herramientas de anotación (Fase 3.5: resaltador + boli)
+    // ---------------------------------------------------------------------
+    //
+    // La barra (píldora arriba, `draw::toolbar_rect`) la muestra/oculta el
+    // botón flotante "✎" y tiene 5 botones (Resaltar/Boli/↶/●/→, geometría
+    // `draw::toolbar_buttons`). El arrastre con una herramienta activa crea
+    // un `ToolGesture` (puntos en coords de página) que al levantar se
+    // convierte en `Highlight` (resaltador, vía `pdf_core::selection`) o en
+    // `Stroke` suavizado (boli, vía `pdf_core::smooth_polyline`).
+
+    /// Activa una herramienta (`ToolKind`). La barra permanece visible para
+    /// poder cambiar de herramienta o volver a navegación; el chip activo se
+    /// dibuja con el acento dorado (el `toolbar_bitmap` se invalida).
+    pub(crate) fn set_tool(&mut self, tool: ToolKind) {
+        self.tool = tool;
+        self.toolbar_bitmap = None; // los estados activos de los botones cambian
+        if self.window.is_some() {
+            self.blit();
+        }
+    }
+
+    /// Muestra/oculta la barra de herramientas (botón flotante "✎"/"✕").
+    /// Ocultarla vuelve a modo NAVEGACIÓN (decisión documentada en
+    /// `toolbar_open`): nunca queda una herramienta activa sin barra visible.
+    pub(crate) fn toggle_toolbar(&mut self) {
+        self.toolbar_open = !self.toolbar_open;
+        if !self.toolbar_open {
+            self.tool = ToolKind::Navigate;
+            self.cancel_tool_gesture();
+        }
+        self.toolbar_bitmap = None;
+        self.tool_fab = None; // el icono cambia ("✎" ↔ "✕")
+        self.redraw();
+    }
+
+    /// Botón "→" de la barra: vuelve a modo navegación y cierra la barra.
+    pub(crate) fn close_toolbar(&mut self) {
+        self.tool = ToolKind::Navigate;
+        self.toolbar_open = false;
+        self.toolbar_bitmap = None;
+        self.tool_fab = None;
+        self.cancel_tool_gesture();
+        self.redraw();
+    }
+
+    /// Botón "●" de la barra: cicla el color del boli por `INK_PALETTE`.
+    /// El botón de la barra se dibuja con el color actual, así que se
+    /// invalida su bitmap para que el círculo cambie.
+    pub(crate) fn cycle_ink_color(&mut self) {
+        let i = INK_PALETTE
+            .iter()
+            .position(|c| *c == self.ink_color)
+            .unwrap_or(0);
+        self.ink_color = INK_PALETTE[(i + 1) % INK_PALETTE.len()];
+        self.toolbar_bitmap = None; // el "●" muestra el nuevo color
+        if self.window.is_some() {
+            self.blit();
+        }
+    }
+
+    /// Botón "↶" de la barra: deshace la ÚLTIMA anotación creada en esta
+    /// sesión (la pila `session_ids`; nunca toca anotaciones cargadas del
+    /// sidecar ni de sesiones anteriores). La borra del set y persiste.
+    pub(crate) fn undo_last_annotation(&mut self) {
+        let Some(id) = self.session_ids.pop() else {
+            return;
+        };
+        if !self.annotations.remove(id) {
+            return;
+        }
+        self.save_annotations();
+        self.page_frame = None; // el frame tendría la anotación borrada
+        self.show_toast("undo");
+    }
+
+    /// Gesto de herramienta: el Down convierte el punto de pantalla a
+    /// coordenadas de página y crea el `ToolGesture` en la página actual.
+    /// El blit pasa a usar el frame compuesto + capa temporal (sin
+    /// re-renderizar ni re-blitear la página) mientras el gesto dure.
+    pub(crate) fn begin_tool_gesture(&mut self, sx: f32, sy: f32) {
+        if self.tool == ToolKind::Navigate {
+            return;
+        }
+        let Some(pt) = self.screen_to_page(sx, sy) else {
+            return;
+        };
+        self.tool_gesture = Some(ToolGesture::new(self.page, self.tool, pt));
+        self.page_frame = None; // recomponer el frame SIN el trazo (la capa temporal va aparte)
+        if self.window.is_some() {
+            self.blit();
+        }
+    }
+
+    /// Gesto de herramienta: cada Move añade el punto (boli) o actualiza el
+    /// rect (resaltador) y re-blitea con el frame compuesto + la capa
+    /// temporal del trazo — la página NO se re-blitea por evento (req. 5).
+    pub(crate) fn update_tool_gesture(&mut self, sx: f32, sy: f32) {
+        let Some(pt) = self.screen_to_page(sx, sy) else {
+            return;
+        };
+        match self.tool {
+            ToolKind::Ink => {
+                if let Some(g) = self.tool_gesture.as_mut() {
+                    g.push(pt);
+                }
+            }
+            ToolKind::Highlight => {
+                if let Some(g) = self.tool_gesture.as_mut() {
+                    g.set_cur(pt);
+                }
+            }
+            ToolKind::Navigate => {}
+        }
+        if self.window.is_some() {
+            self.blit();
+        }
+    }
+
+    /// Gesto de herramienta: al levantar el dedo convierte el gesto en una
+    /// anotación GUARDADA (persistida en el sidecar):
+    ///
+    /// - **Boli**: `smooth_polyline` (Catmull-Rom, el suavizado del motor)
+    ///   sobre los puntos capturados → `Stroke` con `STROKE_WIDTH_PT` y el
+    ///   color actual. Un gesto sin arrastre (un toque) se descarta.
+    /// - **Resaltador**: `pdf_core::highlight_under_gesture` selecciona las
+    ///   líneas de texto bajo el trazo (extracción perezosa, solo ahora) y
+    ///   crea el `Highlight` alineado al texto; "no text" si no hay líneas.
+    ///
+    /// El id nuevo se apunta en `session_ids` para el undo.
+    pub(crate) fn end_tool_gesture(&mut self) {
+        let Some(g) = self.tool_gesture.take() else {
+            return;
+        };
+        self.page_frame = None; // la anotación guardada se dibuja vía el set
+        // Gesto degenerado (un toque sin arrastre): descartar silenciosamente.
+        // El umbral está en px de PANTALLA (TOOL_MIN_PX, el recorrido mínimo
+        // del dedo/lápiz); el bbox del gesto en página se convierte con la
+        // escala efectiva del blit (cover × zoom).
+        let scale = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.page_size(g.page).ok())
+            .map(|(pw, ph)| initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom)
+            .unwrap_or(1.0);
+        let min_d_pt = crate::TOOL_MIN_PX / scale;
+        let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+        let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for &(x, y) in &g.points {
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        if max_x - min_x < min_d_pt && max_y - min_y < min_d_pt {
+            if self.window.is_some() {
+                self.blit();
+            }
+            return;
+        }
+        match g.tool {
+            ToolKind::Ink => {
+                // Suavizado Catmull-Rom del motor: 6 subdivisiones por
+                // segmento (suficiente para que el trazo no se vea
+                // poligonal; la serialización guarda solo los puntos
+                // suavizados).
+                let pts = pdf_core::smooth_polyline(&g.points, 6);
+                if let Some(s) = Stroke::new(pts, STROKE_WIDTH_PT, self.ink_color)
+                    && let Some(id) = self.annotations.add(g.page as usize, Annotation::Stroke(s))
+                {
+                    self.session_ids.push(id);
+                    self.save_annotations();
+                    self.show_toast("ink");
+                }
+            }
+            ToolKind::Highlight => {
+                // El resaltador usa TODO el trazo (los puntos del gesto), no
+                // solo ancla→cursor: un trazo curvo selecciona las líneas
+                // bajo su bbox completo.
+                let spans = self
+                    .doc
+                    .as_ref()
+                    .and_then(|d| d.text(g.page).ok())
+                    .map(|t| t.spans)
+                    .unwrap_or_default();
+                let gesture = Gesture::Points(g.points);
+                if let Some(hl) =
+                    pdf_core::highlight_under_gesture(&spans, &gesture, pdf_core::HIGHLIGHT_COLOR)
+                {
+                    if let Some(id) = self
+                        .annotations
+                        .add(g.page as usize, Annotation::Highlight(hl))
+                    {
+                        self.session_ids.push(id);
+                        self.save_annotations();
+                        self.show_toast("highlighted");
+                    }
+                } else {
+                    // Sin líneas bajo el trazo (zona en blanco, PDF escaneado
+                    // o trazo demasiado corto): aviso, no se crea nada.
+                    self.show_toast("no text");
+                }
+            }
+            ToolKind::Navigate => {}
+        }
+    }
+
+    /// Gesto de herramienta cancelado (segundo dedo, Cancel del sistema,
+    /// ocultar la barra): descarta el trazo en curso sin crear anotación.
+    pub(crate) fn cancel_tool_gesture(&mut self) {
+        if self.tool_gesture.take().is_some() {
+            self.page_frame = None;
+            if self.window.is_some() {
+                self.blit();
+            }
+        }
+    }
+
+    /// ¿El punto de pantalla cae en el "chrome" de las herramientas (el
+    /// botón flotante o la barra abierta)? El Down en esa zona NO inicia un
+    /// gesto de herramienta (es un tap de UI): lo decide `input`.
+    pub(crate) fn chrome_hit(&self, x: f32, y: f32) -> bool {
+        let (l, t, r, b) = tool_fab_rect(self.win_w, self.win_h);
+        if x >= l && x < r && y >= t && y < b {
+            return true;
+        }
+        if self.toolbar_open {
+            let (l, t, r, b) = toolbar_rect(self.win_w, self.win_h);
+            if x >= l && x < r && y >= t && y < b {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Capa temporal del gesto de herramienta en curso: rasteriza el trazo
+    /// del boli o el rect del resaltador en un bitmap del tamaño de su bbox
+    /// de pantalla (`draw::raster_tool_layer`, pdf_core::overlay) con la
+    /// misma transformación del blit (`scale = cover × zoom`, esquina con
+    /// pan). Coste ∝ bbox del trazo — el presupuesto del requisito 5.
+    fn tool_overlay(&self) -> Option<(Bitmap, i32, i32)> {
+        let g = self.tool_gesture.as_ref()?;
+        let (pw, ph) = self.doc.as_ref()?.page_size(g.page).ok()?;
+        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
+        let scale = cover * self.zoom;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round();
+        let dy = self.pan_y.round();
+        let xform = pdf_core::ViewTransform {
+            zoom: scale,
+            offset_x: dx,
+            offset_y: dy,
+        };
+        // Anotación TEMPORAL (no está en el set): con los puntos en curso.
+        let kind = match g.tool {
+            ToolKind::Ink => {
+                // Un solo punto aún no es un trazo: duplicarlo desplazado
+                // dibuja un punto de tinta (el `Stroke::new` exige ≥ 2).
+                let pts = if g.points.len() >= 2 {
+                    g.points.clone()
+                } else {
+                    vec![g.anchor, (g.anchor.0 + 0.01, g.anchor.1)]
+                };
+                let s = Stroke::new(pts, STROKE_WIDTH_PT, self.ink_color)?;
+                Annotation::Stroke(s)
+            }
+            ToolKind::Highlight => {
+                let cur = g.points.last().copied().unwrap_or(g.anchor);
+                Annotation::Highlight(Highlight {
+                    rects: vec![Rect::new(
+                        g.anchor.0,
+                        g.anchor.1,
+                        cur.0 - g.anchor.0,
+                        cur.1 - g.anchor.1,
+                    )],
+                    color: pdf_core::HIGHLIGHT_COLOR,
+                })
+            }
+            ToolKind::Navigate => return None,
+        };
+        // Padding para que la media brocha del trazo (y su AA de 1 px) no se
+        // recorte en el borde del bitmap temporal.
+        let pad = if g.tool == ToolKind::Ink {
+            (STROKE_WIDTH_PT * scale * 0.5).ceil() + 1.0
+        } else {
+            0.0
+        };
+        let ann = Annotated {
+            id: 0,
+            page_idx: g.page as usize,
+            kind,
+        };
+        raster_tool_layer(self.win_w, self.win_h, xform, &ann, pad)
     }
 
     /// Persiste la posición actual (ruta, página, zoom) + modo oscuro en
@@ -3085,6 +3700,20 @@ impl Reader {
                 self.pan_y = 0.0;
                 self.pinch = None;
                 self.bitmap = None;
+                // Transición al abrir: snapshot de la pantalla de lista
+                // (biblioteca: cabecera+banda; picker: bitmap) que el visor
+                // funde sobre la página los primeros `LIB_FADE_MS`.
+                let snapshot = match self.mode {
+                    UiMode::Library => compose_library_snapshot(self),
+                    UiMode::Picker => self.bitmap.clone(),
+                    UiMode::Viewer => None,
+                };
+                if let Some(s) = snapshot {
+                    self.lib_fade = Some((Instant::now(), s));
+                }
+                self.lib_header = None; // biblioteca fuera: liberar planos
+                self.lib_band = None;
+                self.lib_row_dirty = None;
                 self.cache.clear(); // otro documento: nada reutilizable
                 self.mode = UiMode::Viewer;
                 self.status = None;
@@ -3097,6 +3726,16 @@ impl Reader {
                 self.thumb_failed.clear();
                 self.list_dirty = true;
                 self.list_drag = None;
+                // Herramientas de anotación: reseteo a la navegación limpia
+                // (barra cerrada, sin herraienta activa, sin gesto en curso
+                // y SIN histórico de sesión del documento anterior — el undo
+                // es por sesión, decisión documentada en `session_ids`).
+                self.tool = ToolKind::Navigate;
+                self.toolbar_open = false;
+                self.toolbar_bitmap = None;
+                self.tool_fab = None;
+                self.tool_gesture = None;
+                self.session_ids.clear();
                 // Anotaciones del documento (sidecar; set vacío si no existe
                 // o está corrupto — nunca impide abrir el PDF).
                 self.load_annotations(path);
@@ -3126,11 +3765,30 @@ impl Reader {
         self.list_scroll = 0;
         self.lib_search_open = false;
         self.list_dirty = true;
-        self.bitmap = None;
+        self.bitmap = None; // lista del picker (no se usa en la biblioteca)
+        self.lib_header = None; // zona fija: se re-renderiza en el rebuild
+        self.lib_band = None; // banda de contenido: idem
+        self.lib_row_dirty = None;
+        // La caché de páginas del visor (48 MiB) no sirve en la biblioteca:
+        // liberarla aquí evita RSS doble (páginas + zona fija + banda +
+        // portadas) y se re-renderiza al volver a un PDF.
+        self.cache.clear();
+        // Re-cargar los registros persistidos (recents + progreso): la
+        // biblioteca debe reflejar cualquier lectura hecha en otra sesión o
+        // proceso (Continue Reading / barras de progreso / sort-filtros).
+        self.recents = persist::load_recents(self.internal_dir.as_deref());
+        self.lib_books = persist::load_progress(self.internal_dir.as_deref());
         self.sheet_hide_now(); // fuera del visor: el sheet no pinta en biblioteca
         self.clear_selection(); // selección del visor: fuera (no pinta en biblioteca)
         self.close_ai_panel(); // panel de IA del visor: fuera
         self.list_drag = None;
+        // Herramientas del visor: fuera (no pinta en biblioteca).
+        self.tool = ToolKind::Navigate;
+        self.toolbar_open = false;
+        self.toolbar_bitmap = None;
+        self.tool_fab = None;
+        self.tool_gesture = None;
+        self.session_ids.clear();
         self.rescan_library(app);
     }
 
@@ -3159,6 +3817,9 @@ impl Reader {
         self.mode = UiMode::Viewer;
         self.list_dirty = true;
         self.bitmap = None; // lista del picker (las páginas siguen en la caché)
+        self.lib_header = None; // biblioteca fuera: liberar planos cedeados
+        self.lib_band = None;
+        self.lib_row_dirty = None;
         self.list_drag = None;
         self.redraw();
     }
@@ -3202,6 +3863,9 @@ impl Reader {
                 self.status = None;
             } else {
                 self.mode = UiMode::Picker;
+                self.lib_header = None; // biblioteca fuera: liberar planos
+                self.lib_band = None;
+                self.lib_row_dirty = None;
                 self.status = Some("No PDFs in MediaStore — showing app folder".to_string());
             }
         } else {

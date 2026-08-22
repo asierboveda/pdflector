@@ -124,6 +124,61 @@ pub struct Highlight {
     pub color: Color,
 }
 
+/// Smooths a polyline with Catmull-Rom interpolation (the classic pen-stroke
+/// smoothing: each output segment between `points[i]` and `points[i+1]` is a
+/// cubic blended from the four surrounding control points, so the curve
+/// passes *exactly* through every vertex — it never cuts corners) and keeps
+/// the first and last input points as hard endpoints.
+///
+/// Returns a `Vec` with `1 + (n-1)*segs` points for `segs >= 1`;
+/// degenerate inputs (fewer than 2 points) are returned unchanged, so the
+/// result is always drawable when the input is. Positions are page
+/// coordinates (f32), the same space as the rest of the model. Repeated
+/// points collapse to a zero-length segment that still interpolates the
+/// vertex.
+///
+/// Catmull-Rom needs no per-point state — a pure function, so callers can
+/// smooth on capture and store only the (smoothed) points, or store the raw
+/// capture and smooth per draw; no allocations beyond the output vec.
+pub fn smooth_polyline(points: &[(f32, f32)], segs: u32) -> Vec<(f32, f32)> {
+    if points.len() < 2 || segs == 0 {
+        return points.to_vec();
+    }
+    let n = points.len();
+    // Out = first point + (n-1) segments × segs samples each.
+    let mut out = Vec::with_capacity(1 + (n - 1) * segs as usize);
+    out.push(points[0]);
+    let segs_f = segs as f32;
+    for i in 0..n - 1 {
+        // Control window [p0, p1, p2, p3]; clamped at the stroke ends to
+        // duplicate the endpoint (no extrapolation beyond the stroke).
+        let p0 = points[i.saturating_sub(1)];
+        let p1 = points[i];
+        let p2 = points[i + 1];
+        let p3 = points[(i + 2).min(n - 1)];
+        for t in 1..=segs {
+            let t = t as f32 / segs_f;
+            // Catmull-Rom basis (uniform): p(t) over [p1, p2] is
+            //   0.5 * ((2 P1) + (-P0 + P2) t + (2 P0 - 5 P1 + 4 P2 - P3) t² + (-P0 + 3 P1 - 3 P2 + P3) t³)
+            // which interpolates p1 at t=0 and p2 at t=1 exactly.
+            let t2 = t * t;
+            let t3 = t2 * t;
+            let x = 0.5
+                * (2.0 * p1.0
+                    + (-p0.0 + p2.0) * t
+                    + (2.0 * p0.0 - 5.0 * p1.0 + 4.0 * p2.0 - p3.0) * t2
+                    + (-p0.0 + 3.0 * p1.0 - 3.0 * p2.0 + p3.0) * t3);
+            let y = 0.5
+                * (2.0 * p1.1
+                    + (-p0.1 + p2.1) * t
+                    + (2.0 * p0.1 - 5.0 * p1.1 + 4.0 * p2.1 - p3.1) * t2
+                    + (-p0.1 + 3.0 * p1.1 - 3.0 * p2.1 + p3.1) * t3);
+            out.push((x, y));
+        }
+    }
+    out
+}
+
 /// Note anchored to a page point (e.g. a margin position).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextNote {
@@ -429,6 +484,49 @@ mod tests {
         // negative width is clamped to 0, not rejected
         let s = Stroke::new(vec![(0.0, 0.0), (1.0, 1.0)], -3.0, color()).expect("valid");
         assert_eq!(s.width, 0.0);
+    }
+
+    #[test]
+    fn smooth_polyline_keeps_endpoints_and_interpolates() {
+        let pts = vec![(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (30.0, 0.0)];
+        // A colinear flat line stays exactly on the line; the first point is
+        // the hard start, then 3 segments × 4 samples each.
+        let s = smooth_polyline(&pts, 4);
+        assert_eq!(s.first(), Some(&(0.0, 0.0)));
+        assert_eq!(s.last(), Some(&(30.0, 0.0)));
+        assert_eq!(s.len(), 1 + 3 * 4);
+        for (x, y) in &s {
+            assert!((0.0..=30.0).contains(x));
+            assert!(y.abs() < 1e-5, "flat line stays flat, got y={y}");
+        }
+
+        // A corner is properly rounded: the curve passes *exactly* through
+        // the vertex control point (Catmull-Rom interpolates the controls
+        // at t=1 for each inner segment) and then climbs upwards.
+        let corner = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        let s = smooth_polyline(&corner, 8);
+        // out = [P0] + seg0 (8 pts ending at P1) + seg1 (8 pts ending at P2).
+        assert_eq!(s.len(), 17);
+        assert_eq!(s[8], (10.0, 0.0), "curve interpolates the vertex");
+        // After the vertex the stroke climbs: y > 0 on the first sample of
+        // the second segment, and the endpoint is exactly the last vertex.
+        let after = s[9];
+        assert!(
+            after.1 > 0.0 && s[16] == (10.0, 10.0),
+            "climb into the corner: {after:?}"
+        );
+        for p in &s {
+            assert!(p.0 <= 12.0 && p.1 <= 12.0, "overshoot bound at {p:?}");
+        }
+    }
+
+    #[test]
+    fn smooth_polyline_passthrough_for_degenerate_input() {
+        assert_eq!(smooth_polyline(&[], 4), Vec::<(f32, f32)>::new());
+        assert_eq!(smooth_polyline(&[(1.0, 1.0)], 4), vec![(1.0, 1.0)]);
+        // segs = 0 means no interpolation at all.
+        let pts = vec![(0.0, 0.0), (5.0, 5.0), (10.0, 0.0)];
+        assert_eq!(smooth_polyline(&pts, 0), pts);
     }
 
     #[test]

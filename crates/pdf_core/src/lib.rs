@@ -12,22 +12,26 @@ pub mod dark;
 pub mod engine;
 pub mod export;
 pub mod metrics;
+pub mod overlay;
 pub mod prefetch;
 pub mod scroll;
+pub mod selection;
 pub mod store;
 pub mod sync;
 pub mod zoom;
 
 pub use ai::{AiError, GeminiClient, GroqClient, OllamaClient, chunk_pages};
 pub use annotations::{
-    Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote,
+    Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote, smooth_polyline,
 };
 pub use cache::{CacheStats, PageKey, RenderCache, RenderedPage, scale_for_level};
 pub use dark::invert_bitmap;
 pub use engine::{Bitmap, Document, Error, PageText, RenderEngine, Result, TextSpan};
 pub use export::{export_markdown, export_markdown_to_file, export_pdf_annotated};
 pub use metrics::{FrameTimer, read_rss_kb};
+pub use overlay::{ViewTransform, composite_annotations};
 pub use scroll::{Viewport, visible_and_prefetch_pages};
+pub use selection::{Gesture, HIGHLIGHT_COLOR, highlight_under_gesture};
 pub use store::{AnnotationStore, StoreError, sidecar_path};
 pub use sync::{
     AnnotationWatcher, SyncError, annotations_dir, library_index_path, watch_annotations,

@@ -11,9 +11,15 @@
 //! channel (stdlib, no new dependency).
 //!
 //! Each `request` replaces the previous one: the worker only processes the
-//! list it just received, it keeps no accumulated wishlist. Rendering already
-//! in progress when a new request arrives is not cancelled (B2 minimal); the
-//! new list simply takes over as the work queue.
+//! list it just received, it keeps no accumulated wishlist. A `Cmd::Request`
+//! that arrives WHILE the previous one is still rendering **preempts** it: the
+//! stale wishlist is dropped at the next page boundary and the new one takes
+//! over immediately (the last visible pages go first). This is what makes
+//! prefetch effective during fast scroll: a burst of viewports only renders
+//! the LAST request's pages plus whatever was in flight when it arrived,
+//! instead of grinding through every intermediate wishlist (measured in
+//! `pdf_bench` `prefetch` bench). No render is cancelled mid-page (MuPDF has
+//! no cancellation); the preemption point is between pages.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -94,23 +100,65 @@ impl<E: RenderEngine> Prefetcher<E> {
             };
             let _ = init_tx.send(Ok(()));
 
-            while let Ok(cmd) = rx.recv() {
+            'worker: while let Ok(cmd) = rx.recv() {
                 match cmd {
-                    Cmd::Stop => break,
+                    Cmd::Stop => break 'worker,
                     Cmd::Request(visibles, prefetch) => {
-                        // Visible pages first, then prefetch neighbours. Per-page
-                        // render errors are dropped on purpose: prefetch is
-                        // best-effort, and one failing page must not kill the
-                        // worker or stall the rest of the queue.
-                        for key in visibles.iter().chain(prefetch.iter()) {
-                            let _ = cache.get_or_render(key.page_idx, key.scale_level);
+                        // Visible pages first, then prefetch neighbours. A
+                        // newer Request queued behind this one preempts the
+                        // rest at the next page boundary: stale wishlists are
+                        // abandoned, only the newest viewport is rendered to
+                        // the end. Per-page render errors are dropped on
+                        // purpose: prefetch is best-effort, and one failing
+                        // page must not kill the worker or stall the queue.
+                        let mut queue: Vec<PageKey> =
+                            visibles.into_iter().chain(prefetch).collect();
+                        loop {
+                            while let Some(key) = queue.first() {
+                                let _ = cache.get_or_render(key.page_idx, key.scale_level);
+                                queue.remove(0);
+                                // Peek the channel between pages: any newer
+                                // request already queued supersedes this one
+                                // (the client has moved on); Snapshot/GetPage
+                                // are answered and the current list continues.
+                                match rx.try_recv() {
+                                    Ok(Cmd::Stop) => break 'worker,
+                                    Ok(Cmd::Request(v, p)) => {
+                                        // The request being abandoned is done
+                                        // (superseded): release its waiter now
+                                        // so `await_idle_timeout` counts every
+                                        // received request exactly once — the
+                                        // last request is counted at the end
+                                        // of this arm.
+                                        completed_worker.fetch_add(1, Ordering::Relaxed);
+                                        queue.clear();
+                                        queue.extend(v.into_iter().chain(p));
+                                    }
+                                    Ok(Cmd::Snapshot(reply)) => {
+                                        let _ = reply.send(cache.resident_keys());
+                                    }
+                                    Ok(Cmd::GetPage {
+                                        page_idx,
+                                        scale_level,
+                                        reply,
+                                    }) => {
+                                        let _ = reply.send(cache.peek_clone(page_idx, scale_level));
+                                    }
+                                    Err(_) => {}
+                                }
+                            }
+                            if queue.is_empty() {
+                                break;
+                            }
                         }
                         if let Ok(mut snapshot) = stats_worker.lock() {
                             *snapshot = *cache.stats();
                         }
-                        // The request is fully processed: release waiters. This
-                        // must happen after rendering so `await_idle_timeout`
-                        // never returns while pages are still being rendered.
+                        // The request is fully processed (or superseded by a
+                        // newer one, whose own request will release waiters):
+                        // release waiters now, after rendering, so
+                        // `await_idle_timeout` never returns while pages are
+                        // still being rendered.
                         completed_worker.fetch_add(1, Ordering::Relaxed);
                     }
                     Cmd::Snapshot(reply) => {

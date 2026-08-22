@@ -136,26 +136,39 @@ fn drop_does_not_hang() {
 }
 
 /// After `cancel_pending` the pipeline stays usable and a reissued request only
-/// renders its own pages: the counters grow by exactly the 7 pages 3..=9, and
-/// the far-away (400-range) pages are never re-rendered.
+/// renders its own pages. Under the preemption contract (newer requests abort
+/// stale wishlists at the next page boundary), the in-flight far request is
+/// ABANDONED when the cancel arrives — only the subset already rendered before
+/// the cancel counts, and the reissue near page 5 adds exactly its 7 pages.
+///
+/// The far request is sized (radius 100 → 200 pages) so it can never finish
+/// before the 100 ms sleep + cancel even in release builds (~400 ms+ of
+/// renders) — that makes "not all far pages rendered" a robust assertion.
 #[test]
 fn cancel_pending_then_reissue_only_renders_the_new_pages() {
     let prefetcher = open_prefetcher("large_document.pdf", 32 * 1024 * 1024);
 
-    // Large request in flight: pages 390..=412 (radius 10 around page 400).
+    // Huge request in flight: radius 100 around page 400 → pages 300..=499
+    // (far too many to finish before the cancel below).
     let far = Viewport {
         first_visible_page: 400,
         visible_count: 3,
     };
-    prefetcher.request(&far, 500, 10, 0);
+    prefetcher.request(&far, 500, 100, 0);
     std::thread::sleep(Duration::from_millis(100)); // let the worker pick it up
     prefetcher.cancel_pending();
 
-    // Radius 10 around page 400 renders exactly pages 390..=412 (23 pages).
-    let after_cancel = wait_misses(&prefetcher, 23, Duration::from_secs(30));
-    assert_eq!(
-        after_cancel.misses, 23,
-        "far request must render pages 390..=412"
+    // The cancel preempts the far wishlist: the worker goes idle with ONLY the
+    // subset of far pages it had already rendered (strictly fewer than all 200).
+    assert!(
+        prefetcher.await_idle_timeout(Duration::from_secs(30)),
+        "cancel must drain the worker"
+    );
+    let after_cancel = prefetcher.stats_snapshot();
+    assert!(
+        after_cancel.misses < 200,
+        "far request must be preempted by the cancel, not fully rendered: {} misses",
+        after_cancel.misses
     );
 
     // Reissue a small request near page 5: exactly 7 new renders, nothing else.
@@ -165,7 +178,11 @@ fn cancel_pending_then_reissue_only_renders_the_new_pages() {
         visible_count: 3,
     };
     prefetcher.request(&near, 500, 2, 0);
-    let after = wait_misses(&prefetcher, before + 7, Duration::from_secs(30));
+    assert!(
+        prefetcher.await_idle_timeout(Duration::from_secs(30)),
+        "reissue must drain"
+    );
+    let after = prefetcher.stats_snapshot();
     assert_eq!(
         after.misses - before,
         7,
@@ -204,8 +221,13 @@ fn test_await_idle_realmente_espera() {
 /// `request -> cancel -> reissue -> await_idle_timeout` the await returned
 /// `true` while the reissued request was still queued (the empty cancel had
 /// already bumped `completed` past the stale `requested` snapshot). Now the
-/// await must cover the reissue too: the far request (radius 20 → 43 pages)
-/// plus the near reissue (radius 2 → 7 pages) all render before idle.
+/// await must cover the reissue too: after `true`, the reissued pages 3..=9
+/// MUST already be resident — whatever happened to the far (preempted) request.
+///
+/// Under the preemption contract the far wishlist (radius 20 around page 300)
+/// is abandoned as soon as the cancel/reissue arrive, so the miss count is no
+/// longer a fixed 50; the invariant that this regression protects is
+/// `await_idle == true ⟹ reissue rendered`.
 #[test]
 fn await_idle_after_cancel_reissue_waits_for_the_new_request() {
     let prefetcher = open_prefetcher("large_document.pdf", 32 * 1024 * 1024);
@@ -228,13 +250,78 @@ fn await_idle_after_cancel_reissue_waits_for_the_new_request() {
         prefetcher.await_idle_timeout(Duration::from_secs(30)),
         "worker must go idle after draining the reissued request"
     );
+    // The reissue must be FULLY rendered by the time the await returns: the
+    // whole point of this regression (the old bug returned early, missing the
+    // reissued request).
+    for page in 3..=9 {
+        assert!(
+            prefetcher
+                .resident_pages()
+                .iter()
+                .any(|k| k.page_idx == page),
+            "await returned true but reissued page {page} is not resident"
+        );
+    }
+    // The far (preempted) request must have been abandoned: fewer misses than
+    // the full 43 far pages + 7 reissue pages it would cost without preemption.
     let s = prefetcher.stats_snapshot();
-    assert_eq!(
-        s.misses, 50,
-        "far request (43 pages) + reissue (7 pages) must all be rendered \
-         before idle; got {}",
+    assert!(
+        s.misses < 50,
+        "far wishlist must be preempted by cancel/reissue; got {} misses",
         s.misses
     );
+}
+
+/// Preemption (prefetch efectivo): a burst of requests while the worker is
+/// busy must NOT render the stale wishlists to completion — only the last
+/// request's pages (plus whatever was in flight when it arrived).
+///
+/// Deterministic framing: a ~400-page stale wishlist near page 400 is queued
+/// and IMMEDIATELY followed by a tiny request near page 5. The worker can
+/// render at most a couple of stale pages before the preemption kicks in, so
+/// the total miss count stays ≤ 10 instead of ~400.
+#[test]
+fn newer_request_preempts_stale_wishlist() {
+    let prefetcher = open_prefetcher("large_document.pdf", 32 * 1024 * 1024);
+    let stale = Viewport {
+        first_visible_page: 400,
+        visible_count: 3,
+    };
+    let fresh = Viewport {
+        first_visible_page: 5,
+        visible_count: 3,
+    };
+    // Back-to-back: the fresh request is queued before the worker can get far
+    // into the ~400-page stale wishlist.
+    prefetcher.request(&stale, 500, 200, 0); // pages 200..=499 (~400 pages)
+    prefetcher.request(&fresh, 500, 2, 0); // pages 3..=9 (7 pages)
+
+    assert!(
+        prefetcher.await_idle_timeout(Duration::from_secs(60)),
+        "worker must drain the fresh request"
+    );
+    let s = prefetcher.stats_snapshot();
+    assert!(
+        s.misses <= 10,
+        "stale wishlist (~400 pages) must be preempted after at most a couple \
+         of in-flight renders; got {} misses",
+        s.misses
+    );
+    assert!(
+        (7..=10).contains(&s.misses),
+        "fresh request renders pages 3..=9 (7), plus at most a couple of stale \
+         pages already in flight before the preemption; got {} misses",
+        s.misses
+    );
+    for page in 3..=9 {
+        assert!(
+            prefetcher
+                .resident_pages()
+                .iter()
+                .any(|k| k.page_idx == page),
+            "fresh page {page} not resident"
+        );
+    }
 }
 
 /// `get_page` answers `Some(bitmap)` for a resident key — a deep copy whose

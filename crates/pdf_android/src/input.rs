@@ -57,7 +57,9 @@ use android_activity::input::{InputEvent, MotionAction};
 use android_activity::{AndroidApp, InputStatus};
 use log::warn;
 
+use crate::annotations::ToolKind;
 use crate::draw::sheet_buttons;
+use crate::draw::{tool_fab_rect, toolbar_buttons, toolbar_rect};
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
     BookStatus, GRID_COLS, LibSort, ListDrag, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap,
@@ -120,6 +122,14 @@ enum GestureKind {
     Selecting {
         anchor: (f32, f32),
     },
+    /// Un dedo: gesto de herramienta de anotación (resaltador o boli, Fase
+    /// 3.5). El Down con una herramienta activa (y fuera del "chrome" de la
+    /// UI) entra aquí: cada Move añade puntos (boli) o extiende el rect
+    /// (resaltador) a través de `Reader::{begin,update,end}_tool_gesture`; al
+    /// soltar, `end_tool_gesture` crea la anotación guardada. Un segundo dedo
+    /// cancela el gesto en curso y pasa al pinch (la herramienta sigue
+    /// activa: el siguiente Down vuelve a dibujar).
+    ToolDrawing,
 }
 
 /// Estado de los gestos: pointers activos (pointer_id, x, y) + gesto en curso
@@ -176,6 +186,47 @@ fn page_badge_tap(reader: &mut Reader, x: f32, y: f32) -> bool {
     } else {
         false
     }
+}
+
+/// Tap en el botón flotante de la barra de herramientas ("✎" esquina
+/// superior derecha): muestra/oculta la barra. Devuelve true si el punto cae
+/// en el botón (consumido — nunca cambia de página).
+fn tool_fab_tap(reader: &mut Reader, x: f32, y: f32) -> bool {
+    let (l, t, r, b) = tool_fab_rect(reader.win_w, reader.win_h);
+    if x >= l && x < r && y >= t && y < b {
+        reader.toggle_toolbar();
+        true
+    } else {
+        false
+    }
+}
+
+/// Tap DENTRO de la barra de herramientas (misma geometría que
+/// `draw::toolbar_buttons`): "Resaltar"/"Boli" activan la herramienta,
+/// "↶" deshace el último trazo de la sesión, "●" cicla el color del boli y
+/// "→" vuelve a modo navegación y cierra la barra. Un tap en el hueco de la
+/// barra (fuera de los botones) se consume igualmente (no navega) para no
+/// cambiar de página mientras la barra está abierta.
+pub(crate) fn toolbar_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) -> bool {
+    let (l, t, r, b) = toolbar_rect(reader.win_w, reader.win_h);
+    if !(x >= l && x < r && y >= t && y < b) {
+        return false;
+    }
+    for (label, (bl, bt, br, bb)) in toolbar_buttons(reader, reader.win_w, reader.win_h) {
+        if x >= bl && x < br && y >= bt && y < bb {
+            match label {
+                "Resaltar" => reader.set_tool(ToolKind::Highlight),
+                "Boli" => reader.set_tool(ToolKind::Ink),
+                "↶" => reader.undo_last_annotation(),
+                "●" => reader.cycle_ink_color(),
+                _ => reader.close_toolbar(), // "→": navegación + cerrar barra
+            }
+            return true;
+        }
+    }
+    // Hueco de la barra (fuera de los botones): consumido para no navegar.
+    let _ = app;
+    true
 }
 
 /// Tap DENTRO del sheet de ajustes: botones (misma geometría que
@@ -273,6 +324,21 @@ fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
 /// cerrar; sheet visible → botón o cerrar; si no, indicador de página o tap
 /// de página.
 fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
+    // Barra de herramientas y botón flotante: SIEMPRE con prioridad (también
+    // con una herramienta activa — son la vía para volver a navegación).
+    if tool_fab_tap(reader, x, y) {
+        return;
+    }
+    if reader.toolbar_open && toolbar_tap(reader, app, x, y) {
+        return;
+    }
+    // Con una herramienta de anotación activa el tap simple NO navega (el
+    // dedo ya lo consumió el gesto de herramienta; un toque sin arrastre se
+    // descarta en `end_tool_gesture`). Para pasar página hay que volver a
+    // modo navegación (→ o ✎).
+    if reader.tool != ToolKind::Navigate {
+        return;
+    }
     if reader.sel_menu.is_some() {
         sel_menu_tap(reader, app, x, y);
     } else if reader.ai_panel.is_some() {
@@ -303,6 +369,12 @@ fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 /// rápido, sin long-press). El temporizador se desarma al moverse, al entrar
 /// en el pinch o al levantar.
 pub(crate) fn tick_gestures(reader: &mut Reader, _app: &AndroidApp) {
+    // Con una herramienta de anotación activa el long-press NO entra en modo
+    // selección: el dedo es tinta/resaltador. (El gesto de herramienta no
+    // necesita tick: el trazo avanza con los Moves.)
+    if reader.tool != ToolKind::Navigate {
+        return;
+    }
     if !matches!(reader.gesture.kind, GestureKind::Tap { .. })
         || reader.sheet_progress > 0.0
         || reader.gesture.pointers.len() != 1
@@ -394,6 +466,23 @@ fn handle_motion(
             // solo entra si el dedo NO se levanta antes de `LONG_PRESS_MS` y
             // NO se mueve más de `TAP_SLOP` (pull del sheet o cancelación).
             reader.gesture.pointers = pts;
+            // Herramienta de anotación activa (Fase 3.5): el Down en la
+            // página (fuera del "chrome" de la UI — botón flotante y barra)
+            // empieza un GESTO DE HERRAMIENTA (boli/resaltador) en vez de un
+            // tap: el arrastre dibuja y al soltar se crea la anotación. Los
+            // gestos existentes no se rompen: con la herramienta Navegar
+            // (la barra cerrada) esto no aplica y todo sigue igual.
+            if reader.tool != ToolKind::Navigate
+                && reader.gesture.pointers.len() == 1
+                && let Some(&(_, x, y)) = reader.gesture.pointers.first()
+                && !reader.chrome_hit(x, y)
+            {
+                reader.begin_tool_gesture(x, y);
+                if reader.tool_gesture.is_some() {
+                    reader.gesture.kind = GestureKind::ToolDrawing;
+                    return; // gesto de herramienta: sin tap ni long-press
+                }
+            }
             // Defensa: si los DOS dedos llegan en un único ACTION_DOWN
             // (algunos dispositivos/API los entregan juntos, sin PointerDown
             // posterior), empezar el pinch directamente — un "Tap" con 2
@@ -420,6 +509,12 @@ fn handle_motion(
                 // en curso (no fijada) y se pasa al pinch.
                 if matches!(reader.gesture.kind, GestureKind::Selecting { .. }) {
                     reader.clear_selection();
+                }
+                // Segundo dedo durante un gesto de herramienta: se descarta
+                // el trazo en curso (no se crea anotación) y se pasa al
+                // pinch — la herramienta sigue activa para el siguiente Down.
+                if matches!(reader.gesture.kind, GestureKind::ToolDrawing) {
+                    reader.cancel_tool_gesture();
                 }
                 begin_pinch_gesture(reader, &reader.gesture.pointers.clone());
             }
@@ -507,6 +602,14 @@ fn handle_motion(
                         reader.update_sel(cx, cy);
                     }
                 }
+                GestureKind::ToolDrawing if reader.gesture.pointers.len() == 1 => {
+                    // Arrastre de herramienta (boli/resaltador): cada Move
+                    // añade el punto o extiende el rect y re-blitea con el
+                    // frame compuesto + la capa temporal del trazo (la página
+                    // NO se re-blitea por evento — requisito 5).
+                    let (_, cx, cy) = reader.gesture.pointers[0];
+                    reader.update_tool_gesture(cx, cy);
+                }
                 _ => {}
             }
         }
@@ -545,6 +648,12 @@ fn handle_motion(
                     // el menú Copiar/Subrayar/IA (un long-press sin arrastre
                     // no fija nada: `end_sel` descarta los rects degenerados).
                     reader.end_sel();
+                }
+                GestureKind::ToolDrawing => {
+                    // Fin del gesto de herramienta: convierte el trazo en una
+                    // anotación guardada (boli suavizado / resaltador alineado
+                    // al texto; un toque sin arrastre se descarta).
+                    reader.end_tool_gesture();
                 }
                 GestureKind::Pinch { .. } => {
                     // Defensa: si los DOS dedos se levantan en un único
@@ -585,6 +694,7 @@ fn handle_motion(
             reader.gesture.kind = GestureKind::None;
             reader.gesture.press_at = None;
             reader.clear_selection();
+            reader.cancel_tool_gesture(); // el trazo en curso se descarta
             if pinch_active {
                 reader.set_zoom_sharp(reader.zoom);
             }
@@ -608,7 +718,7 @@ fn list_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 /// tarjeta del carousel de Continue Reading (abre el libro en su página
 /// guardada), chips de organización (sort/filter) o celda de la rejilla
 /// (abre el libro). La geometría DEBE reflejar exactamente la de
-/// `render_library_grid` (mismas fórmulas: `lib_chips`, `lib_content_y0`,
+/// `render_library_zone` (mismas fórmulas: `lib_chips`, `lib_content_y0`,
 /// `lib_cont_block_h`, `lib_grid_cell_rect`, `lib_org_chips`).
 fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let header_h = lib_header_h(reader.win_h);
@@ -647,7 +757,11 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 
     // PANEL de búsqueda desplegado: fila 0 = letras A-Z/#, fila 1 = carpetas.
-    let panel_top = search_y + search_hh + 6.0;
+    // La zona usa la MISMA geometría que el render (`lib_search_chips_y0/1`,
+    // donde `lib_chips` coloca los chips) y que `lib_down_zone`; antes usaba
+    // `panel_top = header_h + search_h` (6 px por encima de la fila real), de
+    // modo que un tap en el borde superior del panel caía fuera de los chips.
+    let panel_top = lib_search_chips_y0(reader);
     let panel_h = lib_search_panel_h(reader.win_h, reader.lib_search_open);
     if reader.lib_search_open && y >= panel_top && y < panel_top + panel_h {
         let row = if y < lib_search_chips_y0(reader) + lib_chip_h(reader.win_h) {
@@ -832,7 +946,7 @@ fn picker_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 /// 0 = contenido (scroll vertical), 1 = carousel de Continue Reading, 2 =
 /// fila de chips de LETRAS (búsqueda), 3 = fila de chips de CARPETAS
 /// (búsqueda), 4 = fila de chips de SORT, 5 = fila de chips de FILTER.
-/// Misma geometría que `library_tap` y `render_library_grid`.
+/// Misma geometría que `library_tap` y `render_library_zone`.
 fn library_down_zone(reader: &Reader, y: f32) -> u8 {
     let header_h = lib_header_h(reader.win_h);
     let search_h = lib_search_h();
@@ -958,7 +1072,12 @@ fn handle_picker_motion(
                                 5 => reader.lib_filter_x = s,
                                 _ => {}
                             }
-                            reader.list_dirty = true;
+                            // Scroll horizontal de una fila: se re-renderiza
+                            // SOLO esa fila (bitmap pequeño) y se remienda
+                            // sobre su contenedor; la pantalla no se
+                            // re-renderiza (antes `list_dirty` reconstruía
+                            // TODO por frame de arrastre).
+                            reader.lib_row_dirty = Some(drag.zone);
                             reader.redraw();
                         }
                     }
@@ -980,7 +1099,13 @@ fn handle_picker_motion(
                         let s = (drag.v0 - dy).clamp(0.0, max_v);
                         if s != reader.lib_scroll {
                             reader.lib_scroll = s;
-                            reader.list_dirty = true;
+                            // Scroll vertical = solo cambiar de donde se copia
+                            // la banda de contenido al buffer (memcpy); el
+                            // render (Canvas+JNI) solo se relanza si el scroll
+                            // sale de la banda actual (lo decide `redraw`).
+                            // ANTES: `list_dirty = true` re-renderizaba la
+                            // pantalla entera por frame (~20-60 ms → el lag y
+                            // el parpadeo del scroll de la biblioteca).
                             reader.redraw();
                         }
                     }

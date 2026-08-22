@@ -34,3 +34,11 @@ harness = false
 [[bench]]
 name = "annotations"
 harness = false
+
+[[bench]]
+name = "blit"
+harness = false
+
+[[bench]]
+name = "prefetch"
+harness = false

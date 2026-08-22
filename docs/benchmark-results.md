@@ -226,3 +226,131 @@ release (NDK r28). Mediana de 3, 2 corridas.
   estable se explica por el corpus corregido (más realista). Para una comparación
   limpia haría falta fijar governor y repetir N≥5 corridas.
 
+
+## Auditoría del pipeline de render + optimizaciones blit/prefetch (2026-08-22)
+
+Hardware: AMD Ryzen 7 5800H (16 hilos), Rust 1.97.1, release. Carga ambiental
+del host ALTA durante toda la sesión (IDE + agentes en paralelo, load avg ~5–7;
+otras sesiones midiendo a la vez): las rutas de código SIN tocar muestran
+±10–20 % de varianza run-to-run; las optimizadas ganan 31–89 %, muy por encima
+del ruido. **El corpus fue regenerado el 2026-08-22 18:24** (ficheros más
+pesados que el histórico), así que los absolutos de este día NO son comparables
+1:1 con los de 2026-08-05/13: las comparaciones de esta sección son dentro del
+mismo día (baseline vs optimizado, misma sesión).
+
+### 1) Baseline del inventario (criterion, corpus 2026-08-22) — antes de optimizar
+
+| Bench (grupo) | Caso | Mediana |
+|---|---|---|
+| open_render/open | dense / scanned / paper / large | 42,8 / 39,0 / 38,2 / 66,8 µs |
+| open_render/render_1x | dense / large | 4,11 / 6,81 ms |
+| open_render/render_2x | dense / large | 6,65 / 9,01 ms |
+| render_perf/render | dense p1·1x / large p1·1x | 1,89 / 5,24 ms |
+| cache_scroll | naive_hold / firstpass / pass2 | 131,9 / 95,9 ms / 433 µs |
+| zoom | scale z1.5 / z2 / z4 · rerender l1 / l2 · trim | 32,3 / 57,7 / 228,9 · 3,89 / 12,79 · 7,93 ms |
+| annotations | add n100/n1000 · for_page 200 · to/n1000 · from/n1000 · store n1000 | 6,5/62,4 µs · 81 ns · 285,7 µs · 444,6 µs · 9,02 ms |
+
+Sweep de humo (`cargo run --release -p pdf_bench`, corpus regenerado):
+dense render1x 4,45 ms · scanned 10,30 · paper 6,29 · large 4,61 ms; render2x
+11,0 / 45,1 / 14,6 / 13,5 ms; PEAK_RSS 30 072 KB. (El "open" del sweep, 6,8–11
+ms, incluye el warmup perezoso de MuPDF del primer open del proceso; el open
+puro del criterion es 38–67 µs.)
+
+### 2) Bench nuevo: camino de blit por frame (crates/pdf_bench/benches/blit.rs)
+
+Espejo fiel de las primitivas CPU de `pdf_android/src/draw.rs` (`fill_buffer`,
+`copy_region`, `rgb565`, `blit_page_scaled`, `fill_rect_lut`,
+`draw_sel_rect`, `compose_frame`, `blit_composed`) — pdf_android no compila en
+host (android-activity), así que el espejo vive en pdf_bench y **debe
+mantenerse en sync** con draw.rs. Ventana 2000×1200 (landscape típico de
+tablet), contenido real de `large_document.pdf` pág. 0 a escala cover
+(849×1200 px, 4 MiB), bpp 4 y 2, zoom 1.0 (reposo) y 1.35 (frame de pinch sin
+re-render), composición de frame completo (sheet) y su copia por frame.
+
+| Ruta (2000×1200, mediana) | Baseline | Optimizada | Δ |
+|---|---|---|---|
+| blit/page_1to1_bpp4_light | 332 µs | 368 µs (≈392 el run final) | ~0 (no tocada; ruido) |
+| blit/page_1to1_bpp4_dark | 1,376 ms | 154 µs | **−89 %** |
+| blit/page_1to1_bpp2 (RGB565) | 1,153 ms | 1,167 ms | ~0 (no tocada) |
+| blit/page_zoom135_bpp4_light | 1,292 ms | 889 µs (727 final) | **−31/−44 %** |
+| blit/page_zoom135_bpp4_dark | 2,391 ms | 731 µs (556 final) | **−69/−77 %** |
+| blit/fill_buffer | 193 µs | 189 µs | ~0 (no tocada) |
+| blit/compose_frame_2k1k | 1,161 ms | 1,363–1,396 ms | ~0 (no tocada; ruido +10–20 %) |
+| blit/blit_composed_2k1k | 796 µs | 841–876 µs | ~0 (no tocada; ruido) |
+
+### 3) Optimizaciones aplicadas (cambios mínimos, medidos antes/después)
+
+**a) Inversión de color en dark mode (bpp 4, camino 1:1 y zoom) en
+`pdf_android/src/draw.rs::blit_page_scaled`** y su gemelo
+`pdf_android/src/zoom.rs::blit_scaled_nearest` (camino de pinch de la
+Biblioteca), más el espejo del bench:
+el bucle por bytes (`255 − v` por canal) pasa a **XOR de u32 con
+`0x00FF_FFFF`**: invierte R/G/B y preserva el alfa byte a byte — la MISMA
+transformación que `pdf_core::dark::invert_bitmap`, sin cambio de resultado
+(píxel a píxel idéntico). El camino por bytes no auto-vectorizaba
+(1,38 ms → 154 µs a pantalla completa).
+
+**b) Ruta de zoom (vecino-más-cercano, bpp 4):** accesos por u32 directos con
+la `x_map` precalculada, sin bounds-check de slice por píxel (antes
+`src_row[x_map[x]*4..]` por píxel). `x_map[x] ∈ [0, src_w)` está garantizado
+por construcción (división entera truncada con `dst_rel < dw`), por lo que las
+lecturas crudas son seguras (comentado). 1,29 ms → 889 µs en pinch light;
+2,39 ms → 731 µs en pinch dark. `unsafe` acotado y comentado (AGENTS §3).
+
+**c) Prefetch efectivo (`pdf_core/src/prefetch.rs`):** el worker ahora
+**preempciona** una wishlist stale cuando llega una `Request` nueva: abandona
+la lista antigua en la frontera de página y empieza la nueva (las páginas
+visibles primero). Antes el worker molía TODAS las wishlists encoladas
+(contrato B2 "in-flight no se cancela"); ahora la rafaga de scroll solo
+renderiza la última ventana + las páginas en vuelo. Contabilidad de
+`requested/completed` preservada: cada Request recibido libera exactamente un
+waiter (al ser preempido o al terminar), así que `await_idle_timeout` sigue
+siendo correcto. Doc del módulo y 2 tests de regresión actualizados al nuevo
+contrato (se conserva la garantía que protegían: `await_idle == true ⟹ la
+reissue ya está renderizada`); test nuevo `newer_request_preempts_stale_wishlist`.
+
+Medición (`pdf_bench/benches/prefetch.rs`, burst de 10 viewports no solapados
+de 11 páginas c/u, ráfaga encolada back-to-back):
+
+| Métrica | Contrafactual sin preempeón | Con preempeón | Δ |
+|---|---|---|---|
+| Páginas renderizadas en la ráfaga | 110 | **22** | **−80 %** |
+| Tiempo hasta residente el viewport final | — | 35,8 ms | — |
+
+(Unidad de test: wishlist stale de ~400 págs + request pequeña → 400 → 1–3
+renders.)
+
+**d) Descartada y documentada:** `cache.rs` — eliminar el segundo lookup del
+camino de hit (`get_or_render` hace 2 `map.get` por hit). Medido con
+micro-harness: **10,8 ns/hit** (lookup + promoción LRU); ahorrar un lookup son
+~11 ns y queda muy por debajo del umbral del 5 %; además borrowck lo obligaría
+a un refactor invasivo del camino de miss. Queda la estructura original.
+
+**e) No optimizada (documentada):** rutas bpp 2 (RGB565): el visor fuerza
+R8G8B8A8_UNORM, no es el camino real. `scale_bitmap` (zoom software) sigue
+siendo lento (57,7 ms a ×2) — decisión ya tomada en B3: el camino inmediato
+del zoom es la textura por GPU.
+
+### 4) Verificación (2026-08-22)
+
+- `cargo test -p pdf_core` (32+21+5+8+7+9 tests): **OK**, incluidos los 9 de
+  prefetch (3 corridas estables) y los de cache/zoom/scroll.
+- `cargo clippy --all-targets -- -D warnings`: **limpio**.
+- `cargo fmt --all -- --check`: **limpio**.
+- Cross Android: `cargo build -p pdf_android --target aarch64-linux-android --release`
+  (CARGO_TARGET_DIR=/tmp/cargo-tgt-perf, NDK r28, API keys placeholder
+  gitignored) **OK 0 warnings**; `cargo build -p pdf_app` (host) **OK**.
+- Benches sin regresión: open/render/zoom/annotations/cache_scroll dentro del
+  ruido de carga (±10–20 %, varios mejoran por caída de load); blit: las rutas
+  tocadas mejoran 31–89 %, las no tocadas quedan dentro del ruido.
+
+### Notas de método
+
+- Los números de blit/prefetch son de escritorio Ryzen 7 5800H (host): en la
+  tablet TCL (A55, ~3–4× más lento por núcleo) los tiempos absolutos serán
+  mayores, pero las ganancias relativas de los caminos tocados se transfieren
+  (aritmética por u32 y XOR son independientes de la arquitectura; la
+  medición en tablet queda pendiente, Fase 6).
+- El espejo del bench (blit.rs) y draw.rs/zoom.rs deben evolucionar juntos:
+  cualquier cambio de las primitivas de blit se aplica en los tres sitios y se
+  re-mide con `cargo bench -p pdf_bench --bench blit`.

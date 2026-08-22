@@ -377,9 +377,18 @@ pub(crate) const SELECT_SLOP: f32 = 8.0;
 /// Tamaño mínimo (px) del rect de selección para fijarla y mostrar el menú
 /// Copiar/Subrayar/IA: un rect degenerado (long-press sin arrastre) se descarta.
 pub(crate) const SEL_MIN_PX: f32 = 2.0;
+/// Umbral (px de pantalla) que separa un "toque" (sin gesto) de un gesto de
+/// herramienta real (boli/resaltador): si el gesto no recorre al menos esto,
+/// `Reader::end_tool_gesture` lo descarta (mismo criterio que el tamaño
+/// mínimo de la selección de texto, `SEL_MIN_PX`). Un dedo o el lápiz que
+/// toca y suelta sin intención de dibujar no crea una anotación por accidente.
+pub(crate) const TOOL_MIN_PX: f32 = 6.0;
 /// Duración del aviso breve ("copied", "highlighted", ...) sobre el indicador
 /// de página (`Reader::toast`, expirado en `Reader::tick`).
 pub(crate) const TOAST_MS: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Duración (s) de la transición al abrir un libro: el snapshot de la
+/// biblioteca/picker se funde sobre la página. ~12 frames a 60 fps.
+pub(crate) const LIB_FADE_MS: f32 = 0.18;
 
 // ---------------------------------------------------------------------------
 // Configuración de "Preguntar a la IA" (Fase 5): Groq (texto) + Gemini (imagen)
