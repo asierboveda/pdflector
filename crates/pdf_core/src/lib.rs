@@ -32,7 +32,7 @@ pub use metrics::{FrameTimer, read_rss_kb};
 pub use overlay::{ViewTransform, composite_annotations};
 pub use scroll::{Viewport, visible_and_prefetch_pages};
 pub use selection::{Gesture, HIGHLIGHT_COLOR, highlight_under_gesture};
-pub use store::{AnnotationStore, StoreError, sidecar_path};
+pub use store::{AnnotationStore, StoreError, resolve_sidecar, sidecar_path};
 pub use sync::{
     AnnotationWatcher, SyncError, annotations_dir, library_index_path, watch_annotations,
 };

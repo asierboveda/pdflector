@@ -76,14 +76,55 @@ use crate::annotations::{Annotated, Annotation, AnnotationSet};
 /// The PDF stem (filename without extension) plays the role of the document
 /// `<id>` in the plan's tree. A PDF without an extension maps to its full
 /// file name; a path without a parent yields a relative `annotations/...`.
+/// Sidecar path for `pdf_path` following PLAN §3.5:
+/// `<pdf-dir>/annotations/<pdf-stem>-<hash8>.db`.
+///
+/// The suffix is a stable FNV-1a hash of the PDF path, so two PDFs with the
+/// same stem in different directories (`a/doc.pdf` vs `b/doc.pdf`) no longer
+/// collide on the same sidecar (fix 2026-08-23, ADR-007). The hash is
+/// deterministic across processes (FNV-1a, no random keys). A PDF without an
+/// extension maps to its full file name; a path without a parent yields a
+/// relative `annotations/...`.
+///
+/// For backwards compatibility with pre-hash sidecars (`<stem>.db`), use
+/// [`resolve_sidecar`] when *opening* an existing store.
 pub fn sidecar_path(pdf_path: &Path) -> PathBuf {
     let dir = pdf_path.parent().unwrap_or_else(|| Path::new(""));
     let stem = pdf_path
         .file_stem()
         .or_else(|| pdf_path.file_name())
         .unwrap_or_else(|| std::ffi::OsStr::new("document"));
-    // Concatenate instead of `with_extension`: the latter would replace the
-    // last extension of the stem ("a.b" -> "a.db"), losing the document id.
+    let mut name = stem.to_os_string();
+    name.push(format!("-{:08x}.db", stable_path_hash(pdf_path)));
+    dir.join("annotations").join(name)
+}
+
+fn stable_path_hash(pdf_path: &Path) -> u32 {
+    let abs = pdf_path.as_os_str().as_encoded_bytes().to_vec();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in &abs {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    (hash >> 32) as u32
+}
+
+pub fn resolve_sidecar(pdf_path: &Path) -> PathBuf {
+    let new = sidecar_path(pdf_path);
+    let legacy = legacy_sidecar_path(pdf_path);
+    if legacy.is_file() && !new.is_file() {
+        legacy
+    } else {
+        new
+    }
+}
+
+fn legacy_sidecar_path(pdf_path: &Path) -> PathBuf {
+    let dir = pdf_path.parent().unwrap_or_else(|| Path::new(""));
+    let stem = pdf_path
+        .file_stem()
+        .or_else(|| pdf_path.file_name())
+        .unwrap_or_else(|| std::ffi::OsStr::new("document"));
     let mut name = stem.to_os_string();
     name.push(".db");
     dir.join("annotations").join(name)

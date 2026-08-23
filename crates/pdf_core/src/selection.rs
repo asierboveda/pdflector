@@ -39,44 +39,107 @@ pub enum Gesture {
 
 /// Builds a `Highlight` from a gesture and the page's extracted lines.
 ///
-/// Every span whose bounding box intersects the gesture is covered by one
-/// rect aligned to that span (same y/h as the line box), clipped on x to the
-/// gesture's horizontal extent — the marker stops where the stroke stops.
+/// **Trazo (Points)** — comportamiento de ROTULADOR REAL (optimización
+/// 2026-08-23, petición del autor): cada línea se subraya SOLO si el trazo
+/// pasa por su banda vertical (tolerancia ±[`BAND_TOL`] pt) y el tramo
+/// marcado es el recorrido X del trazo dentro de la línea, clavado al bbox
+/// de la línea. Con esto:
+///   - "pasarse a la siguiente línea subraya todo lo que une": un trazo que
+///     baja de una línea a la siguiente marca AMBAS (y las intermedias por
+///     las que pasa la tinta del rotulador);
+///   - en papers de DOS COLUMNAS no se "une" ni se pinta el gutter: una
+///     línea de la otra columna solo se marca si el trazo llega hasta su x
+///     (el clip por el bbox de la línea lo garantiza).
+///
+/// Un roce mínimo deja marca visible ([`MIN_STROKE_SPAN`] pt).
+///
+/// **Marquee (Rect)** — selección de BLOQUE: líneas cuyo bbox intersecta el
+/// rect, recortadas al tramo horizontal (semántica de abarcar, no de
+/// rotulador).
+///
 /// Degenerate gestures (no points, empty rect) or pages without matching
 /// spans yield `None`, so callers can decide whether to create the
 /// annotation at all.
-///
-/// `color` is the highlight colour — a configurable alpha is expected here
-/// (the marker look comes from alpha blending in the overlay pass).
 pub fn highlight_under_gesture(
     spans: &[crate::engine::TextSpan],
     gesture: &Gesture,
     color: Color,
 ) -> Option<Highlight> {
-    let (x_min, x_max, y_range) = gesture_extent(gesture)?;
-    let mut rects: Vec<Rect> = Vec::new();
-    for span in spans {
-        // Quick reject: no positive-area overlap with the gesture box.
-        if span.x + span.w <= x_min
-            || span.x >= x_max
-            || span.y + span.h <= y_range.0
-            || span.y >= y_range.1
-        {
-            continue;
+    let rects: Vec<Rect> = match gesture {
+        Gesture::Points(pts) => {
+            let mut out = Vec::new();
+            for span in spans {
+                let y0 = span.y - BAND_TOL;
+                let y1 = span.y + span.h + BAND_TOL;
+                let within = |p: &(f32, f32)| p.1 >= y0 && p.1 <= y1;
+                let mut x_min = f32::INFINITY;
+                let mut x_max = f32::NEG_INFINITY;
+                for p in pts {
+                    if within(p) {
+                        x_min = x_min.min(p.0);
+                        x_max = x_max.max(p.0);
+                    }
+                }
+                for w in pts.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let a_in = within(&a);
+                    let b_in = within(&b);
+                    let crosses = (a.1 < y0 && b.1 > y1) || (a.1 > y1 && b.1 < y0);
+                    if a_in || b_in || crosses {
+                        x_min = x_min.min(a.0.min(b.0));
+                        x_max = x_max.max(a.0.max(b.0));
+                    }
+                }
+                if !x_min.is_finite() {
+                    continue;
+                }
+                let x_max = if x_max - x_min < MIN_STROKE_SPAN {
+                    x_min + MIN_STROKE_SPAN
+                } else {
+                    x_max
+                };
+                let x0 = span.x.max(x_min);
+                let x1 = (span.x + span.w).min(x_max);
+                if x1 - x0 > 0.0 {
+                    out.push(Rect::new(x0, span.y, x1 - x0, span.h));
+                }
+            }
+            out
         }
-        let x0 = span.x.max(x_min);
-        let x1 = (span.x + span.w).min(x_max);
-        if x1 - x0 <= 0.0 {
-            continue;
+        Gesture::Rect(r) => {
+            let (x_min, x_max, (y0, y1)) = gesture_extent(&Gesture::Rect(*r))?;
+            let mut out = Vec::new();
+            for span in spans {
+                if span.x + span.w <= x_min
+                    || span.x >= x_max
+                    || span.y + span.h <= y0
+                    || span.y >= y1
+                {
+                    continue;
+                }
+                let x0 = span.x.max(x_min);
+                let x1 = (span.x + span.w).min(x_max);
+                if x1 - x0 > 0.0 {
+                    out.push(Rect::new(x0, span.y, x1 - x0, span.h));
+                }
+            }
+            out
         }
-        rects.push(Rect::new(x0, span.y, x1 - x0, span.h));
-    }
+    };
     if rects.is_empty() {
         None
     } else {
         Some(Highlight { rects, color })
     }
 }
+
+/// Tolerancia vertical de la banda de una línea para el trazo del rotulador
+/// (pt): un deslizamiento casi perfectamente horizontal sigue marcando su
+/// línea (fue el `MIN_GESTURE_H` de la iteración anterior).
+const BAND_TOL: f32 = 1.0;
+/// Tramo mínimo marcado por línea (pt): un trazo que roza una línea deja
+/// marca visible en vez de un rect de ancho 0.
+const MIN_STROKE_SPAN: f32 = 3.0;
 
 /// Horizontal clip range `(min, max_x)` and vertical band `(min, max_y)` of
 /// the gesture, in page coordinates. A point gesture is its own bounding
@@ -134,9 +197,55 @@ mod tests {
         assert_eq!(hl.rects.len(), 2);
         // Line 1 (x 10..100): clipped to the stroke's horizontal extent.
         assert_eq!(hl.rects[0], Rect::new(20.0, 20.0, 40.0, 12.0));
-        // Line 2 (x 10..90): clipped the same way.
-        assert_eq!(hl.rects[1], Rect::new(20.0, 34.0, 40.0, 12.0));
+        // Line 2 (x 10..90): el trazo solo la toca en su borde (x=60): el
+        // tramo marcado es el tramo mínimo (3 pt) donde la rozó, no todo el
+        // rango X del gesto (semántica de rotulador real, 2026-08-23).
+        assert_eq!(hl.rects[1], Rect::new(60.0, 34.0, 3.0, 12.0));
         assert_eq!(hl.color, HIGHLIGHT_COLOR);
+    }
+
+    #[test]
+    fn stroke_going_down_marks_lines_it_joins() {
+        // "Pasar a la siguiente línea subraya todo lo que une": un trazo que
+        // baja de la línea 1 a la 3 diagonalmente marca las 3 líneas (las
+        // que la tinta del rotulador toca en su recorrido).
+        let gesture = Gesture::Points(vec![(20.0, 25.0), (70.0, 25.0), (70.0, 41.0), (40.0, 55.0)]);
+        let hl =
+            highlight_under_gesture(&spans(), &gesture, HIGHLIGHT_COLOR).expect("joined lines");
+        assert_eq!(hl.rects.len(), 3);
+        assert_eq!(hl.rects[0], Rect::new(20.0, 20.0, 50.0, 12.0));
+        assert_eq!(hl.rects[1], Rect::new(40.0, 34.0, 30.0, 12.0)); // trazo x 40..70
+        assert_eq!(hl.rects[2], Rect::new(40.0, 48.0, 30.0, 12.0)); // trazo x 40..70
+    }
+
+    #[test]
+    fn two_columns_do_not_join_across_the_gutter() {
+        // Paper científico de DOS COLUMNAS: subrayar la línea de la columna
+        // izquierda NO arrastra a las líneas de la columna derecha aunque el
+        // bbox del gesto (y) las abarque: el rotulador solo marca lo que toca.
+        let cols = vec![
+            line("izq1", 30.0, 20.0, 180.0, 12.0),
+            line("izq2", 30.0, 34.0, 180.0, 12.0),
+            line("izq3", 30.0, 48.0, 180.0, 12.0),
+            line("der1", 500.0, 20.0, 180.0, 12.0),
+            line("der2", 500.0, 34.0, 180.0, 12.0),
+            line("der3", 500.0, 48.0, 180.0, 12.0),
+        ];
+        // Trazo dentro de la columna izquierda, bajando de la línea 1 a la 3.
+        let gesture = Gesture::Points(vec![(40.0, 25.0), (190.0, 25.0), (190.0, 41.0), (50.0, 55.0)]);
+        let hl =
+            highlight_under_gesture(&cols, &gesture, HIGHLIGHT_COLOR).expect("left column lines");
+        assert_eq!(hl.rects.len(), 3, "solo la columna izquierda");
+        assert!(hl.rects.iter().all(|r| r.x < 500.0), "nada en la derecha");
+        // La derecha se marca SOLO si el trazo llega hasta su x: mismo gesto
+        // pero terminando dentro de la columna derecha.
+        let gesture2 = Gesture::Points(vec![(40.0, 25.0), (190.0, 25.0), (560.0, 55.0)]);
+        let hl2 = highlight_under_gesture(&cols, &gesture2, HIGHLIGHT_COLOR)
+            .expect("reaches right column");
+        assert!(
+            hl2.rects.iter().any(|r| r.x >= 500.0),
+            "la derecha sí al llegar"
+        );
     }
 
     #[test]

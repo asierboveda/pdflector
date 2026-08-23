@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use pdf_core::store::{AnnotationStore, sidecar_path};
+use pdf_core::store::{AnnotationStore, resolve_sidecar, sidecar_path};
 use pdf_core::{Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote};
 
 /// Unique per-test temp dir, removed on drop (also on panic).
@@ -84,26 +84,47 @@ fn sample_set() -> AnnotationSet {
 }
 
 #[test]
-fn sidecar_path_follows_plan_convention() {
+fn sidecar_path_is_stable_and_hash_suffixed() {
     let cases = [
-        (
-            Path::new("/lib/doc.pdf"),
-            Path::new("/lib/annotations/doc.db"),
-        ),
-        (
-            Path::new("/lib/a.b.pdf"),
-            Path::new("/lib/annotations/a.b.db"),
-        ),
-        (Path::new("/lib/doc"), Path::new("/lib/annotations/doc.db")),
-        (
-            Path::new("libs/sub/doc.pdf"),
-            Path::new("libs/sub/annotations/doc.db"),
-        ),
-        (Path::new("doc.pdf"), Path::new("annotations/doc.db")),
+        Path::new("/lib/doc.pdf"),
+        Path::new("/lib/a.b.pdf"),
+        Path::new("/lib/doc"),
+        Path::new("libs/sub/doc.pdf"),
+        Path::new("doc.pdf"),
     ];
-    for (pdf, want) in cases {
-        assert_eq!(sidecar_path(pdf), want, "for {pdf:?}");
+    for pdf in cases {
+        let p1 = sidecar_path(pdf);
+        let p2 = sidecar_path(pdf);
+        assert_eq!(p1, p2, "sidecar_path must be stable for {pdf:?}");
+        let parent = p1.parent().expect("parent");
+        assert!(parent.ends_with("annotations"), "not under annotations/: {p1:?}");
+        let name = p1.file_name().and_then(|n| n.to_str()).expect("name");
+        let stem = pdf.file_stem().or_else(|| pdf.file_name()).and_then(|s| s.to_str()).unwrap_or("document");
+        assert!(name.starts_with(&format!("{stem}-")) && name.ends_with(".db"), "unexpected sidecar name: {name:?} for {pdf:?}");
     }
+}
+
+#[test]
+fn sidecar_collision_different_dirs_same_stem() {
+    let a = sidecar_path(Path::new("/a/doc.pdf"));
+    let b = sidecar_path(Path::new("/b/doc.pdf"));
+    assert_ne!(a, b, "same stem in different dirs must not share a sidecar");
+    assert_eq!(a.parent(), Some(Path::new("/a/annotations")));
+    assert_eq!(b.parent(), Some(Path::new("/b/annotations")));
+}
+
+#[test]
+fn resolve_sidecar_prefers_legacy_when_present() {
+    let tmp = TempDir::new("resolve");
+    let pdf = tmp.path().join("notes.pdf");
+    let legacy = tmp.path().join("annotations").join("notes.db");
+    std::fs::create_dir_all(legacy.parent().unwrap()).expect("mkdir");
+    std::fs::write(&legacy, b"old-format").expect("write legacy");
+    assert_eq!(resolve_sidecar(&pdf), legacy);
+    std::fs::remove_file(&legacy).unwrap();
+    let resolved = resolve_sidecar(&pdf);
+    assert_ne!(resolved, legacy);
+    assert_eq!(resolved, sidecar_path(&pdf));
 }
 
 #[test]
@@ -176,7 +197,7 @@ fn persists_across_reopen_and_save_is_idempotent() {
     std::fs::create_dir_all(&library).expect("create library dir");
     let pdf = library.join("libro.pdf");
     let db = sidecar_path(&pdf);
-    assert_eq!(db, library.join("annotations/libro.db"));
+    assert_eq!(db.parent(), Some(library.join("annotations").as_path()));
 
     let set = sample_set();
     {
