@@ -19,6 +19,12 @@
 |------|---------|--------|
 | 1-6 | `01-lectura-fluida.md` ... `06-android.md` | Waterfall 17 semanas, descartado 2026-08-24 |
 
+## Bug abierto (próxima sesión)
+
+| Bug | Fichero | Síntoma |
+|-----|---------|---------|
+| Pantalla se apaga/parpadea al escribir | `BUG-pantalla-apagada.md` | Trazo que cruza tinta + soltar → flash (abierto) |
+
 ## Cómo modificar el plan vigente
 
 1. Edita `NEXT-PLAN.md` (tabla de fases) o el fichero `A/B/C/D/E-*.md` (criterio/tareas).
