@@ -424,19 +424,13 @@ pub(crate) fn blit_composed_dirty(
     frame: &Bitmap,
     overlays: &[(&Bitmap, i32, i32)],
     blend_layer: Option<(&Bitmap, i32, i32)>,
-    dirty: (i32, i32, i32, i32),
+    _dirty: (i32, i32, i32, i32),
 ) {
-    // Lock con REGIÓN SUCIO: además de copiar solo el rect, se le pasa a
-    // ANativeWindow_lock para que el compositor solo procese esa zona
-    // (camino rápido del driver; en TCL alivia algo el lock vsync).
-    let (x0, y0, x1, y1) = dirty;
-    let mut dirty_rect = android_activity::ndk_sys::ARect {
-        left: x0,
-        top: y0,
-        right: x1,
-        bottom: y1,
-    };
-    let Ok(mut guard) = window.lock(Some(&mut dirty_rect)) else {
+    // Copia completa con lock(None): 2–4 ms en ARM64 NEON para 12 MB.
+    // La variante con lock(dirty) dejaba los buffers del triple-buffering
+    // con contenido indefinido fuera del rect (negro) en el driver Mali de
+    // la TCL.
+    let Ok(mut guard) = window.lock(None) else {
         warn!("ANativeWindow_lock failed");
         return;
     };
@@ -454,13 +448,7 @@ pub(crate) fn blit_composed_dirty(
     let dst_h = guard.height();
     let dst_stride = guard.stride(); // en píxeles
     let dst = guard.bits() as *mut u8;
-    if bpp == 4 {
-        copy_region_rect(dst, dst_w, dst_h, dst_stride, bpp, frame, x0, y0, x1, y1);
-    } else {
-        // Formato no RGBA: sin dirty rect, copia completa (raro; el buffer
-        // se fuerza a R8G8B8A8_UNORM).
-        copy_region(dst, dst_w, dst_h, dst_stride, bpp, frame, 0, 0);
-    }
+    copy_region(dst, dst_w, dst_h, dst_stride, bpp, frame, 0, 0);
     if let Some((ov, ox, oy)) = blend_layer {
         copy_region_blend(dst, dst_w, dst_h, dst_stride, bpp, ov, ox, oy);
     }

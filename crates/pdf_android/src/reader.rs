@@ -2105,7 +2105,9 @@ impl Reader {
                     } else {
                         None
                     };
-                let use_frame = self.sheet_progress > 0.0 || self.tool_gesture.is_some();
+                let use_frame = self.sheet_progress > 0.0
+                    || self.tool_gesture.is_some()
+                    || self.page_frame.is_some();
                 if use_frame {
                     // Sheet visible: frame compuesto + overlay del sheet. El
                     // frame (fondo + página + anotaciones + indicador) se
