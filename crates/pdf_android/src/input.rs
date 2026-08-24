@@ -527,6 +527,15 @@ fn handle_motion(
         }
         MotionAction::PointerDown => {
             reader.gesture.pointers = pts;
+            // PALM REJECTION mientras se dibuja con el STYLUS: si la mano u
+            // otro dedo toca durante un trazo del lápiz, ese segundo puntero
+            // NO es un pinch — se IGNORA por completo (el trazo sigue; nada
+            // de zoom/reescala). Arregla el "parpadeo" al escribir sobre
+            // trazos existentes: al apoyar la palma al soltar, el código
+            // convertía el gesto en pinch y la página reescalaba de golpe.
+            if matches!(reader.gesture.kind, GestureKind::ToolDrawing) && stylus {
+                return;
+            }
             // Segundo dedo: pinch. Distancia inicial = base del factor de
             // zoom; el centro del pinch (punto medio de los dedos) se fija
             // como ancla del zoom (`begin_pinch`): el punto de documento bajo
