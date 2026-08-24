@@ -3536,20 +3536,22 @@ impl Reader {
     /// guardado es el mismo que usaba el modo dibujo eliminado; el modelo de
     /// anotaciones sigue siendo persistible y exportable.
     fn save_annotations(&self) {
-        let Some(sidecar) = self.annot_sidecar.as_ref() else {
+        let Some(sidecar) = self.annot_sidecar.clone() else {
             return;
         };
-        match AnnotationStore::open(sidecar) {
-            Ok(store) => match store.save(&self.annotations) {
-                Ok(()) => info!(
-                    "annotations saved ({} total) to {}",
-                    self.annotations.len(),
-                    sidecar.display()
-                ),
+        let annotations = self.annotations.clone();
+        let len = annotations.len();
+        // Guardado en hilo de fondo: con 276+ trazos, la serialización JSON +
+        // SQLite bloqueaba el hilo UI ~50-200ms al soltar, causando
+        // "parpadeo"/ANR al escribir encima de tinta existente. El hilo de
+        // fondo evita el bloqueo; best-effort (un fallo solo se loguea).
+        std::thread::spawn(move || match AnnotationStore::open(&sidecar) {
+            Ok(store) => match store.save(&annotations) {
+                Ok(()) => info!("annotations saved ({} total) to {}", len, sidecar.display()),
                 Err(e) => error!("annotations save {}: {e}", sidecar.display()),
             },
             Err(e) => error!("annotations open {}: {e}", sidecar.display()),
-        }
+        });
     }
 
     // ---------------------------------------------------------------------

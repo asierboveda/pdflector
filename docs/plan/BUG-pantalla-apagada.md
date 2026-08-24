@@ -140,3 +140,23 @@ con el hardware real.
 - `crates/pdf_android/src/input.rs` → PointerDown + palm rejection + stylus.
 - Logs de interés en vivo: `adb logcat -v threadtime | grep -E
   'ActivityTaskManager|InputDispatcher|surfaceflinger|nvr|pdf_android'`.
+## 7. Fixes Implementados (2026-08-24, sesión actual)
+
+### Fix H1: configChanges para evitar recreación
+- **Archivo:** `crates/pdf_android/Cargo.toml` - `config_changes = "orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|layoutDirection|density|fontScale"`
+- **Efecto:** La Activity ya no se destruye/recrea al rotar o cambiar densidad, evitando el parpadeo negro de recreación.
+
+### Fix H3: save_annotations en hilo de fondo
+- **Archivo:** `crates/pdf_android/src/reader.rs` - `save_annotations()` ahora hace `thread::spawn` con clone de `AnnotationSet`.
+- **Efecto:** Con 276+ trazos, el guardado ya no bloquea el hilo UI (~50-200ms). Elimina el ANR al escribir encima.
+
+### Fix Adicional: keep_screen_on robusto
+- **Verificado:** `dumpsys window` confirma `fl=KEEP_SCREEN_ON` y test de 70s con timeout 10s → `Awake`.
+
+## 8. Verificación Pendiente (usuario)
+
+1. Abrir PDF con anotaciones existentes (276+).
+2. Escribir un trazo que cruce tinta existente y soltar.
+3. Observar: ¿sigue el parpadeo/apagado?
+4. Si sí, capturar con `tools/capture-screenoff.sh` mientras se reproduce.
+

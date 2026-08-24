@@ -97,6 +97,7 @@ label = "PDFLector"
 
 [package.metadata.android.application.activity]
 exported = true
+config_changes = "orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|layoutDirection|density|fontScale"
 
 [[package.metadata.android.application.activity.intent_filter]]
 actions = ["android.intent.action.VIEW"]
