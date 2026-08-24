@@ -1,32 +1,30 @@
 # Plan — PDFLector
 
-> Fuente de verdad editable. Cada fase es un fichero. Estado real = GitHub Milestones + Issues #25-30.
-> Edita estos ficheros para cambiar el objetivo. El agente lee `AGENTS.md` + este índice.
+> **Plan vigente:** `NEXT-PLAN.md` (A-E, visor ultra-óptimo, aprobado 2026-08-24). Los ficheros `01-06` son histórico del plan waterfall obsoleto.
+> **Fuente de verdad:** `NEXT-PLAN.md` + `A/B/C/D/E-*.md`. Edita esos ficheros para cambiar el objetivo.
 
-## Fases
+## Vigente (editable ahora)
 
-| Fase | Fichero | Milestone | Issue | Estado |
-|------|---------|-----------|-------|--------|
-| 0 | `fases/00-andamiaje.md` | — | — | ✅ Cerrada 2026-08-05 |
-| 0.5 | `fases/05-motor.md` | — | — | ✅ ADR-001 MuPDF/AGPL |
-| 1 | `01-lectura-fluida.md` | Milestone 1 | #25 | 🟡 Lado app OK, falta medición HW |
-| 2 | `02-modo-oscuro.md` | Milestone 2 | #26 | 🟡 Lado app OK, falta test |
-| 3 | `03-anotaciones.md` | Milestone 3 | #27 | 🟡 Modelo OK, falta estrés 200 trazos |
-| 4 | `04-sync.md` | Milestone 4 | #28 | 🟡 Código OK, falta E2E Syncthing |
-| 5 | `05-ia.md` | Milestone 5 | #29 | 🟡 Código OK, falta E2E Ollama/Groq |
-| 6 | `06-android.md` | Milestone 6 | #30 | 🟡 Spike OK, falta port Slint |
+| Fase | Fichero | Issue | Objetivo |
+|------|---------|-------|----------|
+| A | `A-latencia.md` | — | Harness `adb` + p95 |
+| B | `B-subrayado.md` | — | Subrayado 0-latencia |
+| C | `C-pintado.md` | — | Pintado 200 trazos 60fps |
+| D | `D-ia-contexto.md` | — | IA con RAG BM25 + visión |
+| E | `E-library.md` | — | Library fluida (secundaria) |
 
-## Cómo modificar el plan
+## Histórico (no editar, solo referencia)
 
-1. Edita el fichero de la fase (cambia objetivo, criterio o tareas).
-2. Actualiza el Issue de GitHub correspondiente (`gh issue edit <n> --body "..."` o desde la web).
-3. Si cambias arquitectura/decisión → crea `docs/adr/ADR-00X-*.md`.
+| Fase | Fichero | Estado |
+|------|---------|--------|
+| 1-6 | `01-lectura-fluida.md` ... `06-android.md` | Waterfall 17 semanas, descartado 2026-08-24 |
 
-## Presupuestos globales (AGENTS.md §MUST)
+## Cómo modificar el plan vigente
 
-- p95 frame time <16.6ms (60fps), render <25ms en TCL, PSS <150MB con 500 pág.
-- Medir antes de afirmar. Toda fase se cierra con log fecha+hardware.
+1. Edita `NEXT-PLAN.md` (tabla de fases) o el fichero `A/B/C/D/E-*.md` (criterio/tareas).
+2. Si cambias arquitectura → crea `docs/adr/ADR-00X-*.md`.
+3. Harness TCL en `.opencode/skills/pdflector-rendimiento/SKILL.md`.
 
-## Decisiones cerradas
+## Competencia
 
-Ver `docs/PLAN.md` §1 y `docs/PROYECTO.md`. Motor=MuPDF, lápiz sin presión, export MD+PDF, sync Syncthing, repo público AGPL-3.0-or-later.
+Ver `COMPETENCIA.md` (Xodo ~12ms, MuPDF ~10ms, prime-pdf-viewer Rust+Slint).
