@@ -128,8 +128,18 @@ enum GestureKind {
     /// (resaltador) a través de `Reader::{begin,update,end}_tool_gesture`; al
     /// soltar, `end_tool_gesture` crea la anotación guardada. Un segundo dedo
     /// cancela el gesto en curso y pasa al pinch (la herramienta sigue
-    /// activa: el siguiente Down vuelve a dibujar).
+    /// activa: el siguiente Down vuelve a dibujar). SOLO entra con STYLUS:
+    /// los dedos NUNCA dibujan (separación dedo/stylus — ver `Pan`).
     ToolDrawing,
+    /// Un dedo (DEDO, con herramienta activa): mover la página (pan) — "los
+    /// gestos con la mano son para mover/zoom". `start` es la posición del
+    /// Down y `pan0` el pan de partida; cada Move fija
+    /// `pan = pan0 + (cur − start)` del documento. Dos dedos lo convierten
+    /// en `Pinch`.
+    Pan {
+        start: (f32, f32),
+        pan0: (f32, f32),
+    },
 }
 
 /// Estado de los gestos: pointers activos (pointer_id, x, y) + gesto en curso
@@ -452,6 +462,7 @@ fn handle_motion(
     action: MotionAction,
     pts: Vec<(i32, f32, f32)>,
     up_idx: Option<usize>,
+    stylus: bool,
 ) {
     if reader.mode == UiMode::Picker || reader.mode == UiMode::Library {
         handle_picker_motion(reader, app, action, pts, up_idx);
@@ -478,10 +489,24 @@ fn handle_motion(
                 && let Some(&(_, x, y)) = reader.gesture.pointers.first()
                 && !reader.chrome_hit(x, y)
             {
-                reader.begin_tool_gesture(x, y);
-                if reader.tool_gesture.is_some() {
-                    reader.gesture.kind = GestureKind::ToolDrawing;
-                    return; // gesto de herramienta: sin tap ni long-press
+                // SEPARACIÓN DEDO/STYLUS: solo el lápiz dibuja con la
+                // herramienta activa; el dedo (con herramienta activa) hace
+                // PAN (mover el documento) y con dos dedos PINCH (zoom).
+                if stylus {
+                    log::info!("tool gesture iniciado con STYLUS");
+                    reader.begin_tool_gesture(x, y);
+                    if reader.tool_gesture.is_some() {
+                        reader.gesture.kind = GestureKind::ToolDrawing;
+                        return; // gesto de herramienta: sin tap ni long-press
+                    }
+                } else {
+                    // Dedo: modo mano — pan 1 dedo (el pinch 2 dedos lo
+                    // convierte el PointerDown). Sin tap ni long-press.
+                    reader.gesture.kind = GestureKind::Pan {
+                        start: (x, y),
+                        pan0: reader.begin_pan(),
+                    };
+                    return;
                 }
             }
             // Defensa: si los DOS dedos llegan en un único ACTION_DOWN
@@ -611,6 +636,11 @@ fn handle_motion(
                     let (_, cx, cy) = reader.gesture.pointers[0];
                     reader.update_tool_gesture(cx, cy);
                 }
+                GestureKind::Pan { start, pan0 } if reader.gesture.pointers.len() == 1 => {
+                    // Dedo con herramienta activa: mover el documento (pan).
+                    let (_, cx, cy) = reader.gesture.pointers[0];
+                    reader.set_pan(pan0.0 + (cx - start.0), pan0.1 + (cy - start.1));
+                }
                 _ => {}
             }
         }
@@ -655,6 +685,10 @@ fn handle_motion(
                     // anotación guardada (boli suavizado / resaltador alineado
                     // al texto; un toque sin arrastre se descarta).
                     reader.end_tool_gesture();
+                }
+                GestureKind::Pan { .. } => {
+                    // Fin del pan con dedo: no hay nada que asentar (el pan
+                    // ya quedó aplicado en cada Move).
                 }
                 GestureKind::Pinch { .. } => {
                     // Defensa: si los DOS dedos se levantan en un único
@@ -1147,12 +1181,22 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
                     .pointers()
                     .map(|p| (p.pointer_id(), p.x(), p.y()))
                     .collect();
+                // Separación dedo/stylus (S-Pen, Saber): solo el STYLUS (o
+                // borrador/estilo invertido) dibuja con la herramienta
+                // activa; los dedos (y la palma) navegan (pan/pinch).
+                let stylus = motion.pointers().any(|p| {
+                    matches!(
+                        p.tool_type(),
+                        android_activity::input::ToolType::Stylus
+                            | android_activity::input::ToolType::Eraser
+                    )
+                });
                 let up_idx = if action == MotionAction::PointerUp {
                     Some(motion.pointer_index())
                 } else {
                     None
                 };
-                handle_motion(reader, app, action, pts, up_idx);
+                handle_motion(reader, app, action, pts, up_idx, stylus);
                 InputStatus::Handled
             }
             InputEvent::KeyEvent(_) | InputEvent::TextEvent(_) | InputEvent::TextAction(_) | _ => {

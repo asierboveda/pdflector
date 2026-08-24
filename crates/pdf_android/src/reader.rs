@@ -3534,6 +3534,20 @@ impl Reader {
         self.repaint = true;
     }
 
+    /// Pan con DEDO (herramienta activa, modo mano): devuelve el pan de
+    /// partida al bajar el dedo (mismo formato que `set_pan`).
+    pub(crate) fn begin_pan(&self) -> (f32, f32) {
+        (self.pan_x, self.pan_y)
+    }
+
+    /// Fija el pan (px) del documento y marca repintado — el blit por vsync
+    /// aplicará el desplazamiento del frame al `ANativeWindow`.
+    pub(crate) fn set_pan(&mut self, x: f32, y: f32) {
+        self.pan_x = x;
+        self.pan_y = y;
+        self.mark_repaint();
+    }
+
     /// ¿Hay un blit pendiente por coalescer? (el bucle principal lo llama
     /// una vez por iteración tras procesar eventos).
     pub(crate) fn take_repaint(&mut self) -> bool {
