@@ -79,6 +79,7 @@ impl PageCache {
     /// Lookup que PROMUEVE la entrada (recencia LRU). Lo usa el render
     /// (`ensure_pages_rendered`): un hit evita el re-render y marca la página
     /// como recientemente usada.
+    #[allow(dead_code)] // el flujo async usa `peek`; get queda como API
     pub(crate) fn get(&mut self, page: u32) -> Option<&Bitmap> {
         if self.map.contains_key(&page) {
             self.promote(page);
@@ -125,15 +126,18 @@ impl PageCache {
     }
 
     /// Nº de páginas residentes (para el log de debug).
+    #[allow(dead_code)] // métrica de debug
     pub(crate) fn len(&self) -> usize {
         self.map.len()
     }
 
     /// Bytes totales residentes (para el log de debug).
+    #[allow(dead_code)] // métrica de debug
     pub(crate) fn resident_bytes(&self) -> usize {
         self.bytes
     }
 
+    #[allow(dead_code)]
     fn promote(&mut self, page: u32) {
         if let Some(pos) = self.lru.iter().position(|&p| p == page) {
             self.lru.remove(pos);

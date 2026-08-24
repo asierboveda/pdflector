@@ -515,12 +515,14 @@ pub fn android_main(app: AndroidApp) {
     crate::jni::enter_immersive(&app);
 
     while running {
-        // Timeout del poll SOLO mientras hay trabajo diferido: animación del
-        // sheet de ajustes, portadas de la biblioteca pendientes, long-press
-        // del dedo en el documento (modo selección) o aviso breve (toast)
-        // visible (`Reader::needs_tick`; `tick` los avanza). En reposo el
-        // poll bloquea sin timeout (sin batería extra).
-        let timeout = if reader.needs_tick() {
+        // Timeout del poll SIEMPRE con ventana (16 ms → tick por vsync):
+        // con `poll_events(None)` (reposo) el looper de android-activity
+        // puede quedarse dormido y PERDER los toques del visor (bug medido
+        // en la TCL: el keyevent despertaba pero el touch no — la app
+        // "se quedaba pillada"). El tick es ligero (~µs) y el coste de
+        // batería de 60 wakeups/s es despreciable frente a la robustez.
+        // Sin ventana (o sin activity), el poll sigue bloqueante (guard).
+        let timeout = if reader.has_window() {
             Some(std::time::Duration::from_millis(16))
         } else {
             None

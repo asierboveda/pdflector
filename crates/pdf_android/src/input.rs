@@ -169,6 +169,7 @@ impl GestureState {
     /// ¿Temporizador de long-press activo (dedo quieto en `Tap`)? El bucle de
     /// eventos mantiene el poll con timeout mientras tanto para que el modo
     /// selección entre aunque el dedo no se mueva.
+    #[allow(dead_code)] // long-press aún activo vía tick_gestures
     pub(crate) fn press_pending(&self) -> bool {
         self.press_at.is_some()
     }

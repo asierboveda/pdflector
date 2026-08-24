@@ -1459,11 +1459,22 @@ impl Reader {
         }
         match self.mode {
             UiMode::Viewer => {
-                // Modo UNA HOJA: página actual + 1 vecina por lado (prefetch
-                // simple para que prev/next sea instantáneo), vía caché LRU.
-                // SOLO se dibuja la página actual (`blit`): las vecinas solo
-                // se cachean.
-                self.ensure_pages_rendered();
+                // Modo UNA HOJA: la página actual + vecinas se garantizan de
+                // forma ASÍNCRONA (worker, patrón de `goto_page`): si alguna
+                // falta y no hay ya un lote en vuelo, se lanza — el render
+                // síncrono aquí congelaba el UI cada `RedrawNeeded` del
+                // sistema (medido: 3 páginas × 40-120 ms, repetido).
+                let needs = {
+                    let n = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
+                    let lo = self.page.saturating_sub(1);
+                    let hi = (self.page + 1).min(n.saturating_sub(1));
+                    (lo..=hi)
+                        .filter(|&p| self.cache.peek(p).is_none())
+                        .collect::<Vec<u32>>()
+                };
+                if !needs.is_empty() && self.render_rx.is_none() {
+                    self.launch_render(needs, self.rendered_zoom, false);
+                }
                 // Indicador de página (abajo a la izquierda) y sheet de
                 // ajustes, cacheados: se re-renderizan solo si cambió la
                 // ventana, la página o el modo oscuro (invalidadores en
@@ -1733,6 +1744,25 @@ impl Reader {
         (pw * cover, ph * cover)
     }
 
+    /// Escala límite por PRESUPUESTO de píxeles: el bitmap de la página
+    /// (`pw×ph` pt) a esa escala no debe superar la caché (~48 MiB). Reduce la
+    /// escala pedida por mitades hasta caber; nunca devuelve 0. Evita el
+    /// render de cientos de MB al abrir con un zoom alto guardado (la
+    /// "pillada") tanto en el worker como en el render síncrono del arranque.
+    #[allow(dead_code)] // regla documentada; el worker la duplica
+    fn budget_scale(&self, pw: f32, ph: f32, scale: f32) -> f32 {
+        let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
+        let mut s = scale.max(0.001);
+        let px_pdf = pw as f64 * ph as f64;
+        while px_pdf * s as f64 * s as f64 > max_px {
+            s *= 0.5;
+            if s <= 0.01 {
+                break;
+            }
+        }
+        s
+    }
+
     /// Esquina superior izquierda del bitmap escalado para centrado
     /// horizontal: `base(z) = (win − doc·z) / 2` (px de zoom 1), la misma
     /// fórmula que `blit` usa para `dx` sin pan. Lineal en `z`; en el
@@ -1825,6 +1855,7 @@ impl Reader {
     /// prefetch adelanta la vecina para que el tap de página entre en ella
     /// sin re-render en el momento de volverse visible. En el modo UNA HOJA
     /// SOLO se DIBUJA la página actual (`blit`): las vecinas solo se cachean.
+    #[allow(dead_code)] // superado por el render async (worker)
     fn ensure_pages_rendered(&mut self) {
         let Some(doc) = self.doc.as_ref() else {
             return;
@@ -1856,6 +1887,9 @@ impl Reader {
                 }
             };
             let scale = initial_scale(pw, ph, self.win_w, self.win_h) * self.rendered_zoom;
+            // Presupuesto (mismo límite que el worker): evita el render de
+            // cientos de MB al abrir con zoom alto guardado.
+            let scale = self.budget_scale(pw, ph, scale);
             let t0 = Instant::now();
             match doc.render_page(page, scale) {
                 Ok(bmp) => {
@@ -2879,6 +2913,7 @@ impl Reader {
     /// de 16 ms → `tick`): animación del sheet, portadas de la biblioteca,
     /// long-press del dedo en el documento (modo selección) o aviso breve
     /// visible. En reposo el poll bloquea sin gastar batería.
+    #[allow(dead_code)] // el bucle usa `has_window()` (timeout fijo)
     pub(crate) fn needs_tick(&mut self) -> bool {
         self.repaint
             || self.tool_gesture.is_some()
@@ -3344,10 +3379,10 @@ impl Reader {
         // falta.
         // EARLY SHARP: si el vecino-más-cercano ya se ve borroso
         // (blit_zoom > 1.6), lanzar en el worker un render de la página a un
-        // nivel 2^ceil(log2 zoom) ≤ 4× (clamp): al llegar, `poll_render`
-        // fija `rendered_zoom` y el pinch sigue pero con el bitmap NUEVO
-        // (nitidez progresiva sin esperar al soltar). Solo si no hay otro
-        // lote en vuelo (el worker ya trabaja en el lote actual).
+        // nivel 2^ceil(log2 zoom) ≤ 2× (clamp pequeño y rápido): al llegar,
+        // `poll_render` fija `rendered_zoom` y el pinch sigue pero con el
+        // bitmap NUEVO (nitidez progresiva sin esperar al soltar y SIN
+        // renders gigantes por cada Move). Solo si no hay otro lote en vuelo.
         let blit_zoom = self.zoom / self.rendered_zoom.max(1e-4);
         if blit_zoom > 1.6 && self.render_rx.is_none() {
             self.launch_render(vec![self.page], self.zoom, true);
@@ -3420,17 +3455,13 @@ impl Reader {
         // SHARP ASÍNCRONO: NO se limpia la caché ni se re-renderiza en el
         // hilo UI (antes: `cache.clear() + redraw()` congelaba 20-400 ms). El
         // bitmap VIEJO sigue en caché y el blit lo escala a `zoom/rendered_zoom`
-        // (preview vecino-más-cercano); el worker renderiza la página y sus
-        // vecinas a la escala final y, al llegar, `poll_render` fija
-        // `rendered_zoom` y repintea (1:1 nítido).
-        let pages = {
-            let n = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
-            let lo = self.page.saturating_sub(1);
-            let hi = (self.page + 1).min(n.saturating_sub(1));
-            (lo..=hi).collect()
-        };
+        // (preview vecino-más-cercano); el worker renderiza SOLO la página
+        // actual (un render por lote: las vecinas se renderizan al navegar,
+        // evita 3 renders gigantes de golpe) y, al llegar, `poll_render` fija
+        // `rendered_zoom` y repintea (1:1 nítido). El presupuesto de píxeles
+        // (launch_render) acota el bitmap para no petar la RAM.
         self.page_frame = None;
-        self.launch_render(pages, zoom, false);
+        self.launch_render(vec![self.page], zoom, false);
         info!("zoom {:.3}", self.zoom);
         self.save_state();
         self.mark_repaint();
@@ -3616,10 +3647,17 @@ impl Reader {
 
     /// Lanza el render ASÍNCRONO de `pages` a la escala `target_zoom`
     /// (factor de zoom — el worker calcula `cover × target_zoom` con su
-    /// propio documento). `clamp_level` limita el render al nivel 2^x más
-    /// cercano ≤ 4× (early sharp durante el pinch: evita renders gigantes
-    /// por cada Move; el sharp final usa `clamp_level=false` para nitidez
-    /// total). Reemplaza cualquier lote anterior (seq++).
+    /// propio documento). `clamp_level` limita el render a un nivel 2^x
+    /// cercano (early sharp durante el pinch: evita renders gigantes por
+    /// cada Move; el sharp final usa `clamp_level=false` para nitidez
+    /// máxima). Reemplaza cualquier lote anterior (seq++).
+    ///
+    /// **Presupuesto de píxeles**: el worker NUNCA produce un bitmap mayor
+    /// que la caché (`CACHE_BYTE_BUDGET`, 48 MiB) — un render de la página a
+    /// zoom alto (p. ej. 8800×11640 px = 400 MB) petaba la RAM de la tablet
+    /// ("se queda pillada") y expulsaba toda la caché. La escala se reduce
+    /// por mitades hasta caber; el `target_zoom` enviado refleja el zoom
+    /// EFECTIVO (escala/cover) para que el blit quede 1:1.
     fn launch_render(&mut self, pages: Vec<u32>, target_zoom: f32, clamp_level: bool) {
         let Some(path) = self.doc_path.clone() else {
             return;
@@ -3641,7 +3679,7 @@ impl Reader {
                 Err(_) => return,
             };
             let target = if clamp_level {
-                let level = pdf_core::scale_level_for_zoom(target_zoom).min(2);
+                let level = pdf_core::scale_level_for_zoom(target_zoom).min(1);
                 2f32.powi(level as i32)
             } else {
                 target_zoom
@@ -3649,13 +3687,22 @@ impl Reader {
             for page in pages {
                 if let Ok((pw, ph)) = doc.page_size(page) {
                     let cover = initial_scale(pw, ph, win_w, win_h);
-                    let scale = cover * target;
+                    // Presupuesto: el bitmap debe caber en la caché (misma
+                    // regla que `Reader::budget_scale` — duplicada aquí porque
+                    // el worker no tiene acceso a `self`).
+                    let mut scale = cover * target;
+                    let px_pdf = pw as f64 * ph as f64;
+                    let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
+                    while scale > 0.001 && px_pdf * scale as f64 * scale as f64 > max_px {
+                        scale *= 0.5;
+                    }
+                    let target_eff = if cover > 0.0 { scale / cover } else { 1.0 };
                     if let Ok(bmp) = doc.render_page(page, scale) {
                         let _ = tx.send(WorkerMsg {
                             seq,
                             page,
                             bitmap: bmp,
-                            target_zoom: target,
+                            target_zoom: target_eff,
                         });
                     }
                 }
@@ -3725,6 +3772,13 @@ impl Reader {
             || self.sheet_anim
             || self.ai_rx.is_some()
             || self.lib_fade.is_some()
+    }
+
+    /// ¿Tenemos ventana (ANativeWindow activo)? El bucle principal usa un
+    /// poll con timeout (16 ms) mientras haya ventana — el poll bloqueante
+    /// puede perder los toques del visor (ver `lib.rs`).
+    pub(crate) fn has_window(&self) -> bool {
+        self.window.is_some()
     }
 
     /// Botón "↶" de la barra: deshace la ÚLTIMA anotación creada en esta
