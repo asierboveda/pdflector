@@ -41,6 +41,12 @@ use pdf_core::Color;
 /// del papel en cualquier zoom, como la tinta real.
 pub(crate) const STROKE_WIDTH_PT: f32 = 2.0;
 
+/// Presets de grosor del boli (pt) para el selector `━` de la barra:
+/// fino (1.0), medio (2.0, el actual), grueso (4.0), muy grueso (7.0).
+/// Cada preset duplica aproximadamente el ancho en pantalla (a zoom 1, en la
+/// TCL 2.0pt≈4px, 4.0pt≈8px, 7.0pt≈14px) y se persiste como float.
+pub(crate) const STROKE_WIDTHS: [f32; 4] = [1.0, 2.5, 4.0, 7.0];
+
 /// Color por defecto del boli: negro azulado cálido (tinta de bolígrafo
 /// sobre papel), opaco (se dibuja tal cual sobre la página; en modo oscuro
 /// la página se invierte pero la tinta conserva su color — la capa de
@@ -125,12 +131,26 @@ impl ToolGesture {
     /// Añade un punto, descartando los casi coincidentes con el anterior
     /// (distancia < 0.25 pt ≈ < 1 px a zoom 4): los Move del táctil/lápiz
     /// llegan a 60-120 Hz y un punto por evento hincharía la polilínea sin
-    /// aportar fidelidad (el trazo sigue siendo suave y ligero de serializar).
+    /// aportar fidelidad. Para gaps grandes (>1pt, típico cuando el sistema
+    /// batchdea eventos o el lápiz va rápido), interpola puntos intermedios
+    /// lineales para evitar segmentos largos y angulosos (complementa el
+    /// history API del MotionEvent que no exponemos aún directamente).
     pub(crate) fn push(&mut self, pt: (f32, f32)) {
         if let Some(&last) = self.points.last() {
-            let d2 = (pt.0 - last.0).powi(2) + (pt.1 - last.1).powi(2);
+            let dx = pt.0 - last.0;
+            let dy = pt.1 - last.1;
+            let d2 = dx * dx + dy * dy;
             if d2 < 0.0625 {
                 return;
+            }
+            // Interpolar si el gap es grande (pérdida de muestras entre vsync)
+            let d = d2.sqrt();
+            if d > 1.0 {
+                let steps = (d / 1.0) as usize;
+                for i in 1..steps {
+                    let t = i as f32 / steps as f32;
+                    self.points.push((last.0 + dx * t, last.1 + dy * t));
+                }
             }
         }
         self.points.push(pt);

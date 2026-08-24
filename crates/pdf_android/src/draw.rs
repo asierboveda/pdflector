@@ -13,9 +13,7 @@ use android_activity::ndk::native_window::NativeWindow;
 use jni::objects::JValue;
 use jni::{JavaVM, jni_sig, jni_str};
 use log::{error, warn};
-use pdf_core::{
-    Annotated, Bitmap, Document, Highlight, Stroke, ViewTransform, composite_annotations,
-};
+use pdf_core::{Annotated, Bitmap, Document, Highlight, Stroke, ViewTransform};
 
 use crate::annotations::ToolKind;
 use crate::persist;
@@ -3407,15 +3405,15 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
 
 /// Tamaño (ancho, alto) en px de la barra de herramientas del visor: píldora
 /// centrada horizontalmente pegada al borde superior, con 5 botones
-/// (Resaltar / Boli / ↶ / ● / →). El ancho se adapta a la ventana (los
-/// botones no se hacen gigantes en tablets muy anchas ni se desbordan en
+/// (Resaltar / Boli / ↶ / ● / ━ / →) — 6 botones. El ancho se adapta a la ventana
+/// (los botones no se hacen gigantes en tablets muy anchas ni se desbordan en
 /// ventanas estrechas); el alto es fijo (52 px, cómodo para el lápiz).
 pub(crate) fn toolbar_size(win_w: i32, _win_h: i32) -> (i32, i32) {
     const GAP: i32 = 6;
     const INNER: i32 = 12;
     const BTN_H: i32 = 52;
-    let bw = ((win_w - 2 * INNER - 4 * GAP) / 5).clamp(96, 150);
-    (5 * bw + 4 * GAP + 2 * INNER, BTN_H)
+    let bw = ((win_w - 2 * INNER - 5 * GAP) / 6).clamp(80, 130);
+    (6 * bw + 5 * GAP + 2 * INNER, BTN_H)
 }
 
 /// Rect (left, top, right, bottom) en px de ventana de la barra de
@@ -3447,9 +3445,12 @@ pub(crate) fn toolbar_buttons(
     let (l, t, _, _) = toolbar_rect(win_w, win_h);
     let gap = 6.0f32;
     let inner = 12.0f32;
-    let bw = (tw as f32 - 2.0 * inner - 4.0 * gap) / 5.0;
-    let mut out = Vec::with_capacity(5);
-    for (i, label) in ["Resaltar", "Boli", "↶", "●", "→"].into_iter().enumerate() {
+    let bw = (tw as f32 - 2.0 * inner - 5.0 * gap) / 6.0;
+    let mut out = Vec::with_capacity(6);
+    for (i, label) in ["Resaltar", "Boli", "↶", "●", "━", "→"]
+        .into_iter()
+        .enumerate()
+    {
         let x0 = l + inner + i as f32 * (bw + gap);
         out.push((label, (x0, t, x0 + bw, t + th as f32)));
     }
@@ -3548,6 +3549,24 @@ pub(crate) fn render_toolbar(reader: &Reader) -> Option<Bitmap> {
                 cx + 9.0,
                 cy + 9.0,
                 999.0,
+                ink,
+            ));
+        }
+        // Botón "━": línea horizontal con grosor = ink_width actual.
+        if label == "━" {
+            let c = &reader.ink_color;
+            let ink = u32::from_be_bytes([0xFF, c.r, c.g, c.b]);
+            let cx = bx + bw / 2.0;
+            let cy = btop + bh / 2.0;
+            // Mapear pt a px preview: 1.0→3px, 2.5→5px, 4.0→7px, 7.0→10px
+            let h = (reader.ink_width * 1.3).clamp(2.0, 10.0);
+            let w = bw * 0.6;
+            rects.push(CanvasRect::rounded(
+                cx - w / 2.0,
+                cy - h / 2.0,
+                cx + w / 2.0,
+                cy + h / 2.0,
+                h / 2.0,
                 ink,
             ));
         }

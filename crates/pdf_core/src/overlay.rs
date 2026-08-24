@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(buf[i + 3], 128, "alpha marcado en el interior");
         assert!(buf[i] > 100, "rgb compuesto sobre transparente (rojo)");
         // Fuera del rect: alpha 0 (transparente) e intacto.
-        assert_eq!(buf[(0 * 8 + 0) * 4 + 3], 0, "fondo transparente");
+        assert_eq!(buf[3], 0, "fondo transparente");
         // La variante opaca (composite_annotations) NO toca alpha: sobre un
         // buffer con alpha 255 se conserva.
         let mut page = vec![0u8; 8 * 8 * 4];

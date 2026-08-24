@@ -219,6 +219,7 @@ pub(crate) fn toolbar_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32)
                 "Boli" => reader.set_tool(ToolKind::Ink),
                 "↶" => reader.undo_last_annotation(),
                 "●" => reader.cycle_ink_color(),
+                "━" => reader.cycle_ink_width(),
                 _ => reader.close_toolbar(), // "→": navegación + cerrar barra
             }
             return true;

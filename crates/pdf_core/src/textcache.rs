@@ -205,7 +205,7 @@ mod tests {
                 unimplemented!()
             }
             fn text(&self, page: u32) -> crate::Result<PageText> {
-                if page % 2 == 0 {
+                if page.is_multiple_of(2) {
                     Err(crate::Error::Engine("fake corrupt".into()))
                 } else {
                     Ok(PageText {

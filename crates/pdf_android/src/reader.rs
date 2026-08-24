@@ -25,7 +25,7 @@ use pdf_core::{
     PageTextCache, Rect, RenderEngine, Stroke, TextSpan,
 };
 
-use crate::annotations::{DEFAULT_INK_COLOR, INK_PALETTE, STROKE_WIDTH_PT, ToolGesture, ToolKind};
+use crate::annotations::{INK_PALETTE, STROKE_WIDTHS, ToolGesture, ToolKind};
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
 use crate::draw::{
     ButtonRect, PageAnnots, PageBlit, ai_panel_layout, blit_composed, blit_lib_fade, blit_library,
@@ -1163,6 +1163,10 @@ pub(crate) struct Reader {
     /// Color actual de la tinta del boli (cicla con el botón "●" de la
     /// barra; arranca en `DEFAULT_INK_COLOR`).
     pub(crate) ink_color: Color,
+    /// Grosor actual del boli en pt (cicla con el botón "━"; arranca en
+    /// `STROKE_WIDTH_PT`). Cada trazo guarda su grosor, así el selector
+    /// no re-pinta trazos viejos.
+    pub(crate) ink_width: f32,
     /// Gesto de herramienta EN CURSO (dedo/lápiz bajado con una herramienta
     /// activa): puntos y ancla en coordenadas de PÁGINA (ver `ToolGesture`).
     /// `Some` mientras el dedo está abajo; se convierte en una anotación
@@ -1250,7 +1254,14 @@ impl Reader {
             toolbar_open: false,
             toolbar_bitmap: None,
             tool_fab: None,
-            ink_color: DEFAULT_INK_COLOR,
+            ink_color: {
+                let ts = persist::load_tool_state(app.internal_data_path().as_deref());
+                ts.ink_color
+            },
+            ink_width: {
+                let ts = persist::load_tool_state(app.internal_data_path().as_deref());
+                ts.ink_width
+            },
             tool_gesture: None,
             session_ids: Vec::new(),
         };
@@ -3395,6 +3406,26 @@ impl Reader {
         self.redraw();
     }
 
+    /// Botón "━" de la barra: cicla el grosor del boli por `STROKE_WIDTHS`.
+    pub(crate) fn cycle_ink_width(&mut self) {
+        let i = STROKE_WIDTHS
+            .iter()
+            .position(|w| (*w - self.ink_width).abs() < f32::EPSILON)
+            .unwrap_or(0);
+        self.ink_width = STROKE_WIDTHS[(i + 1) % STROKE_WIDTHS.len()];
+        persist::save_tool_state(
+            self.internal_dir.as_deref(),
+            &persist::ToolState {
+                ink_color: self.ink_color,
+                ink_width: self.ink_width,
+            },
+        );
+        self.toolbar_bitmap = None;
+        if self.window.is_some() {
+            self.blit();
+        }
+    }
+
     /// Botón "●" de la barra: cicla el color del boli por `INK_PALETTE`.
     /// El botón de la barra se dibuja con el color actual, así que se
     /// invalida su bitmap para que el círculo cambie.
@@ -3404,6 +3435,13 @@ impl Reader {
             .position(|c| *c == self.ink_color)
             .unwrap_or(0);
         self.ink_color = INK_PALETTE[(i + 1) % INK_PALETTE.len()];
+        persist::save_tool_state(
+            self.internal_dir.as_deref(),
+            &persist::ToolState {
+                ink_color: self.ink_color,
+                ink_width: self.ink_width,
+            },
+        );
         self.toolbar_bitmap = None; // el "●" muestra el nuevo color
         if self.window.is_some() {
             self.blit();
@@ -3527,7 +3565,7 @@ impl Reader {
                     g.points.clone()
                 };
                 let pts = pdf_core::smooth_polyline(&simplified, 6);
-                if let Some(s) = Stroke::new(pts, STROKE_WIDTH_PT, self.ink_color)
+                if let Some(s) = Stroke::new(pts, self.ink_width, self.ink_color)
                     && let Some(id) = self.annotations.add(g.page as usize, Annotation::Stroke(s))
                 {
                     self.session_ids.push(id);
@@ -3625,7 +3663,7 @@ impl Reader {
                 } else {
                     vec![g.anchor, (g.anchor.0 + 0.01, g.anchor.1)]
                 };
-                let s = Stroke::new(pts, STROKE_WIDTH_PT, self.ink_color)?;
+                let s = Stroke::new(pts, self.ink_width, self.ink_color)?;
                 Annotation::Stroke(s)
             }
             ToolKind::Highlight => {
@@ -3645,7 +3683,7 @@ impl Reader {
         // Padding para que la media brocha del trazo (y su AA de 1 px) no se
         // recorte en el borde del bitmap temporal.
         let pad = if g.tool == ToolKind::Ink {
-            (STROKE_WIDTH_PT * scale * 0.5).ceil() + 1.0
+            (self.ink_width * scale * 0.5).ceil() + 1.0
         } else {
             0.0
         };

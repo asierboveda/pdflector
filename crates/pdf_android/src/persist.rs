@@ -37,7 +37,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::{error, info, warn};
+use pdf_core::Color;
 use serde::{Deserialize, Serialize};
+
+use crate::annotations::{DEFAULT_INK_COLOR, STROKE_WIDTH_PT};
 
 /// Máximo de entradas de la lista de recientes (los últimos PDFs abiertos).
 pub(crate) const RECENTS_MAX: usize = 10;
@@ -185,6 +188,57 @@ pub(crate) fn touch_progress(
         });
     }
     out
+}
+
+fn default_ink_width() -> f32 {
+    STROKE_WIDTH_PT
+}
+fn default_ink_color() -> Color {
+    DEFAULT_INK_COLOR
+}
+
+/// Estado de herramientas (color y grosor del boli), global y persistido
+/// en `tool_state.json` (no por documento). Se carga al arrancar y se guarda
+/// al ciclar color/grosor.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ToolState {
+    #[serde(default = "default_ink_color")]
+    pub(crate) ink_color: Color,
+    #[serde(default = "default_ink_width")]
+    pub(crate) ink_width: f32,
+}
+impl Default for ToolState {
+    fn default() -> Self {
+        Self {
+            ink_color: DEFAULT_INK_COLOR,
+            ink_width: STROKE_WIDTH_PT,
+        }
+    }
+}
+pub(crate) fn tool_state_path(internal_dir: &Path) -> PathBuf {
+    internal_dir.join("tool_state.json")
+}
+pub(crate) fn load_tool_state(internal_dir: Option<&Path>) -> ToolState {
+    let Some(dir) = internal_dir else {
+        return ToolState::default();
+    };
+    let text = match fs::read_to_string(tool_state_path(dir)) {
+        Ok(t) => t,
+        Err(_) => return ToolState::default(),
+    };
+    serde_json::from_str::<ToolState>(&text).unwrap_or_default()
+}
+pub(crate) fn save_tool_state(internal_dir: Option<&Path>, state: &ToolState) {
+    let Some(dir) = internal_dir else {
+        return;
+    };
+    let path = tool_state_path(dir);
+    let Ok(text) = serde_json::to_string_pretty(state) else {
+        return;
+    };
+    if let Err(e) = fs::write(&path, text) {
+        error!("save tool_state {}: {e}", path.display());
+    }
 }
 
 /// Estado persistido del visor.
