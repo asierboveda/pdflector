@@ -1057,6 +1057,109 @@ fn draw_sel_rect(
 // 10 parámetros posicionales de un blit (raw pointer + dimensiones + trazo):
 // mismo patrón que `copy_region` y `blit_page_scaled`; se acepta el allow.
 #[allow(clippy::too_many_arguments)]
+/// Pinta UN segmento de tinta (tramo incremental en vivo, patrón
+/// Xournal++/GoodNotes) directamente sobre un bitmap RGBA del tamaño de la
+/// ventana (`frame`): transforma los dos puntos de página a pantalla con
+/// `scale/dx/dy` (el MISMO rasterizador que los trazos guardados, para que
+/// la tinta en vivo sea idéntica a la definitiva) y dibuja el tramo con
+/// brocha redondeada. Devuelve el bbox del tramo en px de ventana (dirty
+/// rect para el blit).
+pub(crate) fn draw_ink_segment_on_frame(
+    frame: &mut Bitmap,
+    p0: (f32, f32),
+    p1: (f32, f32),
+    width_pt: f32,
+    color: pdf_core::Color,
+    scale: f32,
+    dx: i32,
+    dy: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    let w = frame.width as usize;
+    let h = frame.height as usize;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let a = (p0.0 * scale + dx as f32, p0.1 * scale + dy as f32);
+    let b = (p1.0 * scale + dx as f32, p1.1 * scale + dy as f32);
+    let width_px = (width_pt * scale).max(1.0);
+    let pad = (width_px / 2.0).ceil() + 1.0;
+    let pts = [a, b];
+    let dst = frame.data.as_mut_ptr();
+    draw_polyline(
+        dst,
+        w,
+        h,
+        w,
+        4,
+        &pts,
+        width_px,
+        [color.r, color.g, color.b, color.a],
+    );
+    let (x0, y0) = (a.0.min(b.0) - pad, a.1.min(b.1) - pad);
+    let (x1, y1) = (a.0.max(b.0) + pad, a.1.max(b.1) + pad);
+    Some((
+        x0.floor().max(0.0) as i32,
+        y0.floor().max(0.0) as i32,
+        x1.ceil().min(w as f32) as i32,
+        y1.ceil().min(h as f32) as i32,
+    ))
+}
+
+/// Pinta una polilínea de tinta completa (en px de ventana, ya
+/// transformada) sobre un bitmap RGBA del tamaño de la ventana — para el
+/// trazo final al soltar (misma pinta que el stamping). Devuelve el bbox.
+pub(crate) fn draw_ink_polyline_on_frame(
+    frame: &mut Bitmap,
+    screen_pts: &[(f32, f32)],
+    width_pt: f32,
+    color: pdf_core::Color,
+    scale: f32,
+    dx: i32,
+    dy: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    if screen_pts.len() < 2 {
+        return None;
+    }
+    let w = frame.width as usize;
+    let h = frame.height as usize;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let pts: Vec<(f32, f32)> = screen_pts
+        .iter()
+        .map(|&(px, py)| (px * scale + dx as f32, py * scale + dy as f32))
+        .collect();
+    let width_px = (width_pt * scale).max(1.0);
+    let dst = frame.data.as_mut_ptr();
+    draw_polyline(
+        dst,
+        w,
+        h,
+        w,
+        4,
+        &pts,
+        width_px,
+        [color.r, color.g, color.b, color.a],
+    );
+    let pad = (width_px / 2.0).ceil() + 1.0;
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for &(x, y) in &pts {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    Some((
+        (min_x - pad).floor().max(0.0) as i32,
+        (min_y - pad).floor().max(0.0) as i32,
+        (max_x + pad).ceil().min(w as f32) as i32,
+        (max_y + pad).ceil().min(h as f32) as i32,
+    ))
+}
+
 fn draw_stroke(
     dst: *mut u8,
     dst_w: usize,

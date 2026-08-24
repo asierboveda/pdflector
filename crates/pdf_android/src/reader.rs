@@ -1179,6 +1179,13 @@ pub(crate) struct Reader {
     /// anotaciones nuevas de la sesión (no las cargadas del sidecar): el
     /// undo no toca trabajo de otras sesiones (decisión documentada).
     pub(crate) session_ids: Vec<u64>,
+    /// Copia del frame de página al EMPEZAR el gesto de tinta (sin el
+    /// trazo en curso): al soltar se restaura y se pinta el trazo final
+    /// suavizado sobre ella — "tinta directa" (patrón Xournal++/GoodNotes):
+    /// durante el gesto cada tramo se stampa al frame; al soltar solo se
+    /// re-pinta el bbox del trazo, nunca la página completa. 12MB una vez
+    /// por trazo (~4ms).
+    gesture_base: Option<Bitmap>,
     /// Unión de los bboxes (px de ventana) del trazo en curso entre dos
     /// Moves consecutivos: el "dirty rect" del blit por Move (solo se
     /// repinta esa zona del frame, no los 12 MB completos). Se actualiza en
@@ -1274,6 +1281,7 @@ impl Reader {
             },
             tool_gesture: None,
             session_ids: Vec::new(),
+            gesture_base: None,
             tool_dirty: None,
             repaint: false,
         };
@@ -1712,6 +1720,22 @@ impl Reader {
         (win as f32 - doc * z) / 2.0
     }
 
+    /// Transformación página→pantalla del trazo (la MISMA que usa el blit):
+    /// `scale = cover × zoom`, origen `(dx, dy)` con el centrado cover + pan.
+    /// `None` si no se puede resolver el tamaño de página.
+    fn page_screen_xform(&self, page: u32) -> Option<(f32, f32, f32, i32, i32)> {
+        let (pw, ph) = self.doc.as_ref()?.page_size(page).ok()?;
+        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
+        let scale = cover * self.zoom;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let dx =
+            (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round() as i32;
+        let dy = self.pan_y.round() as i32;
+        Some((pw, ph, scale, dx, dy))
+    }
+
     /// Fórmula de anclaje del pinch: el pan (px) que, a zoom `z`, deja fijo
     /// en pantalla el punto de documento que estaba bajo el ancla al iniciar
     /// el gesto. `base0`/`base` son la posición de origen del bitmap escalado
@@ -2002,11 +2026,15 @@ impl Reader {
                 // bitmap del bbox del trazo (pdf_core::overlay) y copiada con
                 // alfa-blend sobre el frame en `blit_composed` — el visor NO
                 // re-blitea la página por evento de movimiento (req. 5).
-                let tool_layer: Option<(Bitmap, i32, i32)> = if self.tool_gesture.is_some() {
-                    self.tool_overlay()
-                } else {
-                    None
-                };
+                // Tinta directa (Ink): el trazo se stampa al frame, no hay
+                // capa temporal. El tool_layer solo existe para el resaltador
+                // (rect translúcido que se re-encaja al soltar).
+                let tool_layer: Option<(Bitmap, i32, i32)> =
+                    if self.tool == ToolKind::Highlight && self.tool_gesture.is_some() {
+                        self.tool_overlay()
+                    } else {
+                        None
+                    };
                 let use_frame = self.sheet_progress > 0.0 || self.tool_gesture.is_some();
                 if use_frame {
                     // Sheet visible: frame compuesto + overlay del sheet. El
@@ -2057,34 +2085,40 @@ impl Reader {
                                 .round() as i32;
                             sheet_ov.push((s, 0, -slide));
                         }
-                        // Dirty rect (Fase C, comparativa saber-notes): durante
-                        // el gesto SOLO se repinta la unión del bbox del trazo
-                        // anterior y el actual del frame — la copia completa de
-                        // ~12 MB por Move es el coste dominante (4-8 ms). El
-                        // tool_layer es el bbox actual; `tool_dirty` guarda la
-                        // unión anterior para no dejar el rastro añejo del
-                        // trazo (cuando se encoge con el smooth).
-                        let blend = tool_layer.as_ref().map(|(b, x, y)| (b, *x, *y));
-                        let dirty = if self.sheet_progress <= 0.0
-                            && self.tool_gesture.is_some()
-                            && let Some((b, x, y)) = &tool_layer
-                        {
-                            let cur = (
-                                (*x).max(0),
-                                (*y).max(0),
-                                (x + b.width as i32).min(self.win_w),
-                                (y + b.height as i32).min(self.win_h),
-                            );
-                            self.tool_dirty = Some(match self.tool_dirty {
-                                Some((px0, py0, px1, py1)) => (
-                                    px0.min(cur.0),
-                                    py0.min(cur.1),
-                                    px1.max(cur.2),
-                                    py1.max(cur.3),
-                                ),
-                                None => cur,
-                            });
-                            self.tool_dirty
+                        // Dirty rect: durante el gesto SOLO se repinta la
+                        // unión de bboxes (tinta directa: cada tramo ya está
+                        // en el frame via stamping; el blend de capa solo
+                        // existe para el resaltador, que es un rect
+                        // translúcido que se re-encaja al soltar).
+                        let blend = if self.tool == ToolKind::Highlight {
+                            tool_layer.as_ref().map(|(b, x, y)| (b, *x, *y))
+                        } else {
+                            None
+                        };
+                        let dirty = if self.sheet_progress <= 0.0 && self.tool_gesture.is_some() {
+                            if self.tool == ToolKind::Ink {
+                                // Tinta directa: el dirty lo fija el stamping.
+                                self.tool_dirty
+                            } else if let Some((b, x, y)) = &tool_layer {
+                                let cur = (
+                                    (*x).max(0),
+                                    (*y).max(0),
+                                    (x + b.width as i32).min(self.win_w),
+                                    (y + b.height as i32).min(self.win_h),
+                                );
+                                self.tool_dirty = Some(match self.tool_dirty {
+                                    Some((px0, py0, px1, py1)) => (
+                                        px0.min(cur.0),
+                                        py0.min(cur.1),
+                                        px1.max(cur.2),
+                                        py1.max(cur.3),
+                                    ),
+                                    None => cur,
+                                });
+                                self.tool_dirty
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         };
@@ -3546,12 +3580,16 @@ impl Reader {
             return;
         };
         self.tool_gesture = Some(ToolGesture::new(self.page, self.tool, pt));
-        // NO invalidar `page_frame` aquí: el frame ya tiene las anotaciones
-        // guardadas (se parchea incrementalmente en `end_tool_gesture`);
-        // invalidarlo recomponía TODAS las capas (~6-13 ms con 146 trazos)
-        // al empezar cada trazo — el "hitch" al escribir seguido (ver
-        // comparativa saber-notes). El trazo en curso va como capa temporal
-        // sobre el frame existente.
+        self.tool_dirty = None;
+        // TINTA DIRECTA (patrón Xournal++/GoodNotes): aseguramos que el
+        // frame existe (si no, el primer blit lo compone) y guardamos una
+        // COPIA BASE — durante el gesto cada tramo se stampa al frame; al
+        // soltar se restaura la base y se pinta el trazo final en su bbox.
+        // Nunca se recomponen las anotaciones al empezar un trazo.
+        if self.page_frame.is_none() && self.window.is_some() {
+            self.blit(); // compone el frame (página + anotaciones guardadas)
+        }
+        self.gesture_base = self.page_frame.clone();
         if self.window.is_some() {
             self.blit();
         }
@@ -3570,8 +3608,51 @@ impl Reader {
         };
         match self.tool {
             ToolKind::Ink => {
-                if let Some(g) = self.tool_gesture.as_mut() {
+                // Punto descartado por distancia (no se pinta nada nuevo).
+                let pushed = {
+                    let Some(g) = self.tool_gesture.as_mut() else {
+                        return;
+                    };
+                    let last = *g.points.last().expect("anchor en el Down");
+                    let n0 = g.points.len();
                     g.push(pt);
+                    if g.points.len() == n0 {
+                        None
+                    } else {
+                        Some((g.page, last))
+                    }
+                };
+                let Some((page, last)) = pushed else {
+                    return;
+                };
+                // STAMPING INCREMENTAL: pintar solo el tramo nuevo (último →
+                // actual) directamente sobre el frame, con el MISMO
+                // rasterizador que los trazos guardados. La tinta queda en la
+                // página desde el primer tramo — sin capas temporales.
+                let xform = self.page_screen_xform(page);
+                if let (Some(frame), Some((_, _, scale, dx, dy))) =
+                    (self.page_frame.as_mut(), xform)
+                {
+                    if let Some(bbox) = crate::draw::draw_ink_segment_on_frame(
+                        frame,
+                        last,
+                        pt,
+                        self.ink_width,
+                        self.ink_color,
+                        scale,
+                        dx,
+                        dy,
+                    ) {
+                        self.tool_dirty = Some(match self.tool_dirty {
+                            Some((x0, y0, x1, y1)) => (
+                                x0.min(bbox.0),
+                                y0.min(bbox.1),
+                                x1.max(bbox.2),
+                                y1.max(bbox.3),
+                            ),
+                            None => bbox,
+                        });
+                    }
                 }
             }
             ToolKind::Highlight => {
@@ -3648,6 +3729,11 @@ impl Reader {
                     self.session_ids.push(id);
                     self.save_annotations();
                     self.show_toast("ink");
+                    // TINTA DIRECTA: el trazo ya se vio crecer tramo a tramo;
+                    // ahora se "implementa": restaurar la base (sin tinta) y
+                    // pintar el trazo final suavizado sobre su bbox — la
+                    // página no se recompone, solo esa zona.
+                    self.ink_finalize_on_frame(g.page);
                 }
             }
             ToolKind::Highlight => {
@@ -3680,73 +3766,31 @@ impl Reader {
             }
             ToolKind::Navigate => {}
         }
-        // Parche incremental del frame para evitar recomposición completa de
-        // 146 trazos (6ms desktop / 13ms TCL) que causa lag al escribir rápido.
-        // Si el frame existe y es para la misma página/ventana, dibujar solo
-        // el nuevo trazo sobre él; si no, invalidar para recomposición completa.
+        // Si el gesto fue de TINTA (ya pintado incrementalmente y finalizado
+        // sobre la base), el frame ya está correcto: solo marcar el dirty del
+        // bbox final. Para el resaltador (capa temporal), se parchea el frame
+        // con el highlight recién alineado o se invalida si no aplica.
         let mut patched = false;
-        if let Some(frame) = self.page_frame.as_mut() {
-            if g.page == self.page
-                && frame.width as i32 == self.win_w
-                && frame.height as i32 == self.win_h
-            {
-                if let Some(&id) = self.session_ids.last() {
-                    if let Some(ann) = self
-                        .annotations
-                        .for_page(g.page as usize)
-                        .into_iter()
-                        .find(|a| a.id == id)
-                    {
-                        if let Some(doc) = self.doc.as_ref() {
-                            if let Ok((pw, ph)) = doc.page_size(g.page) {
-                                let cover = initial_scale(pw, ph, self.win_w, self.win_h);
-                                let scale = cover * self.zoom;
-                                let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom)
-                                    + self.pan_x)
-                                    .round() as i32;
-                                let dy = self.pan_y.round() as i32;
-                                let page_anns = match &ann.kind {
-                                    Annotation::Stroke(s) => crate::draw::PageAnnots {
-                                        dx,
-                                        dy,
-                                        scale,
-                                        strokes: vec![s],
-                                        highlights: vec![],
-                                    },
-                                    Annotation::Highlight(h) => crate::draw::PageAnnots {
-                                        dx,
-                                        dy,
-                                        scale,
-                                        strokes: vec![],
-                                        highlights: vec![h],
-                                    },
-                                    Annotation::TextNote(_) => crate::draw::PageAnnots {
-                                        dx,
-                                        dy,
-                                        scale,
-                                        strokes: vec![],
-                                        highlights: vec![],
-                                    },
-                                };
-                                // Frame es RGBA (bpp=4), stride = width
-                                let dst = frame.data.as_mut_ptr();
-                                let dst_w = frame.width as usize;
-                                let dst_h = frame.height as usize;
-                                let dst_stride = dst_w;
-                                crate::draw::draw_annotations(
-                                    dst, dst_w, dst_h, dst_stride, 4, &page_anns,
-                                );
-                                patched = true;
-                            }
-                        }
-                    }
-                }
+        if g.tool == ToolKind::Ink {
+            let base = self.gesture_base.take();
+            self.gesture_base = None;
+            if base.is_none() {
+                // Sin base (caso límite): invalidar para recomposición.
+                self.page_frame = None;
+            } else {
+                patched = true;
             }
+        } else {
+            self.gesture_base = None;
         }
         if !patched {
             self.page_frame = None;
         }
-        self.tool_dirty = None; // el siguiente blit (normal) repinta completo
+        // Ink: tool_dirty ya es el bbox del trazo final (dirty rect limpio);
+        // Highlight: el siguiente blit repinta completo (capa temporal fuera).
+        if g.tool != ToolKind::Ink {
+            self.tool_dirty = None;
+        }
         if self.window.is_some() {
             self.blit();
         }
@@ -3756,11 +3800,45 @@ impl Reader {
     /// ocultar la barra): descarta el trazo en curso sin crear anotación.
     pub(crate) fn cancel_tool_gesture(&mut self) {
         if self.tool_gesture.take().is_some() {
-            self.page_frame = None;
+            // Restaurar la base (quitar la tinta a medio pintar) si existía.
+            self.page_frame = self.gesture_base.take();
             if self.window.is_some() {
                 self.blit();
             }
         }
+    }
+
+    /// TINTA DIRECTA (final): al soltar el boli, restaura el frame desde la
+    /// base capturada al empezar (sin la tinta en curso) y pinta el trazo
+    /// final guardado (suavizado) sobre su bbox. `tool_dirty` queda con el
+    /// bbox para el blit por vsync; nadie más se toca.
+    fn ink_finalize_on_frame(&mut self, page: u32) {
+        let Some(base) = self.gesture_base.take() else {
+            return;
+        };
+        let xform = self.page_screen_xform(page);
+        let Some((_, _, scale, dx, dy)) = xform else {
+            self.page_frame = Some(base);
+            return;
+        };
+        let mut frame = base;
+        // Última anotación añadida (la de este gesto): su Stroke ya está en
+        // el set con los puntos suavizados en coords de página.
+        if let Some(&id) = self.session_ids.last() {
+            if let Some(ann) = self
+                .annotations
+                .for_page(page as usize)
+                .into_iter()
+                .find(|a| a.id == id)
+                && let Annotation::Stroke(s) = &ann.kind
+            {
+                let pts: Vec<(f32, f32)> = s.points.clone();
+                self.tool_dirty = crate::draw::draw_ink_polyline_on_frame(
+                    &mut frame, &pts, s.width, s.color, scale, dx, dy,
+                );
+            }
+        }
+        self.page_frame = Some(frame);
     }
 
     /// ¿El punto de pantalla cae en el "chrome" de las herramientas (el
