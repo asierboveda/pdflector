@@ -354,3 +354,14 @@ del zoom es la textura por GPU.
 - El espejo del bench (blit.rs) y draw.rs/zoom.rs deben evolucionar juntos:
   cualquier cambio de las primitivas de blit se aplica en los tres sitios y se
   re-mide con `cargo bench -p pdf_bench --bench blit`.
+
+## Fase A — Highlight y Composite (desktop, Ryzen 7 5800H, 2026-08-24, cargo bench)
+
+Highlight `highlight_under_gesture` (O(spans×puntos)):
+- pts10_lines20: ~1.3µs, pts50_lines100: ~9.6µs, pts100_lines200: ~36µs, two_cols 200: ~20µs, marquee 200: ~0.31µs
+- Conclusión: highlight puro <<16ms, no es cuello. El cuello es `Document::text()` no medido aún.
+
+Composite `composite_annotations` 1440×2200 (TCL res):
+- strokes10: 0.64ms, strokes50+hl10: 2.14ms, **strokes200: 6.8ms**, strokes100+hl100: 5.27ms
+- Conclusión: 200 trazos 6.8ms en desktop → ~13ms estimado en TCL (A55), dentro de 16ms pero justo. Fase C debe cachear capa.
+

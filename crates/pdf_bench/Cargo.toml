@@ -42,3 +42,11 @@ harness = false
 [[bench]]
 name = "prefetch"
 harness = false
+
+[[bench]]
+name = "highlight"
+harness = false
+
+[[bench]]
+name = "composite"
+harness = false
