@@ -179,6 +179,62 @@ pub fn smooth_polyline(points: &[(f32, f32)], segs: u32) -> Vec<(f32, f32)> {
     out
 }
 
+/// Simplifica una polilínea con Douglas-Peucker (iterativo, sin recursión):
+/// elimina puntos que se desvían menos de `epsilon` de la línea entre los
+/// extremos del segmento (Fase C — pintado sin latencia: un trazo del dedo
+/// de 100+ puntos se reduce a ~15 sin perder forma, y el rasterizado, la
+/// serialización y la caché de capa pagan menos).
+///
+/// - `epsilon` en las mismas unidades que los puntos (coords de página, pt).
+/// - Degenerado: < 2 puntos → devuelve igual; `epsilon <= 0` → devuelve
+///   igual (no simplifica).
+/// - Extremos SIEMPRE conservados (el primero y el último punto sobreviven).
+/// - Determinista: mismo input → mismo output.
+pub fn simplify_polyline(points: &[(f32, f32)], epsilon: f32) -> Vec<(f32, f32)> {
+    if points.len() < 2 || epsilon <= 0.0 {
+        return points.to_vec();
+    }
+    let mut stack: Vec<(usize, usize)> = vec![(0, points.len() - 1)];
+    let mut keep = vec![false; points.len()];
+    keep[0] = true;
+    keep[points.len() - 1] = true;
+    while let Some((start, end)) = stack.pop() {
+        if end <= start + 1 {
+            continue;
+        }
+        let (ax, ay) = points[start];
+        let (bx, by) = points[end];
+        let (dx, dy) = (bx - ax, by - ay);
+        let len2 = dx * dx + dy * dy;
+        let mut max_dist = 0.0f32;
+        let mut max_idx = start;
+        for (i, &(px, py)) in points.iter().enumerate().take(end).skip(start + 1) {
+            let t = if len2 > 0.0 {
+                (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (cx, cy) = (ax + t * dx, ay + t * dy);
+            let d = ((px - cx) * (px - cx) + (py - cy) * (py - cy)).sqrt();
+            if d > max_dist {
+                max_dist = d;
+                max_idx = i;
+            }
+        }
+        if max_dist > epsilon && max_idx != start && max_idx != end {
+            keep[max_idx] = true;
+            stack.push((start, max_idx));
+            stack.push((max_idx, end));
+        }
+    }
+    points
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| keep[*i])
+        .map(|(_, p)| *p)
+        .collect()
+}
+
 /// Note anchored to a page point (e.g. a margin position).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextNote {
@@ -527,6 +583,70 @@ mod tests {
         // segs = 0 means no interpolation at all.
         let pts = vec![(0.0, 0.0), (5.0, 5.0), (10.0, 0.0)];
         assert_eq!(smooth_polyline(&pts, 0), pts);
+    }
+
+    #[test]
+    fn simplify_keeps_endpoints_and_reduces_collinear_points() {
+        // Línea recta larga con muchos puntos: DP elimina todos los
+        // intermedios (desviación ~0 < epsilon).
+        let pts: Vec<(f32, f32)> = (0..50).map(|i| (i as f32 * 2.0, i as f32)).collect();
+        let out = simplify_polyline(&pts, 1.5);
+        assert_eq!(out.len(), 2, "solo extremos en línea recta");
+        assert_eq!(out[0], pts[0]);
+        assert_eq!(out[1], *pts.last().unwrap());
+    }
+
+    #[test]
+    fn simplify_keeps_sharp_corners() {
+        // Esquina en ángulo recto: el vértice se desvía mucho → se conserva.
+        let pts = vec![
+            (0.0, 0.0),
+            (5.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (10.0, 20.0),
+        ];
+        let out = simplify_polyline(&pts, 0.5);
+        assert_eq!(out.len(), 3, "extremos + esquina");
+        assert!(
+            out.contains(&(10.0, 0.0)) || out.contains(&(10.0, 10.0)),
+            "el vértice de la esquina"
+        );
+        // El punto (5,0) colineal se elimina.
+        assert!(!out.contains(&(5.0, 0.0)));
+    }
+
+    #[test]
+    fn simplify_respects_epsilon_threshold() {
+        // Punto con desviación 1.0: conservado con epsilon 0.5, eliminado
+        // con epsilon 2.0.
+        let pts = vec![(0.0, 0.0), (5.0, 1.0), (10.0, 0.0)];
+        assert_eq!(simplify_polyline(&pts, 0.5).len(), 3);
+        assert_eq!(simplify_polyline(&pts, 2.0).len(), 2);
+    }
+
+    #[test]
+    fn simplify_degenerate_inputs_are_noops() {
+        assert_eq!(simplify_polyline(&[], 1.0), Vec::<(f32, f32)>::new());
+        assert_eq!(simplify_polyline(&[(1.0, 1.0)], 1.0), vec![(1.0, 1.0)]);
+        // epsilon <= 0: sin simplificación.
+        let pts = vec![(0.0, 0.0), (5.0, 1.0), (10.0, 0.0)];
+        assert_eq!(simplify_polyline(&pts, 0.0), pts);
+        assert_eq!(simplify_polyline(&pts, -1.0), pts);
+    }
+
+    #[test]
+    fn simplify_deterministic_same_input_same_output() {
+        let pts: Vec<(f32, f32)> = (0..100)
+            .map(|i| {
+                let x = i as f32 * 0.7;
+                let y = (i as f32 * 0.3).sin() * 5.0;
+                (x, y)
+            })
+            .collect();
+        let a = simplify_polyline(&pts, 1.5);
+        let b = simplify_polyline(&pts, 1.5);
+        assert_eq!(a, b);
     }
 
     #[test]

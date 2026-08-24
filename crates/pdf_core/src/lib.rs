@@ -23,7 +23,8 @@ pub mod zoom;
 
 pub use ai::{AiError, GeminiClient, GroqClient, OllamaClient, chunk_pages};
 pub use annotations::{
-    Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote, smooth_polyline,
+    Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote,
+    simplify_polyline, smooth_polyline,
 };
 pub use cache::{CacheStats, PageKey, RenderCache, RenderedPage, scale_for_level};
 pub use dark::invert_bitmap;

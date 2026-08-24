@@ -21,8 +21,8 @@ use log::{error, info, warn};
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::store::{AnnotationStore, sidecar_path};
 use pdf_core::{
-    Annotated, Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache,
-    Rect, RenderEngine, Stroke, TextSpan,
+    Annotated, Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight,
+    PageTextCache, Rect, RenderEngine, Stroke, TextSpan,
 };
 
 use crate::annotations::{DEFAULT_INK_COLOR, INK_PALETTE, STROKE_WIDTH_PT, ToolGesture, ToolKind};
@@ -3514,8 +3514,12 @@ impl Reader {
                 // Suavizado Catmull-Rom del motor: 6 subdivisiones por
                 // segmento (suficiente para que el trazo no se vea
                 // poligonal; la serialización guarda solo los puntos
-                // suavizados).
-                let pts = pdf_core::smooth_polyline(&g.points, 6);
+                // suavizados). Fase C: antes de suavizar se simplifica con
+                // Douglas-Peucker (epsilon 1.5 pt) — un trazo de 100+
+                // puntos del dedo baja a ~15-20 sin perder forma, y el
+                // rasterizado/guardado pagan menos.
+                let simplified = pdf_core::simplify_polyline(&g.points, 1.5);
+                let pts = pdf_core::smooth_polyline(&simplified, 6);
                 if let Some(s) = Stroke::new(pts, STROKE_WIDTH_PT, self.ink_color)
                     && let Some(id) = self.annotations.add(g.page as usize, Annotation::Stroke(s))
                 {
