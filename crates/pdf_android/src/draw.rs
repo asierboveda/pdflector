@@ -104,6 +104,56 @@ fn rgb565(r: u8, g: u8, b: u8) -> u16 {
 // 8 parámetros posicionales de un blit (raw pointer + dimensiones): se acepta
 // el allow en vez de empaquetarlos en una struct que solo se usaría aquí.
 #[allow(clippy::too_many_arguments)]
+/// Copia un RECTÁNGULO de un bitmap RGBA (del mismo tamaño que la ventana) a
+/// la MISMA posición del buffer destino — la versión "dirty rect" de
+/// [`copy_region`] para el gesto: no toca los ~12 MB del resto del frame por
+/// Move del boli (Fase C, comparativa saber-notes: la copia completa es el
+/// coste dominante del blit por evento).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn copy_region_rect(
+    dst: *mut u8,
+    dst_w: usize,
+    dst_h: usize,
+    dst_stride: usize,
+    bpp: usize,
+    src: &Bitmap,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+) {
+    debug_assert_eq!(
+        src.width as usize, dst_w,
+        "dirty rect exige bitmap del mismo tamaño"
+    );
+    let x0 = x0.max(0);
+    let y0 = y0.max(0);
+    let x1 = x1.min(dst_w as i32).min(src.width as i32);
+    let y1 = y1.min(dst_h as i32).min(src.height as i32);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let copy_w = (x1 - x0) as usize;
+    for y in y0..y1 {
+        let row_off = (y as usize * src.width as usize + x0 as usize) * 4;
+        let src_row = &src.data[row_off..row_off + copy_w * 4];
+        let dst_row = unsafe {
+            std::slice::from_raw_parts_mut(
+                dst.add((y as usize * dst_stride + x0 as usize) * bpp),
+                copy_w * bpp,
+            )
+        };
+        if bpp == 4 {
+            dst_row.copy_from_slice(&src_row[..copy_w * 4]);
+        } else {
+            let n = bpp.min(3);
+            for (o, px) in src_row.chunks_exact(4).enumerate() {
+                dst_row[o * bpp..o * bpp + n].copy_from_slice(&px[..n]);
+            }
+        }
+    }
+}
+
 pub(crate) fn copy_region(
     dst: *mut u8,
     dst_w: usize,
@@ -352,6 +402,65 @@ pub(crate) fn blit_composed(
     copy_region(dst, dst_w, dst_h, dst_stride, bpp, frame, 0, 0);
     // Capa de anotación EN CURSO (trazo/resaltador), con alfa-blend: va
     // sobre la página pero DEBAJO de los overlays opacos (menú, sheet...).
+    if let Some((ov, ox, oy)) = blend_layer {
+        copy_region_blend(dst, dst_w, dst_h, dst_stride, bpp, ov, ox, oy);
+    }
+    for (ov, ox, oy) in overlays {
+        copy_region(dst, dst_w, dst_h, dst_stride, bpp, ov, *ox, *oy);
+    }
+}
+
+/// Igual que [`blit_composed`] pero SOLO repinta el rectángulo sucio
+/// `dirty` (px de ventana) del frame — el resto de la ventana ya tiene el
+/// contenido anterior (el blit anterior lo copió): ahorra la copia completa
+/// de ~12 MB por Move del gesto (4-8 ms → ~0.05-0.2 ms). El blend del trazo
+/// y los overlays opacos (FAB, barra, indicador — todos pequeños) se
+/// repintan cada vez sobre su área.
+///
+/// Uso: SOLO cuando `tool_gesture` está activo y el sheet está cerrado (el
+/// frame es la única fuente de verdad y la ventana ya la muestra).
+pub(crate) fn blit_composed_dirty(
+    window: &NativeWindow,
+    frame: &Bitmap,
+    overlays: &[(&Bitmap, i32, i32)],
+    blend_layer: Option<(&Bitmap, i32, i32)>,
+    dirty: (i32, i32, i32, i32),
+) {
+    // Lock con REGIÓN SUCIO: además de copiar solo el rect, se le pasa a
+    // ANativeWindow_lock para que el compositor solo procese esa zona
+    // (camino rápido del driver; en TCL alivia algo el lock vsync).
+    let (x0, y0, x1, y1) = dirty;
+    let mut dirty_rect = android_activity::ndk_sys::ARect {
+        left: x0,
+        top: y0,
+        right: x1,
+        bottom: y1,
+    };
+    let Ok(mut guard) = window.lock(Some(&mut dirty_rect)) else {
+        warn!("ANativeWindow_lock failed");
+        return;
+    };
+    let bpp = match guard.format().bytes_per_pixel() {
+        Some(b) => b,
+        None => {
+            warn!(
+                "buffer format without bytes_per_pixel: {:?}",
+                guard.format()
+            );
+            return;
+        }
+    };
+    let dst_w = guard.width();
+    let dst_h = guard.height();
+    let dst_stride = guard.stride(); // en píxeles
+    let dst = guard.bits() as *mut u8;
+    if bpp == 4 {
+        copy_region_rect(dst, dst_w, dst_h, dst_stride, bpp, frame, x0, y0, x1, y1);
+    } else {
+        // Formato no RGBA: sin dirty rect, copia completa (raro; el buffer
+        // se fuerza a R8G8B8A8_UNORM).
+        copy_region(dst, dst_w, dst_h, dst_stride, bpp, frame, 0, 0);
+    }
     if let Some((ov, ox, oy)) = blend_layer {
         copy_region_blend(dst, dst_w, dst_h, dst_stride, bpp, ov, ox, oy);
     }

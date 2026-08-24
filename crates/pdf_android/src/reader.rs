@@ -1179,6 +1179,16 @@ pub(crate) struct Reader {
     /// anotaciones nuevas de la sesión (no las cargadas del sidecar): el
     /// undo no toca trabajo de otras sesiones (decisión documentada).
     pub(crate) session_ids: Vec<u64>,
+    /// Unión de los bboxes (px de ventana) del trazo en curso entre dos
+    /// Moves consecutivos: el "dirty rect" del blit por Move (solo se
+    /// repinta esa zona del frame, no los 12 MB completos). Se actualiza en
+    /// cada Move y se limpia al terminar el gesto (`end_tool_gesture`).
+    tool_dirty: Option<(i32, i32, i32, i32)>,
+    /// Repintado pendiente (coalescing por vsync): `update_tool_gesture`
+    /// solo marca; el bucle principal hace UN blit por iteración cuando
+    /// `take_repaint()` devuelve true. Evita el backpressure de 16 ms del
+    /// BufferQueue al presentar a >60 Hz.
+    repaint: bool,
 }
 
 impl Reader {
@@ -1264,6 +1274,8 @@ impl Reader {
             },
             tool_gesture: None,
             session_ids: Vec::new(),
+            tool_dirty: None,
+            repaint: false,
         };
         match launch_intent_pdf(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
@@ -1837,7 +1849,10 @@ impl Reader {
     ///
     /// Aquí se decide SOLO el estado que depende del `Reader`: fondo rojo sin
     /// documento, modo oscuro (inversión al blitear) y overlays del visor.
-    fn blit(&mut self) {
+    /// Blit del frame actual al ANativeWindow (lock+copy+unlock_and_post).
+    /// Con el boli activo usa dirty rect + coalescing por vsync (el bucle
+    /// principal lo llama una vez por iteración tras `take_repaint`).
+    pub(crate) fn blit(&mut self) {
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -2042,12 +2057,42 @@ impl Reader {
                                 .round() as i32;
                             sheet_ov.push((s, 0, -slide));
                         }
-                        blit_composed(
-                            window,
-                            frame,
-                            &sheet_ov,
-                            tool_layer.as_ref().map(|(b, x, y)| (b, *x, *y)),
-                        );
+                        // Dirty rect (Fase C, comparativa saber-notes): durante
+                        // el gesto SOLO se repinta la unión del bbox del trazo
+                        // anterior y el actual del frame — la copia completa de
+                        // ~12 MB por Move es el coste dominante (4-8 ms). El
+                        // tool_layer es el bbox actual; `tool_dirty` guarda la
+                        // unión anterior para no dejar el rastro añejo del
+                        // trazo (cuando se encoge con el smooth).
+                        let blend = tool_layer.as_ref().map(|(b, x, y)| (b, *x, *y));
+                        let dirty = if self.sheet_progress <= 0.0
+                            && self.tool_gesture.is_some()
+                            && let Some((b, x, y)) = &tool_layer
+                        {
+                            let cur = (
+                                (*x).max(0),
+                                (*y).max(0),
+                                (x + b.width as i32).min(self.win_w),
+                                (y + b.height as i32).min(self.win_h),
+                            );
+                            self.tool_dirty = Some(match self.tool_dirty {
+                                Some((px0, py0, px1, py1)) => (
+                                    px0.min(cur.0),
+                                    py0.min(cur.1),
+                                    px1.max(cur.2),
+                                    py1.max(cur.3),
+                                ),
+                                None => cur,
+                            });
+                            self.tool_dirty
+                        } else {
+                            None
+                        };
+                        if let Some(d) = dirty {
+                            crate::draw::blit_composed_dirty(window, frame, &sheet_ov, blend, d);
+                        } else {
+                            blit_composed(window, frame, &sheet_ov, blend);
+                        }
                     } else {
                         // Defensa: frame no disponible (compose falló) → blit
                         // normal con el sheet como overlay.
@@ -2748,7 +2793,9 @@ impl Reader {
     /// long-press del dedo en el documento (modo selección) o aviso breve
     /// visible. En reposo el poll bloquea sin gastar batería.
     pub(crate) fn needs_tick(&mut self) -> bool {
-        self.sheet_anim
+        self.repaint
+            || self.tool_gesture.is_some()
+            || self.sheet_anim
             || self.thumbs_pending()
             || self.toast.is_some()
             || self.gesture.press_pending()
@@ -3448,6 +3495,30 @@ impl Reader {
         }
     }
 
+    /// Marca repintado pendiente (coalescing por vsync).
+    fn mark_repaint(&mut self) {
+        self.repaint = true;
+    }
+
+    /// ¿Hay un blit pendiente por coalescer? (el bucle principal lo llama
+    /// una vez por iteración tras procesar eventos).
+    pub(crate) fn take_repaint(&mut self) -> bool {
+        let r = self.repaint;
+        self.repaint = false;
+        r
+    }
+
+    /// ¿El bucle debe correr con timeout (~16 ms) para redibujar? (gesto en
+    /// curso u otro trabajo diferido).
+    #[allow(dead_code)] // apoyo: el flujo real usa `needs_tick(&mut self)`
+    pub(crate) fn needs_repaint(&self) -> bool {
+        self.repaint
+            || self.tool_gesture.is_some()
+            || self.sheet_anim
+            || self.ai_rx.is_some()
+            || self.lib_fade.is_some()
+    }
+
     /// Botón "↶" de la barra: deshace la ÚLTIMA anotación creada en esta
     /// sesión (la pila `session_ids`; nunca toca anotaciones cargadas del
     /// sidecar ni de sesiones anteriores). La borra del set y persiste.
@@ -3475,15 +3546,24 @@ impl Reader {
             return;
         };
         self.tool_gesture = Some(ToolGesture::new(self.page, self.tool, pt));
-        self.page_frame = None; // recomponer el frame SIN el trazo (la capa temporal va aparte)
+        // NO invalidar `page_frame` aquí: el frame ya tiene las anotaciones
+        // guardadas (se parchea incrementalmente en `end_tool_gesture`);
+        // invalidarlo recomponía TODAS las capas (~6-13 ms con 146 trazos)
+        // al empezar cada trazo — el "hitch" al escribir seguido (ver
+        // comparativa saber-notes). El trazo en curso va como capa temporal
+        // sobre el frame existente.
         if self.window.is_some() {
             self.blit();
         }
     }
 
     /// Gesto de herramienta: cada Move añade el punto (boli) o actualiza el
-    /// rect (resaltador) y re-blitea con el frame compuesto + la capa
-    /// temporal del trazo — la página NO se re-blitea por evento (req. 5).
+    /// rect (resaltador) y MARCA repintar — el blit real ocurre UNA vez por
+    /// vsync en el bucle principal (coalescing de eventos, como Saber/Flutter):
+    /// si bliteáramos por Move a 120 Hz, el BufferQueue de SurfaceFlinger
+    /// (pantalla 60 Hz) bloquearía cada `unlock_and_post` ~16 ms (backpressure)
+    /// → jitter/lag. Con un blit por vsync y dirty rect, el coste por frame es
+    /// <1 ms y la latencia es ≤1 frame (16 ms).
     pub(crate) fn update_tool_gesture(&mut self, sx: f32, sy: f32) {
         let Some(pt) = self.screen_to_page(sx, sy) else {
             return;
@@ -3501,9 +3581,7 @@ impl Reader {
             }
             ToolKind::Navigate => {}
         }
-        if self.window.is_some() {
-            self.blit();
-        }
+        self.mark_repaint();
     }
 
     /// Gesto de herramienta: al levantar el dedo convierte el gesto en una
@@ -3608,7 +3686,10 @@ impl Reader {
         // el nuevo trazo sobre él; si no, invalidar para recomposición completa.
         let mut patched = false;
         if let Some(frame) = self.page_frame.as_mut() {
-            if g.page == self.page && frame.width as i32 == self.win_w && frame.height as i32 == self.win_h {
+            if g.page == self.page
+                && frame.width as i32 == self.win_w
+                && frame.height as i32 == self.win_h
+            {
                 if let Some(&id) = self.session_ids.last() {
                     if let Some(ann) = self
                         .annotations
@@ -3620,7 +3701,9 @@ impl Reader {
                             if let Ok((pw, ph)) = doc.page_size(g.page) {
                                 let cover = initial_scale(pw, ph, self.win_w, self.win_h);
                                 let scale = cover * self.zoom;
-                                let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round() as i32;
+                                let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom)
+                                    + self.pan_x)
+                                    .round() as i32;
                                 let dy = self.pan_y.round() as i32;
                                 let page_anns = match &ann.kind {
                                     Annotation::Stroke(s) => crate::draw::PageAnnots {
@@ -3650,7 +3733,9 @@ impl Reader {
                                 let dst_w = frame.width as usize;
                                 let dst_h = frame.height as usize;
                                 let dst_stride = dst_w;
-                                crate::draw::draw_annotations(dst, dst_w, dst_h, dst_stride, 4, &page_anns);
+                                crate::draw::draw_annotations(
+                                    dst, dst_w, dst_h, dst_stride, 4, &page_anns,
+                                );
                                 patched = true;
                             }
                         }
@@ -3661,6 +3746,7 @@ impl Reader {
         if !patched {
             self.page_frame = None;
         }
+        self.tool_dirty = None; // el siguiente blit (normal) repinta completo
         if self.window.is_some() {
             self.blit();
         }

@@ -577,6 +577,15 @@ pub fn android_main(app: AndroidApp) {
             }
             _ => {} // PollEvent es #[non_exhaustive]: cubrir futuras variantes
         });
+        // Coalescing por vsync (Fase C, comparativa saber-notes): UN blit por
+        // iteración si `update_tool_gesture` marcó repintar. Los Moves del
+        // boli llegan a 120 Hz pero la pantalla solo presenta a 60 Hz —
+        // blitear por evento bloquearía el BufferQueue (~16 ms por
+        // unlock_and_post) y encadenaría el lag. Con coalescing: latencia ≤1
+        // frame y coste por frame = dirty rect (< 1 ms).
+        if reader.take_repaint() {
+            reader.blit();
+        }
     }
 
     info!("android_main: fin");
