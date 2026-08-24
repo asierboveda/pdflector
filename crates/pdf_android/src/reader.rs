@@ -3518,7 +3518,14 @@ impl Reader {
                 // Douglas-Peucker (epsilon 1.5 pt) — un trazo de 100+
                 // puntos del dedo baja a ~15-20 sin perder forma, y el
                 // rasterizado/guardado pagan menos.
-                let simplified = pdf_core::simplify_polyline(&g.points, 1.5);
+                // DP solo cuando el trazo es LARGO (≥40 pts) y con epsilon
+                // suave (0.8 pt): conserva la forma manuscrita; un trazo
+                // corto/curvo se envía tal cual al suavizado.
+                let simplified = if g.points.len() >= 40 {
+                    pdf_core::simplify_polyline(&g.points, 0.8)
+                } else {
+                    g.points.clone()
+                };
                 let pts = pdf_core::smooth_polyline(&simplified, 6);
                 if let Some(s) = Stroke::new(pts, STROKE_WIDTH_PT, self.ink_color)
                     && let Some(id) = self.annotations.add(g.page as usize, Annotation::Stroke(s))

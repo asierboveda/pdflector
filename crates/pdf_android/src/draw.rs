@@ -3677,7 +3677,11 @@ pub(crate) fn raster_tool_layer(
         offset_y: xform.offset_y - t as f32,
     };
     let anns = [ann];
-    composite_annotations(&mut data, w as u32, h as u32, &anns, &layer_xform);
+    // Variante alpha (Fase C): el bitmap del trazo EN CURSO debe
+    // marcar alpha en los píxeles pintados — `composite_annotations` a secas
+    // deja alpha=0 (diseñado para el bitmap opaco de página) y el blend las
+    // saltaría: trazo invisible (bug 2026-08-24, ver overlay.rs).
+    pdf_core::composite_annotations_alpha(&mut data, w as u32, h as u32, &anns, &layer_xform);
     Some((
         Bitmap {
             width: w as u32,

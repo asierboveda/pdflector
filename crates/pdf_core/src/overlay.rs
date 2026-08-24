@@ -72,12 +72,37 @@ impl ViewTransform {
 /// Pure and infallible: `buf.len()` must equal `width * height * 4`
 /// (`debug_assert`ed); no other failure mode exists, so the caller can call
 /// it from the render path without error handling.
-pub fn composite_annotations(
+/// Rasteriza todas las anotaciones de una página sobre un buffer RGBA
+/// **transparente** (`alpha` del pixel = cobertura × alpha del color, RGB ya
+/// compuesto sobre el fondo transparente): la salida es una capa que se
+/// puede FUNDIR (source-over) sobre otra imagen con `copy_region_blend` o
+/// similar. A diferencia de [`composite_annotations`] (que dibuja sobre el
+/// bitmap OPAco de la página y nunca toca el byte alpha — el bitmap de
+/// página debe seguir opaco), esta variante marca los píxeles pintados con
+/// su alpha para que el fondo transparente del buffer se conserve donde no
+/// hay tinta.
+///
+/// Fase C: es la que usa `pdf_android::draw::raster_tool_layer` para
+/// materializar la capa del trazo EN CURSO (feedback en tiempo real del
+/// boli) — sin alpha el blend no pinta nada (bug 2026-08-24).
+pub fn composite_annotations_alpha(
     buf: &mut [u8],
     width: u32,
     height: u32,
     anns: &[&Annotated],
     xform: &ViewTransform,
+) {
+    composite_inner(buf, width, height, anns, xform, true)
+}
+
+/// Implementación compartida de la rasterización de la capa.
+fn composite_inner(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    anns: &[&Annotated],
+    xform: &ViewTransform,
+    write_alpha: bool,
 ) {
     debug_assert_eq!(
         buf.len(),
@@ -91,16 +116,27 @@ pub fn composite_annotations(
         match &a.kind {
             Annotation::Highlight(hl) => {
                 for r in &hl.rects {
-                    fill_rect(buf, width, height, xform, r, hl.color);
+                    fill_rect(buf, width, height, xform, r, hl.color, write_alpha);
                 }
             }
-            Annotation::Stroke(s) => draw_stroke(buf, width, height, xform, s),
+            Annotation::Stroke(s) => draw_stroke(buf, width, height, xform, s, write_alpha),
             Annotation::TextNote(_) => {
                 // Notes are rendered by the UI (they carry a string, not
                 // geometry); nothing to paint in the layer.
             }
         }
     }
+}
+
+/// Public entry that keeps the opaque-page contract (never writes alpha).
+pub fn composite_annotations(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    anns: &[&Annotated],
+    xform: &ViewTransform,
+) {
+    composite_inner(buf, width, height, anns, xform, false)
 }
 
 /// Screen-space bounds of a page rect under `xform`, clamped to the bitmap.
@@ -128,6 +164,7 @@ fn fill_rect(
     xform: &ViewTransform,
     r: &Rect,
     color: Color,
+    write_alpha: bool,
 ) {
     let (w, h) = (width as f32, height as f32);
     let Some((rx0, ry0, rx1, ry1)) = screen_rect(xform, r, w, h) else {
@@ -162,7 +199,13 @@ fn fill_rect(
             if cov_x <= 0.0 {
                 continue;
             }
-            blend_pixel(buf, (row + x as usize) * 4, color, cov_x * cov_y);
+            blend_pixel(
+                buf,
+                (row + x as usize) * 4,
+                color,
+                cov_x * cov_y,
+                write_alpha,
+            );
         }
     }
 }
@@ -181,7 +224,14 @@ struct Seg {
 /// Draws one ink stroke as a thick polyline: each segment is rasterized over
 /// its own padded bounding box with a 1-px antialiased fringe. Thickness and
 /// colour come from the stroke model; alpha blends over the page bitmap.
-fn draw_stroke(buf: &mut [u8], width: u32, height: u32, xform: &ViewTransform, s: &Stroke) {
+fn draw_stroke(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    xform: &ViewTransform,
+    s: &Stroke,
+    write_alpha: bool,
+) {
     if !s.is_valid() {
         return;
     }
@@ -193,7 +243,16 @@ fn draw_stroke(buf: &mut [u8], width: u32, height: u32, xform: &ViewTransform, s
     for &p in &s.points[1..] {
         let (ax, ay) = xform.page_to_screen(prev.0, prev.1);
         let (bx, by) = xform.page_to_screen(p.0, p.1);
-        draw_segment(buf, width, w, h, Seg { ax, ay, bx, by }, half, s.color);
+        draw_segment(
+            buf,
+            width,
+            w,
+            h,
+            Seg { ax, ay, bx, by },
+            half,
+            s.color,
+            write_alpha,
+        );
         prev = p;
     }
 }
@@ -201,7 +260,17 @@ fn draw_stroke(buf: &mut [u8], width: u32, height: u32, xform: &ViewTransform, s
 /// Rasterizes one thick segment (screen pixels, already transform-mapped)
 /// with half-width `r` and a 1-px antialiased edge.
 #[inline]
-fn draw_segment(buf: &mut [u8], width: u32, w: f32, h: f32, seg: Seg, r: f32, color: Color) {
+#[allow(clippy::too_many_arguments)]
+fn draw_segment(
+    buf: &mut [u8],
+    width: u32,
+    w: f32,
+    h: f32,
+    seg: Seg,
+    r: f32,
+    color: Color,
+    write_alpha: bool,
+) {
     let dx = seg.bx - seg.ax;
     let dy = seg.by - seg.ay;
     let len2 = dx * dx + dy * dy;
@@ -237,7 +306,7 @@ fn draw_segment(buf: &mut [u8], width: u32, w: f32, h: f32, seg: Seg, r: f32, co
             if cov <= 0.0 {
                 continue;
             }
-            blend_pixel(buf, (row + x) * 4, color, cov);
+            blend_pixel(buf, (row + x) * 4, color, cov, write_alpha);
         }
     }
 }
@@ -264,7 +333,7 @@ fn point_segment_distance(px: f32, py: f32, ax: f32, ay: f32, dx: f32, dy: f32, 
 /// Source-over blend of `color` (with coverage `cov` in [0,1]) at byte
 /// offset `i`. No allocation, no branches beyond the alpha check.
 #[inline]
-fn blend_pixel(buf: &mut [u8], i: usize, color: Color, cov: f32) {
+fn blend_pixel(buf: &mut [u8], i: usize, color: Color, cov: f32, write_alpha: bool) {
     // a: final alpha in [0,1] combining the annotation alpha and coverage.
     let a = color.a as f32 / 255.0 * cov;
     if a <= 0.0 {
@@ -276,6 +345,12 @@ fn blend_pixel(buf: &mut [u8], i: usize, color: Color, cov: f32) {
     buf[i] = (sr * a + dr * inv) as u8;
     buf[i + 1] = (sg * a + dg * inv) as u8;
     buf[i + 2] = (sb * a + db * inv) as u8;
+    if write_alpha {
+        // Capa sobre fondo transparente: el píxel pintado hereda la
+        // cobertura (`a` en [0,1] → 0..=255). Donde no hay tinta, el alpha
+        // sigue a 0 y un blend posterior source-over lo salta.
+        buf[i + 3] = (a * 255.0).round() as u8;
+    }
 }
 
 #[cfg(test)]
@@ -432,6 +507,49 @@ mod tests {
         let mut buf = buffer(8, 8);
         composite_annotations(&mut buf, 8, 8, &anns, &ViewTransform::IDENTITY);
         assert_eq!(&buf[..], buffer(8, 8).as_slice(), "nothing painted");
+    }
+
+    #[test]
+    fn alpha_variant_marks_painted_pixels_and_keeps_bg_transparent() {
+        // La capa transparente de Fase C: el buffer arranca en rgba(0,0,0,0)
+        // y composite_annotations_alpha debe marcar los píxeles pintados con
+        // alpha = cobertura × color.a, dejando el resto en alpha 0.
+        let mut set = AnnotationSet::new();
+        set.add(
+            0,
+            Annotation::Highlight(Highlight {
+                rects: vec![Rect::new(1.0, 1.0, 3.0, 3.0)],
+                color: Color {
+                    r: 255,
+                    g: 0,
+                    b: 0,
+                    a: 128,
+                },
+            }),
+        )
+        .expect("add");
+        let anns = set.for_page(0);
+        let mut buf = vec![0u8; 8 * 8 * 4];
+        composite_annotations_alpha(&mut buf, 8, 8, &anns, &ViewTransform::IDENTITY);
+        // Interior del rect (cobertura 1, alpha 128): rgb = src (sobre 0) y
+        // alpha = 128.
+        let i = (2 * 8 + 2) * 4;
+        assert_eq!(buf[i + 3], 128, "alpha marcado en el interior");
+        assert!(buf[i] > 100, "rgb compuesto sobre transparente (rojo)");
+        // Fuera del rect: alpha 0 (transparente) e intacto.
+        assert_eq!(buf[(0 * 8 + 0) * 4 + 3], 0, "fondo transparente");
+        // La variante opaca (composite_annotations) NO toca alpha: sobre un
+        // buffer con alpha 255 se conserva.
+        let mut page = vec![0u8; 8 * 8 * 4];
+        for px in page.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        composite_annotations(&mut page, 8, 8, &anns, &ViewTransform::IDENTITY);
+        assert_eq!(
+            page[(2 * 8 + 2) * 4 + 3],
+            255,
+            "el bitmap de página sigue opaco"
+        );
     }
 
     #[test]

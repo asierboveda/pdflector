@@ -379,3 +379,17 @@ textbench (mini-binario /tmp, pdf_core release aarch64):
 - B1 (`PageTextCache`, LRU 512 págs, prefetch ±2 al abrir, `get_or_extract` en gesto/selección): hit = 0.000 ms → subrayado sin stext en el hilo UI tras el primer acceso.
 - Prefetch completo de un doc de 93 pág ≈ 50 ms → viable en worker de fondo (no en hilo UI).
 - B2 (índice espacial): NO necesario — `highlight_under_gesture` ya cuesta 20-36 µs para 200 líneas (bench highlight Fase A).
+
+## Fase C — Boli en tiempo real (TCL 9469X, 2026-08-24, release)
+
+**Bug crítico corregido**: el trazo en curso no se veía durante el gesto (el usuario solo veía la tinta al soltar). Causa raíz: `raster_tool_layer` materializaba la capa con `composite_annotations` de pdf_core, que NO escribe el canal alpha (contrato: bitmap de página opaco) → capa con alpha=0 → `copy_region_blend` saltaba todos los píxeles (`ink_px=0` en log) → invisible. Fix: `composite_annotations_alpha` (alpha = cobertura × color.a) en `pdf_core::overlay` + uso en `raster_tool_layer`.
+
+Verificación E2E (screencap durante swipe con tool Boli activa):
+| Métrica | Antes del fix | Después del fix |
+|---|---|---|
+| Píxeles de trazo visibles a mitad de gesto | **0 px** | **928 px** (bbox exacto al dedo) |
+| Píxeles al soltar | ~10-90 px | **2205 px** (bbox coincide con el recorrido) |
+| Posición | — | exacta (layer en (396,495) para dedo en (400,500)) |
+
+- El PULL del sheet solo compite cuando la tool está inactiva (kind Tap); con Boli activo, dibujar en mitad superior funciona.
+- CPS: blit_composed 4-8 ms/frame con blend de la capa (∝ bbox del trazo) — dentro del presupuesto.
