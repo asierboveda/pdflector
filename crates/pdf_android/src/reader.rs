@@ -3521,7 +3521,6 @@ impl Reader {
         let Some(g) = self.tool_gesture.take() else {
             return;
         };
-        self.page_frame = None; // la anotación guardada se dibuja vía el set
         // Gesto degenerado (un toque sin arrastre): descartar silenciosamente.
         // El umbral está en px de PANTALLA (TOOL_MIN_PX, el recorrido mínimo
         // del dedo/lápiz); el bbox del gesto en página se convierte con la
@@ -3602,6 +3601,68 @@ impl Reader {
                 }
             }
             ToolKind::Navigate => {}
+        }
+        // Parche incremental del frame para evitar recomposición completa de
+        // 146 trazos (6ms desktop / 13ms TCL) que causa lag al escribir rápido.
+        // Si el frame existe y es para la misma página/ventana, dibujar solo
+        // el nuevo trazo sobre él; si no, invalidar para recomposición completa.
+        let mut patched = false;
+        if let Some(frame) = self.page_frame.as_mut() {
+            if g.page == self.page && frame.width as i32 == self.win_w && frame.height as i32 == self.win_h {
+                if let Some(&id) = self.session_ids.last() {
+                    if let Some(ann) = self
+                        .annotations
+                        .for_page(g.page as usize)
+                        .into_iter()
+                        .find(|a| a.id == id)
+                    {
+                        if let Some(doc) = self.doc.as_ref() {
+                            if let Ok((pw, ph)) = doc.page_size(g.page) {
+                                let cover = initial_scale(pw, ph, self.win_w, self.win_h);
+                                let scale = cover * self.zoom;
+                                let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round() as i32;
+                                let dy = self.pan_y.round() as i32;
+                                let page_anns = match &ann.kind {
+                                    Annotation::Stroke(s) => crate::draw::PageAnnots {
+                                        dx,
+                                        dy,
+                                        scale,
+                                        strokes: vec![s],
+                                        highlights: vec![],
+                                    },
+                                    Annotation::Highlight(h) => crate::draw::PageAnnots {
+                                        dx,
+                                        dy,
+                                        scale,
+                                        strokes: vec![],
+                                        highlights: vec![h],
+                                    },
+                                    Annotation::TextNote(_) => crate::draw::PageAnnots {
+                                        dx,
+                                        dy,
+                                        scale,
+                                        strokes: vec![],
+                                        highlights: vec![],
+                                    },
+                                };
+                                // Frame es RGBA (bpp=4), stride = width
+                                let dst = frame.data.as_mut_ptr();
+                                let dst_w = frame.width as usize;
+                                let dst_h = frame.height as usize;
+                                let dst_stride = dst_w;
+                                crate::draw::draw_annotations(dst, dst_w, dst_h, dst_stride, 4, &page_anns);
+                                patched = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !patched {
+            self.page_frame = None;
+        }
+        if self.window.is_some() {
+            self.blit();
         }
     }
 

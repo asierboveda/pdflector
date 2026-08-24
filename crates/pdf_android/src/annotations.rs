@@ -137,20 +137,9 @@ impl ToolGesture {
     /// history API del MotionEvent que no exponemos aún directamente).
     pub(crate) fn push(&mut self, pt: (f32, f32)) {
         if let Some(&last) = self.points.last() {
-            let dx = pt.0 - last.0;
-            let dy = pt.1 - last.1;
-            let d2 = dx * dx + dy * dy;
+            let d2 = (pt.0 - last.0).powi(2) + (pt.1 - last.1).powi(2);
             if d2 < 0.0625 {
                 return;
-            }
-            // Interpolar si el gap es grande (pérdida de muestras entre vsync)
-            let d = d2.sqrt();
-            if d > 1.0 {
-                let steps = (d / 1.0) as usize;
-                for i in 1..steps {
-                    let t = i as f32 / steps as f32;
-                    self.points.push((last.0 + dx * t, last.1 + dy * t));
-                }
             }
         }
         self.points.push(pt);

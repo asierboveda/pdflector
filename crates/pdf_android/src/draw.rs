@@ -629,7 +629,7 @@ fn blit_page_scaled(
 /// Coste ∝ nº de puntos de los trazos visibles × área de la brocha — nunca
 /// ∝ área de la página, como exige el presupuesto de Fase 1/2 (200 trazos
 /// visibles sin degradar el frame time).
-fn draw_annotations(
+pub(crate) fn draw_annotations(
     dst: *mut u8,
     dst_w: usize,
     dst_h: usize,
