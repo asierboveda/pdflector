@@ -512,6 +512,7 @@ pub fn android_main(app: AndroidApp) {
 
     let mut reader = Reader::new(&app);
     let mut running = true;
+    crate::jni::enter_immersive(&app);
 
     while running {
         // Timeout del poll SOLO mientras hay trabajo diferido: animación del
@@ -527,6 +528,8 @@ pub fn android_main(app: AndroidApp) {
         app.poll_events(timeout, |event| match event {
             PollEvent::Main(MainEvent::InitWindow { .. }) => {
                 info!("InitWindow");
+                reader.status_bar_top = app.content_rect().top;
+                info!("status_bar_top: {}", reader.status_bar_top);
                 if let Some(win) = app.native_window() {
                     reader.init_window(win);
                 }
@@ -537,6 +540,7 @@ pub fn android_main(app: AndroidApp) {
             }
             PollEvent::Main(MainEvent::WindowResized { .. }) => {
                 info!("WindowResized");
+                reader.status_bar_top = app.content_rect().top;
                 // Re-obtener el handle: tras resize/recreate puede estar stale
                 // (ver nota de refresco en la cabecera del módulo).
                 if let Some(win) = app.native_window() {

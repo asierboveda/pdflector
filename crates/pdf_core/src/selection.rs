@@ -232,7 +232,12 @@ mod tests {
             line("der3", 500.0, 48.0, 180.0, 12.0),
         ];
         // Trazo dentro de la columna izquierda, bajando de la línea 1 a la 3.
-        let gesture = Gesture::Points(vec![(40.0, 25.0), (190.0, 25.0), (190.0, 41.0), (50.0, 55.0)]);
+        let gesture = Gesture::Points(vec![
+            (40.0, 25.0),
+            (190.0, 25.0),
+            (190.0, 41.0),
+            (50.0, 55.0),
+        ]);
         let hl =
             highlight_under_gesture(&cols, &gesture, HIGHLIGHT_COLOR).expect("left column lines");
         assert_eq!(hl.rects.len(), 3, "solo la columna izquierda");

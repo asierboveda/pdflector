@@ -20,13 +20,14 @@ use pdf_core::{
 use crate::annotations::ToolKind;
 use crate::persist;
 use crate::reader::{
-    AiPhase, GRID_CELL_PAD, GRID_COLS, Reader, entry_author, entry_title, grid_cell_h, grid_cell_w,
-    grid_cover_h, grid_cover_w, grid_cell_rect, grid_pad, human_size, lib_chip_h, lib_chips,
-    lib_cont_block_h, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h,
-    lib_cont_cover_w, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
-    lib_org_chip_h, lib_org_chips, lib_org_y, lib_search_h, lib_section_title_h, page_badge_size,
-    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, picker_visible_rows, sheet_btn_h,
-    sheet_btn_w, sheet_h, sheet_pad, sheet_row1_y, sheet_row2_y, title_from_name, truncate_name,
+    AiPhase, GRID_CELL_PAD, GRID_COLS, Reader, entry_author, entry_title, grid_cell_h,
+    grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, human_size, lib_chip_h,
+    lib_chips, lib_cont_block_h, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x,
+    lib_cont_cover_h, lib_cont_cover_w, lib_content_y0, lib_empty_state_geom, lib_grid_y0,
+    lib_header_h, lib_org_chip_h, lib_org_chips, lib_org_y, lib_search_h, lib_section_title_h,
+    page_badge_size, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
+    picker_visible_rows, sheet_btn_h, sheet_btn_w, sheet_h, sheet_pad, sheet_row1_y, sheet_row2_y,
+    title_from_name, truncate_name,
 };
 use crate::theme;
 
@@ -1962,7 +1963,11 @@ const LIB_BG_RGBA: [u8; 4] = [0x0B, 0x0D, 0x12, 0xFF];
 /// + `splice_row`) para que su scroll horizontal no re-renderice la pantalla.
 pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
-    let h = lib_content_y0(reader.win_h, reader.lib_search_open, reader.status.is_some());
+    let h = lib_content_y0(
+        reader.win_h,
+        reader.lib_search_open,
+        reader.status.is_some(),
+    );
     if w <= 0 || h <= 0 {
         return None;
     }
@@ -1975,7 +1980,13 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
 
     // Fondo del bloque fijo (algo más claro que el contenido) + hairline
     // 1 px bajo la zona fija: separación editorial entre cabecera y lista.
-    rects.push(CanvasRect::sharp(0.0, 0.0, w as f32, h as f32, theme::LIB_HEADER_BG));
+    rects.push(CanvasRect::sharp(
+        0.0,
+        0.0,
+        w as f32,
+        h as f32,
+        theme::LIB_HEADER_BG,
+    ));
     rects.push(CanvasRect::sharp(
         0.0,
         h as f32 - 1.0,
@@ -2122,7 +2133,11 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
 /// se dibujan aquí: `Reader` las remienda encima (`render_carousel_row` /
 /// `render_org_chip_row` + `splice_row`) para que su scroll horizontal no
 /// re-renderice la pantalla completa.
-pub(crate) fn render_library_zone(reader: &Reader, band_origin: i32, band_h: i32) -> Option<Bitmap> {
+pub(crate) fn render_library_zone(
+    reader: &Reader,
+    band_origin: i32,
+    band_h: i32,
+) -> Option<Bitmap> {
     let w = reader.win_w;
     if w <= 0 || band_h <= 0 {
         return None;
@@ -2140,8 +2155,11 @@ pub(crate) fn render_library_zone(reader: &Reader, band_origin: i32, band_h: i32
         // EMPTY STATE (sin PDFs): centrado en la ventana; su geometría es en
         // px de ventana, así que se traslada a la banda (contenido −
         // content_y0 − band_origin).
-        let content_y0 =
-            lib_content_y0(reader.win_h, reader.lib_search_open, reader.status.is_some());
+        let content_y0 = lib_content_y0(
+            reader.win_h,
+            reader.lib_search_open,
+            reader.status.is_some(),
+        );
         let shift = -(content_y0 as f32 + band_origin as f32);
         draw_empty_state(reader, &mut rects, &mut texts, shift);
     } else {
@@ -2196,8 +2214,9 @@ pub(crate) fn render_library_zone(reader: &Reader, band_origin: i32, band_h: i32
         let char_w = title_ts * 0.55;
         let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
         let row_first = (((band_origin as f32 - grid_y0) / cell_h).floor().max(0.0)) as usize;
-        let row_last =
-            (((band_origin + band_h) as f32 - grid_y0) / cell_h).ceil().max(0.0) as usize;
+        let row_last = (((band_origin + band_h) as f32 - grid_y0) / cell_h)
+            .ceil()
+            .max(0.0) as usize;
         for row in row_first..row_last {
             for col in 0..GRID_COLS {
                 let Some(entry) = reader.grid_entry_at(row, col) else {
@@ -2258,8 +2277,7 @@ pub(crate) fn render_library_zone(reader: &Reader, band_origin: i32, band_h: i32
                     truncate_name(&entry_author(entry), max_chars),
                 ));
                 // Barra fina de progreso si el libro está empezado.
-                if let Some(p) =
-                    persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
+                if let Some(p) = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
                 {
                     let bar_y = cy + 4.0 + cover_h + 12.0 + 36.0;
                     let track_w = cell_w - 2.0 * GRID_CELL_PAD;
@@ -2497,7 +2515,11 @@ pub(crate) fn render_search_chip_row(reader: &Reader, row: usize) -> Option<Bitm
         return None;
     }
     // Ancho de la fila: última chip en coords GLOBALES (r + scroll) + margen.
-    let scroll = if row == 0 { reader.lib_letters_x } else { reader.lib_folders_x };
+    let scroll = if row == 0 {
+        reader.lib_letters_x
+    } else {
+        reader.lib_folders_x
+    };
     let row_w = chips
         .iter()
         .map(|(_, (_, _, r, _), _)| r + scroll)
@@ -2508,7 +2530,11 @@ pub(crate) fn render_search_chip_row(reader: &Reader, row: usize) -> Option<Bitm
     if row_w <= 0 || row_h <= 0 {
         return None;
     }
-    let scroll = if row == 0 { reader.lib_letters_x } else { reader.lib_folders_x };
+    let scroll = if row == 0 {
+        reader.lib_letters_x
+    } else {
+        reader.lib_folders_x
+    };
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
     for (label, (l, t, r, b), active) in &chips {
@@ -2558,7 +2584,11 @@ pub(crate) fn render_org_chip_row(reader: &Reader, row: usize) -> Option<Bitmap>
     if chips.is_empty() {
         return None;
     }
-    let scroll = if row == 0 { reader.lib_sort_x } else { reader.lib_filter_x };
+    let scroll = if row == 0 {
+        reader.lib_sort_x
+    } else {
+        reader.lib_filter_x
+    };
     let row_w = chips
         .iter()
         .map(|(_, (_, _, r, _), _)| r + scroll)
@@ -2569,7 +2599,11 @@ pub(crate) fn render_org_chip_row(reader: &Reader, row: usize) -> Option<Bitmap>
     if row_w <= 0 || row_h <= 0 {
         return None;
     }
-    let scroll = if row == 0 { reader.lib_sort_x } else { reader.lib_filter_x };
+    let scroll = if row == 0 {
+        reader.lib_sort_x
+    } else {
+        reader.lib_filter_x
+    };
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
     for (label, (l, t, r, b), active) in &chips {
@@ -3665,8 +3699,11 @@ pub(crate) fn compose_library_snapshot(reader: &Reader) -> Option<Bitmap> {
     if w <= 0 || h <= 0 {
         return None;
     }
-    let content_y0 =
-        lib_content_y0(reader.win_h, reader.lib_search_open, reader.status.is_some());
+    let content_y0 = lib_content_y0(
+        reader.win_h,
+        reader.lib_search_open,
+        reader.status.is_some(),
+    );
     let mut out = Bitmap {
         width: w as u32,
         height: h as u32,
@@ -3676,29 +3713,11 @@ pub(crate) fn compose_library_snapshot(reader: &Reader) -> Option<Bitmap> {
     let dst = out.data.as_mut_ptr();
     fill_buffer(dst, w as usize, h as usize, w as usize, 4, LIB_BG_RGBA);
     if let Some(header) = reader.lib_header.as_ref() {
-        copy_region(
-            dst,
-            w as usize,
-            h as usize,
-            w as usize,
-            4,
-            header,
-            0,
-            0,
-        );
+        copy_region(dst, w as usize, h as usize, w as usize, 4, header, 0, 0);
     }
     if let Some((band, origin)) = reader.lib_band.as_ref() {
         let sy = content_y0 - (reader.lib_scroll as i32 - *origin);
-        copy_region(
-            dst,
-            w as usize,
-            h as usize,
-            w as usize,
-            4,
-            band,
-            0,
-            sy,
-        );
+        copy_region(dst, w as usize, h as usize, w as usize, 4, band, 0, sy);
     }
     Some(out)
 }
@@ -3731,8 +3750,9 @@ pub(crate) fn blit_lib_fade(window: &NativeWindow, snap: &Bitmap, alpha: u8) {
     }
     let inv = 255 - a;
     for y in 0..dst_h as usize {
-        let row_dst =
-            unsafe { std::slice::from_raw_parts_mut(dst.add(y * dst_stride * 4), dst_w as usize * 4) };
+        let row_dst = unsafe {
+            std::slice::from_raw_parts_mut(dst.add(y * dst_stride * 4), dst_w as usize * 4)
+        };
         let row_snap = &snap.data[y * dst_w as usize * 4..(y + 1) * dst_w as usize * 4];
         for px in 0..dst_w as usize {
             let d = px * 4;

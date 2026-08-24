@@ -97,10 +97,20 @@ fn sidecar_path_is_stable_and_hash_suffixed() {
         let p2 = sidecar_path(pdf);
         assert_eq!(p1, p2, "sidecar_path must be stable for {pdf:?}");
         let parent = p1.parent().expect("parent");
-        assert!(parent.ends_with("annotations"), "not under annotations/: {p1:?}");
+        assert!(
+            parent.ends_with("annotations"),
+            "not under annotations/: {p1:?}"
+        );
         let name = p1.file_name().and_then(|n| n.to_str()).expect("name");
-        let stem = pdf.file_stem().or_else(|| pdf.file_name()).and_then(|s| s.to_str()).unwrap_or("document");
-        assert!(name.starts_with(&format!("{stem}-")) && name.ends_with(".db"), "unexpected sidecar name: {name:?} for {pdf:?}");
+        let stem = pdf
+            .file_stem()
+            .or_else(|| pdf.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("document");
+        assert!(
+            name.starts_with(&format!("{stem}-")) && name.ends_with(".db"),
+            "unexpected sidecar name: {name:?} for {pdf:?}"
+        );
     }
 }
 

@@ -44,7 +44,9 @@ use crate::persist::{self, BookProgress, RecentEntry};
 use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, THUMB_W, ThumbCache};
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
-use crate::{BACKGROUND, DARK_BG, ERROR_BG, LIB_FADE_MS, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS};
+use crate::{
+    BACKGROUND, DARK_BG, ERROR_BG, LIB_FADE_MS, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS,
+};
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
 /// Construido en `jni::launch_intent_pdf`, consumido en `Reader::new`.
@@ -1145,6 +1147,7 @@ pub(crate) struct Reader {
     /// (decisión documentada: una herramienta activa sin barra visible
     /// dejaría el visor en un modo invisible difícil de revertir).
     pub(crate) toolbar_open: bool,
+    pub(crate) status_bar_top: i32,
     /// Bitmap cacheado de la barra de herramientas (píldora con los botones
     /// Resaltar/Boli/↶/●/→, `draw::render_toolbar`). Se invalida al alternar
     /// herramienta/color, al cambiar el modo oscuro o al redimensionar.
@@ -1507,14 +1510,14 @@ impl Reader {
     /// al rebuild completo. El render es Canvas+JNI UNA vez por banda; el
     /// scroll dentro de la banda es memcpy.
     fn rebuild_library_band(&mut self) {
-        let content_y0 =
-            lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
+        let content_y0 = lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
         let viewport = (self.win_h - content_y0).max(0) as i32;
         let content_h = self.lib_content_h() as i32;
         let margin = grid_cell_h(self.win_w) as i32;
         let band_h = (viewport + 2 * margin).min(content_h.max(viewport));
-        let band_origin =
-            ((self.lib_scroll as i32) - margin).max(0).min((content_h - band_h).max(0));
+        let band_origin = ((self.lib_scroll as i32) - margin)
+            .max(0)
+            .min((content_h - band_h).max(0));
         if let Some(bmp) = render_library_zone(self, band_origin, band_h) {
             let mut band = bmp;
             paste_lib_thumbs(self, &mut band, band_origin);
@@ -1628,7 +1631,11 @@ impl Reader {
     /// sort/filter) sobre la banda actual.
     fn splice_band_rows(&mut self) {
         let has_cont = self.lib_has_cont();
-        let cont_row = if has_cont { render_carousel_row(self) } else { None };
+        let cont_row = if has_cont {
+            render_carousel_row(self)
+        } else {
+            None
+        };
         let sort_row = render_org_chip_row(self, 0);
         let filter_row = render_org_chip_row(self, 1);
         let carousel_x = self.lib_carousel_x as i32;

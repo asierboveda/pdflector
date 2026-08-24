@@ -19,6 +19,60 @@ use log::{error, info, warn};
 
 use crate::reader::{LaunchPdf, LibraryEntry, LibraryScan};
 
+/// Modo inmersivo del visor: oculta la barra de estado y la de navegación del
+/// sistema (Android 15 edge-to-edge las deja DIBUJADAS sobre la app, pero el
+/// sistema se queda con los touches de su franja — un tap en la status bar
+/// abre el shade de notificaciones y jamás llega al fab "✎" ni a la barra de
+/// herramientas). Con `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE` las barras
+/// reaparecen temporalmente con un swipe desde el borde (estándar en
+/// lectores); el resto del tiempo TODA la pantalla es de la app (fix
+/// 2026-08-23: el fab de la Fase 3.5 era intocable en la tablet real).
+///
+/// Deprecado en API 35 pero funcional: `WindowInsetsController.hide` (API
+/// 30+). En API < 30 falla y se degrada silenciosamente (el resto de la app
+/// sigue funcionando; solo muere la franja táctil superior, que ya era
+/// borderline). No loguea errores graves: best-effort en el arranque.
+pub(crate) fn enter_immersive(app: &AndroidApp) {
+    let Ok(vm) = JavaVM::singleton() else {
+        return;
+    };
+    let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+        env.with_local_frame(32, |env| {
+            let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
+            let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
+            let window = env
+                .call_method(
+                    activity.as_ref(),
+                    jni_str!("getWindow"),
+                    jni_sig!(sig = () -> android.view.Window),
+                    &[],
+                )?
+                .l()?;
+            let controller = env
+                .call_method(
+                    window.as_ref(),
+                    jni_str!("getInsetsController"),
+                    jni_sig!(sig = () -> android.view.WindowInsetsController),
+                    &[],
+                )?
+                .l()?;
+            let _ = env.call_method(
+                controller.as_ref(),
+                jni_str!("hide"),
+                jni_sig!(sig = (int) -> void),
+                &[JValue::Int(1 | 2)],
+            )?;
+            let _ = env.call_method(
+                controller.as_ref(),
+                jni_str!("setSystemBarsBehavior"),
+                jni_sig!(sig = (int) -> void),
+                &[JValue::Int(1)],
+            )?;
+            Ok(())
+        })
+    });
+}
+
 /// Lee el Intent de lanzamiento de la Activity (JNI) y, si es un "abrir con"
 /// de un PDF (`ACTION_VIEW` + `data`), prepara el documento para abrirlo:
 ///
