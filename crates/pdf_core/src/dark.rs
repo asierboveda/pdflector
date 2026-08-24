@@ -20,7 +20,7 @@ use crate::engine::Bitmap;
 /// (a fully opaque page stays fully opaque).
 pub fn invert_bitmap(src: &Bitmap) -> Bitmap {
     let mut data = src.data.clone();
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         px[0] = 255 - px[0];
         px[1] = 255 - px[1];
         px[2] = 255 - px[2];
@@ -51,7 +51,7 @@ mod tests {
     fn black_becomes_white() {
         // Black, fully opaque (RGB 0, alpha 255).
         let mut data = vec![0u8; 3 * 2 * 4];
-        for px in data.chunks_exact_mut(4) {
+        for px in data.as_chunks_mut::<4>().0 {
             px[3] = 255;
         }
         let src = rgba(3, 2, data);
