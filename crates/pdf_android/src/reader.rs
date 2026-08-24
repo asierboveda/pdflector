@@ -21,8 +21,8 @@ use log::{error, info, warn};
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::store::{AnnotationStore, sidecar_path};
 use pdf_core::{
-    Annotated, Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, Rect,
-    RenderEngine, Stroke, TextSpan,
+    Annotated, Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache,
+    Rect, RenderEngine, Stroke, TextSpan,
 };
 
 use crate::annotations::{DEFAULT_INK_COLOR, INK_PALETTE, STROKE_WIDTH_PT, ToolGesture, ToolKind};
@@ -1097,6 +1097,11 @@ pub(crate) struct Reader {
     /// un PDF abierto por content:// (biblioteca o "abrir con") queda junto
     /// a la copia en `internal/pdfs/` → `internal/pdfs/annotations/<stem>.db`
     /// (ver `open_library_entry`/`jni::launch_intent_pdf`).
+    /// Caché de texto por página (Fase B1): el resaltador y la selección
+    /// leen `get_or_extract` en vez de `doc.text()` (que re-parsea stext en
+    /// el hilo UI). Prefetcheada al abrir el PDF (página visible ±2) y
+    /// limpiada al cambiar de documento.
+    text_cache: PageTextCache,
     annot_sidecar: Option<PathBuf>,
     /// Selección de texto en curso (long-press + arrastre) en px de ventana
     /// (ver `SelState`): Some durante el arrastre Y mientras está fijada con
@@ -1231,6 +1236,8 @@ impl Reader {
             list_drag: None,
             annotations: AnnotationSet::new(),
             annot_sidecar: None,
+            text_cache: PageTextCache::default(),
+            status_bar_top: 0, // se fija en runtime (content_rect top)
             sel: None,
             sel_menu: None,
             ai_panel: None,
@@ -2325,16 +2332,17 @@ impl Reader {
     /// texto extraíble (p. ej. PDF ESCANEADO: `spans` vacío) o si el rect no
     /// cubre ningún span — en ese caso "Copiar" avisa "no text" en vez de
     /// copiar basura.
-    pub(crate) fn sel_text(&self) -> String {
+    pub(crate) fn sel_text(&mut self) -> String {
         let Some(page_rect) = self.sel_page_rect() else {
             return String::new();
         };
         let Some(doc) = self.doc.as_ref() else {
             return String::new();
         };
-        let Ok(pt) = doc.text(self.page) else {
+        let Ok(pt) = self.text_cache.get_or_extract(doc, self.page) else {
             return String::new();
         };
+        let pt = pt.as_ref();
         if pt.spans.is_empty() {
             return String::new(); // PDF escaneado / sin texto extraíble
         }
@@ -3523,8 +3531,8 @@ impl Reader {
                 let spans = self
                     .doc
                     .as_ref()
-                    .and_then(|d| d.text(g.page).ok())
-                    .map(|t| t.spans)
+                    .and_then(|d| self.text_cache.get_or_extract(d, g.page).ok())
+                    .map(|t| t.spans.clone())
                     .unwrap_or_default();
                 let gesture = Gesture::Points(g.points);
                 if let Some(hl) =
@@ -3743,6 +3751,18 @@ impl Reader {
                 self.tool_fab = None;
                 self.tool_gesture = None;
                 self.session_ids.clear();
+                // Fase B1: texto del documento nuevo (el del anterior no
+                // sirve). Prefetch de la página visible +-2: el primer
+                // resaltado de esas páginas será un HIT (sin stext en el
+                // hilo UI). El resto se extrae perezoso con `get_or_extract`
+                // (1-2 ms) y queda cacheado para repeticiones y para la IA
+                // (Fase D).
+                self.text_cache.clear();
+                if let Some(doc) = self.doc.as_ref() {
+                    let base = page.saturating_sub(2);
+                    let pages: Vec<u32> = (base..(page + 3).min(pages)).collect();
+                    let _n = self.text_cache.prefetch(doc, &pages);
+                }
                 // Anotaciones del documento (sidecar; set vacío si no existe
                 // o está corrupto — nunca impide abrir el PDF).
                 self.load_annotations(path);

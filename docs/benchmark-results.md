@@ -365,3 +365,17 @@ Composite `composite_annotations` 1440×2200 (TCL res):
 - strokes10: 0.64ms, strokes50+hl10: 2.14ms, **strokes200: 6.8ms**, strokes100+hl100: 5.27ms
 - Conclusión: 200 trazos 6.8ms en desktop → ~13ms estimado en TCL (A55), dentro de 16ms pero justo. Fase C debe cachear capa.
 
+
+## Fase B1 — PageTextCache (TCL 9469X, 2026-08-24, release, pantalla ON)
+
+textbench (mini-binario /tmp, pdf_core release aarch64):
+
+| PDF | cold text p0 | cold text mid/end | cache miss p10 | **cache hit p10** | prefetch 20 págs |
+|---|---|---|---|---|---|
+| dense 93p | **9.5 ms** | 2.3 / 0.25 ms | 2.4 ms | **0.000 ms** | 48 ms total |
+| paper 12p | **17.1 ms** | 0.5 / 0.4 ms | 0.38 ms | **0.000 ms** | — |
+
+- Hallazgo: la primera extracción de texto (stext) de una página cuesta 9-17 ms en la TCL — es la latencia percibida del primer subrayado en una página.
+- B1 (`PageTextCache`, LRU 512 págs, prefetch ±2 al abrir, `get_or_extract` en gesto/selección): hit = 0.000 ms → subrayado sin stext en el hilo UI tras el primer acceso.
+- Prefetch completo de un doc de 93 pág ≈ 50 ms → viable en worker de fondo (no en hilo UI).
+- B2 (índice espacial): NO necesario — `highlight_under_gesture` ya cuesta 20-36 µs para 200 líneas (bench highlight Fase A).
