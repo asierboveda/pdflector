@@ -32,6 +32,40 @@ use crate::reader::{LaunchPdf, LibraryEntry, LibraryScan};
 /// 30+). En API < 30 falla y se degrada silenciosamente (el resto de la app
 /// sigue funcionando; solo muere la franja táctil superior, que ya era
 /// borderline). No loguea errores graves: best-effort en el arranque.
+/// Mantiene la pantalla ENCENDIDA mientras la app está en primer plano
+/// (`WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON`): sin este flag el
+/// timeout del sistema apagaba el display a mitad de escritura con el lápiz
+/// (el stylus no cuenta como "user activity" para el suspend en todas las
+/// ROMs). Best-effort en el arranque, igual que `enter_immersive`.
+pub(crate) fn keep_screen_on(app: &AndroidApp) {
+    const FLAG_KEEP_SCREEN_ON: i32 = 0x80; // WindowManager.LayoutParams
+    let Ok(vm) = JavaVM::singleton() else {
+        return;
+    };
+    let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+        env.with_local_frame(32, |env| {
+            let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
+            let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
+            let window = env
+                .call_method(
+                    activity.as_ref(),
+                    jni_str!("getWindow"),
+                    jni_sig!(sig = () -> android.view.Window),
+                    &[],
+                )?
+                .l()?;
+            let _ = env.call_method(
+                window.as_ref(),
+                jni_str!("addFlags"),
+                jni_sig!(sig = (int) -> void),
+                &[JValue::Int(FLAG_KEEP_SCREEN_ON)],
+            )?;
+            Ok(())
+        })
+    });
+    info!("keep_screen_on: flag aplicado");
+}
+
 pub(crate) fn enter_immersive(app: &AndroidApp) {
     let Ok(vm) = JavaVM::singleton() else {
         return;

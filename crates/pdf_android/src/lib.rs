@@ -513,6 +513,7 @@ pub fn android_main(app: AndroidApp) {
     let mut reader = Reader::new(&app);
     let mut running = true;
     crate::jni::enter_immersive(&app);
+    crate::jni::keep_screen_on(&app);
 
     while running {
         // Timeout del poll SIEMPRE con ventana (16 ms → tick por vsync):
