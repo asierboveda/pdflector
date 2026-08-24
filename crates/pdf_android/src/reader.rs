@@ -3928,6 +3928,9 @@ impl Reader {
             max_y = max_y.max(y);
         }
         if max_x - min_x < min_d_pt && max_y - min_y < min_d_pt {
+            // Restaurar la base: un toque sin arrastre no deja tinta fantasma
+            // (la tinta stampada durante los Moves se descarta con la base).
+            self.page_frame = self.gesture_base.take();
             if self.window.is_some() {
                 self.blit();
             }
@@ -3994,20 +3997,17 @@ impl Reader {
             }
             ToolKind::Navigate => {}
         }
-        // Si el gesto fue de TINTA (ya pintado incrementalmente y finalizado
-        // sobre la base), el frame ya está correcto: solo marcar el dirty del
-        // bbox final. Para el resaltador (capa temporal), se parchea el frame
-        // con el highlight recién alineado o se invalida si no aplica.
+        // Si el gesto fue de TINTA: `ink_finalize_on_frame` YA se llevó
+        // `gesture_base` y dejó `page_frame` correcto (base + trazo final) y
+        // `tool_dirty` con su bbox — NO volver a tomar la base aquí (bug
+        // detectado 2026-08-24: la doble-toma invalidaba el frame y
+        // recomponía TODAS las anotaciones al escribir encima de trazos
+        // existentes → cada trazo tardaba 10-20 ms más y con 276 anotaciones
+        // el UI se atascaba).
         let mut patched = false;
         if g.tool == ToolKind::Ink {
-            let base = self.gesture_base.take();
-            self.gesture_base = None;
-            if base.is_none() {
-                // Sin base (caso límite): invalidar para recomposición.
-                self.page_frame = None;
-            } else {
-                patched = true;
-            }
+            self.gesture_base = None; // ya consumida por ink_finalize_on_frame
+            patched = true;
         } else {
             self.gesture_base = None;
         }
