@@ -503,6 +503,11 @@ fn handle_motion(
                 } else {
                     // Dedo: modo mano — pan 1 dedo (el pinch 2 dedos lo
                     // convierte el PointerDown). Sin tap ni long-press.
+                    // Palm rejection por tiempo: tras escribir con stylus, se
+                    // ignora el táctil un margen (evita pans/zooms de la palma).
+                    if reader.should_ignore_touch() {
+                        return;
+                    }
                     reader.gesture.kind = GestureKind::Pan {
                         start: (x, y),
                         pan0: reader.begin_pan(),
@@ -527,6 +532,11 @@ fn handle_motion(
         }
         MotionAction::PointerDown => {
             reader.gesture.pointers = pts;
+            // Palm rejection por tiempo: tras escribir con stylus, se ignora
+            // el táctil un margen (evita pinch/pan de la palma).
+            if reader.should_ignore_touch() {
+                return;
+            }
             // PALM REJECTION mientras se dibuja con el STYLUS: si la mano u
             // otro dedo toca durante un trazo del lápiz, ese segundo puntero
             // NO es un pinch — se IGNORA por completo (el trazo sigue; nada

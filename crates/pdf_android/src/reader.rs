@@ -1196,6 +1196,10 @@ pub(crate) struct Reader {
     /// `take_repaint()` devuelve true. Evita el backpressure de 16 ms del
     /// BufferQueue al presentar a >60 Hz.
     repaint: bool,
+    /// Último instante en que el STYLUS tocó la pantalla (para palm rejection
+    /// por tiempo: tras escribir, se ignora el táctil del dedo/palma durante
+    /// ~500ms para evitar pans/zooms accidentales al apoyar la mano).
+    last_stylus_time: Option<std::time::Instant>,
     /// Render ASÍNCRONO en vuelo (zoom sharp y cambio de página sin congelar
     /// el hilo UI): worker con su PROPIO documento (MuPDF no es Send — patrón
     /// de `prefetch.rs`). Cada lote lleva un `render_seq`; al recibir, si el
@@ -1303,6 +1307,7 @@ impl Reader {
             gesture_base: None,
             tool_dirty: None,
             repaint: false,
+            last_stylus_time: None,
             render_rx: None,
             render_seq: 0,
             fallback_page: None,
@@ -3757,6 +3762,15 @@ impl Reader {
         self.mark_repaint();
     }
 
+    /// ¿Debe ignorarse el táctil del dedo/palma por haber escrito hace poco con el stylus?
+    pub(crate) fn should_ignore_touch(&self) -> bool {
+        if let Some(t) = self.last_stylus_time {
+            t.elapsed().as_millis() < crate::STYLUS_IGNORE_MS as u128
+        } else {
+            false
+        }
+    }
+
     /// ¿Hay un blit pendiente por coalescer? (el bucle principal lo llama
     /// una vez por iteración tras procesar eventos).
     pub(crate) fn take_repaint(&mut self) -> bool {
@@ -3809,6 +3823,7 @@ impl Reader {
         let Some(pt) = self.screen_to_page(sx, sy) else {
             return;
         };
+        self.last_stylus_time = Some(std::time::Instant::now());
         self.tool_gesture = Some(ToolGesture::new(self.page, self.tool, pt));
         self.tool_dirty = None;
         // TINTA DIRECTA (patrón Xournal++/GoodNotes): aseguramos que el
@@ -3836,6 +3851,10 @@ impl Reader {
         let Some(pt) = self.screen_to_page(sx, sy) else {
             return;
         };
+        // Actualizar tiempo de stylus para palm rejection por tiempo
+        if self.tool != ToolKind::Navigate {
+            self.last_stylus_time = Some(std::time::Instant::now());
+        }
         match self.tool {
             ToolKind::Ink => {
                 // Punto descartado por distancia (no se pinta nada nuevo).
@@ -3910,6 +3929,10 @@ impl Reader {
         let Some(g) = self.tool_gesture.take() else {
             return;
         };
+        // Actualizar tiempo para palm rejection: tras soltar, se ignora el táctil un margen
+        if g.tool != ToolKind::Navigate {
+            self.last_stylus_time = Some(std::time::Instant::now());
+        }
         // Gesto degenerado (un toque sin arrastre): descartar silenciosamente.
         // El umbral está en px de PANTALLA (TOOL_MIN_PX, el recorrido mínimo
         // del dedo/lápiz); el bbox del gesto en página se convierte con la

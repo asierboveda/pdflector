@@ -383,6 +383,11 @@ pub(crate) const SEL_MIN_PX: f32 = 2.0;
 /// mínimo de la selección de texto, `SEL_MIN_PX`). Un dedo o el lápiz que
 /// toca y suelta sin intención de dibujar no crea una anotación por accidente.
 pub(crate) const TOOL_MIN_PX: f32 = 6.0;
+/// Tiempo tras el último trazo del stylus durante el cual se ignora el táctil
+/// (palm rejection por tiempo): evita pans/zooms accidentales de la palma
+/// al apoyar la mano al escribir. 500ms es un compromiso entre reactividad
+/// y seguridad (Saber usa ~300-500ms, Samsung Notes ~400ms).
+pub(crate) const STYLUS_IGNORE_MS: u64 = 500;
 /// Duración del aviso breve ("copied", "highlighted", ...) sobre el indicador
 /// de página (`Reader::toast`, expirado en `Reader::tick`).
 pub(crate) const TOAST_MS: std::time::Duration = std::time::Duration::from_millis(1500);
