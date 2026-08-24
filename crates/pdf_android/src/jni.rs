@@ -40,9 +40,10 @@ use crate::reader::{LaunchPdf, LibraryEntry, LibraryScan};
 pub(crate) fn keep_screen_on(app: &AndroidApp) {
     const FLAG_KEEP_SCREEN_ON: i32 = 0x80; // WindowManager.LayoutParams
     let Ok(vm) = JavaVM::singleton() else {
+        log::warn!("keep_screen_on: sin JavaVM");
         return;
     };
-    let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+    let res: jni::errors::Result<()> = vm.attach_current_thread(|env| {
         env.with_local_frame(32, |env| {
             let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
             let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
@@ -63,7 +64,10 @@ pub(crate) fn keep_screen_on(app: &AndroidApp) {
             Ok(())
         })
     });
-    info!("keep_screen_on: flag aplicado");
+    match res {
+        Ok(()) => info!("keep_screen_on: flag aplicado"),
+        Err(e) => warn!("keep_screen_on: {e}"),
+    }
 }
 
 pub(crate) fn enter_immersive(app: &AndroidApp) {

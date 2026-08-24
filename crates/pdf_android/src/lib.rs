@@ -536,6 +536,13 @@ pub fn android_main(app: AndroidApp) {
                 if let Some(win) = app.native_window() {
                     reader.init_window(win);
                 }
+                // NO re-aplicar keep_screen_on aquí: getWindow().addFlags
+                // desde el hilo android_main lanza "Only the original thread
+                // that created a view hierarchy can touch its views" (la
+                // ventana la crea el UI thread Java); la llamada del arranque
+                // (before del bucle, en onCreate aún sin jerarquía) aplica el
+                // flag al objeto Window y persiste (verificado: dumpsys
+                // window → fl=KEEP_SCREEN_ON).
             }
             PollEvent::Main(MainEvent::TerminateWindow { .. }) => {
                 info!("TerminateWindow");
