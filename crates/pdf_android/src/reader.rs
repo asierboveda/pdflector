@@ -1196,6 +1196,25 @@ pub(crate) struct Reader {
     /// `take_repaint()` devuelve true. Evita el backpressure de 16 ms del
     /// BufferQueue al presentar a >60 Hz.
     repaint: bool,
+    /// Render ASÍNCRONO en vuelo (zoom sharp y cambio de página sin congelar
+    /// el hilo UI): worker con su PROPIO documento (MuPDF no es Send — patrón
+    /// de `prefetch.rs`). Cada lote lleva un `render_seq`; al recibir, si el
+    /// seq no es el actual (el usuario hizo otro zoom/página), se descarta.
+    render_rx: Option<std::sync::mpsc::Receiver<WorkerMsg>>,
+    render_seq: u64,
+    /// Página ANTERIOR dibujable mientras llega el render de la nueva (si
+    /// está en caché): evita el parpadeo en blanco al pasar página.
+    fallback_page: Option<u32>,
+}
+
+/// Mensaje del worker de render asíncrono: un bitmap listo a la escala
+/// pedida (`target_zoom` = factor de zoom con el que se renderizó, la "escala
+/// efectiva" = cover × target_zoom).
+struct WorkerMsg {
+    seq: u64,
+    page: u32,
+    bitmap: Bitmap,
+    target_zoom: f32,
 }
 
 impl Reader {
@@ -1284,6 +1303,9 @@ impl Reader {
             gesture_base: None,
             tool_dirty: None,
             repaint: false,
+            render_rx: None,
+            render_seq: 0,
+            fallback_page: None,
         };
         match launch_intent_pdf(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
@@ -1900,19 +1922,28 @@ impl Reader {
                 } else {
                     1.0
                 };
-                let page_blit: Option<PageBlit> = self.cache.peek(self.page).map(|bmp| {
-                    let dx = (((self.win_w as f32 - bmp.width as f32 * blit_zoom) / 2.0)
-                        + self.pan_x)
-                        .round() as i32;
-                    // Una sola hoja: sin columna ni scroll_y → dy = pan.
-                    let dy = self.pan_y.round() as i32;
-                    PageBlit {
-                        bitmap: bmp,
-                        dx,
-                        dy,
-                        zoom: blit_zoom,
-                    }
-                });
+                let page_blit: Option<PageBlit> = {
+                    // Render asíncrono + cambio de página: mientras la página
+                    // NUEVA no está en caché, se muestra la ANTERIOR (si la
+                    // tiene el fallback) — sin parpadeo en blanco.
+                    let bmp = self
+                        .cache
+                        .peek(self.page)
+                        .or_else(|| self.fallback_page.and_then(|p| self.cache.peek(p)));
+                    bmp.map(|bmp| {
+                        let dx = (((self.win_w as f32 - bmp.width as f32 * blit_zoom) / 2.0)
+                            + self.pan_x)
+                            .round() as i32;
+                        // Una sola hoja: sin columna ni scroll_y → dy = pan.
+                        let dy = self.pan_y.round() as i32;
+                        PageBlit {
+                            bitmap: bmp,
+                            dx,
+                            dy,
+                            zoom: blit_zoom,
+                        }
+                    })
+                };
                 // Anotaciones de la página, en orden de dibujo (z): trazos y
                 // highlights guardados (Stroke/Highlight; TextNote no se
                 // dibuja aún). Los highlights se dibujan DEBAJO de los trazos
@@ -2228,13 +2259,35 @@ impl Reader {
     /// salen de la caché (paso instantáneo). Invalida los overlays cacheados
     /// (indicador, sheet, frame de la animación).
     fn goto_page(&mut self, page: u32) {
+        let prev = self.page;
+        if prev == page {
+            return;
+        }
         self.page = page;
         self.page_badge = None; // el indicador "N / total" cambia
         self.sheet_bitmap = None; // el indicador del sheet cambia
         self.page_frame = None; // el frame de la animación del sheet cambia
+        self.tool_dirty = None;
         info!("page {}", self.page + 1);
-        self.redraw();
+        // Cambio de página SIN congelar: si la nueva está en caché (prefetch
+        // previo), el blit es inmediato; si no, se muestra la página ANTERIOR
+        // (fallback) mientras el worker renderiza la nueva asíncronamente.
+        if self.cache.peek(page).is_none() {
+            self.fallback_page = Some(prev);
+            let pages = {
+                let n = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
+                let lo = page.saturating_sub(1);
+                let hi = (page + 1).min(n.saturating_sub(1));
+                (lo..=hi)
+                    .filter(|&p| self.cache.peek(p).is_none())
+                    .collect()
+            };
+            self.launch_render(pages, self.rendered_zoom, false);
+        }
         self.save_state();
+        if self.window.is_some() {
+            self.blit();
+        }
     }
 
     pub(crate) fn next_page(&mut self) {
@@ -2839,6 +2892,9 @@ impl Reader {
             // fondo (sin esto el poll bloquearía y la respuesta tardaría en
             // aparecer hasta el siguiente evento de input).
             || self.ai_rx.is_some()
+            // Render asíncrono en vuelo (zoom sharp / cambio de página):
+            // sondear hasta que el worker termine.
+            || self.render_rx.is_some()
     }
 
     // ---------------------------------------------------------------------
@@ -2913,6 +2969,9 @@ impl Reader {
         // Long-press: si el dedo lleva quieto > `LONG_PRESS_MS` en el área de
         // página (sin sheet), `input::tick_gestures` entra en modo selección.
         crate::input::tick_gestures(self, app);
+        // Render ASÍNCRONO (zoom sharp / cambio de página): aplica los
+        // bitmaps que ya llegaron — el UI nunca se congela esperándolos.
+        self.poll_render();
         // Resultado del hilo de IA (si hay una consulta en vuelo): `try_recv`
         // sondea el canal SIN bloquear; al llegar el mensaje se actualiza el
         // panel (fase Answer/Error) y se libera el receptor. Mientras tanto el
@@ -3283,6 +3342,16 @@ impl Reader {
         // actual con el zoom nuevo. El render y el reescalado de ventana los
         // cubre el bucle de eventos (RedrawNeeded/WindowResized) si hicieran
         // falta.
+        // EARLY SHARP: si el vecino-más-cercano ya se ve borroso
+        // (blit_zoom > 1.6), lanzar en el worker un render de la página a un
+        // nivel 2^ceil(log2 zoom) ≤ 4× (clamp): al llegar, `poll_render`
+        // fija `rendered_zoom` y el pinch sigue pero con el bitmap NUEVO
+        // (nitidez progresiva sin esperar al soltar). Solo si no hay otro
+        // lote en vuelo (el worker ya trabaja en el lote actual).
+        let blit_zoom = self.zoom / self.rendered_zoom.max(1e-4);
+        if blit_zoom > 1.6 && self.render_rx.is_none() {
+            self.launch_render(vec![self.page], self.zoom, true);
+        }
         if self.window.is_some() {
             self.blit();
         }
@@ -3348,12 +3417,23 @@ impl Reader {
             self.pan_y = Self::clamp_pan(self.pan_y, dh * zoom, self.win_h as f32, true);
         }
         self.zoom = zoom;
-        self.rendered_zoom = zoom;
-        self.cache.clear();
-        self.page_frame = None; // el frame compuesto del sheet tiene el zoom viejo
+        // SHARP ASÍNCRONO: NO se limpia la caché ni se re-renderiza en el
+        // hilo UI (antes: `cache.clear() + redraw()` congelaba 20-400 ms). El
+        // bitmap VIEJO sigue en caché y el blit lo escala a `zoom/rendered_zoom`
+        // (preview vecino-más-cercano); el worker renderiza la página y sus
+        // vecinas a la escala final y, al llegar, `poll_render` fija
+        // `rendered_zoom` y repintea (1:1 nítido).
+        let pages = {
+            let n = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
+            let lo = self.page.saturating_sub(1);
+            let hi = (self.page + 1).min(n.saturating_sub(1));
+            (lo..=hi).collect()
+        };
+        self.page_frame = None;
+        self.launch_render(pages, zoom, false);
         info!("zoom {:.3}", self.zoom);
-        self.redraw();
         self.save_state();
+        self.mark_repaint();
     }
 
     /// Alterna el modo oscuro SIN re-renderizar MuPDF y SIN tocar la caché:
@@ -3532,6 +3612,86 @@ impl Reader {
     /// Marca repintado pendiente (coalescing por vsync).
     fn mark_repaint(&mut self) {
         self.repaint = true;
+    }
+
+    /// Lanza el render ASÍNCRONO de `pages` a la escala `target_zoom`
+    /// (factor de zoom — el worker calcula `cover × target_zoom` con su
+    /// propio documento). `clamp_level` limita el render al nivel 2^x más
+    /// cercano ≤ 4× (early sharp durante el pinch: evita renders gigantes
+    /// por cada Move; el sharp final usa `clamp_level=false` para nitidez
+    /// total). Reemplaza cualquier lote anterior (seq++).
+    fn launch_render(&mut self, pages: Vec<u32>, target_zoom: f32, clamp_level: bool) {
+        let Some(path) = self.doc_path.clone() else {
+            return;
+        };
+        self.render_seq += 1;
+        let seq = self.render_seq;
+        let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
+        self.render_rx = Some(rx);
+        let (win_w, win_h) = (self.win_w, self.win_h);
+        std::thread::spawn(move || {
+            // MuPDF no es Send: el worker abre su PROPIO documento (patrón
+            // `prefetch.rs`); MupdfEngine es estático y thread-safe.
+            let engine = match MupdfEngine::new() {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            let doc = match engine.open(std::path::Path::new(&path)) {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            let target = if clamp_level {
+                let level = pdf_core::scale_level_for_zoom(target_zoom).min(2);
+                2f32.powi(level as i32)
+            } else {
+                target_zoom
+            };
+            for page in pages {
+                if let Ok((pw, ph)) = doc.page_size(page) {
+                    let cover = initial_scale(pw, ph, win_w, win_h);
+                    let scale = cover * target;
+                    if let Ok(bmp) = doc.render_page(page, scale) {
+                        let _ = tx.send(WorkerMsg {
+                            seq,
+                            page,
+                            bitmap: bmp,
+                            target_zoom: target,
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    /// Sondeo del worker de render (desde `tick`): aplica los bitmaps
+    /// recibidos a la caché y, cuando llega la página actual, fija
+    /// `rendered_zoom` al nivel del lote y repintea (el blit pasa de preview
+    /// escalado a 1:1 nítido). Los lotes obsoletos (seq viejo) se descartan.
+    /// Al desconectarse el worker (terminado), libera el canal.
+    fn poll_render(&mut self) {
+        loop {
+            let Some(rx) = self.render_rx.as_ref() else {
+                return;
+            };
+            match rx.try_recv() {
+                Ok(msg) => {
+                    if msg.seq != self.render_seq {
+                        continue; // lote obsoleto: descartar
+                    }
+                    self.cache.insert(msg.page, msg.bitmap);
+                    if msg.page == self.page {
+                        self.rendered_zoom = msg.target_zoom;
+                        self.fallback_page = None;
+                        self.mark_repaint();
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.render_rx = None;
+                    break;
+                }
+            }
+        }
     }
 
     /// Pan con DEDO (herramienta activa, modo mano): devuelve el pan de
