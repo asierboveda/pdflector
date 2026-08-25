@@ -62,10 +62,11 @@ use crate::draw::{sheet_buttons, toolbar_buttons, toolbar_rect, viewer_top_chrom
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
     BookStatus, GRID_COLS, LibSort, ListDrag, PickRow, PickerKind, Reader, UiMode, grid_cell_h,
-    grid_cell_w, grid_gap, grid_pad, lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w,
-    lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
-    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
-    lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h, picker_row_h, sheet_h,
+    grid_cell_w, grid_gap, grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_block_h,
+    lib_cont_card_w, lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
+    lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h,
+    lib_search_panel_h, lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h,
+    picker_row_h, settings_menu_button_rect, sheet_h, view_menu_button_rect,
     viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
@@ -869,11 +870,43 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let search_y = header_h + 6.0;
     let search_hh = search_h - 12.0;
 
-    // CABECERA: botón "＋ Añadir" (a la derecha; rescan + toast).
+    // CABECERA: botones de MENÚ "⋯" (View) y "☰" (Settings) a la izquierda
+    // del "＋ Añadir", y el propio "＋ Añadir". Un tap FUERA de ambos
+    // botones de menú CIERRA el dropdown abierto (comportamiento estándar de
+    // dropdowns; el tap fuera no dispara otra acción).
+    let (vl, vt, vr, vb) = view_menu_button_rect(reader.win_w, reader.win_h);
+    let (sl, st, sr, sb) = settings_menu_button_rect(reader.win_w, reader.win_h);
+    let hit_view = x >= vl && x < vr && y >= vt && y < vb;
+    let hit_settings = x >= sl && x < sr && y >= st && y < sb;
+    if (reader.view_menu_open || reader.settings_menu_open) && !hit_view && !hit_settings {
+        reader.view_menu_open = false;
+        reader.settings_menu_open = false;
+        // `lib_header` cacheado: el rebuild re-renderiza la cabecera (sin el
+        // highlight del botón) — ver `Reader::rebuild_library`.
+        reader.list_dirty = true;
+        reader.redraw();
+        return;
+    }
     if y < header_h {
+        // "⋯" View: alterna su dropdown y cierra el de Settings.
+        if hit_view {
+            reader.view_menu_open = !reader.view_menu_open;
+            reader.settings_menu_open = false;
+            reader.list_dirty = true; // re-render de la cabecera (highlight)
+            reader.redraw();
+            return;
+        }
+        // "☰" Settings: alterna su dropdown y cierra el de View.
+        if hit_settings {
+            reader.settings_menu_open = !reader.settings_menu_open;
+            reader.view_menu_open = false;
+            reader.list_dirty = true;
+            reader.redraw();
+            return;
+        }
         let pad = grid_pad(reader.win_w);
         let top_pad = 36.0f32;
-        let btn_w = (reader.win_w as f32 * 0.20).clamp(100.0, 160.0);
+        let btn_w = lib_add_btn_w(reader.win_w);
         let btn_h = ((header_h - top_pad) * 0.52).clamp(34.0, 46.0);
         let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
         let btn_x = reader.win_w as f32 - pad - btn_w;

@@ -19,13 +19,14 @@ use crate::annotations::ToolKind;
 use crate::persist;
 use crate::reader::{
     AiPhase, GRID_CELL_PAD, GRID_COLS, PickRow, PickerKind, Reader, entry_author, entry_title,
-    grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, human_size,
-    lib_chip_h, lib_chips, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h,
-    lib_cont_cover_w, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
-    lib_org_chip_h, lib_org_chips, lib_search_h, page_badge_size, picker_btn_h, picker_btn_w,
-    picker_header_h, picker_row_h, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y,
+    grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad,
+    header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_card_h,
+    lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h, lib_cont_cover_w, lib_content_y0,
+    lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_chip_h, lib_org_chips, lib_search_h,
+    page_badge_size, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
+    settings_menu_button_rect, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y,
     sheet_pad, sheet_theme_btn_w, sheet_theme_y, title_from_name, truncate_name,
-    viewer_bottom_chrome_h, viewer_top_chrome_h,
+    view_menu_button_rect, viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 use crate::theme;
 
@@ -2638,7 +2639,7 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
 
     // ---- CABECERA editorial: título "Biblioteca" + "＋ Añadir" ----
     let top_pad = 36.0f32; // margen seguro para la barra de estado de Android
-    let btn_w = (w as f32 * 0.18).clamp(110.0, 160.0);
+    let btn_w = lib_add_btn_w(w);
     let btn_h = ((header_h - top_pad) * 0.52).clamp(38.0, 46.0);
     let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
     let btn_x = w as f32 - pad - btn_w;
@@ -2665,6 +2666,41 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
         true,
         "＋ Añadir",
     );
+
+    // ---- Botones de MENÚ (esqueleto de las Tareas 2-3): View "⋯" y
+    // Settings "☰", círculos de ~32 dp alineados a la izquierda del
+    // "＋ Añadir". El botón con su dropdown abierto se marca en `primary`
+    // (highlight); el glifo usa `theme::FONT_BODY` 14 sp.
+    let d = header_menu_btn_d(w);
+    let mut menu_glyph = |open: bool, l: f32, t: f32, r: f32, b: f32, ch: &str| {
+        let (bg, border, fg) = if open {
+            (p.primary, p.primary, p.primary_content)
+        } else {
+            (p.base_100, p.base_300, p.base_content)
+        };
+        rects.push(CanvasRect::rounded(l, t, r, b, d / 2.0, border));
+        rects.push(CanvasRect::rounded(
+            l + 1.0,
+            t + 1.0,
+            r - 1.0,
+            b - 1.0,
+            d / 2.0 - 1.0,
+            bg,
+        ));
+        texts.push(CanvasText::new(
+            (l + r) / 2.0,
+            (t + b) / 2.0 + theme::FONT_BODY * 0.35,
+            theme::FONT_BODY,
+            fg,
+            TextAlign::Center,
+            false,
+            ch.to_string(),
+        ));
+    };
+    let (vl, vt, vr, vb) = view_menu_button_rect(w, reader.win_h);
+    menu_glyph(reader.view_menu_open, vl, vt, vr, vb, "⋯");
+    let (sl, st, sr, sb) = settings_menu_button_rect(w, reader.win_h);
+    menu_glyph(reader.settings_menu_open, sl, st, sr, sb, "☰");
 
     // ---- CAMPO de búsqueda (píldora; al tocarla abre el panel de chips) ----
     let search_y = header_h + 4.0;

@@ -305,6 +305,32 @@ pub(crate) struct ViewerState {
     /// Tema visual activo (Readest).
     #[serde(default)]
     pub(crate) theme: Option<AppTheme>,
+    /// Layout de la biblioteca (Grid/List; menú View "⋯", Tarea 1: esqueleto).
+    /// `#[serde(default)]` = compat con `state.json` viejo → Grid.
+    #[serde(default)]
+    pub(crate) view_mode: crate::reader::LibraryViewMode,
+    /// Ajuste de las portadas en sus marcos (Crop/Fit; menú View "⋯").
+    #[serde(default)]
+    pub(crate) cover_fit: crate::reader::LibraryCoverFit,
+    /// Columnas fijas de la rejilla si `auto_columns` es false (menú View).
+    #[serde(default = "default_columns")]
+    pub(crate) columns: u32,
+    /// ¿Ocultar portadas (solo títulos)? (menú Settings "☰").
+    #[serde(default)]
+    pub(crate) hide_covers: bool,
+    /// ¿Estantería de recientes visible? (menú Settings "☰").
+    #[serde(default = "default_recent_shelf")]
+    pub(crate) recent_shelf_enabled: bool,
+}
+
+/// Default de `ViewerState::columns` (3, como arranca la app).
+fn default_columns() -> u32 {
+    3
+}
+
+/// Default de `ViewerState::recent_shelf_enabled` (true, como arranca).
+fn default_recent_shelf() -> bool {
+    true
 }
 
 /// Ruta del fichero de estado dentro del directorio interno de la app.

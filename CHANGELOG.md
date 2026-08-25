@@ -3,6 +3,34 @@
 > Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
 > Formato: `AAAA-MM-DD — Título`.
 
+## 2026-08-25 — Tarea 1/3: esqueleto del header de biblioteca (⋯ View + ☰ Settings)
+
+Estructura de los menús de cabecera estilo Readest (sin contenido todavía,
+Tareas 2-3):
+
+- **Modelo**: enums `LibraryViewMode {Grid,List}`, `LibraryCoverFit {Crop,Fit}`
+  y `LibraryGroupBy {None,Author}` + 8 campos en `Reader` con defaults
+  (`view_mode`, `cover_fit`, `auto_columns`, `columns=3`, `view_menu_open`,
+  `settings_menu_open`, `hide_covers`, `recent_shelf_enabled`) + helper
+  `is_grid()`.
+- **Geometría**: `view_menu_button_rect`/`settings_menu_button_rect` —
+  círculos ~32 dp (≈65 px) con 8 dp de separación, alineados a la izquierda
+  del "＋ Añadir" (anclaje a derecha con `grid_pad`), centrados en el Y de la
+  fila de botones (`lib_header_buttons_cy`); los dropdowns futuros cuelgan
+  del borde derecho (`dropdown-end`).
+- **Render** (`render_library_header`): dos círculos con glifos ⋯ y ☰ (14 sp,
+  `base_content`); el botón con su dropdown abierto se marca en `primary`
+  (highlight).
+- **Input** (`library_tap`): tap en ⋯ alterna `view_menu_open` (cierra
+  settings); tap en ☰ alterna `settings_menu_open` (cierra view); tap FUERA
+  de ambos cierra los dos (sin disparar otra acción); `list_dirty`+`redraw()`
+  para re-renderizar la cabecera cacheada.
+- **Persistencia** (`ViewerState`): 5 campos nuevos con `#[serde(default)]`
+  (view_mode/cover_fit/columns/hide_covers/recent_shelf_enabled; defaults de
+  arranque con funciones para columns=3 y shelf=true) — `state.json` viejo
+  carga sin romper (verificado: fichero sin campos → defaults) y `save_state`
+  los persiste (verificado con `view_mode=List` sobreviviendo a reinicios).
+
 ## 2026-08-25 — Control total de anotaciones con el BOLI (sin menús)
 
 Toda la anotación se controla solo con el boli (S-Pen/Saber, TCL 9469X):

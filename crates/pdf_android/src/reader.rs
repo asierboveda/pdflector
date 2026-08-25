@@ -165,6 +165,39 @@ pub(crate) enum LibSort {
     Author,
 }
 
+/// Layout de la biblioteca (menú View "⋯", Tarea 2 implementa el contenido):
+/// rejilla de portadas o lista de filas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum LibraryViewMode {
+    /// Rejilla (por defecto).
+    #[default]
+    Grid,
+    /// Lista (filas compactas).
+    List,
+}
+
+/// Ajuste de las portadas dentro de sus marcos (menú View "⋯", Tarea 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum LibraryCoverFit {
+    /// Recorte central (fill, por defecto).
+    #[default]
+    Crop,
+    /// Portada completa visible (contain).
+    Fit,
+}
+
+/// Agrupación de la rejilla (menú View "⋯", Tarea 2).
+/// `dead_code` hasta la Tarea 2 (dropdown), donde se consume.
+#[allow(dead_code)] // Tarea 2 (contenido del menú View)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum LibraryGroupBy {
+    /// Sin agrupar (por defecto).
+    #[default]
+    None,
+    /// Agrupar por autor.
+    Author,
+}
+
 /// Un libro del carousel destacado "Continue Reading": un reciente abierto
 /// no terminado, con su progreso persistido (página, total, %). Construido
 /// en `Reader::lib_continue_reading` a partir de `recents.json` +
@@ -410,6 +443,61 @@ pub(crate) fn grid_cell_h(win_w: i32) -> f32 {
 /// negrita + botón "＋ Add book" a la derecha.
 pub(crate) fn lib_header_h(win_h: i32) -> f32 {
     (win_h as f32 / 16.0).clamp(115.0, 135.0)
+}
+
+/// Centro Y (px) de la FILA DE BOTONES de la cabecera editorial ("＋ Añadir"
+/// y los círculos de menú "⋯"/"☰"): la mitad del espacio libre bajo el
+/// margen superior de 36 px. Compartido por el render y el tap para que el
+/// hit-test y el dibujo coincidan exactamente.
+pub(crate) fn lib_header_buttons_cy(win_h: i32) -> f32 {
+    let header_h = lib_header_h(win_h);
+    let top_pad = 36.0f32;
+    top_pad + (header_h - top_pad) / 2.0
+}
+
+/// Diámetro (px) del círculo de los botones de menú de la cabecera: un
+/// touch target de ~32 dp (≈ 65 px con densidad 2.0 de la TCL) — el tamaño
+/// mínimo cómodo para un dedo.
+pub(crate) fn header_menu_btn_d(win_w: i32) -> f32 {
+    (win_w as f32 / 22.0).clamp(56.0, 72.0)
+}
+
+/// Separación (px) entre el círculo de menú y su vecino ("8 dp gap").
+pub(crate) fn header_menu_gap() -> f32 {
+    16.0
+}
+
+/// Ancho (px) del botón "＋ Añadir" de la cabecera (compartido por el
+/// render y la geometría de los menús ⋯/☰, que se alinean a su izquierda).
+pub(crate) fn lib_add_btn_w(win_w: i32) -> f32 {
+    (win_w as f32 * 0.18).clamp(110.0, 160.0)
+}
+
+/// Rectángulo (left, top, right, bottom) del botón de menú SETTINGS "☰":
+/// círculo de `header_menu_btn_d` alineado a la IZQUIERDA del "＋ Añadir"
+/// (que mantiene su anclaje a derecha con `grid_pad`) con `header_menu_gap`
+/// de separación, centrado en el Y de la fila de botones. Los futuros
+/// dropdowns cuelgan de su BORDE DERECHO (`dropdown-end`) para no cortarse
+/// por la izquierda.
+pub(crate) fn settings_menu_button_rect(win_w: i32, win_h: i32) -> (f32, f32, f32, f32) {
+    let d = header_menu_btn_d(win_w);
+    let pad = grid_pad(win_w);
+    let add_x = win_w as f32 - pad - lib_add_btn_w(win_w); // borde izq del ＋
+    let cy = lib_header_buttons_cy(win_h);
+    (
+        add_x - header_menu_gap() - d,
+        cy - d / 2.0,
+        add_x - header_menu_gap(),
+        cy + d / 2.0,
+    )
+}
+
+/// Rectángulo del botón de menú VIEW "⋯": a la IZQUIERDA del de settings,
+/// con `header_menu_gap` de separación.
+pub(crate) fn view_menu_button_rect(win_w: i32, win_h: i32) -> (f32, f32, f32, f32) {
+    let (l, t, _, b) = settings_menu_button_rect(win_w, win_h);
+    let d = header_menu_btn_d(win_w);
+    (l - d - header_menu_gap(), t, l - header_menu_gap(), b)
 }
 
 /// Alto (px) del campo de búsqueda (fila fija bajo la cabecera).
@@ -1045,6 +1133,28 @@ pub(crate) struct Reader {
     /// ¿El teclado del buscador está abierto? true → `tick` hace polling del
     /// texto del EditText invisible (`jni::ime_text`) y re-filtra la rejilla.
     pub(crate) ime_active: bool,
+    /// Layout de la biblioteca (rejilla/listas): el menú View "⋯" lo
+    /// alterna (Tarea 2); se persiste en `state.json` (`ViewerState`).
+    pub(crate) view_mode: LibraryViewMode,
+    /// Ajuste de las portadas en sus marcos (Crop/Fit): menú View "⋯";
+    /// persistido.
+    pub(crate) cover_fit: LibraryCoverFit,
+    /// ¿Columnas automáticas (por ancho de ventana)? menú View "⋯" (Tarea 2).
+    /// `dead_code` hasta la Tarea 2: el dropdown lo alterna.
+    #[allow(dead_code)] // Tarea 2 (contenido del menú View)
+    pub(crate) auto_columns: bool,
+    /// Nº de columnas fijas de la rejilla (si `auto_columns` es false);
+    /// persistido.
+    pub(crate) columns: u32,
+    /// ¿El dropdown del menú View "⋯" está abierto? Abrir uno cierra el
+    /// otro (mutuamente excluyentes).
+    pub(crate) view_menu_open: bool,
+    /// ¿El dropdown del menú Settings "☰" está abierto?
+    pub(crate) settings_menu_open: bool,
+    /// ¿Ocultar portadas (solo títulos)? menú Settings "☰"; persistido.
+    pub(crate) hide_covers: bool,
+    /// ¿Mostrar la estantería de recientes? menú Settings "☰"; persistido.
+    pub(crate) recent_shelf_enabled: bool,
     /// Orden de "My Library" (chips de sort: Recently Added / Recently Read /
     /// Title / Author).
     pub(crate) lib_sort: LibSort,
@@ -1347,6 +1457,14 @@ impl Reader {
             lib_search_open: false,
             lib_query: String::new(),
             ime_active: false,
+            view_mode: LibraryViewMode::Grid,
+            cover_fit: LibraryCoverFit::Crop,
+            auto_columns: true,
+            columns: 3,
+            view_menu_open: false,
+            settings_menu_open: false,
+            hide_covers: false,
+            recent_shelf_enabled: true,
             lib_sort: LibSort::RecentlyAdded,
             lib_status: None,
             lib_books: persist::load_progress(app.internal_data_path().as_deref()),
@@ -1472,6 +1590,14 @@ impl Reader {
                                 theme::AppTheme::DefaultLight
                             };
                         }
+                        // Preferencias de la BIBLIOTECA (menús ⋯/☰, Tarea 1:
+                        // esqueleto): se restauran aunque el PDF guardado ya
+                        // no exista (caen a la biblioteca con su layout).
+                        reader.view_mode = state.view_mode;
+                        reader.cover_fit = state.cover_fit;
+                        reader.columns = state.columns;
+                        reader.hide_covers = state.hide_covers;
+                        reader.recent_shelf_enabled = state.recent_shelf_enabled;
                         // Solo restaurar si el PDF sigue accesible: `open_pdf`
                         // falla si no se puede abrir (corrupto) y deja el
                         // estado intacto.
@@ -4595,6 +4721,11 @@ impl Reader {
             zoom: self.zoom,
             dark: self.dark,
             theme: Some(self.theme),
+            view_mode: self.view_mode,
+            cover_fit: self.cover_fit,
+            columns: self.columns,
+            hide_covers: self.hide_covers,
+            recent_shelf_enabled: self.recent_shelf_enabled,
         };
         crate::persist::save_state(self.internal_dir.as_deref(), &state);
         // Progreso por libro (eager, igual que state.json; un cierre
@@ -5270,6 +5401,14 @@ impl Reader {
     /// que todo colapsa a alto 0 / sin datos sin tocar nada más.
     pub(crate) fn lib_has_cont(&self) -> bool {
         false
+    }
+
+    /// ¿La biblioteca se muestra en REJILLA (vs lista)? El menú View "⋯" lo
+    /// cambia; la persistencia vive en `state.json` (`ViewerState::view_mode`).
+    /// `dead_code` hasta la Tarea 2 (el layout de lista se renderiza ahí).
+    #[allow(dead_code)] // Tarea 2 (render de vista lista)
+    pub(crate) fn is_grid(&self) -> bool {
+        self.view_mode == LibraryViewMode::Grid
     }
 
     /// Autor de un libro por NOMBRE de fichero: busca la entrada de
