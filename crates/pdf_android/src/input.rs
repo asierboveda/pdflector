@@ -59,8 +59,8 @@ use log::warn;
 
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
 use crate::draw::{
-    ViewMenuItem, sheet_buttons, toolbar_buttons, toolbar_rect, view_menu_geometry,
-    viewer_top_chrome_buttons,
+    SettingsMenuItem, ViewMenuItem, settings_menu_geometry, sheet_buttons, toolbar_buttons,
+    toolbar_rect, view_menu_geometry, viewer_top_chrome_buttons,
 };
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
@@ -874,10 +874,6 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let search_y = header_h + 6.0;
     let search_hh = search_h - 12.0;
 
-    // CABECERA: botones de MENÚ "⋯" (View) y "☰" (Settings) a la izquierda
-    // del "＋ Añadir", y el propio "＋ Añadir". Un tap FUERA de ambos
-    // botones de menú CIERRA el dropdown abierto (comportamiento estándar de
-    // dropdowns; el tap fuera no dispara otra acción).
     let (vl, vt, vr, vb) = view_menu_button_rect(reader.win_w, reader.win_h);
     let (sl, st, sr, sb) = settings_menu_button_rect(reader.win_w, reader.win_h);
     let hit_view = x >= vl && x < vr && y >= vt && y < vb;
@@ -1000,7 +996,68 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         return;
     }
 
-    if reader.settings_menu_open && !hit_settings {
+    // SettingsMenu dropdown abierto: procesar tap en ítems o cerrar
+    if reader.settings_menu_open {
+        let (_card_rect, items) = settings_menu_geometry(reader.win_w, reader.win_h);
+        let mut handled = false;
+        for (item, rect) in items {
+            if x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3 {
+                match item {
+                    SettingsMenuItem::RecentShelf => {
+                        reader.recent_shelf_enabled = !reader.recent_shelf_enabled;
+                        reader.save_state();
+                        reader.settings_menu_open = false;
+                    }
+                    SettingsMenuItem::CoverSizeSmall => {
+                        reader.cover_size = 0;
+                        reader.save_state();
+                        reader.settings_menu_open = false;
+                    }
+                    SettingsMenuItem::CoverSizeMedium => {
+                        reader.cover_size = 1;
+                        reader.save_state();
+                        reader.settings_menu_open = false;
+                    }
+                    SettingsMenuItem::CoverSizeLarge => {
+                        reader.cover_size = 2;
+                        reader.save_state();
+                        reader.settings_menu_open = false;
+                    }
+                    SettingsMenuItem::CoverProgress => {
+                        reader.cover_progress = !reader.cover_progress;
+                        reader.save_state();
+                        reader.settings_menu_open = false;
+                    }
+                    SettingsMenuItem::ClearLibrary => {
+                        let now = Instant::now();
+                        if let Some(until) = reader.clear_confirm_until
+                            && now <= until
+                        {
+                            reader.clear_confirm_until = None;
+                            reader.clear_library(app);
+                            return;
+                        }
+                        reader.clear_confirm_until = Some(now + std::time::Duration::from_secs(3));
+                        reader.list_dirty = true;
+                        reader.redraw();
+                        return;
+                    }
+                }
+                handled = true;
+                break;
+            }
+        }
+        if handled {
+            reader.list_dirty = true;
+            reader.redraw();
+            return;
+        }
+        if hit_settings {
+            reader.settings_menu_open = false;
+            reader.list_dirty = true;
+            reader.redraw();
+            return;
+        }
         reader.settings_menu_open = false;
         reader.list_dirty = true;
         reader.redraw();
@@ -1182,7 +1239,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 
     if reader.is_grid() {
         let cols = reader.effective_grid_cols();
-        let row = ((yc - grid_y0) / grid_cell_h(win_w, cols)) as usize;
+        let row = ((yc - grid_y0) / grid_cell_h(win_w, cols, reader.cover_size)) as usize;
         let cell_w = grid_cell_w(win_w, cols);
         let pad = grid_pad(win_w);
         let col = ((x - pad) / (cell_w + grid_gap(win_w))).floor() as usize;
@@ -1199,7 +1256,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     } else {
         let pad = grid_pad(win_w);
         if x >= pad && x < win_w as f32 - pad {
-            let row_h = list_row_h(reader.win_h);
+            let row_h = list_row_h(reader.win_h, reader.cover_size);
             let row_gap = list_row_gap();
             let total_row_h = row_h + row_gap;
             let rel_y = yc - grid_y0;

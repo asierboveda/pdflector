@@ -407,15 +407,24 @@ pub(crate) fn grid_cell_w(win_w: i32, cols: usize) -> f32 {
     (w - 2.0 * grid_pad(win_w) - (c - 1.0) * grid_gap(win_w)) / c
 }
 
+/// Multiplicador de escala según `cover_size`: 0 -> 0.85 (Pequeño), 1 -> 1.0 (Mediano), 2 -> 1.15 (Grande).
+pub(crate) fn cover_size_multiplier(cover_size: u8) -> f32 {
+    match cover_size {
+        0 => 0.85,
+        2 => 1.15,
+        _ => 1.0,
+    }
+}
+
 /// Ancho (px) del área de portada dentro de la celda.
-pub(crate) fn grid_cover_w(win_w: i32, cols: usize) -> f32 {
-    grid_cell_w(win_w, cols) - 2.0 * GRID_CELL_PAD
+pub(crate) fn grid_cover_w(win_w: i32, cols: usize, cover_size: u8) -> f32 {
+    (grid_cell_w(win_w, cols) - 2.0 * GRID_CELL_PAD) * cover_size_multiplier(cover_size)
 }
 
 /// Alto (px) del área de portada: proporción 2:3 (alto = ancho × 1.5), estilo
 /// Apple Books, para TODAS las celdas (rejilla uniforme).
-pub(crate) fn grid_cover_h(win_w: i32, cols: usize) -> f32 {
-    grid_cover_w(win_w, cols) * 1.5
+pub(crate) fn grid_cover_h(win_w: i32, cols: usize, cover_size: u8) -> f32 {
+    grid_cover_w(win_w, cols, cover_size) * 1.5
 }
 
 /// Alto (px) de la zona de texto de la celda: título (14sp) + autor (12sp) + barra progreso + padding.
@@ -424,13 +433,13 @@ pub(crate) fn grid_title_h(_win_w: i32) -> f32 {
 }
 
 /// Alto (px) de una celda de la rejilla.
-pub(crate) fn grid_cell_h(win_w: i32, cols: usize) -> f32 {
-    grid_cover_h(win_w, cols) + grid_title_h(win_w)
+pub(crate) fn grid_cell_h(win_w: i32, cols: usize, cover_size: u8) -> f32 {
+    grid_cover_h(win_w, cols, cover_size) + grid_title_h(win_w)
 }
 
 /// Alto (px) de una fila de la biblioteca en modo Lista.
-pub(crate) fn list_row_h(_win_h: i32) -> f32 {
-    116.0
+pub(crate) fn list_row_h(_win_h: i32, cover_size: u8) -> f32 {
+    (116.0 * cover_size_multiplier(cover_size)).max(96.0)
 }
 
 /// Separación vertical (px) entre filas en modo Lista.
@@ -444,11 +453,12 @@ pub(crate) fn list_row_rect(
     rows_y0: i32,
     idx: usize,
     win_h: i32,
+    cover_size: u8,
 ) -> (f32, f32, f32, f32) {
     let pad = grid_pad(win_w);
     let x = pad;
     let w = win_w as f32 - 2.0 * pad;
-    let h = list_row_h(win_h);
+    let h = list_row_h(win_h, cover_size);
     let gap = list_row_gap();
     let y = rows_y0 as f32 + idx as f32 * (h + gap);
     (x, y, x + w, y + h)
@@ -843,7 +853,7 @@ pub(crate) fn lib_empty_state_geom(reader: &Reader) -> Option<EmptyStateGeom> {
 pub(crate) fn grid_visible_rows(win_w: i32, win_h: i32, has_status: bool) -> usize {
     let status_h = if has_status { picker_row_h(win_h) } else { 0 };
     let usable = (win_h - picker_header_h(win_h) - status_h) as f32;
-    (usable / grid_cell_h(win_w, GRID_COLS)).floor().max(1.0) as usize
+    (usable / grid_cell_h(win_w, GRID_COLS, 1)).floor().max(1.0) as usize
 }
 
 /// Y del borde superior de la zona de rejilla (cabecera + franja de estado).
@@ -861,14 +871,15 @@ pub(crate) fn grid_cell_rect(
     row: usize,
     col: usize,
     cols: usize,
+    cover_size: u8,
 ) -> (f32, f32, f32, f32) {
     let x = grid_pad(win_w) + col as f32 * (grid_cell_w(win_w, cols) + grid_gap(win_w));
-    let y = rows_y0 as f32 + row as f32 * grid_cell_h(win_w, cols);
+    let y = rows_y0 as f32 + row as f32 * grid_cell_h(win_w, cols, cover_size);
     (
         x,
         y,
         x + grid_cell_w(win_w, cols),
-        y + grid_cell_h(win_w, cols),
+        y + grid_cell_h(win_w, cols, cover_size),
     )
 }
 
@@ -1184,6 +1195,12 @@ pub(crate) struct Reader {
     pub(crate) hide_covers: bool,
     /// ¿Mostrar la estantería de recientes? menú Settings "☰"; persistido.
     pub(crate) recent_shelf_enabled: bool,
+    /// Tamaño de portadas (0: Pequeño, 1: Mediano, 2: Grande); menú Settings "☰"; persistido.
+    pub(crate) cover_size: u8,
+    /// ¿Mostrar badge de porcentaje leído sobre las portadas? menú Settings "☰"; persistido.
+    pub(crate) cover_progress: bool,
+    /// Timeout para confirmar el vaciado de la biblioteca (3 segundos).
+    pub(crate) clear_confirm_until: Option<std::time::Instant>,
     /// Agrupación de la biblioteca (None = libros sueltos, Author = por autor).
     pub(crate) group_by: LibraryGroupBy,
     /// Orden de "My Library" (chips de sort: Recently Added / Recently Read /
@@ -1496,6 +1513,9 @@ impl Reader {
             settings_menu_open: false,
             hide_covers: false,
             recent_shelf_enabled: true,
+            cover_size: 1,
+            cover_progress: false,
+            clear_confirm_until: None,
             group_by: LibraryGroupBy::None,
             lib_sort: LibSort::RecentlyAdded,
             lib_status: None,
@@ -1630,6 +1650,8 @@ impl Reader {
                         reader.columns = state.columns;
                         reader.hide_covers = state.hide_covers;
                         reader.recent_shelf_enabled = state.recent_shelf_enabled;
+                        reader.cover_size = state.cover_size;
+                        reader.cover_progress = state.cover_progress;
                         // Solo restaurar si el PDF sigue accesible: `open_pdf`
                         // falla si no se puede abrir (corrupto) y deja el
                         // estado intacto.
@@ -1870,9 +1892,9 @@ impl Reader {
         let content_h = self.lib_content_h() as i32;
         let margin = if self.is_grid() {
             let cols = self.effective_grid_cols();
-            grid_cell_h(self.win_w, cols) as i32
+            grid_cell_h(self.win_w, cols, self.cover_size) as i32
         } else {
-            list_row_h(self.win_h) as i32
+            list_row_h(self.win_h, self.cover_size) as i32
         };
         let band_h = (viewport + 2 * margin).min(content_h.max(viewport));
         let band_origin = ((self.lib_scroll as i32) - margin)
@@ -3486,7 +3508,7 @@ impl Reader {
             return (0, 0); // la rejilla está por debajo de la ventana
         }
         let cols = self.effective_grid_cols();
-        let ch = grid_cell_h(self.win_w, cols);
+        let ch = grid_cell_h(self.win_w, cols, self.cover_size);
         let row0 = ((content_y0 - grid_y0_screen) / ch).max(0.0) as usize;
         let below = ((self.win_h as f32 - grid_y0_screen) / ch).ceil().max(0.0) as usize;
         (row0, below + 1)
@@ -3501,7 +3523,7 @@ impl Reader {
         if grid_y0_screen >= self.win_h as f32 {
             return (0, 0);
         }
-        let rh = list_row_h(self.win_h) + list_row_gap();
+        let rh = list_row_h(self.win_h, self.cover_size) + list_row_gap();
         let row0 = ((content_y0 - grid_y0_screen) / rh).max(0.0) as usize;
         let below = ((self.win_h as f32 - grid_y0_screen) / rh).ceil().max(0.0) as usize;
         (row0, below + 1)
@@ -4817,6 +4839,8 @@ impl Reader {
             columns: self.columns,
             hide_covers: self.hide_covers,
             recent_shelf_enabled: self.recent_shelf_enabled,
+            cover_size: self.cover_size,
+            cover_progress: self.cover_progress,
         };
         crate::persist::save_state(self.internal_dir.as_deref(), &state);
         if self.mode == UiMode::Viewer && !path.is_empty() {
@@ -5053,6 +5077,41 @@ impl Reader {
         self.lib_header = None; // zona fija: se re-renderiza en el rebuild
         self.lib_band = None;
         self.lib_row_dirty = None;
+        self.redraw();
+    }
+
+    /// Porcentaje leído de un libro (0.0-1.0) según la ruta de su fichero.
+    #[allow(dead_code)]
+    pub(crate) fn book_progress_pct(&self, path: &str) -> Option<f32> {
+        crate::persist::progress_for(&self.lib_books, path).map(|b| b.pct())
+    }
+
+    /// Vacía la biblioteca curada (elimina library.json y los PDFs internos).
+    pub(crate) fn clear_library(&mut self, app: &AndroidApp) {
+        if let Some(dir) = self.internal_dir.as_deref() {
+            let lib_file = crate::persist::library_path(dir);
+            if lib_file.exists()
+                && let Err(e) = fs::remove_file(&lib_file)
+            {
+                log::warn!("failed to remove library.json: {e}");
+            }
+            let pdf_dir = dir.join("pdfs");
+            if let Ok(entries) = fs::read_dir(&pdf_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() {
+                        let _ = fs::remove_file(&p);
+                    }
+                }
+            }
+        }
+        self.lib_books.clear();
+        self.library_list.clear();
+        self.lib_filtered.clear();
+        self.reload_curated_library(app);
+        self.settings_menu_open = false;
+        self.show_toast("Library cleared");
+        self.list_dirty = true;
         self.redraw();
     }
 
@@ -5582,10 +5641,10 @@ impl Reader {
             let cols = self.effective_grid_cols();
             let rows = count.div_ceil(cols);
             let gap = grid_gap(win_w);
-            grid_y0 + rows as f32 * (grid_cell_h(win_w, cols) + gap) + 40.0
+            grid_y0 + rows as f32 * (grid_cell_h(win_w, cols, self.cover_size) + gap) + 40.0
         } else {
             let gap = list_row_gap();
-            grid_y0 + count as f32 * (list_row_h(win_h) + gap) + 40.0
+            grid_y0 + count as f32 * (list_row_h(win_h, self.cover_size) + gap) + 40.0
         }
     }
 

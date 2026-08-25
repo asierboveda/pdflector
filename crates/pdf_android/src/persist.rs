@@ -321,6 +321,12 @@ pub(crate) struct ViewerState {
     /// ¿Estantería de recientes visible? (menú Settings "☰").
     #[serde(default = "default_recent_shelf")]
     pub(crate) recent_shelf_enabled: bool,
+    /// Tamaño de portadas (0: Pequeño, 1: Mediano, 2: Grande; menú Settings "☰").
+    #[serde(default = "default_cover_size")]
+    pub(crate) cover_size: u8,
+    /// ¿Mostrar badge de porcentaje leído sobre las portadas? (menú Settings "☰").
+    #[serde(default)]
+    pub(crate) cover_progress: bool,
 }
 
 /// Default de `ViewerState::columns` (3, como arranca la app).
@@ -331,6 +337,11 @@ fn default_columns() -> u32 {
 /// Default de `ViewerState::recent_shelf_enabled` (true, como arranca).
 fn default_recent_shelf() -> bool {
     true
+}
+
+/// Default de `ViewerState::cover_size` (1 = Mediano).
+fn default_cover_size() -> u8 {
+    1
 }
 
 /// Ruta del fichero de estado dentro del directorio interno de la app.

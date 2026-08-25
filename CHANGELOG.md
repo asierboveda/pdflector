@@ -3,6 +3,18 @@
 > Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
 > Formato: `AAAA-MM-DD — Título`.
 
+## 2026-08-26 — Tarea 3/3: Library — Contenido SettingsMenu (☰) + SettingsModel
+
+Implementación completa de las 5 secciones del SettingsMenu desplegable (☰) estilo Readest:
+
+- **Dropdown SettingsMenu flotante** (`draw.rs:render_settings_menu`/`draw_settings_menu`): tarjeta anclada al borde derecho de `settings_menu_button_rect` (`dropdown-end`), con sombra multinivel (`shadow-2xl`), esquinas redondeadas 16px, borde `base-300` y fondo `base-100`.
+- **Sección LECTURA RECIENTE**: toggle "Mostrar lectura reciente" que sincroniza en tiempo real `recent_shelf_enabled`, mostrando/ocultando el carrusel superior y ajustando el offset vertical de la rejilla.
+- **Sección TAMAÑO DE PORTADA**: 3 opciones con checkmark ("Pequeño (Small)", "Mediano (Medium)", "Grande (Large)") que ajustan `cover_size` (0/1/2) aplicando multiplicadores 0.85 / 1.0 / 1.15 tanto en cuadrícula como en filas de lista, recalculando alturas de celda y escalado de portadas.
+- **Sección PROGRESO**: toggle "Mostrar porcentaje de lectura" (`cover_progress`) que muestra un badge flotante redondeado (radio 999, fondo `primary`, texto `primary_content`) con el porcentaje leído (p. ej. "67%") en la esquina inferior derecha de cada portada en rejilla y lista. Libros no leídos (0%) se omiten.
+- **Sección ADMINISTRAR BIBLIOTECA**: botón "Vaciar biblioteca" con confirmación interactiva en 2 pasos y timeout de 3 segundos ("¿Vaciar? Toca de nuevo para confirmar"). Elimina `library.json` y los PDFs en el almacenamiento interno de la app, invoca `reload_curated_library(app)` mostrando el estado vacío ("Tu biblioteca está vacía") y lanza toast de confirmación "Library cleared".
+- **Sección ACERCA DE**: fila informativa no interactiva con nombre de la app (`PDFLector`), versión del paquete (`env!("CARGO_PKG_VERSION")`, v0.1.0) y licencia ("Open source · AGPL-3.0").
+- **Persistencia**: campos `cover_size: u8` (default 1) y `cover_progress: bool` (default false) integrados en `ViewerState` con `#[serde(default)]`, persistiendo y recuperando el estado entre sesiones.
+
 ## 2026-08-26 — Tarea 2/3: Library — Contenido ViewMenu (⋯) — Grid/List, Columns, Covers, Group/Sort
 
 Implementación completa de las 6 secciones del ViewMenu desplegable (⋯) estilo Readest:

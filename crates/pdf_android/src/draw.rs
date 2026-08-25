@@ -19,15 +19,15 @@ use crate::annotations::ToolKind;
 use crate::persist;
 use crate::reader::{
     AiPhase, GRID_CELL_PAD, LibSort, LibraryCoverFit, LibraryGroupBy, PickRow, PickerKind, Reader,
-    entry_author, entry_title, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h,
-    grid_cover_w, grid_pad, header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h, lib_chips,
-    lib_cont_card_h, lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h, lib_cont_cover_w,
-    lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_chip_h, lib_org_chips,
-    lib_search_h, list_row_gap, list_row_h, list_row_rect, page_badge_size, picker_btn_h,
-    picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect, sheet_act_y,
-    sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad, sheet_theme_btn_w, sheet_theme_y,
-    title_from_name, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
-    viewer_top_chrome_h,
+    cover_size_multiplier, entry_author, entry_title, grid_cell_h, grid_cell_rect, grid_cell_w,
+    grid_cover_h, grid_cover_w, grid_pad, header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h,
+    lib_chips, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h,
+    lib_cont_cover_w, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
+    lib_org_chip_h, lib_org_chips, lib_search_h, list_row_gap, list_row_h, list_row_rect,
+    page_badge_size, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
+    settings_menu_button_rect, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y,
+    sheet_pad, sheet_theme_btn_w, sheet_theme_y, title_from_name, truncate_name,
+    view_menu_button_rect, viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 use crate::theme;
 
@@ -3180,6 +3180,395 @@ pub(crate) fn render_view_menu(reader: &Reader) -> Option<Bitmap> {
     jni_text_bitmap(mw, mh, theme::TRANSPARENT, &rects, &texts)
 }
 
+/// Items interactivos del menú Settings "☰" (Readest SettingsMenu).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettingsMenuItem {
+    RecentShelf,
+    CoverSizeSmall,
+    CoverSizeMedium,
+    CoverSizeLarge,
+    CoverProgress,
+    ClearLibrary,
+}
+
+/// Geometría compartida del menú Settings "☰" (coords en px de ventana).
+#[allow(clippy::type_complexity)]
+pub(crate) fn settings_menu_geometry(
+    win_w: i32,
+    win_h: i32,
+) -> (
+    (f32, f32, f32, f32),
+    Vec<(SettingsMenuItem, (f32, f32, f32, f32))>,
+) {
+    let (_sl, _st, sr, sb) = settings_menu_button_rect(win_w, win_h);
+    let menu_w = 380.0f32.min(win_w as f32 - 32.0);
+    let menu_r = sr;
+    let menu_l = menu_r - menu_w;
+    let menu_t = sb + 8.0f32;
+    let mut items = Vec::new();
+
+    let mut y = menu_t + 12.0;
+    let item_h = 38.0f32;
+    let sec_h = 24.0f32;
+    let hr_h = 8.0f32;
+    let pad_x = 16.0f32;
+
+    // 1. RECENTLY READ
+    y += sec_h;
+    items.push((
+        SettingsMenuItem::RecentShelf,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + hr_h;
+
+    // 2. COVER SIZE
+    y += sec_h;
+    items.push((
+        SettingsMenuItem::CoverSizeSmall,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        SettingsMenuItem::CoverSizeMedium,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        SettingsMenuItem::CoverSizeLarge,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + hr_h;
+
+    // 3. SHOW PROGRESS
+    y += sec_h;
+    items.push((
+        SettingsMenuItem::CoverProgress,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + hr_h;
+
+    // 4. MANAGE LIBRARY
+    y += sec_h;
+    items.push((
+        SettingsMenuItem::ClearLibrary,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + hr_h;
+
+    // 5. ABOUT
+    y += sec_h;
+    // About is non-interactive
+    y += 34.0 + 26.0 + 12.0;
+
+    let menu_b = y;
+    ((menu_l, menu_t, menu_r, menu_b), items)
+}
+
+/// Dibuja las primitivas del dropdown SettingsMenu (☰) en coords absolutas de ventana.
+pub(crate) fn draw_settings_menu(
+    reader: &Reader,
+    rects: &mut Vec<CanvasRect>,
+    texts: &mut Vec<CanvasText>,
+) {
+    let (card_rect, _items) = settings_menu_geometry(reader.win_w, reader.win_h);
+    let (ml, mt, mr, mb) = card_rect;
+    let p = reader.theme.palette();
+
+    // Sombra multinivel (shadow-2xl)
+    draw_card_shadow(rects, ml, mt, mr, mb, 16.0, p.is_dark);
+
+    // Fondo base-100 + borde base-300
+    rects.push(CanvasRect::rounded(ml, mt, mr, mb, 16.0, p.base_300));
+    rects.push(CanvasRect::rounded(
+        ml + 1.0,
+        mt + 1.0,
+        mr - 1.0,
+        mb - 1.0,
+        15.0,
+        p.base_100,
+    ));
+
+    let pad_x = 16.0f32;
+    let sec_ts = theme::FONT_CAPTION * 0.95; // 11sp
+    let body_ts = theme::FONT_BODY; // 14sp
+
+    let mut y = mt + 12.0;
+    let item_h = 38.0f32;
+    let sec_h = 24.0f32;
+    let hr_h = 8.0f32;
+
+    // 1. RECENTLY READ
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "LECTURA RECIENTE".to_string(),
+    ));
+    y += sec_h;
+    {
+        let active = reader.recent_shelf_enabled;
+        if active {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                p.base_200,
+            ));
+            texts.push(CanvasText::new(
+                mr - pad_x - 4.0,
+                y + item_h * 0.68,
+                body_ts,
+                p.primary,
+                TextAlign::Right,
+                true,
+                "✓".to_string(),
+            ));
+        }
+        let fg = if active { p.primary } else { p.base_content };
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            fg,
+            TextAlign::Left,
+            active,
+            "Mostrar lectura reciente".to_string(),
+        ));
+        y += item_h;
+    }
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 2. COVER SIZE
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "TAMAÑO DE PORTADA".to_string(),
+    ));
+    y += sec_h;
+    for (label, active) in [
+        ("Pequeño (Small)", reader.cover_size == 0),
+        ("Mediano (Medium)", reader.cover_size == 1),
+        ("Grande (Large)", reader.cover_size == 2),
+    ] {
+        if active {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                p.base_200,
+            ));
+            texts.push(CanvasText::new(
+                mr - pad_x - 4.0,
+                y + item_h * 0.68,
+                body_ts,
+                p.primary,
+                TextAlign::Right,
+                true,
+                "✓".to_string(),
+            ));
+        }
+        let fg = if active { p.primary } else { p.base_content };
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            fg,
+            TextAlign::Left,
+            active,
+            label.to_string(),
+        ));
+        y += item_h;
+    }
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 3. SHOW PROGRESS
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "PROGRESO".to_string(),
+    ));
+    y += sec_h;
+    {
+        let active = reader.cover_progress;
+        if active {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                p.base_200,
+            ));
+            texts.push(CanvasText::new(
+                mr - pad_x - 4.0,
+                y + item_h * 0.68,
+                body_ts,
+                p.primary,
+                TextAlign::Right,
+                true,
+                "✓".to_string(),
+            ));
+        }
+        let fg = if active { p.primary } else { p.base_content };
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            fg,
+            TextAlign::Left,
+            active,
+            "Mostrar porcentaje de lectura".to_string(),
+        ));
+        y += item_h;
+    }
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 4. MANAGE LIBRARY
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "ADMINISTRAR BIBLIOTECA".to_string(),
+    ));
+    y += sec_h;
+    {
+        let confirming = reader
+            .clear_confirm_until
+            .map(|until| std::time::Instant::now() <= until)
+            .unwrap_or(false);
+        let clear_label = if confirming {
+            "¿Vaciar? Toca de nuevo para confirmar"
+        } else {
+            "Vaciar biblioteca"
+        };
+        let danger_color = if p.is_dark { 0xFFFF6B6B } else { 0xFFD32F2F };
+        if confirming {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                if p.is_dark { 0x33FF6B6B } else { 0x22D32F2F },
+            ));
+        }
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            danger_color,
+            TextAlign::Left,
+            confirming,
+            clear_label.to_string(),
+        ));
+        y += item_h;
+    }
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 5. ABOUT
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "ACERCA DE".to_string(),
+    ));
+    y += sec_h;
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + theme::FONT_CAPTION * 1.1 * 0.85,
+        theme::FONT_CAPTION * 1.1,
+        p.base_content,
+        TextAlign::Left,
+        true,
+        format!("PDFLector v{}", env!("CARGO_PKG_VERSION")),
+    ));
+    y += 28.0;
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + theme::FONT_CAPTION * 0.9 * 0.85,
+        theme::FONT_CAPTION * 0.9,
+        p.neutral_content,
+        TextAlign::Left,
+        false,
+        "Open source · AGPL-3.0".to_string(),
+    ));
+}
+
+/// Renderiza el dropdown SettingsMenu (☰) completo a un bitmap RGBA8.
+#[allow(dead_code)]
+pub(crate) fn render_settings_menu(reader: &Reader) -> Option<Bitmap> {
+    let (card_rect, _items) = settings_menu_geometry(reader.win_w, reader.win_h);
+    let (ml, mt, mr, mb) = card_rect;
+    let mw = (mr - ml).ceil() as i32;
+    let mh = (mb - mt).ceil() as i32;
+    if mw <= 0 || mh <= 0 {
+        return None;
+    }
+    let mut rects: Vec<CanvasRect> = Vec::new();
+    let mut texts: Vec<CanvasText> = Vec::new();
+    draw_settings_menu(reader, &mut rects, &mut texts);
+    for r in &mut rects {
+        r.left -= ml;
+        r.right -= ml;
+        r.top -= mt;
+        r.bottom -= mt;
+    }
+    for t in &mut texts {
+        t.x -= ml;
+        t.y -= mt;
+    }
+    jni_text_bitmap(mw, mh, theme::TRANSPARENT, &rects, &texts)
+}
+
 /// Render de la ZONA FIJA de la biblioteca (cabecera editorial + campo de
 /// búsqueda + franja de estado + overlay de menú si está abierto)
 pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
@@ -3193,9 +3582,15 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
         return None;
     }
 
-    let (card_rect, _) = view_menu_geometry(reader.win_w, reader.win_h);
-    let h_total = if reader.view_menu_open {
-        h_fixed.max(card_rect.3.ceil() as i32 + 20)
+    let card_b = if reader.view_menu_open {
+        view_menu_geometry(reader.win_w, reader.win_h).0.3
+    } else if reader.settings_menu_open {
+        settings_menu_geometry(reader.win_w, reader.win_h).0.3
+    } else {
+        0.0
+    };
+    let h_total = if reader.view_menu_open || reader.settings_menu_open {
+        h_fixed.max(card_b.ceil() as i32 + 20)
     } else {
         h_fixed
     };
@@ -3378,9 +3773,11 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
         ));
     }
 
-    // ViewMenu dropdown abierto: dibujar el menú directamente sobre la cabecera
+    // Menús dropdown abiertos: dibujar el menú directamente sobre la cabecera
     if reader.view_menu_open {
         draw_view_menu(reader, &mut rects, &mut texts);
+    } else if reader.settings_menu_open {
+        draw_settings_menu(reader, &mut rects, &mut texts);
     }
 
     jni_text_bitmap(w, h_total, theme::TRANSPARENT, &rects, &texts)
@@ -3554,10 +3951,10 @@ pub(crate) fn render_library_zone(
         let grid_y0 = lib_grid_y0(w, reader.win_h, reader.lib_has_cont());
         if reader.is_grid() {
             let cols = reader.effective_grid_cols();
-            let cell_h = grid_cell_h(w, cols);
+            let cell_h = grid_cell_h(w, cols, reader.cover_size);
             let cell_w = grid_cell_w(w, cols);
-            let cover_w = grid_cover_w(w, cols);
-            let cover_h = grid_cover_h(w, cols);
+            let cover_w = grid_cover_w(w, cols, reader.cover_size);
+            let cover_h = grid_cover_h(w, cols, reader.cover_size);
             let title_ts = theme::FONT_BODY;
             let char_w = title_ts * 0.55;
             let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
@@ -3570,7 +3967,8 @@ pub(crate) fn render_library_zone(
                     let Some(entry) = reader.grid_entry_at(row, col) else {
                         continue;
                     };
-                    let (cx, cy_rel, _, _) = grid_cell_rect(w, 0, row, col, cols);
+                    let (cx, cy_rel, _, _) =
+                        grid_cell_rect(w, 0, row, col, cols, reader.cover_size);
                     let cy = yof + grid_y0 + cy_rel;
                     if !reader.hide_covers {
                         let cover_x0 = cx + (cell_w - cover_w) / 2.0;
@@ -3614,6 +4012,35 @@ pub(crate) fn render_library_zone(
                                 truncate_name(&entry_title(entry), 12),
                             ));
                         }
+                        // Badge de progreso sobre la portada (SHOW PROGRESS)
+                        let pct =
+                            persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
+                                .map(|bp| bp.pct())
+                                .unwrap_or(0.0);
+                        if reader.cover_progress && pct > 0.0 {
+                            let pct_val = (pct * 100.0).round() as u32;
+                            if pct_val > 0 {
+                                let pct_str = format!("{pct_val}%");
+                                let badge_w = 42.0f32;
+                                let badge_h = 22.0f32;
+                                let badge_r = cover_x0 + cover_w - 6.0;
+                                let badge_b = cover_y0 + cover_h - 6.0;
+                                let badge_l = badge_r - badge_w;
+                                let badge_t = badge_b - badge_h;
+                                rects.push(CanvasRect::rounded(
+                                    badge_l, badge_t, badge_r, badge_b, 999.0, p.primary,
+                                ));
+                                texts.push(CanvasText::new(
+                                    (badge_l + badge_r) / 2.0,
+                                    badge_t + badge_h * 0.68,
+                                    theme::FONT_CAPTION * 0.85,
+                                    p.primary_content,
+                                    TextAlign::Center,
+                                    true,
+                                    pct_str,
+                                ));
+                            }
+                        }
                         // Título bajo el marco
                         let text_y0 = cy + 4.0 + cover_h + 10.0;
                         texts.push(CanvasText::new(
@@ -3639,10 +4066,6 @@ pub(crate) fn render_library_zone(
                         // Barra de progreso
                         let bar_y = author_y0 + 20.0;
                         let track_w = cell_w - 2.0 * GRID_CELL_PAD;
-                        let pct =
-                            persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
-                                .map(|bp| bp.pct())
-                                .unwrap_or(0.0);
                         rects.push(CanvasRect::rounded(
                             cx + GRID_CELL_PAD,
                             bar_y,
@@ -3739,7 +4162,7 @@ pub(crate) fn render_library_zone(
             }
         } else {
             // MODO LISTA: 1 columna, fila de ancho total
-            let row_h = list_row_h(reader.win_h);
+            let row_h = list_row_h(reader.win_h, reader.cover_size);
             let row_gap = list_row_gap();
             let total_row_h = row_h + row_gap;
             let idx_first = (((band_origin as f32 - grid_y0) / total_row_h)
@@ -3752,7 +4175,8 @@ pub(crate) fn render_library_zone(
                 let Some(entry) = reader.list_entry_at(i) else {
                     continue;
                 };
-                let (rx, ry_rel, rx2, _ry2) = list_row_rect(w, 0, i, reader.win_h);
+                let (rx, ry_rel, rx2, _ry2) =
+                    list_row_rect(w, 0, i, reader.win_h, reader.cover_size);
                 let ry = yof + grid_y0 + ry_rel;
                 let card_r = 14.0f32;
 
@@ -3774,11 +4198,15 @@ pub(crate) fn render_library_zone(
                     p.base_100,
                 ));
 
+                let pct = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
+                    .map(|bp| bp.pct())
+                    .unwrap_or(0.0);
+
                 let text_x = if !reader.hide_covers {
-                    let cw = 60.0f32;
-                    let ch = 90.0f32;
+                    let cw = (60.0 * cover_size_multiplier(reader.cover_size)).round();
+                    let ch = (90.0 * cover_size_multiplier(reader.cover_size)).round();
                     let cx = rx + 12.0;
-                    let cy = ry + 13.0;
+                    let cy = ry + (row_h - ch) / 2.0;
                     let cover_r = 8.0f32;
 
                     draw_card_shadow(&mut rects, cx, cy, cx + cw, cy + ch, cover_r, p.is_dark);
@@ -3810,6 +4238,30 @@ pub(crate) fn render_library_zone(
                             truncate_name(&entry_title(entry), 8),
                         ));
                     }
+                    if reader.cover_progress && pct > 0.0 {
+                        let pct_val = (pct * 100.0).round() as u32;
+                        if pct_val > 0 {
+                            let pct_str = format!("{pct_val}%");
+                            let badge_w = 38.0f32;
+                            let badge_h = 20.0f32;
+                            let badge_r = cx + cw - 4.0;
+                            let badge_b = cy + ch - 4.0;
+                            let badge_l = badge_r - badge_w;
+                            let badge_t = badge_b - badge_h;
+                            rects.push(CanvasRect::rounded(
+                                badge_l, badge_t, badge_r, badge_b, 999.0, p.primary,
+                            ));
+                            texts.push(CanvasText::new(
+                                (badge_l + badge_r) / 2.0,
+                                badge_t + badge_h * 0.68,
+                                theme::FONT_CAPTION * 0.80,
+                                p.primary_content,
+                                TextAlign::Center,
+                                true,
+                                pct_str,
+                            ));
+                        }
+                    }
                     cx + cw + 18.0
                 } else {
                     rx + 20.0
@@ -3839,9 +4291,6 @@ pub(crate) fn render_library_zone(
                     truncate_name(&entry_author(entry), max_chars),
                 ));
 
-                let pct = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
-                    .map(|bp| bp.pct())
-                    .unwrap_or(0.0);
                 let bar_y = ry + 82.0;
                 let bar_w = rx2 - text_x - 90.0;
                 rects.push(CanvasRect::rounded(
@@ -4393,9 +4842,9 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
     if reader.is_grid() {
         let cols = reader.effective_grid_cols();
         let cell_w = grid_cell_w(w, cols);
-        let cell_h = grid_cell_h(w, cols);
-        let cover_w = grid_cover_w(w, cols);
-        let cover_h = grid_cover_h(w, cols);
+        let cell_h = grid_cell_h(w, cols, reader.cover_size);
+        let cover_w = grid_cover_w(w, cols, reader.cover_size);
+        let cover_h = grid_cover_h(w, cols, reader.cover_size);
         let row_first = (((band_origin as f32 - grid_y0) / cell_h).floor().max(0.0)) as usize;
         let row_last = (((band_origin + band.height as i32) as f32 - grid_y0) / cell_h)
             .ceil()
@@ -4408,7 +4857,7 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
                 let Some(thumb) = reader.thumbs.peek(&entry.uri) else {
                     continue;
                 };
-                let (cx, cy_rel, _, _) = grid_cell_rect(w, 0, row, col, cols);
+                let (cx, cy_rel, _, _) = grid_cell_rect(w, 0, row, col, cols, reader.cover_size);
                 let cover_x0 = (cx + (cell_w - cover_w) / 2.0).round() as i32;
                 let cover_y0 = (grid_y0 + cy_rel - band_origin as f32 + 4.0).round() as i32;
                 paste_thumb(
@@ -4424,7 +4873,7 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
             }
         }
     } else {
-        let row_h = list_row_h(reader.win_h);
+        let row_h = list_row_h(reader.win_h, reader.cover_size);
         let row_gap = list_row_gap();
         let total_row_h = row_h + row_gap;
         let idx_first = (((band_origin as f32 - grid_y0) / total_row_h)
@@ -4433,6 +4882,8 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
         let idx_last = (((band_origin + band.height as i32) as f32 - grid_y0) / total_row_h)
             .ceil()
             .max(0.0) as usize;
+        let cw = (60.0 * cover_size_multiplier(reader.cover_size)).round() as i32;
+        let ch = (90.0 * cover_size_multiplier(reader.cover_size)).round() as i32;
         for i in idx_first..idx_last {
             let Some(entry) = reader.list_entry_at(i) else {
                 continue;
@@ -4440,18 +4891,144 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
             let Some(thumb) = reader.thumbs.peek(&entry.uri) else {
                 continue;
             };
-            let (rx, ry_rel, _, _) = list_row_rect(w, 0, i, reader.win_h);
+            let (rx, ry_rel, _, _) = list_row_rect(w, 0, i, reader.win_h, reader.cover_size);
             let cover_x0 = (rx + 12.0).round() as i32;
-            let cover_y0 = (grid_y0 + ry_rel - band_origin as f32 + 13.0).round() as i32;
+            let cover_y0 =
+                (grid_y0 + ry_rel - band_origin as f32 + (row_h - ch as f32) / 2.0).round() as i32;
             paste_thumb(
                 &mut band.data,
                 band.width as usize,
                 thumb,
                 cover_x0,
                 cover_y0,
-                60,
-                90,
+                cw,
+                ch,
                 reader.cover_fit,
+            );
+        }
+    }
+
+    if reader.cover_progress {
+        let p = reader.theme.palette();
+        let mut badge_rects: Vec<CanvasRect> = Vec::new();
+        let mut badge_texts: Vec<CanvasText> = Vec::new();
+
+        if reader.is_grid() {
+            let cols = reader.effective_grid_cols();
+            let cell_w = grid_cell_w(w, cols);
+            let cell_h = grid_cell_h(w, cols, reader.cover_size);
+            let cover_w = grid_cover_w(w, cols, reader.cover_size);
+            let cover_h = grid_cover_h(w, cols, reader.cover_size);
+            let row_first = (((band_origin as f32 - grid_y0) / cell_h).floor().max(0.0)) as usize;
+            let row_last = (((band_origin + band.height as i32) as f32 - grid_y0) / cell_h)
+                .ceil()
+                .max(0.0) as usize;
+            for row in row_first..row_last {
+                for col in 0..cols {
+                    let Some(entry) = reader.grid_entry_at(row, col) else {
+                        continue;
+                    };
+                    let pct = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
+                        .map(|bp| bp.pct())
+                        .unwrap_or(0.0);
+                    if pct > 0.0 {
+                        let pct_val = (pct * 100.0).round() as u32;
+                        if pct_val > 0 {
+                            let (cx, cy_rel, _, _) =
+                                grid_cell_rect(w, 0, row, col, cols, reader.cover_size);
+                            let cover_x0 = cx + (cell_w - cover_w) / 2.0;
+                            let cover_y0 = grid_y0 + cy_rel - band_origin as f32 + 4.0;
+                            let pct_str = format!("{pct_val}%");
+                            let badge_w = 42.0f32;
+                            let badge_h = 22.0f32;
+                            let badge_r = cover_x0 + cover_w - 6.0;
+                            let badge_b = cover_y0 + cover_h - 6.0;
+                            let badge_l = badge_r - badge_w;
+                            let badge_t = badge_b - badge_h;
+                            badge_rects.push(CanvasRect::rounded(
+                                badge_l, badge_t, badge_r, badge_b, 999.0, p.primary,
+                            ));
+                            badge_texts.push(CanvasText::new(
+                                (badge_l + badge_r) / 2.0,
+                                badge_t + badge_h * 0.68,
+                                theme::FONT_CAPTION * 0.85,
+                                p.primary_content,
+                                TextAlign::Center,
+                                true,
+                                pct_str,
+                            ));
+                        }
+                    }
+                }
+            }
+        } else {
+            let row_h = list_row_h(reader.win_h, reader.cover_size);
+            let row_gap = list_row_gap();
+            let total_row_h = row_h + row_gap;
+            let idx_first = (((band_origin as f32 - grid_y0) / total_row_h)
+                .floor()
+                .max(0.0)) as usize;
+            let idx_last = (((band_origin + band.height as i32) as f32 - grid_y0) / total_row_h)
+                .ceil()
+                .max(0.0) as usize;
+            let cw = (60.0 * cover_size_multiplier(reader.cover_size)).round();
+            let ch = (90.0 * cover_size_multiplier(reader.cover_size)).round();
+            for i in idx_first..idx_last {
+                let Some(entry) = reader.list_entry_at(i) else {
+                    continue;
+                };
+                let pct = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
+                    .map(|bp| bp.pct())
+                    .unwrap_or(0.0);
+                if pct > 0.0 {
+                    let pct_val = (pct * 100.0).round() as u32;
+                    if pct_val > 0 {
+                        let (rx, ry_rel, _, _) =
+                            list_row_rect(w, 0, i, reader.win_h, reader.cover_size);
+                        let cx = rx + 12.0;
+                        let cy = grid_y0 + ry_rel - band_origin as f32 + (row_h - ch) / 2.0;
+                        let pct_str = format!("{pct_val}%");
+                        let badge_w = 38.0f32;
+                        let badge_h = 20.0f32;
+                        let badge_r = cx + cw - 4.0;
+                        let badge_b = cy + ch - 4.0;
+                        let badge_l = badge_r - badge_w;
+                        let badge_t = badge_b - badge_h;
+                        badge_rects.push(CanvasRect::rounded(
+                            badge_l, badge_t, badge_r, badge_b, 999.0, p.primary,
+                        ));
+                        badge_texts.push(CanvasText::new(
+                            (badge_l + badge_r) / 2.0,
+                            badge_t + badge_h * 0.68,
+                            theme::FONT_CAPTION * 0.80,
+                            p.primary_content,
+                            TextAlign::Center,
+                            true,
+                            pct_str,
+                        ));
+                    }
+                }
+            }
+        }
+
+        if !badge_rects.is_empty()
+            && let Some(overlay) = jni_text_bitmap(
+                band.width as i32,
+                band.height as i32,
+                theme::TRANSPARENT,
+                &badge_rects,
+                &badge_texts,
+            )
+        {
+            copy_region_blend(
+                band.data.as_mut_ptr(),
+                band.width as usize,
+                band.height as usize,
+                band.width as usize,
+                4,
+                &overlay,
+                0,
+                0,
             );
         }
     }
