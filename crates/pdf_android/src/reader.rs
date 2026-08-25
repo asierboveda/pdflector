@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use android_activity::AndroidApp;
 use android_activity::ndk::hardware_buffer_format::HardwareBufferFormat;
@@ -32,8 +32,8 @@ use crate::draw::{
     blit_page, compose_frame, compose_library_snapshot, paste_lib_thumbs, raster_tool_layer,
     render_ai_panel, render_carousel_row, render_library_header, render_library_zone,
     render_org_chip_row, render_page_badge, render_picker_list, render_search_chip_row,
-    render_sel_menu, render_sheet, render_toast, render_tool_fab, render_toolbar, sel_menu_layout,
-    splice_row, tool_fab_rect, toolbar_rect,
+    render_sel_menu, render_sheet, render_toast, render_toolbar, render_viewer_bottom_chrome,
+    render_viewer_top_chrome, sel_menu_layout, splice_row, toolbar_rect,
 };
 use crate::input::GestureState;
 use crate::jni::{
@@ -41,12 +41,11 @@ use crate::jni::{
     sanitize_pdf_name,
 };
 use crate::persist::{self, BookProgress, RecentEntry};
+use crate::theme;
 use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, THUMB_W, ThumbCache};
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
-use crate::{
-    BACKGROUND, DARK_BG, ERROR_BG, LIB_FADE_MS, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS,
-};
+use crate::{LIB_FADE_MS, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS};
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
 /// Construido en `jni::launch_intent_pdf`, consumido en `Reader::new`.
@@ -265,66 +264,80 @@ pub(crate) fn picker_visible_rows(win_h: i32, has_status: bool) -> usize {
     ((win_h - picker_header_h(win_h) - status_h) / picker_row_h(win_h)).max(0) as usize
 }
 
-/// Alto (px) del sheet de ajustes desplegado del todo: la mitad de la
-/// ventana (panel deslizante desde el borde superior).
+/// Alto (px) del área de la barra superior flotante de chrome del visor.
+pub(crate) fn viewer_top_chrome_h(win_h: i32) -> f32 {
+    (win_h as f32 * 0.02).clamp(28.0, 48.0) + 68.0 + 12.0
+}
+
+/// Alto (px) del área de la barra inferior flotante de chrome del visor.
+pub(crate) fn viewer_bottom_chrome_h(win_h: i32) -> f32 {
+    (win_h as f32 * 0.025).clamp(28.0, 48.0) + 76.0 + 16.0
+}
+
+/// Alto (px) del sheet de ajustes (B2: ajustado al contenido real ~42% de win_h).
 pub(crate) fn sheet_h(win_h: i32) -> i32 {
-    win_h / 2
+    (win_h as f32 * 0.42).clamp(650.0, 950.0).round() as i32
 }
 
 /// Pad horizontal del sheet (px).
 pub(crate) fn sheet_pad(win_w: i32) -> f32 {
-    (win_w / 48).max(12) as f32
+    (win_w as f32 * 0.04).clamp(24.0, 56.0)
 }
 
-/// Alto (px) de los botones del sheet.
-pub(crate) fn sheet_btn_h(win_h: i32) -> f32 {
-    (win_h / 32).max(48) as f32
+/// Alto (px) de los botones del sheet (S3: alto >= 48 px).
+pub(crate) fn sheet_btn_h(_win_h: i32) -> f32 {
+    50.0
 }
 
-/// Separación vertical entre filas de botones del sheet (px).
-pub(crate) fn sheet_gap(win_h: i32) -> f32 {
-    (win_h / 64).max(24) as f32
+/// Y del borde superior de la fila de temas del sheet (B2: distribuido uniforme).
+pub(crate) fn sheet_theme_y(win_h: i32) -> f32 {
+    let sh = sheet_h(win_h) as f32;
+    (sh * 0.18).clamp(90.0, 160.0)
 }
 
-/// Y del borde superior de la fila 1 de botones del sheet (Back/Open/Dark):
-/// debajo del título "Settings" (ver `render_sheet`).
-pub(crate) fn sheet_row1_y(win_h: i32) -> f32 {
-    (win_h / 48).max(44) as f32
+/// Y del borde superior de la fila de navegación del sheet (B2: distribuido uniforme).
+pub(crate) fn sheet_nav_y(win_h: i32) -> f32 {
+    let sh = sheet_h(win_h) as f32;
+    (sh * 0.48).clamp(280.0, 430.0)
 }
 
-/// Y del borde superior de la fila 2 de botones del sheet (−10/N/+10).
-pub(crate) fn sheet_row2_y(win_h: i32) -> f32 {
-    sheet_row1_y(win_h) + sheet_btn_h(win_h) + sheet_gap(win_h)
+/// Y del borde superior de la fila de acciones del sheet (B2: distribuido uniforme).
+pub(crate) fn sheet_act_y(win_h: i32) -> f32 {
+    let sh = sheet_h(win_h) as f32;
+    (sh * 0.78).clamp(470.0, 700.0)
 }
 
-/// Ancho (px) de cada botón de fila del sheet (3 por fila, con pads entre
-/// ellos).
+/// Ancho (px) de cada botón de 3 por fila del sheet.
 pub(crate) fn sheet_btn_w(win_w: i32) -> f32 {
     (win_w as f32 - 4.0 * sheet_pad(win_w)) / 3.0
+}
+
+/// Ancho (px) de cada botón de 4 por fila (temas) del sheet.
+pub(crate) fn sheet_theme_btn_w(win_w: i32) -> f32 {
+    (win_w as f32 - 5.0 * sheet_pad(win_w)) / 4.0
 }
 
 /// --- Rejilla 3×3 de la biblioteca (geometría compartida por render y tap) ---
 /// Columnas de la rejilla de la biblioteca.
 pub(crate) const GRID_COLS: usize = 3;
 
-/// Pad exterior horizontal de la rejilla (px): margen fijo de 16 px, estilo
-/// Apple Books (e-reader: portadas con aire a los bordes, sin relleno denso).
-pub(crate) fn grid_pad(_win_w: i32) -> f32 {
-    16.0
+/// Pad exterior horizontal de la rejilla (px): margen con respiro estilo Apple Books.
+pub(crate) fn grid_pad(win_w: i32) -> f32 {
+    (win_w as f32 * 0.04).clamp(24.0, 60.0)
 }
 
-/// Separación entre celdas de la rejilla (px).
-pub(crate) fn grid_gap() -> f32 {
-    14.0
+/// Separación entre celdas de la rejilla (px): respiro >= 3% de win_w.
+pub(crate) fn grid_gap(win_w: i32) -> f32 {
+    (win_w as f32 * 0.035).clamp(24.0, 56.0)
 }
 
 /// Inset de la portada dentro de la celda (px).
-pub(crate) const GRID_CELL_PAD: f32 = 8.0;
+pub(crate) const GRID_CELL_PAD: f32 = 10.0;
 
 /// Ancho (px) de una celda de la rejilla.
 pub(crate) fn grid_cell_w(win_w: i32) -> f32 {
     let w = win_w as f32;
-    (w - 2.0 * grid_pad(win_w) - 2.0 * grid_gap()) / GRID_COLS as f32
+    (w - 2.0 * grid_pad(win_w) - 2.0 * grid_gap(win_w)) / GRID_COLS as f32
 }
 
 /// Ancho (px) del área de portada dentro de la celda.
@@ -333,17 +346,14 @@ pub(crate) fn grid_cover_w(win_w: i32) -> f32 {
 }
 
 /// Alto (px) del área de portada: proporción 2:3 (alto = ancho × 1.5), estilo
-/// Apple Books, para TODAS las celdas (rejilla uniforme). La miniatura real
-/// (con su propia proporción) se recorta en centro al pegarse (`paste_thumb`,
-/// center-crop: escala hasta rellenar y recorta el sobrante, nunca letterbox).
+/// Apple Books, para TODAS las celdas (rejilla uniforme).
 pub(crate) fn grid_cover_h(win_w: i32) -> f32 {
     grid_cover_w(win_w) * 1.5
 }
 
-/// Alto (px) de la zona de texto de la celda: título (1 línea, ~13 sp) +
-/// autor (1 línea, secundaria) + barra de progreso fina + aire generoso.
+/// Alto (px) de la zona de texto de la celda: título (14sp) + autor (12sp) + barra progreso + padding.
 pub(crate) fn grid_title_h(_win_w: i32) -> f32 {
-    62.0
+    72.0
 }
 
 /// Alto (px) de una celda de la rejilla.
@@ -363,41 +373,31 @@ pub(crate) fn grid_cell_h(win_w: i32) -> f32 {
 // organización (sort/filter). Toda la geometría de abajo es COMPARTIDA
 // por el render (`draw::render_library_zone` + `render_library_header`), el tap y el arrastre
 // (`input`) y el pump de portadas (`Reader::pump_thumbs`).
-//
-// Estructura vertical FIJA (no scrollea): cabecera (título + Add book) +
-// campo de búsqueda (+ panel de chips letra/carpeta si está abierto) +
-// franja de estado (si la hay). El CONTENIDO scrollea en vertical por
-// píxeles (`Reader::lib_scroll`): [Continue Reading] + [título "My
-// Library" + chips de organización + rejilla] + aire inferior. Los
-// scrolls HORIZONTALES: carousel (`lib_carousel_x`), panel de búsqueda
-// (`lib_letters_x`/`lib_folders_x`) y organización (`lib_sort_x`/
-// `lib_filter_x`).
 
 /// Alto (px) de la CABECERA de la biblioteca: título "Library" grande y
-/// negrita + botón "＋ Add book" a la derecha. Más alta que la del picker:
-/// es la pieza editorial de la pantalla (mucho espacio negativo).
+/// negrita + botón "＋ Add book" a la derecha.
 pub(crate) fn lib_header_h(win_h: i32) -> f32 {
-    (win_h as f32 / 12.0).clamp(88.0, 120.0)
+    (win_h as f32 / 16.0).clamp(115.0, 135.0)
 }
 
 /// Alto (px) del campo de búsqueda (fila fija bajo la cabecera).
 pub(crate) fn lib_search_h() -> f32 {
-    46.0
+    48.0
 }
 
 /// Alto (px) del panel de búsqueda desplegado (2 filas de chips: letras y
 /// carpetas); 0 si el campo de búsqueda está cerrado.
 pub(crate) fn lib_search_panel_h(win_h: i32, open: bool) -> f32 {
     if open {
-        lib_chip_h(win_h) * 2.0 + 12.0
+        lib_chip_h(win_h) * 2.0 + 16.0
     } else {
         0.0
     }
 }
 
-/// Alto (px) de un chip del panel de búsqueda (letras/carpetas).
+/// Alto (px) de un chip del panel de búsqueda (letras/carpetas, >= 40 px).
 pub(crate) fn lib_chip_h(win_h: i32) -> f32 {
-    (win_h as f32 / 56.0).clamp(32.0, 40.0)
+    (win_h as f32 / 50.0).clamp(40.0, 46.0)
 }
 
 /// Y (px) del borde superior de la fila 0 (letras) del panel de búsqueda.
@@ -407,7 +407,7 @@ pub(crate) fn lib_search_chips_y0(reader: &Reader) -> f32 {
 
 /// Y (px) del borde superior de la fila 1 (carpetas) del panel de búsqueda.
 pub(crate) fn lib_search_chips_y1(reader: &Reader) -> f32 {
-    lib_search_chips_y0(reader) + lib_chip_h(reader.win_h) + 6.0
+    lib_search_chips_y0(reader) + lib_chip_h(reader.win_h) + 8.0
 }
 
 /// Y (px) del borde superior del contenido scrolleable (cabecera + campo de
@@ -423,76 +423,67 @@ pub(crate) fn lib_section_title_h(win_h: i32) -> f32 {
     (win_h as f32 / 64.0).clamp(24.0, 32.0)
 }
 
-/// Ancho (px) de la portada de una tarjeta de "Continue Reading" (grande,
-/// 2:3; algo menor que la de la rejilla para que el carousel respire).
-pub(crate) fn lib_cont_cover_w(win_w: i32) -> f32 {
-    grid_cover_w(win_w) * 0.72
+/// Ancho (px) de la portada de una tarjeta de "Continue Reading" (2:3).
+pub(crate) fn lib_cont_cover_w(win_h: i32) -> f32 {
+    lib_cont_cover_h(win_h) / 1.5
 }
 
 /// Alto (px) de la portada de una tarjeta (proporción 2:3).
-pub(crate) fn lib_cont_cover_h(win_w: i32) -> f32 {
-    lib_cont_cover_w(win_w) * 1.5
+pub(crate) fn lib_cont_cover_h(win_h: i32) -> f32 {
+    lib_cont_card_h(win_h) - 32.0
 }
 
-/// Alto (px) de la zona de texto de la tarjeta (título + autor + barra de
-/// progreso + "Page X of Y · Z%" + botón Read).
-pub(crate) fn lib_cont_text_h() -> f32 {
-    106.0
+/// Alto (px) de la tarjeta horizontal (~15% de win_h).
+pub(crate) fn lib_cont_card_h(win_h: i32) -> f32 {
+    (win_h as f32 * 0.15).clamp(240.0, 330.0)
 }
 
-/// Alto (px) de la tarjeta completa (portada + zona de texto).
-pub(crate) fn lib_cont_card_h(win_w: i32) -> f32 {
-    lib_cont_cover_h(win_w) + lib_cont_text_h()
-}
-
-/// Ancho (px) de la tarjeta (portada + padding interior de 10 px por lado).
-pub(crate) fn lib_cont_card_w(win_w: i32) -> f32 {
-    lib_cont_cover_w(win_w) + 20.0
+/// Ancho (px) de la tarjeta horizontal.
+pub(crate) fn lib_cont_card_w(win_w: i32, _win_h: i32) -> f32 {
+    (win_w as f32 * 0.52).clamp(440.0, 640.0)
 }
 
 /// Separación horizontal entre tarjetas del carousel (px).
 pub(crate) fn lib_cont_gap() -> f32 {
-    14.0
+    18.0
 }
 
 /// X (px) en coords de CONTENIDO de la tarjeta `i` del carousel (sin el
 /// scroll horizontal aplicado).
-pub(crate) fn lib_cont_card_x(win_w: i32, i: usize) -> f32 {
-    grid_pad(win_w) + i as f32 * (lib_cont_card_w(win_w) + lib_cont_gap())
+pub(crate) fn lib_cont_card_x(win_w: i32, win_h: i32, i: usize) -> f32 {
+    grid_pad(win_w) + i as f32 * (lib_cont_card_w(win_w, win_h) + lib_cont_gap())
 }
 
 /// Alto (px) del bloque de "Continue Reading" (título de sección + fila de
-/// tarjetas) en coords de contenido; 0 si no hay libros en curso (la
-/// sección se OCULTA, no se pinta un hueco vacío).
-pub(crate) fn lib_cont_block_h(win_w: i32, win_h: i32, has_cont: bool) -> f32 {
+/// tarjetas) en coords de contenido; 0 si no hay libros en curso.
+pub(crate) fn lib_cont_block_h(_win_w: i32, win_h: i32, has_cont: bool) -> f32 {
     if !has_cont {
         0.0
     } else {
-        lib_section_title_h(win_h) + lib_cont_card_h(win_w) + 6.0
+        lib_section_title_h(win_h) + lib_cont_card_h(win_h) + 16.0
     }
 }
 
 /// --- Organización de "My Library" (sort + filter, chips discretos) ---
-/// Alto (px) de un chip de organización: más pequeño que los del panel de
-/// búsqueda — discretos, no dominan sobre las portadas.
+/// Alto (px) de un chip de organización (>= 40 px).
 pub(crate) fn lib_org_chip_h(win_h: i32) -> f32 {
-    (win_h as f32 / 62.0).clamp(24.0, 30.0)
+    (win_h as f32 / 50.0).clamp(40.0, 46.0)
 }
 
 /// Separación entre las filas de chips de sort y filter (px).
 pub(crate) fn lib_org_gap() -> f32 {
-    8.0
+    10.0
 }
 
 /// Alto (px) del bloque de organización (2 filas: sort + filter).
 pub(crate) fn lib_org_block_h(win_h: i32) -> f32 {
-    lib_org_chip_h(win_h) * 2.0 + lib_org_gap()
+    lib_org_chip_h(win_h) * 2.0 + lib_org_gap() + 6.0
 }
 
 /// Ancho (px) reservado para la etiqueta discreta de cada fila ("SORT" /
 /// "FILTER"), antes de los chips.
 pub(crate) fn lib_org_label_w() -> f32 {
-    46.0
+    54.0
 }
 
 /// Y (px) del borde superior de la fila de organización `row` (0 = sort,
@@ -536,7 +527,7 @@ pub(crate) fn lib_letter_chip_w(win_w: i32) -> f32 {
 /// inicial (A-Z/#) y por carpeta, con [All] al frente de cada fila.
 pub(crate) fn lib_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonRect, bool)> {
     let win_w = reader.win_w;
-    let gap = grid_gap();
+    let gap = grid_gap(win_w);
     let x0 = grid_pad(win_w);
     let y = if row == 0 {
         lib_search_chips_y0(reader)
@@ -615,7 +606,7 @@ pub(crate) fn lib_org_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonR
     let mut out = Vec::new();
     let mut x = x0;
     for (label, active) in lib_org_row(reader, row) {
-        let w = (10.0 + label.chars().count() as f32 * 6.4).clamp(44.0, (win_w / 4) as f32);
+        let w = (28.0 + label.chars().count() as f32 * 8.5).clamp(56.0, (win_w / 4) as f32);
         let l = x - scroll;
         out.push((label.to_string(), (l, y0, l + w, y0 + chip_h), active));
         x += w + gap;
@@ -628,17 +619,20 @@ pub(crate) fn lib_org_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonR
 fn lib_org_row(reader: &Reader, row: usize) -> Vec<(&'static str, bool)> {
     if row == 0 {
         vec![
-            ("Recently Added", reader.lib_sort == LibSort::RecentlyAdded),
-            ("Recently Read", reader.lib_sort == LibSort::RecentlyRead),
-            ("Title", reader.lib_sort == LibSort::Title),
-            ("Author", reader.lib_sort == LibSort::Author),
+            ("Recientes", reader.lib_sort == LibSort::RecentlyAdded),
+            ("Leídos", reader.lib_sort == LibSort::RecentlyRead),
+            ("Título", reader.lib_sort == LibSort::Title),
+            ("Autor", reader.lib_sort == LibSort::Author),
         ]
     } else {
         vec![
-            ("All", reader.lib_status.is_none()),
-            ("Reading", reader.lib_status == Some(BookStatus::Reading)),
-            ("Finished", reader.lib_status == Some(BookStatus::Finished)),
-            ("Unread", reader.lib_status == Some(BookStatus::Unread)),
+            ("Todos", reader.lib_status.is_none()),
+            ("En lectura", reader.lib_status == Some(BookStatus::Reading)),
+            (
+                "Terminados",
+                reader.lib_status == Some(BookStatus::Finished),
+            ),
+            ("Por leer", reader.lib_status == Some(BookStatus::Unread)),
         ]
     }
 }
@@ -719,7 +713,7 @@ pub(crate) fn grid_cell_rect(
     row: usize,
     col: usize,
 ) -> (f32, f32, f32, f32) {
-    let x = grid_pad(win_w) + col as f32 * (grid_cell_w(win_w) + grid_gap());
+    let x = grid_pad(win_w) + col as f32 * (grid_cell_w(win_w) + grid_gap(win_w));
     let y = rows_y0 as f32 + row as f32 * grid_cell_h(win_w);
     (x, y, x + grid_cell_w(win_w), y + grid_cell_h(win_w))
 }
@@ -1019,8 +1013,18 @@ pub(crate) struct Reader {
     pub(crate) doc_path: Option<String>,
     /// Directorio interno de la app (para `state.json`; ver `persist`).
     internal_dir: Option<PathBuf>,
-    /// Modo oscuro activo (página invertida + fondo negro).
+    /// Tema activo de la interfaz (DefaultLight, SepiaLight, DefaultDark, SepiaDark).
+    pub(crate) theme: theme::AppTheme,
+    /// Modo oscuro activo (página invertida + fondo oscuro).
     pub(crate) dark: bool,
+    /// ¿Chrome del visor visible? (barra superior fina + barra inferior de progreso).
+    pub(crate) chrome_visible: bool,
+    /// Momento de expiración para auto-ocultar el chrome del visor (≤ 2.5 s).
+    pub(crate) chrome_hide_at: Option<Instant>,
+    /// Bitmap renderizado de la barra superior de chrome del visor.
+    pub(crate) chrome_top_bitmap: Option<Bitmap>,
+    /// Bitmap renderizado de la barra inferior de chrome del visor.
+    pub(crate) chrome_bottom_bitmap: Option<Bitmap>,
     /// ¿Objetivo del sheet de ajustes? (true = abierto). La animación real
     /// vive en `sheet_progress`; `sheet_anim` marca que está en vuelo.
     pub(crate) sheet_open: bool,
@@ -1157,9 +1161,6 @@ pub(crate) struct Reader {
     /// Resaltar/Boli/↶/●/→, `draw::render_toolbar`). Se invalida al alternar
     /// herramienta/color, al cambiar el modo oscuro o al redimensionar.
     toolbar_bitmap: Option<Bitmap>,
-    /// Bitmap cacheado del botón flotante de toggle de la barra ("✎"/"✕",
-    /// `draw::render_tool_fab`). Se invalida igual que la barra.
-    tool_fab: Option<Bitmap>,
     /// Color actual de la tinta del boli (cicla con el botón "●" de la
     /// barra; arranca en `DEFAULT_INK_COLOR`).
     pub(crate) ink_color: Color,
@@ -1265,7 +1266,12 @@ impl Reader {
             status: None,
             doc_path: None,
             internal_dir: app.internal_data_path(),
+            theme: theme::AppTheme::DefaultLight,
             dark: false,
+            chrome_visible: false,
+            chrome_hide_at: None,
+            chrome_top_bitmap: None,
+            chrome_bottom_bitmap: None,
             sheet_open: false,
             sheet_progress: 0.0,
             sheet_anim: false,
@@ -1293,7 +1299,6 @@ impl Reader {
             tool: ToolKind::Navigate,
             toolbar_open: false,
             toolbar_bitmap: None,
-            tool_fab: None,
             ink_color: {
                 let ts = persist::load_tool_state(app.internal_data_path().as_deref());
                 ts.ink_color
@@ -1353,12 +1358,23 @@ impl Reader {
             }
             // Lanzamiento normal sin intent. Estado persistido (`persist`): si
             // el PDF guardado sigue accesible, se abre directamente en su
-            // página/zoom/modo oscuro; si ya no existe (o no se puede abrir),
+            // página/zoom/tema; si ya no existe (o no se puede abrir),
             // se BORRA el estado y se abre la biblioteca MediaStore
             // (rescan_library cae al picker interno si MediaStore está vacía).
             None => {
                 let restored =
                     if let Some(state) = persist::load_state(reader.internal_dir.as_deref()) {
+                        if let Some(th) = state.theme {
+                            reader.theme = th;
+                            reader.dark = th.is_dark();
+                        } else {
+                            reader.dark = state.dark;
+                            reader.theme = if state.dark {
+                                theme::AppTheme::DefaultDark
+                            } else {
+                                theme::AppTheme::DefaultLight
+                            };
+                        }
                         // Solo restaurar si el PDF sigue accesible: `open_pdf`
                         // falla si no se puede abrir (corrupto) y deja el
                         // estado intacto.
@@ -1367,17 +1383,16 @@ impl Reader {
                             reader.page = state.page.min(pages.saturating_sub(1));
                             reader.zoom = state.zoom.clamp(PINCH_MIN, PINCH_MAX);
                             reader.rendered_zoom = reader.zoom;
-                            reader.dark = state.dark;
                             // Modo UNA HOJA: la página restaurada se fija
                             // directamente (no hay scroll que alinear).
                             reader.cache.clear();
                             reader.page_badge = None; // indicador de la página restaurada
                             info!(
-                                "restored {} @page {} zoom {:.3} dark {}",
+                                "restored {} @page {} zoom {:.3} theme {:?}",
                                 state.path,
                                 reader.page + 1,
                                 reader.zoom,
-                                reader.dark
+                                reader.theme
                             );
                             reader.save_state();
                             reader.redraw();
@@ -1457,10 +1472,11 @@ impl Reader {
             self.cache.clear(); // nueva escala cover → los bitmaps viejos no sirven
             self.list_dirty = true;
             self.page_badge = None;
+            self.chrome_top_bitmap = None;
+            self.chrome_bottom_bitmap = None;
             self.sheet_bitmap = None;
             self.page_frame = None;
             self.toolbar_bitmap = None; // la barra reescala con la ventana
-            self.tool_fab = None;
         }
         match self.mode {
             UiMode::Viewer => {
@@ -1480,12 +1496,15 @@ impl Reader {
                 if !needs.is_empty() && self.render_rx.is_none() {
                     self.launch_render(needs, self.rendered_zoom, false);
                 }
-                // Indicador de página (abajo a la izquierda) y sheet de
-                // ajustes, cacheados: se re-renderizan solo si cambió la
-                // ventana, la página o el modo oscuro (invalidadores en
-                // `goto_page`, `toggle_dark`, `set_zoom_*` y el resize de
-                // arriba). El sheet se materializa solo cuando empieza a
-                // verse y se libera al cerrar del todo.
+                // Chrome del visor y sheet de ajustes
+                if self.chrome_visible {
+                    if self.chrome_top_bitmap.is_none() {
+                        self.chrome_top_bitmap = render_viewer_top_chrome(self);
+                    }
+                    if self.chrome_bottom_bitmap.is_none() {
+                        self.chrome_bottom_bitmap = render_viewer_bottom_chrome(self);
+                    }
+                }
                 if self.doc.is_some() && self.page_badge.is_none() {
                     self.page_badge = render_page_badge(self);
                 }
@@ -1587,7 +1606,7 @@ impl Reader {
     /// scroll dentro de la banda es memcpy.
     fn rebuild_library_band(&mut self) {
         let content_y0 = lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
-        let viewport = (self.win_h - content_y0).max(0) as i32;
+        let viewport = (self.win_h - content_y0).max(0);
         let content_h = self.lib_content_h() as i32;
         let margin = grid_cell_h(self.win_w) as i32;
         let band_h = (viewport + 2 * margin).min(content_h.max(viewport));
@@ -1612,7 +1631,7 @@ impl Reader {
             Some((bmp, origin)) => {
                 let content_y0 =
                     lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
-                let viewport = (self.win_h - content_y0).max(0) as i32;
+                let viewport = (self.win_h - content_y0).max(0);
                 let s = self.lib_scroll as i32;
                 s >= *origin && s + viewport <= *origin + bmp.height as i32
             }
@@ -1942,12 +1961,11 @@ impl Reader {
             return;
         };
         let t0 = Instant::now();
+        let p = self.theme.palette();
         let bg = if self.doc.is_none() {
-            ERROR_BG
-        } else if self.dark {
-            DARK_BG // modo oscuro: fondo negro puro (se funde con la página)
+            theme::ERROR_BG_RGBA
         } else {
-            BACKGROUND
+            p.rgba_bg()
         };
         match self.mode {
             UiMode::Viewer => {
@@ -2040,40 +2058,35 @@ impl Reader {
                     let ty = by - tb.height as i32 - 8;
                     (tb, tx, ty)
                 });
-                // Indicador de página (abajo a la izquierda, siempre): se usa
-                // en el blit normal y también dentro del frame compuesto.
-                let badge: Option<(&Bitmap, i32, i32)> = self.page_badge.as_ref().map(|b| {
-                    let (bx, by, _, _) = page_badge_rect(self.win_w, self.win_h);
-                    (b, bx, by)
-                });
-                // Overlays del visor en el MISMO buffer (un solo lock+present):
-                // botón flotante de herramientas + barra de herramientas,
-                // indicador de página, menú de selección, panel de IA, aviso
-                // breve y sheet de ajustes deslizado desde el borde superior
-                // (solo si está visible; `progress == 1` = abierto del todo).
-                // El menú, el panel y el aviso van SIEMPRE (también con el
-                // sheet: se añaden al frame compuesto o como overlays de
-                // `blit_composed`).
-                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(7);
-                // Barra de herramientas (píldora) + botón flotante "✎": se
-                // cachean como bitmaps (Canvas+JNI) y se invalidan al
-                // alternar tool/color/modo oscuro o al redimensionar.
+                // Indicador de página (abajo a la izquierda, cuando el chrome está oculto)
+                let badge: Option<(&Bitmap, i32, i32)> = if self.chrome_visible {
+                    None
+                } else {
+                    self.page_badge.as_ref().map(|b| {
+                        let (bx, by, _, _) = page_badge_rect(self.win_w, self.win_h);
+                        (b, bx, by)
+                    })
+                };
+                // Overlays del visor en el MISMO buffer (un solo lock+present)
+                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(8);
+                // Chrome del visor (barra superior e inferior) o badge
+                if self.chrome_visible {
+                    if let Some(top) = self.chrome_top_bitmap.as_ref() {
+                        overlays.push((top, 0, 0));
+                    }
+                    if let Some(bot) = self.chrome_bottom_bitmap.as_ref() {
+                        overlays.push((bot, 0, self.win_h - bot.height as i32));
+                    }
+                } else if let Some((b, bx, by)) = badge {
+                    overlays.push((b, bx, by));
+                }
+                // Barra de herramientas (píldora)
                 if self.toolbar_open && self.toolbar_bitmap.is_none() {
                     self.toolbar_bitmap = render_toolbar(self);
-                }
-                if self.tool_fab.is_none() {
-                    self.tool_fab = render_tool_fab(self);
                 }
                 if let Some(tb) = self.toolbar_bitmap.as_ref() {
                     let (tx, ty, _, _) = toolbar_rect(self.win_w, self.win_h);
                     overlays.push((tb, tx as i32, ty as i32));
-                }
-                if let Some(fb) = self.tool_fab.as_ref() {
-                    let (fx, fy, _, _) = tool_fab_rect(self.win_w, self.win_h);
-                    overlays.push((fb, fx as i32, fy as i32));
-                }
-                if let Some((b, bx, by)) = badge {
-                    overlays.push((b, bx, by));
                 }
                 if let Some(menu) = self.sel_menu.as_ref() {
                     overlays.push((&menu.bitmap, menu.x, menu.y));
@@ -2138,10 +2151,6 @@ impl Reader {
                         if let Some(tb) = self.toolbar_bitmap.as_ref() {
                             let (tx, ty, _, _) = toolbar_rect(self.win_w, self.win_h);
                             sheet_ov.push((tb, tx as i32, ty as i32));
-                        }
-                        if let Some(fb) = self.tool_fab.as_ref() {
-                            let (fx, fy, _, _) = tool_fab_rect(self.win_w, self.win_h);
-                            sheet_ov.push((fb, fx as i32, fy as i32));
                         }
                         if let Some(menu) = self.sel_menu.as_ref() {
                             sheet_ov.push((&menu.bitmap, menu.x, menu.y));
@@ -2257,7 +2266,15 @@ impl Reader {
                     let ty = self.win_h - tb.height as i32 - 16;
                     (tb, tx, ty)
                 });
-                blit_library(window, header, band, content_y0, self.lib_scroll, toast_ov);
+                blit_library(
+                    window,
+                    p.rgba_lib_bg(),
+                    header,
+                    band,
+                    self.lib_scroll as i32,
+                    content_y0,
+                    toast_ov,
+                );
             }
             UiMode::Picker => match self.bitmap.as_ref() {
                 Some(bmp) => blit_fast(window, bmp, 1.0, bg, (self.offset_x, self.offset_y), None),
@@ -2925,6 +2942,7 @@ impl Reader {
         self.repaint
             || self.tool_gesture.is_some()
             || self.sheet_anim
+            || (self.chrome_visible && self.chrome_hide_at.is_some())
             || self.thumbs_pending()
             || self.toast.is_some()
             || self.gesture.press_pending()
@@ -3001,6 +3019,40 @@ impl Reader {
         self.page_frame = None;
     }
 
+    /// Muestra el chrome del visor (barra superior e inferior) y programa el auto-hide a 4.5s.
+    pub(crate) fn show_chrome(&mut self) {
+        self.chrome_visible = true;
+        self.chrome_hide_at = Some(Instant::now() + Duration::from_millis(4500));
+        self.chrome_top_bitmap = None;
+        self.chrome_bottom_bitmap = None;
+        self.redraw();
+    }
+
+    /// Oculta el chrome del visor.
+    pub(crate) fn hide_chrome(&mut self) {
+        self.chrome_visible = false;
+        self.chrome_hide_at = None;
+        self.chrome_top_bitmap = None;
+        self.chrome_bottom_bitmap = None;
+        self.redraw();
+    }
+
+    /// Alterna la visibilidad del chrome del visor.
+    pub(crate) fn toggle_chrome(&mut self) {
+        if self.chrome_visible {
+            self.hide_chrome();
+        } else {
+            self.show_chrome();
+        }
+    }
+
+    /// Resetea el temporizador de auto-ocultado del chrome (al tocar un control).
+    pub(crate) fn touch_chrome(&mut self) {
+        if self.chrome_visible {
+            self.chrome_hide_at = Some(Instant::now() + Duration::from_millis(4500));
+        }
+    }
+
     /// Tick del bucle de eventos (timeout ~16 ms): avanza la animación del
     /// sheet, detecta el long-press del dedo en el documento (entra en modo
     /// selección), expira el aviso breve (toast) y renderiza un lote de
@@ -3008,6 +3060,13 @@ impl Reader {
     /// los eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
     /// despertar el loop en reposo).
     pub(crate) fn tick(&mut self, app: &AndroidApp) {
+        // Auto-ocultar chrome del visor tras ~2.5 s
+        if self.chrome_visible
+            && let Some(hide_at) = self.chrome_hide_at
+            && Instant::now() >= hide_at
+        {
+            self.hide_chrome();
+        }
         // Long-press: si el dedo lleva quieto > `LONG_PRESS_MS` en el área de
         // página (sin sheet), `input::tick_gestures` entra en modo selección.
         crate::input::tick_gestures(self, app);
@@ -3077,6 +3136,7 @@ impl Reader {
                 // completo de la pantalla por cada lote de portadas).
                 paste_lib_thumbs(self, &mut band, origin);
                 self.lib_band = Some((band, origin));
+                self.splice_band_rows();
                 self.redraw();
             } else {
                 // Sin banda aún: el primer rebuild la crea con las portadas.
@@ -3474,25 +3534,52 @@ impl Reader {
         self.mark_repaint();
     }
 
-    /// Alterna el modo oscuro SIN re-renderizar MuPDF y SIN tocar la caché:
-    /// esta guarda SIEMPRE bitmaps normales (de colores) y la inversión
-    /// (255 − v, la transformación de `pdf_core::dark::invert_bitmap`) se
-    /// aplica en el blit (`draw::blit_page`), solo cuando el modo oscuro está
-    /// activo. El fondo letterbox pasa a negro puro (`DARK_BG`). La
-    /// preferencia se persiste junto a la posición.
-    pub(crate) fn toggle_dark(&mut self) {
-        self.dark = !self.dark;
-        // La caché guarda SIEMPRE bitmaps normales: la inversión (255 − v) se
-        // aplica en el blit (`draw::blit_page`), solo con el modo oscuro
-        // activo — no se re-renderiza ni se invierte nada aquí.
-        self.page_badge = None; // colores del indicador cambian
-        self.sheet_bitmap = None; // colores del sheet cambian (Dark/Light)
-        self.page_frame = None; // el frame compuesto cambia de modo
-        self.toolbar_bitmap = None; // los colores de la barra cambian
-        self.tool_fab = None; // y los del botón flotante
-        info!("dark mode: {}", self.dark);
+    /// Establece un tema específico. Invalida cachés y persiste estado.
+    pub(crate) fn set_theme(&mut self, theme: crate::theme::AppTheme) {
+        if self.theme == theme {
+            return;
+        }
+        self.theme = theme;
+        self.dark = self.theme.is_dark();
+        self.page_badge = None;
+        self.sheet_bitmap = None;
+        self.page_frame = None;
+        self.toolbar_bitmap = None;
+        self.chrome_top_bitmap = None;
+        self.chrome_bottom_bitmap = None;
+        self.lib_header = None;
+        self.lib_band = None;
+        self.toast_bitmap = None;
+        self.sel_menu = None;
+        info!("theme set to {:?} (dark: {})", self.theme, self.dark);
         self.save_state();
         self.redraw();
+    }
+
+    /// Cicla el tema activo (DefaultLight → SepiaLight → DefaultDark → SepiaDark → DefaultLight).
+    /// Invalida las caches de bitmaps y persiste el nuevo tema.
+    pub(crate) fn cycle_theme(&mut self) {
+        self.theme = self.theme.next();
+        self.dark = self.theme.is_dark();
+        self.page_badge = None;
+        self.sheet_bitmap = None;
+        self.page_frame = None;
+        self.toolbar_bitmap = None;
+        self.chrome_top_bitmap = None;
+        self.chrome_bottom_bitmap = None;
+        self.lib_header = None;
+        self.lib_band = None;
+        self.toast_bitmap = None;
+        self.sel_menu = None;
+        info!("theme cycled to {:?} (dark: {})", self.theme, self.dark);
+        self.save_state();
+        self.redraw();
+    }
+
+    /// Alterna el modo oscuro (cicla al tema siguiente).
+    #[allow(dead_code)]
+    pub(crate) fn toggle_dark(&mut self) {
+        self.cycle_theme();
     }
 
     /// Carga las anotaciones del PDF `path` desde su sidecar SQLite
@@ -3586,6 +3673,7 @@ impl Reader {
     /// Muestra/oculta la barra de herramientas (botón flotante "✎"/"✕").
     /// Ocultarla vuelve a modo NAVEGACIÓN (decisión documentada en
     /// `toolbar_open`): nunca queda una herramienta activa sin barra visible.
+    #[allow(dead_code)]
     pub(crate) fn toggle_toolbar(&mut self) {
         self.toolbar_open = !self.toolbar_open;
         if !self.toolbar_open {
@@ -3593,7 +3681,6 @@ impl Reader {
             self.cancel_tool_gesture();
         }
         self.toolbar_bitmap = None;
-        self.tool_fab = None; // el icono cambia ("✎" ↔ "✕")
         self.redraw();
     }
 
@@ -3602,7 +3689,6 @@ impl Reader {
         self.tool = ToolKind::Navigate;
         self.toolbar_open = false;
         self.toolbar_bitmap = None;
-        self.tool_fab = None;
         self.cancel_tool_gesture();
         self.redraw();
     }
@@ -3883,8 +3969,7 @@ impl Reader {
                 let xform = self.page_screen_xform(page);
                 if let (Some(frame), Some((_, _, scale, dx, dy))) =
                     (self.page_frame.as_mut(), xform)
-                {
-                    if let Some(bbox) = crate::draw::draw_ink_segment_on_frame(
+                    && let Some(bbox) = crate::draw::draw_ink_segment_on_frame(
                         frame,
                         last,
                         pt,
@@ -3893,17 +3978,17 @@ impl Reader {
                         scale,
                         dx,
                         dy,
-                    ) {
-                        self.tool_dirty = Some(match self.tool_dirty {
-                            Some((x0, y0, x1, y1)) => (
-                                x0.min(bbox.0),
-                                y0.min(bbox.1),
-                                x1.max(bbox.2),
-                                y1.max(bbox.3),
-                            ),
-                            None => bbox,
-                        });
-                    }
+                    )
+                {
+                    self.tool_dirty = Some(match self.tool_dirty {
+                        Some((x0, y0, x1, y1)) => (
+                            x0.min(bbox.0),
+                            y0.min(bbox.1),
+                            x1.max(bbox.2),
+                            y1.max(bbox.3),
+                        ),
+                        None => bbox,
+                    });
                 }
             }
             ToolKind::Highlight => {
@@ -4077,21 +4162,18 @@ impl Reader {
             return;
         };
         let mut frame = base;
-        // Última anotación añadida (la de este gesto): su Stroke ya está en
-        // el set con los puntos suavizados en coords de página.
-        if let Some(&id) = self.session_ids.last() {
-            if let Some(ann) = self
+        if let Some(&id) = self.session_ids.last()
+            && let Some(ann) = self
                 .annotations
                 .for_page(page as usize)
                 .into_iter()
                 .find(|a| a.id == id)
-                && let Annotation::Stroke(s) = &ann.kind
-            {
-                let pts: Vec<(f32, f32)> = s.points.clone();
-                self.tool_dirty = crate::draw::draw_ink_polyline_on_frame(
-                    &mut frame, &pts, s.width, s.color, scale, dx, dy,
-                );
-            }
+            && let Annotation::Stroke(s) = &ann.kind
+        {
+            let pts: Vec<(f32, f32)> = s.points.clone();
+            self.tool_dirty = crate::draw::draw_ink_polyline_on_frame(
+                &mut frame, &pts, s.width, s.color, scale, dx, dy,
+            );
         }
         self.page_frame = Some(frame);
     }
@@ -4100,10 +4182,6 @@ impl Reader {
     /// botón flotante o la barra abierta)? El Down en esa zona NO inicia un
     /// gesto de herramienta (es un tap de UI): lo decide `input`.
     pub(crate) fn chrome_hit(&self, x: f32, y: f32) -> bool {
-        let (l, t, r, b) = tool_fab_rect(self.win_w, self.win_h);
-        if x >= l && x < r && y >= t && y < b {
-            return true;
-        }
         if self.toolbar_open {
             let (l, t, r, b) = toolbar_rect(self.win_w, self.win_h);
             if x >= l && x < r && y >= t && y < b {
@@ -4198,6 +4276,7 @@ impl Reader {
             page: self.page,
             zoom: self.zoom,
             dark: self.dark,
+            theme: Some(self.theme),
         };
         crate::persist::save_state(self.internal_dir.as_deref(), &state);
         // Progreso por libro (eager, igual que state.json; un cierre
@@ -4277,7 +4356,6 @@ impl Reader {
                 self.tool = ToolKind::Navigate;
                 self.toolbar_open = false;
                 self.toolbar_bitmap = None;
-                self.tool_fab = None;
                 self.tool_gesture = None;
                 self.session_ids.clear();
                 // Fase B1: texto del documento nuevo (el del anterior no
@@ -4342,7 +4420,6 @@ impl Reader {
         self.tool = ToolKind::Navigate;
         self.toolbar_open = false;
         self.toolbar_bitmap = None;
-        self.tool_fab = None;
         self.tool_gesture = None;
         self.session_ids.clear();
         self.rescan_library(app);
@@ -4767,7 +4844,8 @@ impl Reader {
         if n == 0 {
             return 0.0;
         }
-        let last_right = lib_cont_card_x(self.win_w, n - 1) + lib_cont_card_w(self.win_w);
+        let last_right = lib_cont_card_x(self.win_w, self.win_h, n - 1)
+            + lib_cont_card_w(self.win_w, self.win_h);
         (last_right + grid_pad(self.win_w) - self.win_w as f32).max(0.0)
     }
 

@@ -58,8 +58,7 @@ use android_activity::{AndroidApp, InputStatus};
 use log::warn;
 
 use crate::annotations::ToolKind;
-use crate::draw::sheet_buttons;
-use crate::draw::{tool_fab_rect, toolbar_buttons, toolbar_rect};
+use crate::draw::{sheet_buttons, toolbar_buttons, toolbar_rect, viewer_top_chrome_buttons};
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
     BookStatus, GRID_COLS, LibSort, ListDrag, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap,
@@ -67,7 +66,7 @@ use crate::reader::{
     lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
     lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
     lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h, picker_row_h,
-    picker_visible_rows, sheet_h,
+    picker_visible_rows, sheet_h, viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 
@@ -175,20 +174,57 @@ impl GestureState {
     }
 }
 
-/// Tap simple: mitad derecha → página siguiente; mitad izquierda → anterior.
+/// Tap simple: tercio izquierdo → página anterior; tercio derecho → página siguiente;
+/// tercio central → alternar visibilidad del chrome del visor.
 fn tap_page(reader: &mut Reader, x: f32) {
-    if x >= reader.win_w as f32 / 2.0 {
+    let third = reader.win_w as f32 / 3.0;
+    if x < third {
+        reader.prev_page();
+    } else if x > 2.0 * third {
         reader.next_page();
     } else {
-        reader.prev_page();
+        reader.toggle_chrome();
     }
 }
 
+/// Tap en el chrome del visor (barra superior e inferior).
+/// Devuelve true si el tap fue consumido por el chrome.
+fn viewer_chrome_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) -> bool {
+    if !reader.chrome_visible {
+        return false;
+    }
+    let top_h = viewer_top_chrome_h(reader.win_h);
+    let bot_h = viewer_bottom_chrome_h(reader.win_h);
+    let win_w = reader.win_w as f32;
+    let win_h = reader.win_h as f32;
+
+    if y < top_h {
+        let btns = viewer_top_chrome_buttons(win_w, win_h);
+        for (tag, (l, t, r, b)) in btns {
+            if x >= l && x < r && y >= t && y < b {
+                match tag {
+                    "Back" => reader.enter_library(app),
+                    "Theme" => reader.cycle_theme(),
+                    _ => {}
+                }
+                reader.touch_chrome();
+                return true;
+            }
+        }
+        reader.touch_chrome();
+        return true;
+    }
+
+    if y > win_h - bot_h {
+        reader.touch_chrome();
+        return true;
+    }
+
+    false
+}
+
 /// Tap en el indicador de página "N / total" (overlay abajo a la izquierda):
-/// página siguiente. Devuelve true si el punto cae en el indicador
-/// (consumido). Decisión documentada (2026-08-XX): el indicador además de
-/// informar es un acceso rápido a la página siguiente, igual que el
-/// indicador de la antigua barra superior.
+/// página siguiente. Devuelve true si el punto cae en el indicador.
 fn page_badge_tap(reader: &mut Reader, x: f32, y: f32) -> bool {
     let (l, t, r, b) = page_badge_rect(reader.win_w, reader.win_h);
     if x >= l as f32 && x < r as f32 && y >= t as f32 && y < b as f32 {
@@ -199,25 +235,10 @@ fn page_badge_tap(reader: &mut Reader, x: f32, y: f32) -> bool {
     }
 }
 
-/// Tap en el botón flotante de la barra de herramientas ("✎" esquina
-/// superior derecha): muestra/oculta la barra. Devuelve true si el punto cae
-/// en el botón (consumido — nunca cambia de página).
-fn tool_fab_tap(reader: &mut Reader, x: f32, y: f32) -> bool {
-    let (l, t, r, b) = tool_fab_rect(reader.win_w, reader.win_h);
-    if x >= l && x < r && y >= t && y < b {
-        reader.toggle_toolbar();
-        true
-    } else {
-        false
-    }
-}
-
 /// Tap DENTRO de la barra de herramientas (misma geometría que
 /// `draw::toolbar_buttons`): "Resaltar"/"Boli" activan la herramienta,
 /// "↶" deshace el último trazo de la sesión, "●" cicla el color del boli y
-/// "→" vuelve a modo navegación y cierra la barra. Un tap en el hueco de la
-/// barra (fuera de los botones) se consume igualmente (no navega) para no
-/// cambiar de página mientras la barra está abierta.
+/// "→" vuelve a modo navegación y cierra la barra.
 pub(crate) fn toolbar_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) -> bool {
     let (l, t, r, b) = toolbar_rect(reader.win_w, reader.win_h);
     if !(x >= l && x < r && y >= t && y < b) {
@@ -236,25 +257,23 @@ pub(crate) fn toolbar_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32)
             return true;
         }
     }
-    // Hueco de la barra (fuera de los botones): consumido para no navegar.
     let _ = app;
     true
 }
 
 /// Tap DENTRO del sheet de ajustes: botones (misma geometría que
-/// `draw::sheet_buttons`): "← Library" (biblioteca MediaStore), Dark/Light,
-/// Search (biblioteca con la búsqueda lista para empezar — sin teclado, la
-/// búsqueda ES la barra de filtros de la biblioteca), −10/+10 y "N / total"
-/// (página siguiente). Un tap en el hueco del sheet (fuera de los botones) no
-/// hace nada: el panel se cierra con un tap FUERA del sheet o con un arrastre
-/// hacia arriba.
+/// `draw::sheet_buttons`): temas, navegación y acciones.
 fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     for (label, (l, t, r, b)) in sheet_buttons(reader, reader.win_w as f32, reader.win_h as f32) {
         if x >= l && x < r && y >= t && y < b {
             match label {
+                "Theme:Light" => reader.set_theme(crate::theme::AppTheme::DefaultLight),
+                "Theme:Sepia" => reader.set_theme(crate::theme::AppTheme::SepiaLight),
+                "Theme:Dark" => reader.set_theme(crate::theme::AppTheme::DefaultDark),
+                "Theme:Nord" => reader.set_theme(crate::theme::AppTheme::SepiaDark),
                 "← Library" => reader.enter_library(app),
-                "Dark" | "Light" => reader.toggle_dark(),
                 "Search" => reader.enter_library_search(app),
+                "Close" => reader.hide_sheet(),
                 "-10" => reader.jump_page(-10),
                 "+10" => reader.jump_page(10),
                 _ => reader.next_page(), // "N / total"
@@ -264,11 +283,7 @@ fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 }
 
-/// Tap con el menú de selección abierto: dentro de un botón → acción
-/// (Copiar → portapapeles; Subrayar → highlight persistido; "IA" → abre el
-/// panel de IA con la consulta a Groq); fuera → cerrar el menú y descartar
-/// la selección. NUNCA cambia de página: el tap izq/der no se dispara
-/// mientras hay selección activa.
+/// Tap con el menú de selección abierto.
 fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let Some(menu) = &reader.sel_menu else {
         return;
@@ -278,7 +293,7 @@ fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         && y >= menu.y as f32
         && y < (menu.y + menu.h) as f32;
     if !inside {
-        reader.clear_selection(); // tocar fuera: cierra y descarta
+        reader.clear_selection();
         return;
     }
     let hit: Option<&'static str> = menu
@@ -289,22 +304,12 @@ fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     match hit {
         Some("Copiar") => reader.copy_sel(app),
         Some("Subrayar") => reader.highlight_sel(),
-        // Parte 2: "IA" abre el panel de "Preguntar a la IA" (hilo de fondo
-        // + Groq; ver `Reader::ask_ai`). El menú se cierra dentro de
-        // `ask_ai` (`clear_selection`), que abre el panel en su lugar.
         Some("IA") => reader.ask_ai(),
-        // Defensa: botón desconocido (imposible hoy) → cerrar y descartar.
         Some(_) | None => reader.clear_selection(),
     }
 }
 
-/// Tap con el panel de "Preguntar a la IA" abierto: dentro de un botón →
-/// acción ("×" → cerrar; "▲"/"▼" → scroll del cuerpo); fuera → cerrar el
-/// panel. Un tap DENTRO del panel pero fuera de sus botones no hace nada
-/// (evita cerrar el panel por accidente mientras se lee la respuesta; se
-/// cierra con ✕ o con tap fuera). NUNCA cambia de página: el tap izq/der no
-/// se dispara mientras el panel está abierto (misma regla que el menú de
-/// selección, ver `fire_tap_action`).
+/// Tap con el panel de "Preguntar a la IA" abierto.
 fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
     let Some(panel) = &reader.ai_panel else {
         return;
@@ -314,7 +319,7 @@ fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
         && y >= panel.y as f32
         && y < (panel.y + panel.h) as f32;
     if !inside {
-        reader.close_ai_panel(); // tap fuera: cerrar el panel
+        reader.close_ai_panel();
         return;
     }
     let hit: Option<&'static str> = panel
@@ -326,38 +331,21 @@ fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
         Some("×") => reader.close_ai_panel(),
         Some("▲") => reader.ai_scroll(-1),
         Some("▼") => reader.ai_scroll(1),
-        _ => {} // dentro del panel, fuera de los botones: no hacer nada
+        _ => {}
     }
 }
 
-/// Ejecuta la acción de un tap simple en `(x, y)` — la lógica del Up del
-/// gesto `Tap`, disparada INMEDIATAMENTE al soltar (sin ventana de doble-tap):
-/// menú de selección abierto → botón o cerrar; panel de IA abierto → botón o
-/// cerrar; sheet visible → botón o cerrar; si no, indicador de página o tap
-/// de página.
+/// Ejecuta la acción de un tap simple en `(x, y)`.
 fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
-    // Barra de herramientas y botón flotante: SIEMPRE con prioridad (también
-    // con una herramienta activa — son la vía para volver a navegación).
-    if tool_fab_tap(reader, x, y) {
-        return;
-    }
     if reader.toolbar_open && toolbar_tap(reader, app, x, y) {
         return;
     }
-    // Con una herramienta de anotación activa el tap simple NO navega (el
-    // dedo ya lo consumió el gesto de herramienta; un toque sin arrastre se
-    // descarta en `end_tool_gesture`). Para pasar página hay que volver a
-    // modo navegación (→ o ✎).
     if reader.tool != ToolKind::Navigate {
         return;
     }
     if reader.sel_menu.is_some() {
         sel_menu_tap(reader, app, x, y);
     } else if reader.ai_panel.is_some() {
-        // Panel de IA abierto: sus botones (✕/▲/▼) o cerrar con tap fuera.
-        // Va ANTES del sheet y del tap de página: mientras el panel esté
-        // abierto ningún otro gesto de tap actúa (misma regla que el menú
-        // de selección; el pinch sí sigue funcionando).
         ai_panel_tap(reader, x, y);
     } else if reader.sheet_progress > 0.0 {
         if y < sheet_h(reader.win_h) as f32 {
@@ -365,7 +353,9 @@ fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         } else {
             reader.hide_sheet();
         }
-    } else if page_badge_tap(reader, x, y) {
+    } else if viewer_chrome_tap(reader, app, x, y) {
+        // Tap en botones o barras de chrome del visor consumido
+    } else if !reader.chrome_visible && page_badge_tap(reader, x, y) {
         // Indicador de página: siguiente (consumido).
     } else {
         tap_page(reader, x);
@@ -781,12 +771,13 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let search_y = header_h + 6.0;
     let search_hh = search_h - 12.0;
 
-    // CABECERA: botón "＋ Add book" (a la derecha; rescan + toast).
+    // CABECERA: botón "＋ Añadir" (a la derecha; rescan + toast).
     if y < header_h {
         let pad = grid_pad(reader.win_w);
-        let btn_w = (reader.win_w as f32 * 0.24).clamp(120.0, 220.0);
-        let btn_h = (header_h * 0.5).clamp(36.0, 52.0);
-        let btn_y = (header_h - btn_h) / 2.0;
+        let top_pad = 36.0f32;
+        let btn_w = (reader.win_w as f32 * 0.20).clamp(100.0, 160.0);
+        let btn_h = ((header_h - top_pad) * 0.52).clamp(34.0, 46.0);
+        let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
         let btn_x = reader.win_w as f32 - pad - btn_w;
         if x >= btn_x && x < btn_x + btn_w && y >= btn_y && y < btn_y + btn_h {
             reader.add_book(app);
@@ -881,7 +872,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let cont_block_h = lib_cont_block_h(win_w, reader.win_h, has_cont);
     if yc < cont_block_h {
         if has_cont && yc >= lib_section_title_h(reader.win_h) {
-            let cw = lib_cont_card_w(win_w);
+            let cw = lib_cont_card_w(win_w, reader.win_h);
             let i = ((x - grid_pad(win_w) + reader.lib_carousel_x) / (cw + lib_cont_gap())).floor();
             if i >= 0.0
                 && let Some(book) = reader.lib_continue_reading().get(i as usize)
@@ -915,16 +906,16 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                 if x >= l && x < r && y >= t && y < b {
                     if row == 0 {
                         reader.lib_set_sort(match label.as_str() {
-                            "Recently Read" => LibSort::RecentlyRead,
-                            "Title" => LibSort::Title,
-                            "Author" => LibSort::Author,
+                            "Recently Read" | "Leídos" => LibSort::RecentlyRead,
+                            "Title" | "Título" => LibSort::Title,
+                            "Author" | "Autor" => LibSort::Author,
                             _ => LibSort::RecentlyAdded,
                         });
                     } else {
                         reader.lib_set_status(match label.as_str() {
-                            "Reading" => Some(BookStatus::Reading),
-                            "Finished" => Some(BookStatus::Finished),
-                            "Unread" => Some(BookStatus::Unread),
+                            "Reading" | "En lectura" => Some(BookStatus::Reading),
+                            "Finished" | "Terminados" => Some(BookStatus::Finished),
+                            "Unread" | "Por leer" => Some(BookStatus::Unread),
                             _ => None,
                         });
                     }
@@ -941,7 +932,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let row = ((yc - grid_y0) / grid_cell_h(win_w)) as usize;
     let cell_w = grid_cell_w(win_w);
     let pad = grid_pad(win_w);
-    let col = ((x - pad) / (cell_w + grid_gap())).floor() as usize;
+    let col = ((x - pad) / (cell_w + grid_gap(win_w))).floor() as usize;
     if col < GRID_COLS
         && let Some(entry) = reader.grid_entry_at(row, col)
     {

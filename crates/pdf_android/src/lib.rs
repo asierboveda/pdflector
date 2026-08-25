@@ -356,15 +356,6 @@ mod zoom;
 use crate::input::handle_input;
 use crate::reader::{Reader, UiMode};
 
-/// Color de fondo letterbox (gris oscuro, opaco).
-pub(crate) const BACKGROUND: [u8; 4] = [0x26, 0x26, 0x26, 0xFF];
-/// Fondo letterbox en modo oscuro (negro puro: la página invertida es negra
-/// y, sin zoom hacia fuera — PINCH_MIN = 1.0 —, la página siempre cubre la
-/// ventana; este fondo solo asoma si el render de la página falla).
-pub(crate) const DARK_BG: [u8; 4] = [0x00, 0x00, 0x00, 0xFF];
-/// Fondo cuando no se pudo abrir el PDF (rojo apagado, visible en pantalla).
-pub(crate) const ERROR_BG: [u8; 4] = [0x5A, 0x12, 0x12, 0xFF];
-
 /// Radio (px) de movimiento máximo entre Down y Up para considerar el gesto un
 /// "tap" (no un swipe). ~20 px a 320 dpi (ViewConfiguration touch slop ≈ 8 dp).
 pub(crate) const TAP_SLOP: f32 = 24.0;
@@ -431,80 +422,219 @@ pub(crate) const GEMINI_MODEL: &str = "gemini-flash-latest";
 pub(crate) const PINCH_MIN: f32 = 1.0;
 pub(crate) const PINCH_MAX: f32 = 8.0;
 
-/// Constantes de color y tema para la interfaz (0xAARRGGBB para Canvas JNI).
+/// Constantes de color, temas y tipografía para la interfaz (0xAARRGGBB para Canvas JNI).
 pub(crate) mod theme {
-    // --- Modo Oscuro (Barra Superior del Visor en modo oscuro y Biblioteca) ---
-    pub(crate) const DARK_BAR_BG: u32 = 0xFF0B0D12;
-    pub(crate) const DARK_BAR_BORDER: u32 = 0xFF232B3A;
-    pub(crate) const DARK_BTN_BG: u32 = 0xFF161B26;
-    pub(crate) const DARK_BTN_BORDER: u32 = 0xFF2A3444;
-    pub(crate) const DARK_BTN_TEXT: u32 = 0xFFE6EAF0;
+    use serde::{Deserialize, Serialize};
 
-    // Botones de Acción Destacada / Estado Activo (Warm Gold Accent)
-    pub(crate) const ACCENT_BLUE_BG: u32 = 0xFFC8A96A;
-    pub(crate) const ACCENT_BLUE_BORDER: u32 = 0xFFD9BD8B;
-    pub(crate) const ACCENT_AMBER_BG: u32 = 0xFFC8A96A;
-    pub(crate) const ACCENT_AMBER_BORDER: u32 = 0xFFD9BD8B;
+    /// Color transparente para fondos de bitmap sin opacidad.
+    pub(crate) const TRANSPARENT: u32 = 0x00000000;
 
-    // Indicador de Página (Modo Oscuro)
-    pub(crate) const DARK_BADGE_BG: u32 = 0xDD0B0D12;
-    pub(crate) const DARK_BADGE_BORDER: u32 = 0xFF232B3A;
-    pub(crate) const DARK_BADGE_TEXT: u32 = 0xFFE6EAF0;
+    /// Fondo de error cuando no se pudo abrir el PDF (rojo oscuro opaco).
+    pub(crate) const ERROR_BG_RGBA: [u8; 4] = [0x5A, 0x12, 0x12, 0xFF];
 
-    // --- Modo Claro (Barra Superior del Visor en modo claro) ---
-    pub(crate) const LIGHT_BAR_BG: u32 = 0xFFF8FAFC;
-    pub(crate) const LIGHT_BAR_BORDER: u32 = 0xFFCBD5E1;
-    pub(crate) const LIGHT_BTN_BG: u32 = 0xFFE2E8F0;
-    pub(crate) const LIGHT_BTN_BORDER: u32 = 0xFFCBD5E1;
-    pub(crate) const LIGHT_BTN_TEXT: u32 = 0xFF1E293B;
+    /// Color del relleno del rect de selección (azul accent, alfa ~30 %: 77/255).
+    pub(crate) const SEL_FILL_RGBA: [u8; 4] = [0x4D, 0xA3, 0xFF, 0x4D];
+    /// Color del borde del rect de selección (1-2 px, alfa completo).
+    pub(crate) const SEL_BORDER_RGBA: [u8; 4] = [0x4D, 0xA3, 0xFF, 0xFF];
 
-    // Indicador de Página (Modo Claro)
-    pub(crate) const LIGHT_BADGE_BG: u32 = 0xFFEDF2F7;
-    pub(crate) const LIGHT_BADGE_BORDER: u32 = 0xFFCBD5E1;
-    pub(crate) const LIGHT_BADGE_TEXT: u32 = 0xFF0F172A;
+    /// Jerarquía tipográfica única (Readest Design System).
+    pub(crate) const FONT_DISPLAY: f32 = 24.0;
+    pub(crate) const FONT_TITLE: f32 = 17.0;
+    pub(crate) const FONT_BODY: f32 = 14.0;
+    pub(crate) const FONT_CAPTION: f32 = 12.0;
+    pub(crate) const FONT_LABEL_CAPS: f32 = 11.0;
 
-    // --- Paleta de Biblioteca y Picker ---
-    pub(crate) const LIB_BG: u32 = 0xFF0B0D12;
-    pub(crate) const LIB_HEADER_BG: u32 = 0xFF0F1218;
-    pub(crate) const LIB_HEADER_BORDER: u32 = 0xFF1A2029;
-    pub(crate) const LIB_ROW_EVEN: u32 = 0xFF10141C;
-    pub(crate) const LIB_ROW_ODD: u32 = 0xFF141922;
-    pub(crate) const LIB_ROW_BORDER: u32 = 0xFF1E2530;
-    pub(crate) const LIB_TEXT_PRIMARY: u32 = 0xFFEDF0F4;
-    pub(crate) const LIB_TEXT_SECONDARY: u32 = 0xFF9AA3B2;
-    pub(crate) const LIB_TEXT_MUTED: u32 = 0xFF5C6674;
+    /// Temas disponibles en PDFLector (reglas y paletas derivadas exactas de Readest).
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+    pub(crate) enum AppTheme {
+        #[default]
+        DefaultLight,
+        SepiaLight,
+        DefaultDark,
+        SepiaDark,
+    }
 
-    // Portadas de la biblioteca (estilo Apple Books)
-    /// Sombra sutil bajo la portada (negro translúcido; se dibuja desplazada
-    /// +2/+3 px detrás de la portada en lugar de un borde llamativo).
-    pub(crate) const LIB_COVER_SHADOW: u32 = 0x38000000;
-    /// Relleno del placeholder de portada mientras carga la miniatura
-    /// (silueta gris oscura sin borde, nada de ruido).
-    pub(crate) const LIB_COVER_PLACEHOLDER: u32 = 0xFF161B26;
+    impl AppTheme {
+        /// Cicla al siguiente tema: Default-Light → Sepia-Light → Default-Dark → Sepia-Dark → Default-Light...
+        pub(crate) fn next(self) -> Self {
+            match self {
+                Self::DefaultLight => Self::SepiaLight,
+                Self::SepiaLight => Self::DefaultDark,
+                Self::DefaultDark => Self::SepiaDark,
+                Self::SepiaDark => Self::DefaultLight,
+            }
+        }
 
-    // --- Biblioteca personal premium (2026-08-XX): acento, tarjetas, ---
-    // --- búsqueda y progreso (paleta oscura cálida + dorado)          ---
-    /// Acento dorado cálido (acción destacada: Add book, Read, chip activo,
-    /// barra de progreso). Mismo tono que `ACCENT_AMBER_BG`; alias de uso
-    /// para la biblioteca.
-    pub(crate) const LIB_ACCENT: u32 = 0xFFC8A96A;
-    /// Texto oscuro sobre el acento dorado (contraste AA).
-    pub(crate) const LIB_ACCENT_DARK: u32 = 0xFF0B0D12;
-    /// Fondo de tarjeta del carousel de "Continue Reading" (sutil, más
-    /// claro que `LIB_BG`; borde `LIB_CARD_BORDER` de 1 px).
-    pub(crate) const LIB_CARD_BG: u32 = 0xFF11151D;
-    pub(crate) const LIB_CARD_BORDER: u32 = 0xFF1E2530;
-    /// Campo de búsqueda (píldora): relleno y borde discretos.
-    pub(crate) const LIB_SEARCH_BG: u32 = 0xFF141922;
-    pub(crate) const LIB_SEARCH_BORDER: u32 = 0xFF2A3444;
-    /// Pista de las barras de progreso (fina, discreta); el relleno usa
-    /// `LIB_ACCENT`.
-    pub(crate) const LIB_PROGRESS_TRACK: u32 = 0xFF232B3A;
+        /// ¿Modo oscuro activo?
+        pub(crate) fn is_dark(self) -> bool {
+            matches!(self, Self::DefaultDark | Self::SepiaDark)
+        }
 
-    // Franja de Estado / Mensajes de Error
-    pub(crate) const STATUS_BG: u32 = 0xFF2A1212;
-    pub(crate) const STATUS_BORDER: u32 = 0xFF3A1A1A;
-    pub(crate) const STATUS_TEXT: u32 = 0xFFE5A0A0;
+        /// Obtiene la paleta completa calculada para este tema según las reglas Readest.
+        pub(crate) fn palette(self) -> ThemePalette {
+            match self {
+                Self::DefaultLight => ThemePalette {
+                    name: "Default-Light",
+                    is_dark: false,
+                    base_100: 0xFFFFFFFF,
+                    base_200: 0xFFF2F2F2,
+                    base_300: 0xFFE0E0E0,
+                    base_content: 0xFF171717,
+                    neutral: 0xFFD9D9D9,
+                    neutral_content: 0xFF737373,
+                    primary: 0xFF0066CC,
+                    primary_content: 0xFFFFFFFF,
+                },
+                Self::SepiaLight => ThemePalette {
+                    name: "Sepia-Light",
+                    is_dark: false,
+                    base_100: 0xFFF1E8D0,
+                    base_200: 0xFFE6DCBF,
+                    base_300: 0xFFD4C8A5,
+                    base_content: 0xFF5B4636,
+                    neutral: 0xFFC9BC96,
+                    neutral_content: 0xFF8A705B,
+                    primary: 0xFF008B8B,
+                    primary_content: 0xFFFFFFFF,
+                },
+                Self::DefaultDark => ThemePalette {
+                    name: "Default-Dark",
+                    is_dark: true,
+                    base_100: 0xFF242424,
+                    // Fondo de biblioteca (delta de luminosidad +10% más profundo en dark para contraste de tarjetas)
+                    base_200: 0xFF141414,
+                    base_300: 0xFF3D3D3D,
+                    base_content: 0xFFE0E0E0,
+                    neutral: 0xFF474747,
+                    neutral_content: 0xFF9E9E9E,
+                    primary: 0xFF77BBEE,
+                    primary_content: 0xFF111111,
+                },
+                Self::SepiaDark => ThemePalette {
+                    name: "Sepia-Dark",
+                    is_dark: true,
+                    base_100: 0xFF342E25,
+                    // Fondo de biblioteca (delta de luminosidad +10% más profundo en dark para contraste de tarjetas)
+                    base_200: 0xFF201B15,
+                    base_300: 0xFF4D4437,
+                    base_content: 0xFFFFD595,
+                    neutral: 0xFF615747,
+                    neutral_content: 0xFFC4A572,
+                    primary: 0xFF48D1CC,
+                    primary_content: 0xFF1A1610,
+                },
+            }
+        }
+    }
+
+    /// Paleta de color derivada de Readest para renderizado UI.
+    #[allow(dead_code)]
+    #[derive(Copy, Clone, Debug)]
+    pub(crate) struct ThemePalette {
+        pub(crate) name: &'static str,
+        pub(crate) is_dark: bool,
+        pub(crate) base_100: u32,
+        pub(crate) base_200: u32,
+        pub(crate) base_300: u32,
+        pub(crate) base_content: u32,
+        pub(crate) neutral: u32,
+        pub(crate) neutral_content: u32,
+        pub(crate) primary: u32,
+        pub(crate) primary_content: u32,
+    }
+
+    #[allow(dead_code)]
+    impl ThemePalette {
+        pub(crate) fn bg(&self) -> u32 {
+            self.base_100
+        }
+        pub(crate) fn lib_bg(&self) -> u32 {
+            self.base_200
+        }
+        pub(crate) fn card_bg(&self) -> u32 {
+            self.base_100
+        }
+        pub(crate) fn card_border(&self) -> u32 {
+            self.base_300
+        }
+        pub(crate) fn btn_bg(&self) -> u32 {
+            self.base_200
+        }
+        pub(crate) fn btn_border(&self) -> u32 {
+            self.base_300
+        }
+        pub(crate) fn btn_text(&self) -> u32 {
+            self.base_content
+        }
+        pub(crate) fn text_primary(&self) -> u32 {
+            self.base_content
+        }
+        pub(crate) fn text_secondary(&self) -> u32 {
+            self.neutral_content
+        }
+        pub(crate) fn text_muted(&self) -> u32 {
+            self.neutral_content
+        }
+        pub(crate) fn accent(&self) -> u32 {
+            self.primary
+        }
+        pub(crate) fn accent_text(&self) -> u32 {
+            self.primary_content
+        }
+        pub(crate) fn progress_track(&self) -> u32 {
+            self.base_300
+        }
+        pub(crate) fn progress_fill(&self) -> u32 {
+            self.primary
+        }
+        pub(crate) fn cover_shadow(&self) -> u32 {
+            if self.is_dark { 0x70000000 } else { 0x34000000 }
+        }
+        pub(crate) fn cover_placeholder(&self) -> u32 {
+            self.base_200
+        }
+        pub(crate) fn sel_overlay(&self) -> u32 {
+            if self.is_dark { 0x5577BBEE } else { 0x440066CC }
+        }
+        pub(crate) fn popup_bg(&self) -> u32 {
+            if self.is_dark { 0xF2222222 } else { 0xF2FFFFFF }
+        }
+        pub(crate) fn popup_border(&self) -> u32 {
+            self.base_300
+        }
+        pub(crate) fn badge_bg(&self) -> u32 {
+            if self.is_dark { 0xDD222222 } else { 0xDDFFFFFF }
+        }
+        pub(crate) fn badge_border(&self) -> u32 {
+            self.base_300
+        }
+        pub(crate) fn badge_text(&self) -> u32 {
+            self.base_content
+        }
+        pub(crate) fn status_bg(&self) -> u32 {
+            if self.is_dark { 0xFF3A1A1A } else { 0xFFFFEAEA }
+        }
+        pub(crate) fn status_border(&self) -> u32 {
+            if self.is_dark { 0xFF5A2A2A } else { 0xFFFFCCCC }
+        }
+        pub(crate) fn status_text(&self) -> u32 {
+            if self.is_dark { 0xFFFF9999 } else { 0xFFCC0000 }
+        }
+        pub(crate) fn rgba_bg(&self) -> [u8; 4] {
+            let a = ((self.base_100 >> 24) & 0xFF) as u8;
+            let r = ((self.base_100 >> 16) & 0xFF) as u8;
+            let g = ((self.base_100 >> 8) & 0xFF) as u8;
+            let b = (self.base_100 & 0xFF) as u8;
+            [r, g, b, a]
+        }
+        pub(crate) fn rgba_lib_bg(&self) -> [u8; 4] {
+            let a = ((self.base_200 >> 24) & 0xFF) as u8;
+            let r = ((self.base_200 >> 16) & 0xFF) as u8;
+            let g = ((self.base_200 >> 8) & 0xFF) as u8;
+            let b = (self.base_200 & 0xFF) as u8;
+            [r, g, b, a]
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

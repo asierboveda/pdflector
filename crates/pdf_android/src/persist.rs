@@ -241,6 +241,8 @@ pub(crate) fn save_tool_state(internal_dir: Option<&Path>, state: &ToolState) {
     }
 }
 
+use crate::theme::AppTheme;
+
 /// Estado persistido del visor.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ViewerState {
@@ -252,6 +254,9 @@ pub(crate) struct ViewerState {
     pub(crate) zoom: f32,
     /// Modo oscuro activo (página invertida + fondo negro).
     pub(crate) dark: bool,
+    /// Tema visual activo (Readest).
+    #[serde(default)]
+    pub(crate) theme: Option<AppTheme>,
 }
 
 /// Ruta del fichero de estado dentro del directorio interno de la app.

@@ -3,6 +3,63 @@
 > Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
 > Formato: `AAAA-MM-DD — Título`.
 
+## 2026-08-25 — Iteración 3 — cierre de defectos visuales
+
+Cierre de defectos visuales, bugs residuales y pulido perceptual en `crates/pdf_android`:
+
+- **Bugs corregidos**:
+  - **[A1] Eliminación del botón fantasma ✏️**: Eliminado el renderizado residual de `tool_fab` y su captura de toques `tool_fab_tap` en el visor, dejando la esquina superior derecha completamente limpia.
+  - **[A2] Swatch de tema en Top Bar**: Incorporado padding interno $\ge 18$ px en `viewer_top_chrome_buttons`, garantizando que el swatch circular quede 100% dentro de la tarjeta flotante sin cortar el radio de curvatura.
+  - **[A3] Paleta Default-Dark & Sepia-Dark**: Alineados los valores derivados de Readest en `Default-Dark` (`#141414` base-200, `#242424` base-100, `#77BBEE` primary) y `Sepia-Dark` (`#201B15` base-200, `#342E25` base-100, `#48D1CC` primary).
+- **Pulido perceptual**:
+  - **[B1] Barra de progreso**: Implementado track de ancho completo en `base-300` con fill `primary` redondeado y separación vertical $\ge 8$ px del texto de autor (eliminado el aspecto de enlace subrayado en rejilla y Continue Reading).
+  - **[B2] Sheet sin espacio muerto**: Altura de panel ajustada al 42% de `win_h` y distribución vertical uniforme (`space-evenly`) de las 3 secciones (`TEMA`, `LECTURA`, `DOCUMENTO`).
+  - **[B3] Contraste de tarjetas en dark mode**: Delta de luminosidad perceptible de +10% en superficies `base-100` frente al fondo `base-200`, reforzado con borde 1px `base-300` y sombra multicapa `0x70000000`.
+  - **[B4] Swatches informativos en selector de temas**: Círculos de previsualización que muestran el color real de fondo del tema (`#FFFFFF`, `#F1E8D0`, `#242424`, `#342E25`) con anillo `primary` de 2px en el tema activo.
+- **Rendimiento**: Scroll de biblioteca mantenido en 3.9 ms – 6.5 ms por frame blit (muy inferior al límite de 33 ms).
+- **Evidencias visuales**: Generadas 6 capturas en `/tmp/`: `pl3-biblio-light.png`, `pl3-biblio-default-dark.png`, `pl3-biblio-sepia-dark.png`, `pl3-viewer-chrome-light.png`, `pl3-sheet-light.png`, `pl3-sheet-dark.png`.
+
+## 2026-08-25 — Iteración 2 — fidelidad visual
+
+Pasada exhaustiva de fidelidad visual y calidad perceptual sobre `crates/pdf_android` adaptando al detalle el lenguaje visual de Readest, con superficies separadas, elevación con sombras multinivel, marcos con contención 2:3 y barras flotantes:
+
+- **Biblioteca (`draw.rs`, `reader.rs`, `lib.rs`)**:
+  - **B1 Superficies separadas**: Fondo de biblioteca en `base-200` (`#F2F2F2` en light, `#141414` en dark); tarjetas, barras y filas en `base-100` (`#FFFFFF` en light, `#1C1C1C` en dark) con sombras de elevación y bordes de 1px `base-300`.
+  - **B2 Portadas en marco 2:3**: Renderizado `CONTAIN` centrado dentro del marco 2:3 con padding interno de 8px, bordes de papel y sombreado de lomo, evitando el corte/sangre total de celda.
+  - **B3 Rejilla con respiro**: Gutter horizontal $\ge 3.5\%$ de `win_w` (50px en 1440w), títulos en 14sp peso 600 `base-content` bajo el marco, autor en 12sp `neutral-content`, y barra de progreso de 4px en `base-300` con fill `primary`.
+  - **B4 Continue Reading rediseñado**: Tarjetas horizontales (alto 15% `win_h`, ancho 52% `win_w`) con marco 2:3 a la izquierda, título en 17sp bold `base-content`, autor en 12sp `neutral-content`, progreso separado de 4px, metadatos y botón de píldora `"Continuar"` relleno en `primary` con texto de alto contraste.
+  - **B5 Chips de Búsqueda y Organización**: Píldoras con altura $\ge 40$ px (44px), inactivas con fondo `base-100` y borde `base-300`, activas con fondo `primary` y texto en contraste.
+- **Visor (`draw.rs`, `reader.rs`, `input.rs`)**:
+  - **V1 Barras Flotantes**: Top bar y Bottom bar como tarjetas flotantes con radio de 24px, sombra de elevación multinivel y márgenes $\ge 2\%$ `win_w` respecto a los bordes superior, inferior y laterales.
+  - **V2 Botones Táctiles**: Áreas táctiles de todos los controles $\ge 48\times 48$ px con glifos claros e interactivos.
+  - **V3 Barra Inferior con Slider**: Tarjeta flotante con texto `"Pág. N de M · P%"` en 13sp `base-content`, pista de 6px radio completo en `base-300`, fill `primary`, y thumb circular de 22px `primary` con borde de 2px `base-100`.
+  - **V4 Top Bar**: Píldora `"← Biblioteca"` ($\ge 48$ px alto), título del libro en 16sp peso 600 `base-content`, y swatch circular de 26px del color `primary` activo con anillo interactivo de selección de tema.
+- **Sheet de Ajustes (`draw.rs`, `reader.rs`, `input.rs`)**:
+  - **S1 Panel Real**: Panel con altura 55-60% de `win_h` (~1276px en 2200h), radio de 24px en el borde inferior y sombra proyectada.
+  - **S2 Secciones Estructuradas**: Encabezados de sección en 11sp mayúsculas `neutral-content` (`TEMA`, `LECTURA`, `DOCUMENTO`), fila de 4 swatches circulares de 26px (`Claro`, `Sepia`, `Oscuro`, `Sepia D.`) con anillo activo de 2px `primary`, fila de navegación (`◀ −10`, `Pág. N / Total`, `+10 ▶`), y fila de acciones (`← Biblioteca`, `🔍 Buscar`, `✕ Cerrar`).
+  - **S3 Dimensiones de Botones**: Todos los botones del sheet con altura $\ge 48$ px.
+- **Global (G1-G3)**:
+  - **G1**: Sombras multinivel visibles en temas claros y oscuros (alpha $\ge 0x60$ + borde `base-300`).
+  - **G2**: Tipografía $\ge 12$ sp en todo el texto informativo (únicamente labels en mayúsculas a 11sp).
+  - **G3**: Contraste garantizado con texto informativo en `base-content`.
+- **Rendimiento**: Frame time en scroll de biblioteca entre 3.8 ms y 6.1 ms (muy inferior a 33 ms).
+- **Evidencias visuales**: 6 capturas generadas en `/tmp/`: `pl2-biblio-light.png`, `pl2-biblio-dark.png`, `pl2-viewer-chrome-light.png`, `pl2-viewer-chrome-dark.png`, `pl2-sheet-light.png`, `pl2-biblio-sepia.png`.
+
+## 2026-08-24 — Restyling visual de PDFLector (Android) al look&feel de Readest
+
+Reemplazo completo del sistema visual en `crates/pdf_android` adoptando los principios de diseño, paletas y jerarquía tipográfica de Readest (https://github.com/readest/readest).
+
+- **Sistema de Temas (`lib.rs` `mod theme`)**: Implementados 4 temas completos derivados de la fórmula Readest (`base-100`, `base-200`, `base-300`, `base-content`, `neutral`, `neutral-content`, `primary`, `primary-content`): `Default-Light`, `Sepia-Light`, `Default-Dark`, `Sepia-Dark`. Los 4 temas son ciclables de forma interactiva y persistentes en `ViewerState`. Se eliminaron todos los literales de color hardcodeados fuera de `mod theme` (0 ocurrencias de `0x[0-9A-Fa-f]{8}` fuera de `mod theme`).
+- **Chrome del Visor y Navegación (`reader.rs`, `draw.rs`, `input.rs`)**:
+  - Taps por tercios horizontales: tercio izquierdo = página anterior, tercio derecho = página siguiente, tercio central = alternar chrome.
+  - Barra superior fina: botón estilo píldora `← Biblioteca`, título del documento truncado con elipsis y botón de tema actual (`Default-Light`, `Sepia-Light`, etc.).
+  - Barra inferior de progreso: pista estilizada de 3px con relleno de color `primary` y etiqueta `"Página N de M · P %"` en tipografía 12sp `neutral-content`. Auto-ocultado automático tras ≤2.5s de inactividad.
+  - Indicador badge mínimo (`N / M`) visible únicamente cuando el chrome está oculto.
+- **Sheet de Ajustes (`draw.rs` `render_sheet`)**: Rediseñado con tokens Readest, esquinas redondeadas (16px), título de sección en 11sp mayúsculas (`FONT_LABEL_CAPS`) y control de tema activo destacado en color `primary`.
+- **Biblioteca y Componentes (`draw.rs`)**: Biblioteca personal (cabecera, barra de búsqueda, sección "Leyendo ahora", carrusel, chips de ordenación y filtrado, rejilla "Tu Colección", empty state), toasts, FAB y menús adaptados a los tokens y jerarquía tipográfica Readest (`FONT_DISPLAY` 24sp, `FONT_TITLE` 17sp, `FONT_BODY` 14sp, `FONT_CAPTION` 12sp, `FONT_LABEL_CAPS` 11sp).
+- **Archivos editados**: `crates/pdf_android/src/{lib.rs, draw.rs, input.rs, reader.rs, persist.rs}`.
+- **Verificación**: `cargo build -p pdf_android --target aarch64-linux-android --release` (0 warnings), `cargo clippy -p pdf_android --target aarch64-linux-android --release -- -D warnings` (limpio), `cargo fmt --all -- --check` (limpio), `cargo check -p pdf_core -p pdf_app -p pdf_bench` (limpio). APK instalado y probado en TCL 9469X con 5 capturas verificadas en `/tmp/`.
+
 ## 2026-08-18 — Restyling visual de la UI de Android: paleta warm-neutral, card de ajustes y portadas en rejilla
 
 - **Paleta de color (`lib.rs` `mod theme`)**: migrada a tonos cálidos/neutros premium (`DARK_BAR_BG` = `0xFF0B0D12`, `DARK_BAR_BORDER` = `0xFF232B3A`, `DARK_BTN_BG` = `0xFF161B26`, `DARK_BTN_BORDER` = `0xFF2A3444`, `DARK_BTN_TEXT` = `0xFFE6EAF0`, `ACCENT` warm gold `0xFFC8A96A`/`0xFFD9BD8B`, `DARK_BADGE_BG` = `0xDD0B0D12` semitransparente, `LIB_BG` = `0xFF0B0D12`, `LIB_ROW_EVEN/ODD` = `0xFF10141C`/`0xFF141922`, `LIB_TEXT_PRIMARY/SECONDARY/MUTED`).
