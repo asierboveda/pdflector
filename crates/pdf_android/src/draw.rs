@@ -18,15 +18,16 @@ use pdf_core::{Annotated, Bitmap, Document, Highlight, Stroke, ViewTransform};
 use crate::annotations::ToolKind;
 use crate::persist;
 use crate::reader::{
-    AiPhase, GRID_CELL_PAD, GRID_COLS, PickRow, PickerKind, Reader, entry_author, entry_title,
-    grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad,
-    header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_card_h,
-    lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h, lib_cont_cover_w, lib_content_y0,
-    lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_chip_h, lib_org_chips, lib_search_h,
-    page_badge_size, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
-    settings_menu_button_rect, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y,
-    sheet_pad, sheet_theme_btn_w, sheet_theme_y, title_from_name, truncate_name,
-    view_menu_button_rect, viewer_bottom_chrome_h, viewer_top_chrome_h,
+    AiPhase, GRID_CELL_PAD, LibSort, LibraryCoverFit, LibraryGroupBy, PickRow, PickerKind, Reader,
+    entry_author, entry_title, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h,
+    grid_cover_w, grid_pad, header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h, lib_chips,
+    lib_cont_card_h, lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h, lib_cont_cover_w,
+    lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_chip_h, lib_org_chips,
+    lib_search_h, list_row_gap, list_row_h, list_row_rect, page_badge_size, picker_btn_h,
+    picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect, sheet_act_y,
+    sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad, sheet_theme_btn_w, sheet_theme_y,
+    title_from_name, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
+    viewer_top_chrome_h,
 };
 use crate::theme;
 
@@ -2601,24 +2602,604 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
 /// directamente sobre sus bytes RGBA (Canvas no pinta bitmaps): center-crop
 /// vecino-más-cercano al área 2:3 (`grid_cover_w`×`grid_cover_h` /
 /// `lib_cont_cover_*`), sin pasar por un lock de ventana.
+/// Items interactivos del menú View "⋯" (Readest ViewMenu).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ViewMenuItem {
+    Grid,
+    List,
+    ColumnsAuto,
+    ColumnsDec,
+    ColumnsInc,
+    CoverCrop,
+    CoverFit,
+    CoverHide,
+    RecentShelf,
+    GroupNone,
+    GroupAuthor,
+    SortTitle,
+    SortAuthor,
+    SortAdded,
+    SortRead,
+    SortProgress,
+}
+
+/// Geometría compartida del menú View "⋯" (coords en px de ventana).
+/// Devuelve el rect del card del menú y los rects de cada ítem interactivo.
+#[allow(clippy::type_complexity)]
+pub(crate) fn view_menu_geometry(
+    win_w: i32,
+    win_h: i32,
+) -> (
+    (f32, f32, f32, f32),
+    Vec<(ViewMenuItem, (f32, f32, f32, f32))>,
+) {
+    let (_vl, _vt, vr, vb) = view_menu_button_rect(win_w, win_h);
+    let menu_w = 380.0f32.min(win_w as f32 - 32.0);
+    let menu_r = vr;
+    let menu_l = menu_r - menu_w;
+    let menu_t = vb + 8.0f32;
+    let mut items = Vec::new();
+
+    let mut y = menu_t + 12.0;
+    let item_h = 38.0f32;
+    let sec_h = 24.0f32;
+    let hr_h = 8.0f32;
+    let pad_x = 16.0f32;
+
+    // 1. MODO DE VISTA
+    y += sec_h;
+    items.push((
+        ViewMenuItem::Grid,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        ViewMenuItem::List,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + hr_h;
+
+    // 2. COLUMNAS
+    y += sec_h;
+    let btn_step_w = 44.0f32;
+    let auto_w = 84.0f32;
+    items.push((
+        ViewMenuItem::ColumnsAuto,
+        (
+            menu_l + pad_x,
+            y + 2.0,
+            menu_l + pad_x + auto_w,
+            y + item_h - 2.0,
+        ),
+    ));
+    items.push((
+        ViewMenuItem::ColumnsDec,
+        (
+            menu_r - pad_x - 2.0 * btn_step_w - 44.0,
+            y + 2.0,
+            menu_r - pad_x - btn_step_w - 44.0,
+            y + item_h - 2.0,
+        ),
+    ));
+    items.push((
+        ViewMenuItem::ColumnsInc,
+        (
+            menu_r - pad_x - btn_step_w,
+            y + 2.0,
+            menu_r - pad_x,
+            y + item_h - 2.0,
+        ),
+    ));
+    y += item_h + hr_h;
+
+    // 3. PORTADAS
+    y += sec_h;
+    items.push((
+        ViewMenuItem::CoverCrop,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        ViewMenuItem::CoverFit,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        ViewMenuItem::CoverHide,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + hr_h;
+
+    // 4. DESTACADOS
+    items.push((
+        ViewMenuItem::RecentShelf,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + hr_h;
+
+    // 5. AGRUPAR POR
+    y += sec_h;
+    items.push((
+        ViewMenuItem::GroupNone,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        ViewMenuItem::GroupAuthor,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + hr_h;
+
+    // 6. ORDENAR POR
+    y += sec_h;
+    items.push((
+        ViewMenuItem::SortTitle,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        ViewMenuItem::SortAuthor,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        ViewMenuItem::SortAdded,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        ViewMenuItem::SortRead,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h;
+    items.push((
+        ViewMenuItem::SortProgress,
+        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
+    ));
+    y += item_h + 12.0;
+
+    let menu_b = y;
+    ((menu_l, menu_t, menu_r, menu_b), items)
+}
+
+/// Dibuja las primitivas del dropdown ViewMenu (⋯) en coords absolutas de ventana.
+pub(crate) fn draw_view_menu(
+    reader: &Reader,
+    rects: &mut Vec<CanvasRect>,
+    texts: &mut Vec<CanvasText>,
+) {
+    let (card_rect, _items) = view_menu_geometry(reader.win_w, reader.win_h);
+    let (ml, mt, mr, mb) = card_rect;
+    let p = reader.theme.palette();
+
+    // Sombra multinivel (shadow-2xl)
+    draw_card_shadow(rects, ml, mt, mr, mb, 16.0, p.is_dark);
+
+    // Fondo base-100 + borde base-300
+    rects.push(CanvasRect::rounded(ml, mt, mr, mb, 16.0, p.base_300));
+    rects.push(CanvasRect::rounded(
+        ml + 1.0,
+        mt + 1.0,
+        mr - 1.0,
+        mb - 1.0,
+        15.0,
+        p.base_100,
+    ));
+
+    let pad_x = 16.0f32;
+    let sec_ts = theme::FONT_CAPTION * 0.95; // 11sp
+    let body_ts = theme::FONT_BODY; // 14sp
+
+    let mut y = mt + 12.0;
+    let item_h = 38.0f32;
+    let sec_h = 24.0f32;
+    let hr_h = 8.0f32;
+
+    // 1. MODO DE VISTA
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "MODO DE VISTA".to_string(),
+    ));
+    y += sec_h;
+    for (_item, label, active) in [
+        (ViewMenuItem::Grid, "Cuadrícula (Grid)", reader.is_grid()),
+        (ViewMenuItem::List, "Lista (List)", !reader.is_grid()),
+    ] {
+        if active {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                p.base_200,
+            ));
+            texts.push(CanvasText::new(
+                mr - pad_x - 4.0,
+                y + item_h * 0.68,
+                body_ts,
+                p.primary,
+                TextAlign::Right,
+                true,
+                "✓".to_string(),
+            ));
+        }
+        let fg = if active { p.primary } else { p.base_content };
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            fg,
+            TextAlign::Left,
+            active,
+            label.to_string(),
+        ));
+        y += item_h;
+    }
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 2. COLUMNAS
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "COLUMNAS".to_string(),
+    ));
+    y += sec_h;
+    // Botón Auto
+    let (auto_fill, auto_border, auto_fg) = if reader.auto_columns {
+        (p.primary, p.primary, p.primary_content)
+    } else {
+        (p.base_200, p.base_300, p.base_content)
+    };
+    draw_button(
+        rects,
+        texts,
+        ml + pad_x,
+        y + 2.0,
+        ml + pad_x + 84.0,
+        y + item_h - 2.0,
+        auto_fill,
+        auto_border,
+        auto_fg,
+        theme::FONT_CAPTION,
+        true,
+        "Auto",
+    );
+
+    // Stepper − N +
+    let step_fg = if reader.auto_columns {
+        p.neutral_content
+    } else {
+        p.base_content
+    };
+    let step_bg = if reader.auto_columns {
+        p.base_100
+    } else {
+        p.base_200
+    };
+    let step_bdr = p.base_300;
+    let step_r = mr - pad_x;
+    draw_button(
+        rects,
+        texts,
+        step_r - 132.0,
+        y + 2.0,
+        step_r - 88.0,
+        y + item_h - 2.0,
+        step_bg,
+        step_bdr,
+        step_fg,
+        body_ts,
+        true,
+        "−",
+    );
+    let num_str = format!("{}", reader.columns.clamp(1, 4));
+    texts.push(CanvasText::new(
+        step_r - 66.0,
+        y + item_h * 0.68,
+        body_ts,
+        step_fg,
+        TextAlign::Center,
+        true,
+        num_str,
+    ));
+    draw_button(
+        rects,
+        texts,
+        step_r - 44.0,
+        y + 2.0,
+        step_r,
+        y + item_h - 2.0,
+        step_bg,
+        step_bdr,
+        step_fg,
+        body_ts,
+        true,
+        "+",
+    );
+    y += item_h;
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 3. PORTADAS
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "PORTADAS".to_string(),
+    ));
+    y += sec_h;
+    for (label, active) in [
+        (
+            "Recortar (Crop)",
+            reader.cover_fit == LibraryCoverFit::Crop && !reader.hide_covers,
+        ),
+        (
+            "Completa (Fit)",
+            reader.cover_fit == LibraryCoverFit::Fit && !reader.hide_covers,
+        ),
+        ("Ocultar portadas", reader.hide_covers),
+    ] {
+        if active {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                p.base_200,
+            ));
+            texts.push(CanvasText::new(
+                mr - pad_x - 4.0,
+                y + item_h * 0.68,
+                body_ts,
+                p.primary,
+                TextAlign::Right,
+                true,
+                "✓".to_string(),
+            ));
+        }
+        let fg = if active { p.primary } else { p.base_content };
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            fg,
+            TextAlign::Left,
+            active,
+            label.to_string(),
+        ));
+        y += item_h;
+    }
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 4. DESTACADOS
+    {
+        let active = reader.recent_shelf_enabled;
+        if active {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                p.base_200,
+            ));
+            texts.push(CanvasText::new(
+                mr - pad_x - 4.0,
+                y + item_h * 0.68,
+                body_ts,
+                p.primary,
+                TextAlign::Right,
+                true,
+                "✓".to_string(),
+            ));
+        }
+        let fg = if active { p.primary } else { p.base_content };
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            fg,
+            TextAlign::Left,
+            active,
+            "Mostrar lectura reciente".to_string(),
+        ));
+        y += item_h;
+    }
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 5. AGRUPAR POR
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "AGRUPAR POR".to_string(),
+    ));
+    y += sec_h;
+    for (label, active) in [
+        ("Ninguno (Libros)", reader.group_by == LibraryGroupBy::None),
+        ("Autor", reader.group_by == LibraryGroupBy::Author),
+    ] {
+        if active {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                p.base_200,
+            ));
+            texts.push(CanvasText::new(
+                mr - pad_x - 4.0,
+                y + item_h * 0.68,
+                body_ts,
+                p.primary,
+                TextAlign::Right,
+                true,
+                "✓".to_string(),
+            ));
+        }
+        let fg = if active { p.primary } else { p.base_content };
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            fg,
+            TextAlign::Left,
+            active,
+            label.to_string(),
+        ));
+        y += item_h;
+    }
+    rects.push(CanvasRect::sharp(
+        ml + pad_x,
+        y + 3.0,
+        mr - pad_x,
+        y + 4.0,
+        p.base_300,
+    ));
+    y += hr_h;
+
+    // 6. ORDENAR POR
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + sec_ts * 0.85,
+        sec_ts,
+        p.neutral_content,
+        TextAlign::Left,
+        true,
+        "ORDENAR POR".to_string(),
+    ));
+    y += sec_h;
+    for (label, active) in [
+        ("Título", reader.lib_sort == LibSort::Title),
+        ("Autor", reader.lib_sort == LibSort::Author),
+        ("Fecha añadido", reader.lib_sort == LibSort::RecentlyAdded),
+        ("Última lectura", reader.lib_sort == LibSort::RecentlyRead),
+        ("Progreso", reader.lib_sort == LibSort::Progress),
+    ] {
+        if active {
+            rects.push(CanvasRect::rounded(
+                ml + pad_x - 4.0,
+                y + 2.0,
+                mr - pad_x + 4.0,
+                y + item_h - 2.0,
+                8.0,
+                p.base_200,
+            ));
+            texts.push(CanvasText::new(
+                mr - pad_x - 4.0,
+                y + item_h * 0.68,
+                body_ts,
+                p.primary,
+                TextAlign::Right,
+                true,
+                "✓".to_string(),
+            ));
+        }
+        let fg = if active { p.primary } else { p.base_content };
+        texts.push(CanvasText::new(
+            ml + pad_x,
+            y + item_h * 0.68,
+            body_ts,
+            fg,
+            TextAlign::Left,
+            active,
+            label.to_string(),
+        ));
+        y += item_h;
+    }
+}
+
+/// Renderiza el dropdown ViewMenu (⋯) completo a un bitmap RGBA8.
+#[allow(dead_code)]
+pub(crate) fn render_view_menu(reader: &Reader) -> Option<Bitmap> {
+    let (card_rect, _items) = view_menu_geometry(reader.win_w, reader.win_h);
+    let (ml, mt, mr, mb) = card_rect;
+    let mw = (mr - ml).ceil() as i32;
+    let mh = (mb - mt).ceil() as i32;
+    if mw <= 0 || mh <= 0 {
+        return None;
+    }
+    let mut rects: Vec<CanvasRect> = Vec::new();
+    let mut texts: Vec<CanvasText> = Vec::new();
+    draw_view_menu(reader, &mut rects, &mut texts);
+    for r in &mut rects {
+        r.left -= ml;
+        r.right -= ml;
+        r.top -= mt;
+        r.bottom -= mt;
+    }
+    for t in &mut texts {
+        t.x -= ml;
+        t.y -= mt;
+    }
+    jni_text_bitmap(mw, mh, theme::TRANSPARENT, &rects, &texts)
+}
+
 /// Render de la ZONA FIJA de la biblioteca (cabecera editorial + campo de
-/// búsqueda + franja de estado) a un bitmap de alto `content_y0`, origen =
-/// borde superior de la ventana. La zona fija NO scrollea y se re-renderiza
-/// solo cuando cambia la estructura (datos, filtros, panel de búsqueda,
-/// estado, tamaño de ventana) — ver `Reader::rebuild_library`. Los chips del
-/// panel de búsqueda (fila letras / fila carpetas) NO se dibujan aquí: son
-/// filas horizontales móviles que `Reader` remienda encima (`render_search_chip_row`
-/// + `splice_row`) para que su scroll horizontal no re-renderice la pantalla.
+/// búsqueda + franja de estado + overlay de menú si está abierto)
 pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
-    let h = lib_content_y0(
+    let h_fixed = lib_content_y0(
         reader.win_h,
         reader.lib_search_open,
         reader.status.is_some(),
     );
-    if w <= 0 || h <= 0 {
+    if w <= 0 || h_fixed <= 0 {
         return None;
     }
+
+    let (card_rect, _) = view_menu_geometry(reader.win_w, reader.win_h);
+    let h_total = if reader.view_menu_open {
+        h_fixed.max(card_rect.3.ceil() as i32 + 20)
+    } else {
+        h_fixed
+    };
+
     let pad = grid_pad(w);
     let header_h = lib_header_h(reader.win_h);
     let search_h = lib_search_h();
@@ -2628,12 +3209,18 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let mut texts: Vec<CanvasText> = Vec::new();
 
     // Fondo del bloque fijo + hairline 1 px bajo la zona fija
-    rects.push(CanvasRect::sharp(0.0, 0.0, w as f32, h as f32, p.base_200));
     rects.push(CanvasRect::sharp(
         0.0,
-        h as f32 - 1.0,
+        0.0,
         w as f32,
-        h as f32,
+        h_fixed as f32,
+        p.base_200,
+    ));
+    rects.push(CanvasRect::sharp(
+        0.0,
+        h_fixed as f32 - 1.0,
+        w as f32,
+        h_fixed as f32,
         p.base_300,
     ));
 
@@ -2667,10 +3254,7 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
         "＋ Añadir",
     );
 
-    // ---- Botones de MENÚ (esqueleto de las Tareas 2-3): View "⋯" y
-    // Settings "☰", círculos de ~32 dp alineados a la izquierda del
-    // "＋ Añadir". El botón con su dropdown abierto se marca en `primary`
-    // (highlight); el glifo usa `theme::FONT_BODY` 14 sp.
+    // ---- Botones de MENÚ: View "⋯" y Settings "☰" ----
     let d = header_menu_btn_d(w);
     let mut menu_glyph = |open: bool, l: f32, t: f32, r: f32, b: f32, ch: &str| {
         let (bg, border, fg) = if open {
@@ -2702,40 +3286,40 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let (sl, st, sr, sb) = settings_menu_button_rect(w, reader.win_h);
     menu_glyph(reader.settings_menu_open, sl, st, sr, sb, "☰");
 
-    // ---- CAMPO de búsqueda (píldora; al tocarla abre el panel de chips) ----
-    let search_y = header_h + 4.0;
-    let search_hh = search_h - 8.0;
-    let field_r = search_hh / 2.0;
+    // ---- CAMPO de búsqueda ----
+    let search_y = header_h + 6.0;
+    let search_hh = search_h - 12.0;
+    let field_r = w as f32 - pad;
     rects.push(CanvasRect::rounded(
         pad,
         search_y,
-        w as f32 - pad,
-        search_y + search_hh,
         field_r,
+        search_y + search_hh,
+        search_hh / 2.0,
         p.base_300,
     ));
     rects.push(CanvasRect::rounded(
         pad + 1.0,
         search_y + 1.0,
-        w as f32 - pad - 1.0,
+        field_r - 1.0,
         search_y + search_hh - 1.0,
-        (field_r - 1.0).max(0.0),
+        (search_hh / 2.0 - 1.0).max(0.0),
         p.base_100,
     ));
+
     let (summary, has_filter) = search_summary(reader);
     if has_filter {
-        // Resumen del filtro activo + "✕" (limpia filtros y cierra el panel).
         texts.push(CanvasText::new(
             pad + 18.0,
             search_y + search_hh * 0.64,
             theme::FONT_BODY,
             p.base_content,
             TextAlign::Left,
-            false,
-            summary,
+            true,
+            truncate_name(&summary, 28),
         ));
         let xw = search_hh - 8.0;
-        let xx = w as f32 - pad - 14.0 - xw;
+        let xx = field_r - 14.0 - xw;
         rects.push(CanvasRect::rounded(
             xx,
             search_y + 4.0,
@@ -2768,19 +3352,19 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     // ---- FRANJA de estado (si la hay) ----
     if let Some(status) = reader.status.as_deref() {
         let row_h = picker_row_h(reader.win_h) as f32;
-        let status_top = h as f32 - row_h;
+        let status_top = h_fixed as f32 - row_h;
         rects.push(CanvasRect::sharp(
             0.0,
             status_top,
             w as f32,
-            h as f32,
+            h_fixed as f32,
             p.status_bg(),
         ));
         rects.push(CanvasRect::sharp(
             0.0,
-            h as f32 - 1.0,
+            h_fixed as f32 - 1.0,
             w as f32,
-            h as f32,
+            h_fixed as f32,
             p.status_border(),
         ));
         texts.push(CanvasText::new(
@@ -2794,16 +3378,16 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
         ));
     }
 
-    jni_text_bitmap(w, h, p.base_200, &rects, &texts)
+    // ViewMenu dropdown abierto: dibujar el menú directamente sobre la cabecera
+    if reader.view_menu_open {
+        draw_view_menu(reader, &mut rects, &mut texts);
+    }
+
+    jni_text_bitmap(w, h_total, theme::TRANSPARENT, &rects, &texts)
 }
 
 /// Render de la BANDA de contenido de la biblioteca (la zona scrolleable:
-/// Continue Reading + My Library + rejilla o empty state) a un bitmap de
-/// alto `band_h` cuyas filas representan coordenadas de CONTENIDO en
-/// [band_origin, band_origin + band_h). El scroll vertical NO se aplica
-/// aquí: `blit_library` copia la banda al buffer desplazada por el scroll
-/// (memcpy). Es el análogo del `page_frame` del visor para la biblioteca: el
-/// render caro (Canvas+JNI) se paga una vez por banda, no por frame.
+/// Continue Reading + My Library + rejilla o lista o empty state)
 pub(crate) fn render_library_zone(
     reader: &Reader,
     band_origin: i32,
@@ -2815,14 +3399,12 @@ pub(crate) fn render_library_zone(
     }
     let yof = -band_origin as f32; // contenido − origen de banda
     let p = reader.theme.palette();
+    let pad = grid_pad(w);
 
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
 
     if reader.library_list.is_empty() {
-        // EMPTY STATE (sin PDFs): centrado en la ventana; su geometría es en
-        // px de ventana, así que se traslada a la banda (contenido −
-        // content_y0 − band_origin).
         let content_y0 = lib_content_y0(
             reader.win_h,
             reader.lib_search_open,
@@ -2831,117 +3413,466 @@ pub(crate) fn render_library_zone(
         let shift = -(content_y0 as f32 + band_origin as f32);
         draw_empty_state(reader, &mut rects, &mut texts, shift);
     } else {
-        // REJILLA 3×3 (lista FILTRADA): solo las filas que intersectan la
-        // banda. Biblioteca minimalista (estilo Readest): sin Continue
-        // Reading, sin títulos de sección y sin organización.
-        let grid_y0 = lib_grid_y0(w, reader.win_h, reader.lib_has_cont());
-        let cell_h = grid_cell_h(w);
-        let cell_w = grid_cell_w(w);
-        let cover_w = grid_cover_w(w);
-        let cover_h = grid_cover_h(w);
-        let title_ts = theme::FONT_BODY;
-        let char_w = title_ts * 0.55;
-        let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
-        let row_first = (((band_origin as f32 - grid_y0) / cell_h).floor().max(0.0)) as usize;
-        let row_last = (((band_origin + band_h) as f32 - grid_y0) / cell_h)
-            .ceil()
-            .max(0.0) as usize;
-        for row in row_first..row_last {
-            for col in 0..GRID_COLS {
-                let Some(entry) = reader.grid_entry_at(row, col) else {
+        // Continue reading carousel (si está habilitado y hay libros)
+        if reader.lib_has_cont() {
+            let section_y = yof + 8.0;
+            texts.push(CanvasText::new(
+                pad,
+                section_y + theme::FONT_TITLE * 0.85,
+                theme::FONT_TITLE,
+                p.base_content,
+                TextAlign::Left,
+                true,
+                "Seguir leyendo".to_string(),
+            ));
+            let cont_y0 = section_y + theme::FONT_TITLE + 12.0;
+            let books = reader.lib_continue_reading();
+            for (i, book) in books.iter().enumerate() {
+                let card_w = lib_cont_card_w(w, reader.win_h);
+                let card_h = lib_cont_card_h(reader.win_h);
+                let cx = lib_cont_card_x(w, reader.win_h, i) - reader.lib_carousel_x;
+                if cx + card_w < 0.0 || cx > w as f32 {
                     continue;
-                };
-                let (cx, cy_rel, _, _) = grid_cell_rect(w, 0, row, col);
-                let cy = yof + grid_y0 + cy_rel;
-                let cover_x0 = cx + (cell_w - cover_w) / 2.0;
-                let cover_y0 = cy + 4.0;
+                }
+                let cy = cont_y0;
+                let cw = lib_cont_cover_w(reader.win_h);
+                let chh = lib_cont_cover_h(reader.win_h);
                 let cover_r = 12.0f32;
-                // Sombra visible multicapa detrás del marco 2:3
+
                 draw_card_shadow(
                     &mut rects,
-                    cover_x0,
-                    cover_y0,
-                    cover_x0 + cover_w,
-                    cover_y0 + cover_h,
+                    cx,
+                    cy,
+                    cx + card_w,
+                    cy + card_h,
+                    16.0,
+                    p.is_dark,
+                );
+                rects.push(CanvasRect::rounded(
+                    cx,
+                    cy,
+                    cx + card_w,
+                    cy + card_h,
+                    16.0,
+                    p.base_300,
+                ));
+                rects.push(CanvasRect::rounded(
+                    cx + 1.0,
+                    cy + 1.0,
+                    cx + card_w - 1.0,
+                    cy + card_h - 1.0,
+                    15.0,
+                    p.base_100,
+                ));
+
+                let cover_x = cx + 16.0;
+                let cover_y = cy + 16.0;
+                draw_card_shadow(
+                    &mut rects,
+                    cover_x,
+                    cover_y,
+                    cover_x + cw,
+                    cover_y + chh,
                     cover_r,
                     p.is_dark,
                 );
-                // Marco 2:3 con fondo base-200 y borde 1px base-300
                 rects.push(CanvasRect::rounded(
-                    cover_x0,
-                    cover_y0,
-                    cover_x0 + cover_w,
-                    cover_y0 + cover_h,
+                    cover_x,
+                    cover_y,
+                    cover_x + cw,
+                    cover_y + chh,
                     cover_r,
                     p.base_300,
                 ));
                 rects.push(CanvasRect::rounded(
-                    cover_x0 + 1.0,
-                    cover_y0 + 1.0,
-                    cover_x0 + cover_w - 1.0,
-                    cover_y0 + cover_h - 1.0,
+                    cover_x + 1.0,
+                    cover_y + 1.0,
+                    cover_x + cw - 1.0,
+                    cover_y + chh - 1.0,
                     (cover_r - 1.0).max(0.0),
                     p.base_200,
                 ));
-                if reader.thumbs.peek(&entry.uri).is_none() {
-                    texts.push(CanvasText::new(
-                        cover_x0 + cover_w / 2.0,
-                        cover_y0 + cover_h / 2.0 + title_ts * 0.35,
-                        title_ts,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        true,
-                        truncate_name(&entry_title(entry), 12),
+
+                let tx = cover_x + cw + 16.0;
+                let title_ts = theme::FONT_TITLE;
+                texts.push(CanvasText::new(
+                    tx,
+                    cy + 34.0,
+                    title_ts,
+                    p.base_content,
+                    TextAlign::Left,
+                    true,
+                    truncate_name(&book.name, 18),
+                ));
+                texts.push(CanvasText::new(
+                    tx,
+                    cy + 60.0,
+                    theme::FONT_CAPTION,
+                    p.neutral_content,
+                    TextAlign::Left,
+                    false,
+                    truncate_name(&book.author, 18),
+                ));
+                let bar_w = card_w - (tx - cx) - 20.0;
+                let bar_y = cy + 86.0;
+                rects.push(CanvasRect::rounded(
+                    tx,
+                    bar_y,
+                    tx + bar_w,
+                    bar_y + 4.0,
+                    2.0,
+                    p.base_300,
+                ));
+                if book.pct > 0.0 {
+                    rects.push(CanvasRect::rounded(
+                        tx,
+                        bar_y,
+                        tx + (bar_w * book.pct).clamp(4.0, bar_w),
+                        bar_y + 4.0,
+                        2.0,
+                        p.primary,
                     ));
                 }
-                // Título 14sp peso 600 base-content bajo el marco (B3)
-                let text_y0 = cy + 4.0 + cover_h + 10.0;
+                let page_info = format!(
+                    "Pág. {} de {} · {:.0}%",
+                    book.page + 1,
+                    book.page_count.max(1),
+                    book.pct * 100.0
+                );
                 texts.push(CanvasText::new(
-                    cx + GRID_CELL_PAD,
-                    text_y0 + title_ts * 0.85,
+                    tx,
+                    bar_y + 20.0,
+                    theme::FONT_CAPTION * 0.9,
+                    p.neutral_content,
+                    TextAlign::Left,
+                    false,
+                    page_info,
+                ));
+            }
+        }
+
+        let grid_y0 = lib_grid_y0(w, reader.win_h, reader.lib_has_cont());
+        if reader.is_grid() {
+            let cols = reader.effective_grid_cols();
+            let cell_h = grid_cell_h(w, cols);
+            let cell_w = grid_cell_w(w, cols);
+            let cover_w = grid_cover_w(w, cols);
+            let cover_h = grid_cover_h(w, cols);
+            let title_ts = theme::FONT_BODY;
+            let char_w = title_ts * 0.55;
+            let max_chars = (((cell_w - 2.0 * GRID_CELL_PAD) / char_w) as usize).max(3);
+            let row_first = (((band_origin as f32 - grid_y0) / cell_h).floor().max(0.0)) as usize;
+            let row_last = (((band_origin + band_h) as f32 - grid_y0) / cell_h)
+                .ceil()
+                .max(0.0) as usize;
+            for row in row_first..row_last {
+                for col in 0..cols {
+                    let Some(entry) = reader.grid_entry_at(row, col) else {
+                        continue;
+                    };
+                    let (cx, cy_rel, _, _) = grid_cell_rect(w, 0, row, col, cols);
+                    let cy = yof + grid_y0 + cy_rel;
+                    if !reader.hide_covers {
+                        let cover_x0 = cx + (cell_w - cover_w) / 2.0;
+                        let cover_y0 = cy + 4.0;
+                        let cover_r = 12.0f32;
+                        // Sombra visible multicapa detrás del marco 2:3
+                        draw_card_shadow(
+                            &mut rects,
+                            cover_x0,
+                            cover_y0,
+                            cover_x0 + cover_w,
+                            cover_y0 + cover_h,
+                            cover_r,
+                            p.is_dark,
+                        );
+                        // Marco 2:3 con fondo base-200 y borde 1px base-300
+                        rects.push(CanvasRect::rounded(
+                            cover_x0,
+                            cover_y0,
+                            cover_x0 + cover_w,
+                            cover_y0 + cover_h,
+                            cover_r,
+                            p.base_300,
+                        ));
+                        rects.push(CanvasRect::rounded(
+                            cover_x0 + 1.0,
+                            cover_y0 + 1.0,
+                            cover_x0 + cover_w - 1.0,
+                            cover_y0 + cover_h - 1.0,
+                            (cover_r - 1.0).max(0.0),
+                            p.base_200,
+                        ));
+                        if reader.thumbs.peek(&entry.uri).is_none() {
+                            texts.push(CanvasText::new(
+                                cover_x0 + cover_w / 2.0,
+                                cover_y0 + cover_h / 2.0 + title_ts * 0.35,
+                                title_ts,
+                                p.neutral_content,
+                                TextAlign::Center,
+                                true,
+                                truncate_name(&entry_title(entry), 12),
+                            ));
+                        }
+                        // Título bajo el marco
+                        let text_y0 = cy + 4.0 + cover_h + 10.0;
+                        texts.push(CanvasText::new(
+                            cx + GRID_CELL_PAD,
+                            text_y0 + title_ts * 0.85,
+                            title_ts,
+                            p.base_content,
+                            TextAlign::Left,
+                            true,
+                            truncate_name(&entry_title(entry), max_chars),
+                        ));
+                        // Autor
+                        let author_y0 = text_y0 + 20.0;
+                        texts.push(CanvasText::new(
+                            cx + GRID_CELL_PAD,
+                            author_y0 + theme::FONT_CAPTION * 0.85,
+                            theme::FONT_CAPTION,
+                            p.neutral_content,
+                            TextAlign::Left,
+                            false,
+                            truncate_name(&entry_author(entry), max_chars),
+                        ));
+                        // Barra de progreso
+                        let bar_y = author_y0 + 20.0;
+                        let track_w = cell_w - 2.0 * GRID_CELL_PAD;
+                        let pct =
+                            persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
+                                .map(|bp| bp.pct())
+                                .unwrap_or(0.0);
+                        rects.push(CanvasRect::rounded(
+                            cx + GRID_CELL_PAD,
+                            bar_y,
+                            cx + GRID_CELL_PAD + track_w,
+                            bar_y + 4.0,
+                            2.0,
+                            p.base_300,
+                        ));
+                        if pct > 0.0 {
+                            let fill_w = (track_w * pct).clamp(4.0, track_w);
+                            rects.push(CanvasRect::rounded(
+                                cx + GRID_CELL_PAD,
+                                bar_y,
+                                cx + GRID_CELL_PAD + fill_w,
+                                bar_y + 4.0,
+                                2.0,
+                                p.primary,
+                            ));
+                        }
+                    } else {
+                        // Modo Rejilla con hide_covers
+                        let card_r = 12.0f32;
+                        draw_card_shadow(
+                            &mut rects,
+                            cx,
+                            cy,
+                            cx + cell_w,
+                            cy + 100.0,
+                            card_r,
+                            p.is_dark,
+                        );
+                        rects.push(CanvasRect::rounded(
+                            cx,
+                            cy,
+                            cx + cell_w,
+                            cy + 100.0,
+                            card_r,
+                            p.base_300,
+                        ));
+                        rects.push(CanvasRect::rounded(
+                            cx + 1.0,
+                            cy + 1.0,
+                            cx + cell_w - 1.0,
+                            cy + 99.0,
+                            card_r - 1.0,
+                            p.base_100,
+                        ));
+
+                        texts.push(CanvasText::new(
+                            cx + 12.0,
+                            cy + 28.0,
+                            title_ts,
+                            p.base_content,
+                            TextAlign::Left,
+                            true,
+                            truncate_name(&entry_title(entry), max_chars),
+                        ));
+                        texts.push(CanvasText::new(
+                            cx + 12.0,
+                            cy + 52.0,
+                            theme::FONT_CAPTION,
+                            p.neutral_content,
+                            TextAlign::Left,
+                            false,
+                            truncate_name(&entry_author(entry), max_chars),
+                        ));
+                        let bar_y = cy + 72.0;
+                        let track_w = cell_w - 24.0;
+                        let pct =
+                            persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
+                                .map(|bp| bp.pct())
+                                .unwrap_or(0.0);
+                        rects.push(CanvasRect::rounded(
+                            cx + 12.0,
+                            bar_y,
+                            cx + 12.0 + track_w,
+                            bar_y + 4.0,
+                            2.0,
+                            p.base_300,
+                        ));
+                        if pct > 0.0 {
+                            let fill_w = (track_w * pct).clamp(4.0, track_w);
+                            rects.push(CanvasRect::rounded(
+                                cx + 12.0,
+                                bar_y,
+                                cx + 12.0 + fill_w,
+                                bar_y + 4.0,
+                                2.0,
+                                p.primary,
+                            ));
+                        }
+                    }
+                }
+            }
+        } else {
+            // MODO LISTA: 1 columna, fila de ancho total
+            let row_h = list_row_h(reader.win_h);
+            let row_gap = list_row_gap();
+            let total_row_h = row_h + row_gap;
+            let idx_first = (((band_origin as f32 - grid_y0) / total_row_h)
+                .floor()
+                .max(0.0)) as usize;
+            let idx_last = (((band_origin + band_h) as f32 - grid_y0) / total_row_h)
+                .ceil()
+                .max(0.0) as usize;
+            for i in idx_first..idx_last {
+                let Some(entry) = reader.list_entry_at(i) else {
+                    continue;
+                };
+                let (rx, ry_rel, rx2, _ry2) = list_row_rect(w, 0, i, reader.win_h);
+                let ry = yof + grid_y0 + ry_rel;
+                let card_r = 14.0f32;
+
+                draw_card_shadow(&mut rects, rx, ry, rx2, ry + row_h, card_r, p.is_dark);
+                rects.push(CanvasRect::rounded(
+                    rx,
+                    ry,
+                    rx2,
+                    ry + row_h,
+                    card_r,
+                    p.base_300,
+                ));
+                rects.push(CanvasRect::rounded(
+                    rx + 1.0,
+                    ry + 1.0,
+                    rx2 - 1.0,
+                    ry + row_h - 1.0,
+                    card_r - 1.0,
+                    p.base_100,
+                ));
+
+                let text_x = if !reader.hide_covers {
+                    let cw = 60.0f32;
+                    let ch = 90.0f32;
+                    let cx = rx + 12.0;
+                    let cy = ry + 13.0;
+                    let cover_r = 8.0f32;
+
+                    draw_card_shadow(&mut rects, cx, cy, cx + cw, cy + ch, cover_r, p.is_dark);
+                    rects.push(CanvasRect::rounded(
+                        cx,
+                        cy,
+                        cx + cw,
+                        cy + ch,
+                        cover_r,
+                        p.base_300,
+                    ));
+                    rects.push(CanvasRect::rounded(
+                        cx + 1.0,
+                        cy + 1.0,
+                        cx + cw - 1.0,
+                        cy + ch - 1.0,
+                        (cover_r - 1.0).max(0.0),
+                        p.base_200,
+                    ));
+
+                    if reader.thumbs.peek(&entry.uri).is_none() {
+                        texts.push(CanvasText::new(
+                            cx + cw / 2.0,
+                            cy + ch / 2.0 + theme::FONT_CAPTION * 0.35,
+                            theme::FONT_CAPTION * 0.9,
+                            p.neutral_content,
+                            TextAlign::Center,
+                            true,
+                            truncate_name(&entry_title(entry), 8),
+                        ));
+                    }
+                    cx + cw + 18.0
+                } else {
+                    rx + 20.0
+                };
+
+                let title_ts = theme::FONT_TITLE;
+                let char_w = title_ts * 0.55;
+                let max_chars = (((rx2 - text_x - 120.0) / char_w) as usize).max(8);
+
+                texts.push(CanvasText::new(
+                    text_x,
+                    ry + 32.0,
                     title_ts,
                     p.base_content,
                     TextAlign::Left,
                     true,
                     truncate_name(&entry_title(entry), max_chars),
                 ));
-                // Autor 12sp neutral-content (B3)
-                let author_y0 = text_y0 + 20.0;
+
                 texts.push(CanvasText::new(
-                    cx + GRID_CELL_PAD,
-                    author_y0 + theme::FONT_CAPTION * 0.85,
+                    text_x,
+                    ry + 58.0,
                     theme::FONT_CAPTION,
                     p.neutral_content,
                     TextAlign::Left,
                     false,
                     truncate_name(&entry_author(entry), max_chars),
                 ));
-                // Barra de progreso de 4px con track completo base-300 y fill primary (B1)
-                // Separación vertical >= 8 px del texto de autor:
-                let bar_y = author_y0 + 20.0;
-                let track_w = cell_w - 2.0 * GRID_CELL_PAD;
+
                 let pct = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
                     .map(|bp| bp.pct())
                     .unwrap_or(0.0);
+                let bar_y = ry + 82.0;
+                let bar_w = rx2 - text_x - 90.0;
                 rects.push(CanvasRect::rounded(
-                    cx + GRID_CELL_PAD,
+                    text_x,
                     bar_y,
-                    cx + GRID_CELL_PAD + track_w,
+                    text_x + bar_w,
                     bar_y + 4.0,
                     2.0,
                     p.base_300,
                 ));
                 if pct > 0.0 {
-                    let fill_w = (track_w * pct).clamp(4.0, track_w);
+                    let fill_w = (bar_w * pct).clamp(4.0, bar_w);
                     rects.push(CanvasRect::rounded(
-                        cx + GRID_CELL_PAD,
+                        text_x,
                         bar_y,
-                        cx + GRID_CELL_PAD + fill_w,
+                        text_x + fill_w,
                         bar_y + 4.0,
                         2.0,
                         p.primary,
                     ));
                 }
+                let pct_text = format!("{:.0}%", pct * 100.0);
+                texts.push(CanvasText::new(
+                    rx2 - 20.0,
+                    bar_y + 4.0,
+                    theme::FONT_CAPTION,
+                    p.neutral_content,
+                    TextAlign::Right,
+                    true,
+                    pct_text,
+                ));
             }
         }
 
@@ -3278,6 +4209,7 @@ pub(crate) fn render_carousel_row(reader: &Reader) -> Option<Bitmap> {
             16,
             cw as i32,
             chh as i32,
+            reader.cover_fit,
         );
     }
     Some(out)
@@ -3437,58 +4369,89 @@ pub(crate) fn blit_library(
     // Fondo del buffer según el tema activo
     fill_buffer(dst, dst_w, dst_h, dst_stride, bpp, bg_rgba);
 
-    if let Some(h) = header {
-        copy_region(dst, dst_w, dst_h, dst_stride, bpp, h, 0, 0);
-    }
     if let Some((band, origin)) = band {
         let sy = content_y0 - (scroll - origin);
         copy_region(dst, dst_w, dst_h, dst_stride, bpp, band, 0, sy);
     }
+    if let Some(h) = header {
+        copy_region_blend(dst, dst_w, dst_h, dst_stride, bpp, h, 0, 0);
+    }
     if let Some((t, tx, ty)) = toast {
-        copy_region(dst, dst_w, dst_h, dst_stride, bpp, t, tx, ty);
+        copy_region_blend(dst, dst_w, dst_h, dst_stride, bpp, t, tx, ty);
     }
 }
 
-/// Pega las portadas CACHEADAS de la rejilla sobre la banda (celdas visibles
-/// dentro de la banda, clave = content:// URI): se llama tras crear la banda
-/// y cuando `pump_thumbs` cachea portadas nuevas — el placeholder del canvas
-/// queda cubierto y NO se re-renderiza la pantalla (el pegado es memcpy por
-/// celda). Las portadas del carousel viven DENTRO de su fila
-/// (`render_carousel_row`), no en la banda.
+/// Pega las portadas CACHEADAS de la rejilla o lista sobre la banda
 pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: i32) {
     let w = reader.win_w;
-    if w <= 0 || band.width == 0 || band.height == 0 {
+    if w <= 0 || band.width == 0 || band.height == 0 || reader.hide_covers {
         return;
     }
-    let cell_w = grid_cell_w(w);
-    let cover_w = grid_cover_w(w);
-    let cover_h = grid_cover_h(w);
     let has_cont = reader.lib_has_cont();
     let grid_y0 = lib_grid_y0(w, reader.win_h, has_cont);
-    let cell_h = grid_cell_h(w);
-    let row_first = (((band_origin as f32 - grid_y0) / cell_h).floor().max(0.0)) as usize;
-    let row_last = (((band_origin + band.height as i32) as f32 - grid_y0) / cell_h)
-        .ceil()
-        .max(0.0) as usize;
-    for row in row_first..row_last {
-        for col in 0..GRID_COLS {
-            let Some(entry) = reader.grid_entry_at(row, col) else {
+
+    if reader.is_grid() {
+        let cols = reader.effective_grid_cols();
+        let cell_w = grid_cell_w(w, cols);
+        let cell_h = grid_cell_h(w, cols);
+        let cover_w = grid_cover_w(w, cols);
+        let cover_h = grid_cover_h(w, cols);
+        let row_first = (((band_origin as f32 - grid_y0) / cell_h).floor().max(0.0)) as usize;
+        let row_last = (((band_origin + band.height as i32) as f32 - grid_y0) / cell_h)
+            .ceil()
+            .max(0.0) as usize;
+        for row in row_first..row_last {
+            for col in 0..cols {
+                let Some(entry) = reader.grid_entry_at(row, col) else {
+                    continue;
+                };
+                let Some(thumb) = reader.thumbs.peek(&entry.uri) else {
+                    continue;
+                };
+                let (cx, cy_rel, _, _) = grid_cell_rect(w, 0, row, col, cols);
+                let cover_x0 = (cx + (cell_w - cover_w) / 2.0).round() as i32;
+                let cover_y0 = (grid_y0 + cy_rel - band_origin as f32 + 4.0).round() as i32;
+                paste_thumb(
+                    &mut band.data,
+                    band.width as usize,
+                    thumb,
+                    cover_x0,
+                    cover_y0,
+                    cover_w as i32,
+                    cover_h as i32,
+                    reader.cover_fit,
+                );
+            }
+        }
+    } else {
+        let row_h = list_row_h(reader.win_h);
+        let row_gap = list_row_gap();
+        let total_row_h = row_h + row_gap;
+        let idx_first = (((band_origin as f32 - grid_y0) / total_row_h)
+            .floor()
+            .max(0.0)) as usize;
+        let idx_last = (((band_origin + band.height as i32) as f32 - grid_y0) / total_row_h)
+            .ceil()
+            .max(0.0) as usize;
+        for i in idx_first..idx_last {
+            let Some(entry) = reader.list_entry_at(i) else {
                 continue;
             };
             let Some(thumb) = reader.thumbs.peek(&entry.uri) else {
                 continue;
             };
-            let (cx, cy_rel, _, _) = grid_cell_rect(w, 0, row, col);
-            let cover_x0 = (cx + (cell_w - cover_w) / 2.0).round() as i32;
-            let cover_y0 = (grid_y0 + cy_rel - band_origin as f32 + 4.0).round() as i32;
+            let (rx, ry_rel, _, _) = list_row_rect(w, 0, i, reader.win_h);
+            let cover_x0 = (rx + 12.0).round() as i32;
+            let cover_y0 = (grid_y0 + ry_rel - band_origin as f32 + 13.0).round() as i32;
             paste_thumb(
                 &mut band.data,
                 band.width as usize,
                 thumb,
                 cover_x0,
                 cover_y0,
-                cover_w as i32,
-                cover_h as i32,
+                60,
+                90,
+                reader.cover_fit,
             );
         }
     }
@@ -3605,11 +4568,8 @@ fn draw_empty_state(
     );
 }
 
-/// Pega la portada escalada (center-crop, vecino-más-cercano) dentro del
-/// bitmap base de la rejilla: escala la miniatura hasta RELLENAR el área 2:3
-/// y centra el recorte (el sobrante se recorta, nunca letterbox); fuera de
-/// las esquinas redondeadas de 12 px el píxel no se escribe y queda visible
-/// el fondo con la sombra ya pintada en el bitmap base.
+/// Pega la portada escalada según el modo `fit` (Crop vs Fit) dentro del bitmap base.
+#[allow(clippy::too_many_arguments)]
 fn paste_thumb(
     dst: &mut [u8],
     dst_w: usize,
@@ -3618,6 +4578,7 @@ fn paste_thumb(
     dy: i32,
     target_w: i32,
     target_h: i32,
+    fit: LibraryCoverFit,
 ) {
     let dst_h = dst.len() / (dst_w * 4);
     if dst_w == 0 || dst_h == 0 || target_w <= 0 || target_h <= 0 {
@@ -3629,66 +4590,116 @@ fn paste_thumb(
         return;
     }
 
-    // CONTAIN con respiro interior de 8 px (B2: nunca a sangre completa)
-    let pad = 8.0f64;
-    let avail_w = (target_w as f64 - 2.0 * pad).max(10.0);
-    let avail_h = (target_h as f64 - 2.0 * pad).max(10.0);
-    let scale = (avail_w / src_w as f64).min(avail_h / src_h as f64);
-    let dw = (src_w as f64 * scale).max(1.0);
-    let dh = (src_h as f64 * scale).max(1.0);
-    let page_x0 = ((target_w as f64 - dw) / 2.0).round() as i32;
-    let page_y0 = ((target_h as f64 - dh) / 2.0).round() as i32;
-    let page_x1 = page_x0 + dw as i32;
-    let page_y1 = page_y0 + dh as i32;
+    match fit {
+        LibraryCoverFit::Crop => {
+            let scale = (target_w as f64 / src_w as f64).max(target_h as f64 / src_h as f64);
+            let dw = (src_w as f64 * scale).max(1.0);
+            let dh = (src_h as f64 * scale).max(1.0);
+            let off_x = ((dw - target_w as f64) / 2.0).round();
+            let off_y = ((dh - target_h as f64) / 2.0).round();
 
-    let src_stride = src_w as usize * 4;
-    for ty in page_y0..page_y1 {
-        let py = dy + ty;
-        if py < 0 || py as usize >= dst_h {
-            continue;
-        }
-        let sy = (((ty - page_y0) as f64 + 0.5) / scale - 0.5).clamp(0.0, (src_h - 1) as f64);
-        let y0 = sy.floor() as usize;
-        let y1 = (y0 + 1).min(src_h as usize - 1);
-        let fy = (sy - y0 as f64) as f32;
-        let row0 = &thumb.data[y0 * src_stride..];
-        let row1 = &thumb.data[y1 * src_stride..];
-
-        for tx in page_x0..page_x1 {
-            let px = dx + tx;
-            if px < 0 || px as usize >= dst_w {
-                continue;
-            }
-
-            let sx = (((tx - page_x0) as f64 + 0.5) / scale - 0.5).clamp(0.0, (src_w - 1) as f64);
-            let x0 = sx.floor() as usize;
-            let x1 = (x0 + 1).min(src_w as usize - 1);
-            let fx = (sx - x0 as f64) as f32;
-
-            // Borde sutil de 1 px alrededor de la página de papel
-            let is_edge = tx == page_x0 || tx == page_x1 - 1 || ty == page_y0 || ty == page_y1 - 1;
-            // Sombra sutil del lomo de libro en los primeros 6 px de la página
-            let spine_mul = if tx - page_x0 < 6 {
-                1.0 - (0.24 * (1.0 - (tx - page_x0) as f32 / 6.0))
-            } else {
-                1.0
-            };
-
-            let o = (py as usize * dst_w + px as usize) * 4;
-            for c in 0..3usize {
-                let p00 = row0[x0 * 4 + c] as f32;
-                let p10 = row0[x1 * 4 + c] as f32;
-                let p01 = row1[x0 * 4 + c] as f32;
-                let p11 = row1[x1 * 4 + c] as f32;
-                let top = p00 + (p10 - p00) * fx;
-                let bottom = p01 + (p11 - p01) * fx;
-                let mut val = (top + (bottom - top) * fy) * spine_mul;
-                if is_edge {
-                    val *= 0.88;
+            let src_stride = src_w as usize * 4;
+            for ty in 0..target_h {
+                let py = dy + ty;
+                if py < 0 || py as usize >= dst_h {
+                    continue;
                 }
-                dst[o + c] = val.clamp(0.0, 255.0).round() as u8;
+                let sy = (((ty as f64 + off_y) + 0.5) / scale - 0.5).clamp(0.0, (src_h - 1) as f64);
+                let y0 = sy.floor() as usize;
+                let y1 = (y0 + 1).min(src_h as usize - 1);
+                let fy = (sy - y0 as f64) as f32;
+                let row0 = &thumb.data[y0 * src_stride..];
+                let row1 = &thumb.data[y1 * src_stride..];
+
+                for tx in 0..target_w {
+                    let px = dx + tx;
+                    if px < 0 || px as usize >= dst_w {
+                        continue;
+                    }
+                    let sx =
+                        (((tx as f64 + off_x) + 0.5) / scale - 0.5).clamp(0.0, (src_w - 1) as f64);
+                    let x0 = sx.floor() as usize;
+                    let x1 = (x0 + 1).min(src_w as usize - 1);
+                    let fx = (sx - x0 as f64) as f32;
+
+                    let o = (py as usize * dst_w + px as usize) * 4;
+                    for c in 0..3usize {
+                        let p00 = row0[x0 * 4 + c] as f32;
+                        let p10 = row0[x1 * 4 + c] as f32;
+                        let p01 = row1[x0 * 4 + c] as f32;
+                        let p11 = row1[x1 * 4 + c] as f32;
+                        let top = p00 + (p10 - p00) * fx;
+                        let bottom = p01 + (p11 - p01) * fx;
+                        let val = top + (bottom - top) * fy;
+                        dst[o + c] = val.clamp(0.0, 255.0).round() as u8;
+                    }
+                    dst[o + 3] = 0xFF;
+                }
             }
-            dst[o + 3] = 0xFF;
+        }
+        LibraryCoverFit::Fit => {
+            let pad = 6.0f64;
+            let avail_w = (target_w as f64 - 2.0 * pad).max(10.0);
+            let avail_h = (target_h as f64 - 2.0 * pad).max(10.0);
+            let scale = (avail_w / src_w as f64).min(avail_h / src_h as f64);
+            let dw = (src_w as f64 * scale).max(1.0);
+            let dh = (src_h as f64 * scale).max(1.0);
+            let page_x0 = ((target_w as f64 - dw) / 2.0).round() as i32;
+            let page_y0 = ((target_h as f64 - dh) / 2.0).round() as i32;
+            let page_x1 = page_x0 + dw as i32;
+            let page_y1 = page_y0 + dh as i32;
+
+            let src_stride = src_w as usize * 4;
+            for ty in page_y0..page_y1 {
+                let py = dy + ty;
+                if py < 0 || py as usize >= dst_h {
+                    continue;
+                }
+                let sy =
+                    (((ty - page_y0) as f64 + 0.5) / scale - 0.5).clamp(0.0, (src_h - 1) as f64);
+                let y0 = sy.floor() as usize;
+                let y1 = (y0 + 1).min(src_h as usize - 1);
+                let fy = (sy - y0 as f64) as f32;
+                let row0 = &thumb.data[y0 * src_stride..];
+                let row1 = &thumb.data[y1 * src_stride..];
+
+                for tx in page_x0..page_x1 {
+                    let px = dx + tx;
+                    if px < 0 || px as usize >= dst_w {
+                        continue;
+                    }
+
+                    let sx = (((tx - page_x0) as f64 + 0.5) / scale - 0.5)
+                        .clamp(0.0, (src_w - 1) as f64);
+                    let x0 = sx.floor() as usize;
+                    let x1 = (x0 + 1).min(src_w as usize - 1);
+                    let fx = (sx - x0 as f64) as f32;
+
+                    let is_edge =
+                        tx == page_x0 || tx == page_x1 - 1 || ty == page_y0 || ty == page_y1 - 1;
+                    let spine_mul = if tx - page_x0 < 6 {
+                        1.0 - (0.24 * (1.0 - (tx - page_x0) as f32 / 6.0))
+                    } else {
+                        1.0
+                    };
+
+                    let o = (py as usize * dst_w + px as usize) * 4;
+                    for c in 0..3usize {
+                        let p00 = row0[x0 * 4 + c] as f32;
+                        let p10 = row0[x1 * 4 + c] as f32;
+                        let p01 = row1[x0 * 4 + c] as f32;
+                        let p11 = row1[x1 * 4 + c] as f32;
+                        let top = p00 + (p10 - p00) * fx;
+                        let bottom = p01 + (p11 - p01) * fx;
+                        let mut val = (top + (bottom - top) * fy) * spine_mul;
+                        if is_edge {
+                            val *= 0.88;
+                        }
+                        dst[o + c] = val.clamp(0.0, 255.0).round() as u8;
+                    }
+                    dst[o + 3] = 0xFF;
+                }
+            }
         }
     }
 }

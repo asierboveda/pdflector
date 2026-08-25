@@ -151,11 +151,12 @@ pub(crate) enum BookStatus {
     Finished,
 }
 
-/// Orden de "My Library" (sort, chips discretos de organización).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Orden de "My Library" (sort, chips discretos de organización y menú View).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum LibSort {
     /// `added_unix` del registro de progreso (más reciente primero; los
     /// nunca abiertos al final).
+    #[default]
     RecentlyAdded,
     /// `last_read_unix` (más reciente primero; los nunca abiertos al final).
     RecentlyRead,
@@ -163,6 +164,8 @@ pub(crate) enum LibSort {
     Title,
     /// Autor (primer segmento de RELATIVE_PATH), luego título.
     Author,
+    /// Porcentaje de progreso leído (pct(), mayor progreso primero).
+    Progress,
 }
 
 /// Layout de la biblioteca (menú View "⋯", Tarea 2 implementa el contenido):
@@ -187,8 +190,6 @@ pub(crate) enum LibraryCoverFit {
 }
 
 /// Agrupación de la rejilla (menú View "⋯", Tarea 2).
-/// `dead_code` hasta la Tarea 2 (dropdown), donde se consume.
-#[allow(dead_code)] // Tarea 2 (contenido del menú View)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum LibraryGroupBy {
     /// Sin agrupar (por defecto).
@@ -399,21 +400,22 @@ pub(crate) fn grid_gap(win_w: i32) -> f32 {
 /// Inset de la portada dentro de la celda (px).
 pub(crate) const GRID_CELL_PAD: f32 = 10.0;
 
-/// Ancho (px) de una celda de la rejilla.
-pub(crate) fn grid_cell_w(win_w: i32) -> f32 {
+/// Ancho (px) de una celda de la rejilla según el número de columnas.
+pub(crate) fn grid_cell_w(win_w: i32, cols: usize) -> f32 {
     let w = win_w as f32;
-    (w - 2.0 * grid_pad(win_w) - 2.0 * grid_gap(win_w)) / GRID_COLS as f32
+    let c = cols.max(1) as f32;
+    (w - 2.0 * grid_pad(win_w) - (c - 1.0) * grid_gap(win_w)) / c
 }
 
 /// Ancho (px) del área de portada dentro de la celda.
-pub(crate) fn grid_cover_w(win_w: i32) -> f32 {
-    grid_cell_w(win_w) - 2.0 * GRID_CELL_PAD
+pub(crate) fn grid_cover_w(win_w: i32, cols: usize) -> f32 {
+    grid_cell_w(win_w, cols) - 2.0 * GRID_CELL_PAD
 }
 
 /// Alto (px) del área de portada: proporción 2:3 (alto = ancho × 1.5), estilo
 /// Apple Books, para TODAS las celdas (rejilla uniforme).
-pub(crate) fn grid_cover_h(win_w: i32) -> f32 {
-    grid_cover_w(win_w) * 1.5
+pub(crate) fn grid_cover_h(win_w: i32, cols: usize) -> f32 {
+    grid_cover_w(win_w, cols) * 1.5
 }
 
 /// Alto (px) de la zona de texto de la celda: título (14sp) + autor (12sp) + barra progreso + padding.
@@ -422,8 +424,34 @@ pub(crate) fn grid_title_h(_win_w: i32) -> f32 {
 }
 
 /// Alto (px) de una celda de la rejilla.
-pub(crate) fn grid_cell_h(win_w: i32) -> f32 {
-    grid_cover_h(win_w) + grid_title_h(win_w)
+pub(crate) fn grid_cell_h(win_w: i32, cols: usize) -> f32 {
+    grid_cover_h(win_w, cols) + grid_title_h(win_w)
+}
+
+/// Alto (px) de una fila de la biblioteca en modo Lista.
+pub(crate) fn list_row_h(_win_h: i32) -> f32 {
+    116.0
+}
+
+/// Separación vertical (px) entre filas en modo Lista.
+pub(crate) fn list_row_gap() -> f32 {
+    12.0
+}
+
+/// Rectángulo de una fila de la biblioteca en modo Lista.
+pub(crate) fn list_row_rect(
+    win_w: i32,
+    rows_y0: i32,
+    idx: usize,
+    win_h: i32,
+) -> (f32, f32, f32, f32) {
+    let pad = grid_pad(win_w);
+    let x = pad;
+    let w = win_w as f32 - 2.0 * pad;
+    let h = list_row_h(win_h);
+    let gap = list_row_gap();
+    let y = rows_y0 as f32 + idx as f32 * (h + gap);
+    (x, y, x + w, y + h)
 }
 
 // --- Biblioteca rediseñada: biblioteca PERSONAL premium (2026-08-XX) ---
@@ -615,18 +643,15 @@ pub(crate) fn lib_org_y(win_w: i32, win_h: i32, has_cont: bool, row: usize) -> f
         + row as f32 * (lib_org_chip_h(win_h) + lib_org_gap())
 }
 
-/// Y (px) del borde superior de la REJILLA en coords de CONTENIDO.
-/// Biblioteca MINIMALISTA (estilo Readest): sin Continue Reading, sin
-/// títulos de sección y sin chips de organización — la rejilla arranca
-/// justo bajo el campo de búsqueda con un pequeño aire de 8 px.
-pub(crate) fn lib_grid_y0(_win_w: i32, _win_h: i32, _has_cont: bool) -> f32 {
-    8.0
-}
-
-/// Alto total (px) del contenido scrolleable de la biblioteca (Continue
-/// Reading + título de My Library + organización + rejilla + aire inferior).
-pub(crate) fn lib_content_h(win_w: i32, win_h: i32, has_cont: bool, grid_rows: usize) -> f32 {
-    lib_grid_y0(win_w, win_h, has_cont) + grid_rows as f32 * grid_cell_h(win_w) + 28.0
+/// Y (px) del borde superior de la REJILLA o LISTA en coords de CONTENIDO.
+/// Si `has_cont` es true (estantería de recientes activa con libros),
+/// deja espacio para el carousel Continue Reading.
+pub(crate) fn lib_grid_y0(win_w: i32, win_h: i32, has_cont: bool) -> f32 {
+    if has_cont {
+        lib_cont_block_h(win_w, win_h, true) + 16.0
+    } else {
+        8.0
+    }
 }
 
 /// Ancho (px) de un chip del panel de búsqueda según el nº de caracteres de
@@ -818,7 +843,7 @@ pub(crate) fn lib_empty_state_geom(reader: &Reader) -> Option<EmptyStateGeom> {
 pub(crate) fn grid_visible_rows(win_w: i32, win_h: i32, has_status: bool) -> usize {
     let status_h = if has_status { picker_row_h(win_h) } else { 0 };
     let usable = (win_h - picker_header_h(win_h) - status_h) as f32;
-    (usable / grid_cell_h(win_w)).floor().max(1.0) as usize
+    (usable / grid_cell_h(win_w, GRID_COLS)).floor().max(1.0) as usize
 }
 
 /// Y del borde superior de la zona de rejilla (cabecera + franja de estado).
@@ -835,10 +860,16 @@ pub(crate) fn grid_cell_rect(
     rows_y0: i32,
     row: usize,
     col: usize,
+    cols: usize,
 ) -> (f32, f32, f32, f32) {
-    let x = grid_pad(win_w) + col as f32 * (grid_cell_w(win_w) + grid_gap(win_w));
-    let y = rows_y0 as f32 + row as f32 * grid_cell_h(win_w);
-    (x, y, x + grid_cell_w(win_w), y + grid_cell_h(win_w))
+    let x = grid_pad(win_w) + col as f32 * (grid_cell_w(win_w, cols) + grid_gap(win_w));
+    let y = rows_y0 as f32 + row as f32 * grid_cell_h(win_w, cols);
+    (
+        x,
+        y,
+        x + grid_cell_w(win_w, cols),
+        y + grid_cell_h(win_w, cols),
+    )
 }
 
 /// Tamaño fijo del indicador de página "N / total" (overlay abajo a la
@@ -1140,8 +1171,6 @@ pub(crate) struct Reader {
     /// persistido.
     pub(crate) cover_fit: LibraryCoverFit,
     /// ¿Columnas automáticas (por ancho de ventana)? menú View "⋯" (Tarea 2).
-    /// `dead_code` hasta la Tarea 2: el dropdown lo alterna.
-    #[allow(dead_code)] // Tarea 2 (contenido del menú View)
     pub(crate) auto_columns: bool,
     /// Nº de columnas fijas de la rejilla (si `auto_columns` es false);
     /// persistido.
@@ -1155,6 +1184,8 @@ pub(crate) struct Reader {
     pub(crate) hide_covers: bool,
     /// ¿Mostrar la estantería de recientes? menú Settings "☰"; persistido.
     pub(crate) recent_shelf_enabled: bool,
+    /// Agrupación de la biblioteca (None = libros sueltos, Author = por autor).
+    pub(crate) group_by: LibraryGroupBy,
     /// Orden de "My Library" (chips de sort: Recently Added / Recently Read /
     /// Title / Author).
     pub(crate) lib_sort: LibSort,
@@ -1465,6 +1496,7 @@ impl Reader {
             settings_menu_open: false,
             hide_covers: false,
             recent_shelf_enabled: true,
+            group_by: LibraryGroupBy::None,
             lib_sort: LibSort::RecentlyAdded,
             lib_status: None,
             lib_books: persist::load_progress(app.internal_data_path().as_deref()),
@@ -1836,7 +1868,12 @@ impl Reader {
         let content_y0 = lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
         let viewport = (self.win_h - content_y0).max(0);
         let content_h = self.lib_content_h() as i32;
-        let margin = grid_cell_h(self.win_w) as i32;
+        let margin = if self.is_grid() {
+            let cols = self.effective_grid_cols();
+            grid_cell_h(self.win_w, cols) as i32
+        } else {
+            list_row_h(self.win_h) as i32
+        };
         let band_h = (viewport + 2 * margin).min(content_h.max(viewport));
         let band_origin = ((self.lib_scroll as i32) - margin)
             .max(0)
@@ -3392,18 +3429,30 @@ impl Reader {
                 }
             }
         }
-        // Rejilla (clave = content:// URI), solo filas visibles.
-        let (row0, rows) = self.lib_visible_grid_rows();
-        for row in row0..row0 + rows {
-            for col in 0..GRID_COLS {
-                // Clonar la URI: `thumbs.get` promueve la recencia (necesita
-                // &mut self) y no puede convivir con el préstamo de
-                // `grid_entry_at`.
-                let Some(uri) = self.grid_entry_at(row, col).map(|e| e.uri.clone()) else {
-                    continue;
-                };
-                if self.thumbs.get(&uri).is_none() && !self.thumb_failed.contains(&uri) {
-                    return true;
+        // Portadas de la rejilla / lista (clave = content:// URI), solo filas visibles.
+        if !self.hide_covers {
+            if self.is_grid() {
+                let cols = self.effective_grid_cols();
+                let (row0, rows) = self.lib_visible_grid_rows();
+                for row in row0..row0 + rows {
+                    for col in 0..cols {
+                        let Some(uri) = self.grid_entry_at(row, col).map(|e| e.uri.clone()) else {
+                            continue;
+                        };
+                        if self.thumbs.get(&uri).is_none() && !self.thumb_failed.contains(&uri) {
+                            return true;
+                        }
+                    }
+                }
+            } else {
+                let (idx0, count) = self.lib_visible_list_rows();
+                for idx in idx0..idx0 + count {
+                    let Some(uri) = self.list_entry_at(idx).map(|e| e.uri.clone()) else {
+                        continue;
+                    };
+                    if self.thumbs.get(&uri).is_none() && !self.thumb_failed.contains(&uri) {
+                        return true;
+                    }
                 }
             }
         }
@@ -3436,16 +3485,31 @@ impl Reader {
         if grid_y0_screen >= self.win_h as f32 {
             return (0, 0); // la rejilla está por debajo de la ventana
         }
-        let row0 = ((content_y0 - grid_y0_screen) / grid_cell_h(self.win_w)).max(0.0) as usize;
-        let below = ((self.win_h as f32 - grid_y0_screen) / grid_cell_h(self.win_w))
-            .ceil()
-            .max(0.0) as usize;
+        let cols = self.effective_grid_cols();
+        let ch = grid_cell_h(self.win_w, cols);
+        let row0 = ((content_y0 - grid_y0_screen) / ch).max(0.0) as usize;
+        let below = ((self.win_h as f32 - grid_y0_screen) / ch).ceil().max(0.0) as usize;
+        (row0, below + 1)
+    }
+
+    /// Rango de filas de la lista VISIBLES con el scroll vertical actual.
+    pub(crate) fn lib_visible_list_rows(&self) -> (usize, usize) {
+        let content_y0 =
+            lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some()) as f32;
+        let grid_y0_screen =
+            content_y0 + lib_grid_y0(self.win_w, self.win_h, self.lib_has_cont()) - self.lib_scroll;
+        if grid_y0_screen >= self.win_h as f32 {
+            return (0, 0);
+        }
+        let rh = list_row_h(self.win_h) + list_row_gap();
+        let row0 = ((content_y0 - grid_y0_screen) / rh).max(0.0) as usize;
+        let below = ((self.win_h as f32 - grid_y0_screen) / rh).ceil().max(0.0) as usize;
         (row0, below + 1)
     }
 
     /// Renderiza bajo demanda un lote de portadas de la biblioteca (máx. 3 por
     /// tick, ~1-3 ms cada una): primero el carousel de "Continue Reading"
-    /// (clave = ruta local) y después las celdas VISIBLES de la rejilla
+    /// (clave = ruta local) y después las celdas VISIBLES de la rejilla/lista
     /// (clave = content:// URI). Solo las que no están en caché ni fallaron.
     /// Devuelve true si entró alguna portada nueva (→ re-render de la
     /// biblioteca).
@@ -3485,48 +3549,80 @@ impl Reader {
                 budget -= 1;
             }
         }
-        // Rejilla (clave = URI content:// para entradas del sistema o RUTA
-        // local para las CURADAS — ver `reload_curated_library`).
-        let (row0, rows) = self.lib_visible_grid_rows();
-        for row in row0..row0 + rows {
-            for col in 0..GRID_COLS {
-                if budget == 0 {
-                    return changed;
-                }
-                // Clonar uri+name antes de mutar la caché (préstamos).
-                let Some((name, uri)) = self
-                    .grid_entry_at(row, col)
-                    .map(|e| (e.name.clone(), e.uri.clone()))
-                else {
-                    continue;
-                };
-                if self.thumbs.get(&uri).is_some() || self.thumb_failed.contains(&uri) {
-                    continue;
-                }
-                let rendered = if uri.starts_with("content:") {
-                    self.render_thumb(app, &uri)
-                } else {
-                    // Entrada CURADA: uri es una ruta local → portada por
-                    // ruta (mismo patrón que los recientes).
-                    self.render_thumb_path(&uri)
-                };
-                match rendered {
-                    Some(bmp) => {
-                        self.thumbs.insert(uri.clone(), bmp);
-                        info!(
-                            "thumb {} cached ({} entries / {:.1} MiB)",
-                            name,
-                            self.thumbs.len(),
-                            self.thumbs.resident_bytes() as f64 / (1024.0 * 1024.0)
-                        );
-                        changed = true;
-                    }
-                    None => {
-                        self.thumb_failed.insert(uri.clone());
-                        warn!("thumb failed: {uri}");
+        if !self.hide_covers {
+            if self.is_grid() {
+                let cols = self.effective_grid_cols();
+                let (row0, rows) = self.lib_visible_grid_rows();
+                for row in row0..row0 + rows {
+                    for col in 0..cols {
+                        if budget == 0 {
+                            return changed;
+                        }
+                        let Some((name, uri)) = self
+                            .grid_entry_at(row, col)
+                            .map(|e| (e.name.clone(), e.uri.clone()))
+                        else {
+                            continue;
+                        };
+                        if self.thumbs.get(&uri).is_some() || self.thumb_failed.contains(&uri) {
+                            continue;
+                        }
+                        let rendered = if uri.starts_with("content:") {
+                            self.render_thumb(app, &uri)
+                        } else {
+                            self.render_thumb_path(&uri)
+                        };
+                        match rendered {
+                            Some(bmp) => {
+                                self.thumbs.insert(uri.clone(), bmp);
+                                info!("thumb {name} cached");
+                                changed = true;
+                            }
+                            None => {
+                                self.thumb_failed.insert(uri.clone());
+                                warn!("thumb failed: {uri}");
+                            }
+                        }
+                        budget -= 1;
                     }
                 }
-                budget -= 1;
+            } else {
+                let (idx0, count) = self.lib_visible_list_rows();
+                for idx in idx0..idx0 + count {
+                    if budget == 0 {
+                        return changed;
+                    }
+                    let Some((name, uri)) = self
+                        .list_entry_at(idx)
+                        .map(|e| (e.name.clone(), e.uri.clone()))
+                    else {
+                        continue;
+                    };
+                    if self.thumbs.get(&uri).is_some() || self.thumb_failed.contains(&uri) {
+                        continue;
+                    }
+                    let rendered = if uri.starts_with("content:") {
+                        self.render_thumb(app, &uri)
+                    } else {
+                        self.render_thumb_path(&uri)
+                    };
+                    match rendered {
+                        Some(bmp) => {
+                            self.thumbs.insert(uri.clone(), bmp);
+                            info!(
+                                "list thumb {name} cached (total: {} / {:.1} MiB)",
+                                self.thumbs.len(),
+                                self.thumbs.resident_bytes() as f64 / (1024.0 * 1024.0)
+                            );
+                            changed = true;
+                        }
+                        None => {
+                            self.thumb_failed.insert(uri.clone());
+                            warn!("list thumb failed: {uri}");
+                        }
+                    }
+                    budget -= 1;
+                }
             }
         }
         changed
@@ -4708,13 +4804,8 @@ impl Reader {
     /// primera vez (added_unix) y se actualiza en cada apertura o cambio de
     /// página — de ahí se derivan "Page X of Y", la barra de progreso, el
     /// estado Reading/Finished y los sorts de "My Library" sin abrir el PDF.
-    fn save_state(&mut self) {
-        if self.mode != UiMode::Viewer {
-            return;
-        }
-        let Some(path) = self.doc_path.as_ref() else {
-            return;
-        };
+    pub(crate) fn save_state(&mut self) {
+        let path = self.doc_path.clone().unwrap_or_default();
         let state = crate::persist::ViewerState {
             path: path.clone(),
             page: self.page,
@@ -4728,13 +4819,13 @@ impl Reader {
             recent_shelf_enabled: self.recent_shelf_enabled,
         };
         crate::persist::save_state(self.internal_dir.as_deref(), &state);
-        // Progreso por libro (eager, igual que state.json; un cierre
-        // inesperado no pierde la página del libro).
-        let pages = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
-        let now = crate::persist::unix_now();
-        self.lib_books =
-            crate::persist::touch_progress(&self.lib_books, path, self.page, pages, now);
-        crate::persist::save_progress(self.internal_dir.as_deref(), &self.lib_books);
+        if self.mode == UiMode::Viewer && !path.is_empty() {
+            let pages = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
+            let now = crate::persist::unix_now();
+            self.lib_books =
+                crate::persist::touch_progress(&self.lib_books, &path, self.page, pages, now);
+            crate::persist::save_progress(self.internal_dir.as_deref(), &self.lib_books);
+        }
     }
 
     /// Abre un PDF por ruta (picker) y pasa al visor con la página 1.
@@ -5100,18 +5191,36 @@ impl Reader {
         picker_visible_rows(self.win_h, self.status.is_some()).saturating_sub(crumbs)
     }
 
-    /// Nº de filas de celdas de la rejilla de la biblioteca (3 columnas) con
+    /// Nº de columnas efectivas de la rejilla (Auto -> 3, Manual -> columns clamp 1..4).
+    pub(crate) fn effective_grid_cols(&self) -> usize {
+        if self.auto_columns {
+            3
+        } else {
+            self.columns.clamp(1, 4) as usize
+        }
+    }
+
+    /// Nº de filas de celdas de la rejilla de la biblioteca con
     /// el filtro actual aplicado (`lib_filtered`).
+    #[allow(dead_code)]
     pub(crate) fn grid_total_rows(&self) -> usize {
-        self.lib_filtered.len().div_ceil(GRID_COLS)
+        let cols = self.effective_grid_cols();
+        self.lib_filtered.len().div_ceil(cols)
     }
 
     /// Entrada de la rejilla en la fila `row` (0-based) y columna `col`
-    /// (0..GRID_COLS) — resolución sobre la lista FILTRADA (`lib_filtered`,
-    /// que sin filtros equivale a TODAS las entradas en orden de MediaStore).
-    /// None si la celda está fuera de rango (fila incompleta de la última).
+    /// (0..cols) — resolución sobre la lista FILTRADA (`lib_filtered`).
+    /// None si la celda está fuera de rango.
     pub(crate) fn grid_entry_at(&self, row: usize, col: usize) -> Option<&LibraryEntry> {
-        let idx = row.checked_mul(GRID_COLS)?.checked_add(col)?;
+        let cols = self.effective_grid_cols();
+        let idx = row.checked_mul(cols)?.checked_add(col)?;
+        self.lib_filtered
+            .get(idx)
+            .and_then(|&i| self.library_list.get(i))
+    }
+
+    /// Entrada de la lista en el índice `idx` de la lista FILTRADA.
+    pub(crate) fn list_entry_at(&self, idx: usize) -> Option<&LibraryEntry> {
         self.lib_filtered
             .get(idx)
             .and_then(|&i| self.library_list.get(i))
@@ -5235,6 +5344,29 @@ impl Reader {
                             .cmp(&self.library_list[b].name.to_lowercase())
                     })
             }),
+            LibSort::Progress => {
+                let mut keyed: Vec<(usize, f32)> = idxs
+                    .iter()
+                    .map(|&i| {
+                        let e = &self.library_list[i];
+                        let pct = persist::progress_for(&self.lib_books, &self.entry_path(e))
+                            .map(|p| p.pct())
+                            .unwrap_or(0.0);
+                        (i, pct)
+                    })
+                    .collect();
+                keyed.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| {
+                            self.library_list[a.0]
+                                .name
+                                .to_lowercase()
+                                .cmp(&self.library_list[b.0].name.to_lowercase())
+                        })
+                });
+                idxs = keyed.into_iter().map(|(i, _)| i).collect();
+            }
             LibSort::RecentlyAdded | LibSort::RecentlyRead => {
                 // Precomputar la clave (added/read) una vez por entrada: evita
                 // reconstruir la ruta local en cada comparación del sort.
@@ -5260,12 +5392,19 @@ impl Reader {
                 idxs = keyed.into_iter().map(|(i, _)| i).collect();
             }
         }
+        if self.group_by == LibraryGroupBy::Author && self.lib_sort != LibSort::Author {
+            idxs.sort_by(|&a, &b| {
+                entry_author(&self.library_list[a])
+                    .to_lowercase()
+                    .cmp(&entry_author(&self.library_list[b]).to_lowercase())
+            });
+        }
         self.lib_filtered = idxs;
     }
 
     /// Aplica un cambio de filtro/sort: recalcula la lista, clampa el scroll
     /// y re-renderiza.
-    fn apply_filter(&mut self) {
+    pub(crate) fn apply_filter(&mut self) {
         self.refresh_lib_filtered();
         let max_v = self.lib_max_scroll();
         if self.lib_scroll > max_v {
@@ -5400,13 +5539,22 @@ impl Reader {
     /// (geometría, tap, drag, pump de portadas) sigue referenciándola, así
     /// que todo colapsa a alto 0 / sin datos sin tocar nada más.
     pub(crate) fn lib_has_cont(&self) -> bool {
-        false
+        if !self.recent_shelf_enabled {
+            return false;
+        }
+        if let Some(s) = self.lib_status
+            && s != BookStatus::Reading
+        {
+            return false;
+        }
+        self.recents.iter().any(|r| {
+            persist::progress_for(&self.lib_books, &r.path)
+                .map(|p| !p.is_finished())
+                .unwrap_or(true)
+        })
     }
 
-    /// ¿La biblioteca se muestra en REJILLA (vs lista)? El menú View "⋯" lo
-    /// cambia; la persistencia vive en `state.json` (`ViewerState::view_mode`).
-    /// `dead_code` hasta la Tarea 2 (el layout de lista se renderiza ahí).
-    #[allow(dead_code)] // Tarea 2 (render de vista lista)
+    /// ¿La biblioteca se muestra en REJILLA (vs lista)?
     pub(crate) fn is_grid(&self) -> bool {
         self.view_mode == LibraryViewMode::Grid
     }
@@ -5425,12 +5573,20 @@ impl Reader {
 
     /// Alto total (px) del contenido scrolleable de la biblioteca.
     pub(crate) fn lib_content_h(&self) -> f32 {
-        lib_content_h(
-            self.win_w,
-            self.win_h,
-            self.lib_has_cont(),
-            self.grid_total_rows(),
-        )
+        let win_w = self.win_w;
+        let win_h = self.win_h;
+        let has_cont = self.lib_has_cont();
+        let grid_y0 = lib_grid_y0(win_w, win_h, has_cont);
+        let count = self.lib_filtered.len();
+        if self.is_grid() {
+            let cols = self.effective_grid_cols();
+            let rows = count.div_ceil(cols);
+            let gap = grid_gap(win_w);
+            grid_y0 + rows as f32 * (grid_cell_h(win_w, cols) + gap) + 40.0
+        } else {
+            let gap = list_row_gap();
+            grid_y0 + count as f32 * (list_row_h(win_h) + gap) + 40.0
+        }
     }
 
     /// Scroll vertical máximo (px) del contenido de la biblioteca.

@@ -58,16 +58,20 @@ use android_activity::{AndroidApp, InputStatus};
 use log::warn;
 
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
-use crate::draw::{sheet_buttons, toolbar_buttons, toolbar_rect, viewer_top_chrome_buttons};
+use crate::draw::{
+    ViewMenuItem, sheet_buttons, toolbar_buttons, toolbar_rect, view_menu_geometry,
+    viewer_top_chrome_buttons,
+};
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
-    BookStatus, GRID_COLS, LibSort, ListDrag, PickRow, PickerKind, Reader, UiMode, grid_cell_h,
-    grid_cell_w, grid_gap, grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_block_h,
-    lib_cont_card_w, lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
-    lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h,
-    lib_search_panel_h, lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h,
-    picker_row_h, settings_menu_button_rect, sheet_h, view_menu_button_rect,
-    viewer_bottom_chrome_h, viewer_top_chrome_h,
+    BookStatus, LibSort, LibraryCoverFit, LibraryGroupBy, LibraryViewMode, ListDrag, PickRow,
+    PickerKind, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap, grid_pad, lib_add_btn_w,
+    lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w, lib_cont_gap, lib_content_y0,
+    lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h, lib_org_chip_h,
+    lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h, lib_section_title_h,
+    list_row_gap, list_row_h, page_badge_rect, picker_btn_w, picker_header_h, picker_row_h,
+    settings_menu_button_rect, sheet_h, view_menu_button_rect, viewer_bottom_chrome_h,
+    viewer_top_chrome_h,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 
@@ -878,11 +882,126 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let (sl, st, sr, sb) = settings_menu_button_rect(reader.win_w, reader.win_h);
     let hit_view = x >= vl && x < vr && y >= vt && y < vb;
     let hit_settings = x >= sl && x < sr && y >= st && y < sb;
-    if (reader.view_menu_open || reader.settings_menu_open) && !hit_view && !hit_settings {
+
+    // ViewMenu dropdown abierto: procesar tap en ítems o cerrar
+    if reader.view_menu_open {
+        let (_card_rect, items) = view_menu_geometry(reader.win_w, reader.win_h);
+        let mut handled = false;
+        for (item, rect) in items {
+            if x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3 {
+                match item {
+                    ViewMenuItem::Grid => {
+                        reader.view_mode = LibraryViewMode::Grid;
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::List => {
+                        reader.view_mode = LibraryViewMode::List;
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::ColumnsAuto => {
+                        reader.auto_columns = !reader.auto_columns;
+                        reader.save_state();
+                    }
+                    ViewMenuItem::ColumnsDec => {
+                        reader.auto_columns = false;
+                        reader.columns = reader.columns.saturating_sub(1).clamp(1, 4);
+                        reader.save_state();
+                    }
+                    ViewMenuItem::ColumnsInc => {
+                        reader.auto_columns = false;
+                        reader.columns = (reader.columns + 1).clamp(1, 4);
+                        reader.save_state();
+                    }
+                    ViewMenuItem::CoverCrop => {
+                        reader.cover_fit = LibraryCoverFit::Crop;
+                        reader.hide_covers = false;
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::CoverFit => {
+                        reader.cover_fit = LibraryCoverFit::Fit;
+                        reader.hide_covers = false;
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::CoverHide => {
+                        reader.hide_covers = !reader.hide_covers;
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::RecentShelf => {
+                        reader.recent_shelf_enabled = !reader.recent_shelf_enabled;
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::GroupNone => {
+                        reader.group_by = LibraryGroupBy::None;
+                        reader.apply_filter();
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::GroupAuthor => {
+                        reader.group_by = LibraryGroupBy::Author;
+                        reader.apply_filter();
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::SortTitle => {
+                        reader.lib_sort = LibSort::Title;
+                        reader.apply_filter();
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::SortAuthor => {
+                        reader.lib_sort = LibSort::Author;
+                        reader.apply_filter();
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::SortAdded => {
+                        reader.lib_sort = LibSort::RecentlyAdded;
+                        reader.apply_filter();
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::SortRead => {
+                        reader.lib_sort = LibSort::RecentlyRead;
+                        reader.apply_filter();
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                    ViewMenuItem::SortProgress => {
+                        reader.lib_sort = LibSort::Progress;
+                        reader.apply_filter();
+                        reader.save_state();
+                        reader.view_menu_open = false;
+                    }
+                }
+                handled = true;
+                break;
+            }
+        }
+        if handled {
+            reader.list_dirty = true;
+            reader.redraw();
+            return;
+        }
+        if hit_view {
+            reader.view_menu_open = false;
+            reader.list_dirty = true;
+            reader.redraw();
+            return;
+        }
         reader.view_menu_open = false;
+        reader.list_dirty = true;
+        reader.redraw();
+        return;
+    }
+
+    if reader.settings_menu_open && !hit_settings {
         reader.settings_menu_open = false;
-        // `lib_header` cacheado: el rebuild re-renderiza la cabecera (sin el
-        // highlight del botón) — ver `Reader::rebuild_library`.
         reader.list_dirty = true;
         reader.redraw();
         return;
@@ -1061,21 +1180,43 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         return;
     }
 
-    // Celda de la rejilla (lista FILTRADA): fila por y, columna por x (misma
-    // geometría que `lib_grid_cell_rect`). Abre el libro (reanuda en su
-    // página guardada si está empezado — lo hace `open_library_entry`).
-    let row = ((yc - grid_y0) / grid_cell_h(win_w)) as usize;
-    let cell_w = grid_cell_w(win_w);
-    let pad = grid_pad(win_w);
-    let col = ((x - pad) / (cell_w + grid_gap(win_w))).floor() as usize;
-    if col < GRID_COLS
-        && let Some(entry) = reader.grid_entry_at(row, col)
-    {
-        let entry = entry.clone();
-        if !reader.open_library_entry(app, &entry) {
-            reader.status = Some(format!("Cannot open {}", entry.name));
-            reader.list_dirty = true;
-            reader.redraw();
+    if reader.is_grid() {
+        let cols = reader.effective_grid_cols();
+        let row = ((yc - grid_y0) / grid_cell_h(win_w, cols)) as usize;
+        let cell_w = grid_cell_w(win_w, cols);
+        let pad = grid_pad(win_w);
+        let col = ((x - pad) / (cell_w + grid_gap(win_w))).floor() as usize;
+        if col < cols
+            && let Some(entry) = reader.grid_entry_at(row, col)
+        {
+            let entry = entry.clone();
+            if !reader.open_library_entry(app, &entry) {
+                reader.status = Some(format!("Cannot open {}", entry.name));
+                reader.list_dirty = true;
+                reader.redraw();
+            }
+        }
+    } else {
+        let pad = grid_pad(win_w);
+        if x >= pad && x < win_w as f32 - pad {
+            let row_h = list_row_h(reader.win_h);
+            let row_gap = list_row_gap();
+            let total_row_h = row_h + row_gap;
+            let rel_y = yc - grid_y0;
+            if rel_y >= 0.0 {
+                let idx = (rel_y / total_row_h).floor() as usize;
+                let in_row_y = rel_y - idx as f32 * total_row_h;
+                if in_row_y <= row_h
+                    && let Some(entry) = reader.list_entry_at(idx)
+                {
+                    let entry = entry.clone();
+                    if !reader.open_library_entry(app, &entry) {
+                        reader.status = Some(format!("Cannot open {}", entry.name));
+                        reader.list_dirty = true;
+                        reader.redraw();
+                    }
+                }
+            }
         }
     }
 }

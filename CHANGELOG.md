@@ -3,6 +3,17 @@
 > Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
 > Formato: `AAAA-MM-DD — Título`.
 
+## 2026-08-26 — Tarea 2/3: Library — Contenido ViewMenu (⋯) — Grid/List, Columns, Covers, Group/Sort
+
+Implementación completa de las 6 secciones del ViewMenu desplegable (⋯) estilo Readest:
+
+- **Dropdown ViewMenu flotante** (`draw.rs:render_view_menu`/`draw_view_menu`): tarjeta anclada al borde derecho (`dropdown-end`) con sombra multinivel (`shadow-2xl`), esquinas redondeadas 16px, borde `base-300` y fondo `base-100`. Se dibuja directamente sobre la cabecera fija y se compone en blit con alpha blending.
+- **Sección ViewMode (Grid ↔ List)**: opciones "Cuadrícula (Grid)" y "Lista (List)" con checkmark en la opción activa; tap cambia `view_mode`, persiste en `state.json` (`save_state`), invalida con `list_dirty = true` y cierra el menú. Modo Lista muestra tarjetas de ancho completo (1 columna) con portada miniatura, título, formato/autor y barra de progreso.
+- **Sección Columns (Auto + Stepper)**: botón "Auto" con estado activo/inactivo (`auto_columns`) + stepper "− N +" para columnas 1..4 (deshabilitado visualmente cuando Auto=true; al pulsar − o + desactiva Auto y fija el valor exacto). Rejilla adapta dinámicamente el ancho de celda y portada a `effective_grid_cols()`.
+- **Sección Book Covers (Crop ↔ Fit + Hide)**: opciones "Recortar (Crop)", "Completa (Fit)" y "Ocultar portadas". Crop escala llenando marco 2:3; Fit escala manteniendo relación de aspecto con letterbox `base-200`; Hide oculta las portadas mostrando tarjetas compactas solo con metadatos.
+- **Sección Destacados (Show recently read)**: toggle "Mostrar lectura reciente" que muestra/oculta el bloque Continue Reading según `recent_shelf_enabled`.
+- **Secciones Agrupar por y Ordenar por**: opciones "Ninguno (Libros)" / "Autor" y "Título" / "Autor" / "Fecha añadido" / "Última lectura" / "Progreso" (con checkmark en la opción activa). "Progreso" ordena primero los libros con mayor porcentaje leído (`pct()`). Tap reordena `lib_filtered` y refresca la vista.
+
 ## 2026-08-25 — Tarea 1/3: esqueleto del header de biblioteca (⋯ View + ☰ Settings)
 
 Estructura de los menús de cabecera estilo Readest (sin contenido todavía,
