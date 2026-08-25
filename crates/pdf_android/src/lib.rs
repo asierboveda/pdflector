@@ -354,7 +354,7 @@ mod view;
 mod zoom;
 
 use crate::input::handle_input;
-use crate::reader::{Reader, UiMode};
+use crate::reader::Reader;
 
 /// Radio (px) de movimiento máximo entre Down y Up para considerar el gesto un
 /// "tap" (no un swipe). ~20 px a 320 dpi (ViewConfiguration touch slop ≈ 8 dp).
@@ -704,11 +704,11 @@ pub fn android_main(app: AndroidApp) {
             }
             PollEvent::Main(MainEvent::Resume { .. }) => {
                 info!("Resume");
-                // Al volver de Ajustes tras conceder "All files access",
-                // re-consultar MediaStore sin esperar a un Rescan manual.
-                if reader.mode == UiMode::Library && reader.grant_pending {
-                    reader.rescan_library(&app);
-                }
+                // Biblioteca CURADA: el Resume NO re-consulta MediaStore (la
+                // rejilla sale de `internal/library.json`); solo se limpia la
+                // marca "pendiente de conceder permiso" — el selector de
+                // añadir re-comprueba el permiso por sí mismo al invocarse.
+                reader.grant_pending = false;
             }
             PollEvent::Main(MainEvent::Destroy) => {
                 info!("Destroy: saliendo del bucle");

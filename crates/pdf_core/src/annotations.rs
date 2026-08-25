@@ -364,6 +364,261 @@ impl AnnotationSet {
     }
 }
 
+/// Squared distance from point `p` to the segment `a`–`b` (page coordinates).
+/// Uses the closest point on the segment (clamped parameter t), so the eraser
+/// hits mid-segment gaps the same way as a real wide stroke would.
+fn dist2_point_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (px, py) = p;
+    let (abx, aby) = (b.0 - a.0, b.1 - a.1);
+    let denom = abx * abx + aby * aby;
+    let t = if denom == 0.0 {
+        0.0
+    } else {
+        (((px - a.0) * abx + (py - a.1) * aby) / denom).clamp(0.0, 1.0)
+    };
+    let (cx, cy) = (a.0 + t * abx, a.1 + t * aby);
+    let (dx, dy) = (px - cx, py - cy);
+    dx * dx + dy * dy
+}
+
+/// Hit-test of the ERASER against a stroke: `true` when `pt` is within
+/// `radius` (page points) of the polyline, measured per SEGMENT (distance
+/// point→segment) plus half the stroke width — the effective hit radius is
+/// `radius + width/2`, so a wide marker feels its ink.
+///
+/// Pure function (no model/store access): the caller resolves `Stroke` from
+/// the set. Tests in [`tests`](self).
+pub fn stroke_hit(stroke: &Stroke, pt: (f32, f32), radius: f32) -> bool {
+    let r = radius + stroke.width / 2.0;
+    let r2 = r * r;
+    stroke
+        .points
+        .windows(2)
+        .any(|w| dist2_point_segment(pt, w[0], w[1]) <= r2)
+}
+
+/// Hit-test of the ERASER against a highlight: `true` when `pt` lies inside
+/// any highlight rect EXPANDED by `pad` page points in every direction (the
+/// eraser feels a padded box, so a thin underline line is easy to hit).
+///
+/// Pure function; tests in [`tests`](self).
+pub fn highlight_hit(h: &Highlight, pt: (f32, f32), pad: f32) -> bool {
+    h.rects.iter().any(|r| {
+        pt.0 >= r.x - pad && pt.0 <= r.x + r.w + pad && pt.1 >= r.y - pad && pt.1 <= r.y + r.h + pad
+    })
+}
+
+/// Sliver de un rect recortado por la goma: trozos más cortos no se crean
+/// (evita motas en el subrayado al pasar la goma por el borde).
+const ERASE_MIN_SLIVER_PT: f32 = 2.0;
+
+/// GOMA REAL sobre un trazo: elimina los vértices que caen dentro del círculo
+/// de la goma (`radius` + `width/2` efectivos) o dentro del BARRIIDO entre la
+/// posición anterior de la goma (`prev`) y la actual (`center`) — un barrido
+/// continuo no deja islas entre pasadas. Los tramos contiguos NO tocados se
+/// devuelven como trazos separados (una goma parte la línea en trozos); los
+/// tramos degenerados (1 punto) se descartan.
+///
+/// Devuelve `None` si el trazo no fue tocado (el llamador no toca nada);
+/// `Some(trozos)` si lo fue (puede ser vacío → eliminar el trazo entero).
+/// Pura: el llamador decide el `remove`/`add` y la persistencia.
+/// GOMA REAL sobre un trazo: recorta los SEGMENTOS que cruzan el círculo de la
+/// goma (`radius` + `width/2` efectivos) en sus puntos de intersección — el
+/// hueco es EXACTAMENTE el círculo, como una goma real, sin "mordiscos" de
+/// vértices. El barrido entre la posición anterior (`prev`) y la actual
+/// (`center`) se muestrea en círculos intermedios, así una pasada rápida corta
+/// el trazo por todo el camino recorrido (sin islas entre frames). Los trozos
+/// contiguos que sobreviven se devuelven como trazos separados; las motas
+/// menores de 1.5 pt se descartan.
+///
+/// Devuelve `None` si el trazo no fue tocado; `Some(trozos)` si lo fue (puede
+/// ser vacío → eliminar el trazo entero). Pura: el llamador decide el
+/// `remove`/`add` y la persistencia.
+pub fn split_stroke(
+    stroke: &Stroke,
+    center: (f32, f32),
+    radius: f32,
+    prev: Option<(f32, f32)>,
+) -> Option<Vec<Stroke>> {
+    let r = radius + stroke.width / 2.0;
+    // Círculos de la goma: barrido muestreado (4) + posición actual.
+    let mut centers: Vec<(f32, f32)> = Vec::new();
+    if let Some(pr) = prev {
+        for i in 1..=4 {
+            let t = i as f32 / 4.0;
+            centers.push((pr.0 + (center.0 - pr.0) * t, pr.1 + (center.1 - pr.1) * t));
+        }
+    }
+    centers.push(center);
+
+    // 1) Recortar cada segmento del trazo por TODOS los círculos.
+    let mut segs: Vec<((f32, f32), (f32, f32))> = Vec::new();
+    for w in stroke.points.windows(2) {
+        segs.push((w[0], w[1]));
+    }
+    let mut any_touched = false;
+    for c in &centers {
+        let mut next: Vec<((f32, f32), (f32, f32))> = Vec::new();
+        for (a, b) in segs {
+            let orig_len = seg_len(a, b);
+            let pieces = clip_segment_by_circle(a, b, *c, r);
+            if pieces.is_empty() {
+                any_touched = true; // el segmento entero se comió
+            } else {
+                let kept_len: f32 = pieces.iter().map(|(x, y)| seg_len(*x, *y)).sum();
+                if kept_len < orig_len - 1e-3 {
+                    any_touched = true;
+                }
+                next.extend(pieces);
+            }
+        }
+        segs = next;
+    }
+    if !any_touched {
+        return None;
+    }
+
+    // 2) Unir trozos contiguos en polilíneas (runs) y descartar motas.
+    const MIN_PIECE_PT: f32 = 1.5;
+    let mut runs: Vec<Vec<(f32, f32)>> = Vec::new();
+    let mut cur: Vec<(f32, f32)> = Vec::new();
+    for (a, b) in segs {
+        if seg_len(a, b) < MIN_PIECE_PT {
+            continue; // mota: se descarta
+        }
+        if cur.is_empty() {
+            cur = vec![a, b];
+        } else if let Some(last) = cur.last()
+            && dist2(*last, a) < 1e-3
+        {
+            cur.push(b);
+        } else {
+            runs.push(std::mem::take(&mut cur));
+            cur = vec![a, b];
+        }
+    }
+    if cur.len() >= 2 {
+        runs.push(cur);
+    }
+    Some(
+        runs.into_iter()
+            .map(|points| Stroke {
+                points,
+                width: stroke.width,
+                color: stroke.color,
+            })
+            .collect(),
+    )
+}
+
+/// Distancia entre dos puntos (euclídea).
+fn dist2(a: (f32, f32), b: (f32, f32)) -> f32 {
+    (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)
+}
+
+/// Longitud de un segmento.
+fn seg_len(a: (f32, f32), b: (f32, f32)) -> f32 {
+    dist2(a, b).sqrt()
+}
+
+/// Interpolación lineal entre `a` y `b` en `t` (0..1).
+fn lerp(a: (f32, f32), b: (f32, f32), t: f32) -> (f32, f32) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
+/// Recorta el segmento `a→b` con el CÍRCULO (c, r): devuelve los trozos del
+/// segmento que quedan FUERA del círculo (intersección exacta punto→círculo,
+/// https://paulbourke.net/geometry/circlesphere/); vacío si el segmento está
+/// completamente dentro.
+fn clip_segment_by_circle(
+    a: (f32, f32),
+    b: (f32, f32),
+    c: (f32, f32),
+    r: f32,
+) -> Vec<((f32, f32), (f32, f32))> {
+    let d = (b.0 - a.0, b.1 - a.1);
+    let f = (a.0 - c.0, a.1 - c.1);
+    let a2 = d.0 * d.0 + d.1 * d.1;
+    if a2 <= 0.0 {
+        return Vec::new();
+    }
+    let bb = 2.0 * (f.0 * d.0 + f.1 * d.1);
+    let cc = f.0 * f.0 + f.1 * f.1 - r * r;
+    let disc = bb * bb - 4.0 * a2 * cc;
+    if disc <= 0.0 {
+        // Sin intersección: ¿el punto medio dentro del círculo?
+        let m = lerp(a, b, 0.5);
+        if (m.0 - c.0).powi(2) + (m.1 - c.1).powi(2) <= r * r {
+            Vec::new() // el segmento entero está dentro
+        } else {
+            vec![(a, b)] // entero fuera
+        }
+    } else {
+        let t1 = ((-bb - disc.sqrt()) / (2.0 * a2)).clamp(0.0, 1.0);
+        let t2 = ((-bb + disc.sqrt()) / (2.0 * a2)).clamp(0.0, 1.0);
+        let mut out = Vec::new();
+        if t1 > 0.0 {
+            out.push((a, lerp(a, b, t1)));
+        }
+        if t2 < 1.0 {
+            out.push((lerp(a, b, t2), b));
+        }
+        out
+    }
+}
+
+/// GOMA REAL sobre un subrayado: cada rect cuya expansión `pad` contiene el
+/// punto de la goma — o es cruzado por el BARRIO de la goma entre `prev` y
+/// `center` (muestreo del segmento) — se parte en dos (izquierda/derecha del
+/// corte); los trozos menores de `ERASE_MIN_SLIVER_PT` se descartan. Los
+/// rects no tocados se conservan. `None` = no tocado; `Some(rects)` = rects
+/// restantes (puede ser vacío → eliminar el highlight). Pura.
+pub fn trim_highlight(
+    h: &Highlight,
+    center: (f32, f32),
+    pad: f32,
+    prev: Option<(f32, f32)>,
+) -> Option<Vec<Rect>> {
+    let mut out: Vec<Rect> = Vec::new();
+    let mut any = false;
+    for r in &h.rects {
+        let hit_at = |p: (f32, f32)| -> bool {
+            p.0 >= r.x - pad && p.0 <= r.x + r.w + pad && p.1 >= r.y - pad && p.1 <= r.y + r.h + pad
+        };
+        // Punto actual o, si existe barrido, la primera muestra del segmento
+        // prev→center que toca la caja (una goma rápida no puede "saltar"
+        // por encima de una línea de subrayado entre dos frames).
+        let mut sweep_cut: Option<f32> = None;
+        if let Some(pr) = prev {
+            const SWEEP_SAMPLES: usize = 8;
+            for i in 1..=SWEEP_SAMPLES {
+                let t = i as f32 / SWEEP_SAMPLES as f32;
+                let s = (pr.0 + (center.0 - pr.0) * t, pr.1 + (center.1 - pr.1) * t);
+                if hit_at(s) {
+                    sweep_cut = Some(s.0);
+                    break;
+                }
+            }
+        }
+        if !hit_at(center) && sweep_cut.is_none() {
+            out.push(*r);
+            continue;
+        }
+        any = true;
+        // Recortar al rect real (un toque en el pad exterior corta en el borde).
+        let cut_x = sweep_cut.unwrap_or(center.0).clamp(r.x, r.x + r.w);
+        let left = Rect::new(r.x, r.y, cut_x - r.x, r.h);
+        let right = Rect::new(cut_x, r.y, r.x + r.w - cut_x, r.h);
+        if left.w >= ERASE_MIN_SLIVER_PT {
+            out.push(left);
+        }
+        if right.w >= ERASE_MIN_SLIVER_PT {
+            out.push(right);
+        }
+    }
+    if any { Some(out) } else { None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,5 +974,190 @@ mod tests {
             }
             other => panic!("expected a highlight, got {other:?}"),
         }
+    }
+
+    // --- Eraser hit-tests (pure functions; see `stroke_hit`/`highlight_hit`) ---
+
+    #[test]
+    fn stroke_hit_hits_midpoint_of_a_segment() {
+        let s = Stroke::new(vec![(0.0, 0.0), (100.0, 0.0)], 2.0, color()).unwrap();
+        // Mid-segment point, 2 pt away: within radius 8 + width/2 = 9.
+        assert!(stroke_hit(&s, (50.0, 2.0), 8.0));
+        // 12 pt away: outside the same effective radius.
+        assert!(!stroke_hit(&s, (50.0, 12.0), 8.0));
+    }
+
+    #[test]
+    fn stroke_hit_hits_endpoint_and_uses_width() {
+        let s = Stroke::new(vec![(0.0, 0.0), (10.0, 0.0)], 10.0, color()).unwrap();
+        // Endpoint hit with radius 0 thanks to the width (10/2 = 5 > 0).
+        assert!(stroke_hit(&s, (0.0, 4.0), 0.0));
+        assert!(!stroke_hit(&s, (0.0, 6.0), 0.0));
+    }
+
+    #[test]
+    fn stroke_hit_ignores_far_points_of_polyline() {
+        let s = Stroke::new(vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)], 2.0, color()).unwrap();
+        // Near the second segment, far from the first one.
+        assert!(stroke_hit(&s, (10.0, 5.0), 8.0));
+        // Far from both segments.
+        assert!(!stroke_hit(&s, (50.0, 50.0), 8.0));
+    }
+
+    #[test]
+    fn highlight_hit_respects_expansion_pad() {
+        let h = Highlight {
+            rects: vec![Rect::new(10.0, 20.0, 100.0, 12.0)],
+            color: color(),
+        };
+        // Inside the rect.
+        assert!(highlight_hit(&h, (50.0, 26.0), 4.0));
+        // Inside the 4 pt expansion, outside the raw rect: hits.
+        assert!(highlight_hit(&h, (10.0, 16.0), 4.0));
+        assert!(highlight_hit(&h, (8.0, 21.0), 4.0));
+        // Beyond the pad: misses.
+        assert!(!highlight_hit(&h, (10.0, 15.0), 4.0));
+        assert!(!highlight_hit(&h, (5.0, 21.0), 4.0));
+    }
+
+    #[test]
+    fn highlight_hit_any_rect_of_multi_line() {
+        let h = Highlight {
+            rects: vec![
+                Rect::new(10.0, 20.0, 100.0, 12.0),
+                Rect::new(10.0, 40.0, 80.0, 12.0),
+            ],
+            color: color(),
+        };
+        assert!(highlight_hit(&h, (20.0, 45.0), 0.0)); // second line
+        assert!(!highlight_hit(&h, (20.0, 35.0), 0.0)); // between lines
+    }
+
+    // --- Eraser trimming (the real-gum split; see `split_stroke`/`trim_highlight`) ---
+
+    #[test]
+    fn split_stroke_none_when_not_touched() {
+        let s = Stroke::new(vec![(0.0, 0.0), (50.0, 0.0)], 2.0, color()).unwrap();
+        assert!(split_stroke(&s, (25.0, 40.0), 8.0, None).is_none());
+    }
+
+    #[test]
+    fn split_stroke_cuts_middle_leaving_two_pieces() {
+        let s = Stroke::new(
+            vec![
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (20.0, 0.0),
+                (30.0, 0.0),
+                (40.0, 0.0),
+            ],
+            2.0,
+            color(),
+        )
+        .unwrap();
+        // Goma en x=20: elimina los vértices 20 (y vecinos a <= 9 pt: 10 y 30
+        // están a 10 pt -> fuera; con radio 8 + width 1 = 9, quedan 10 y 30
+        // fuera por 1 pt).
+        let parts = split_stroke(&s, (20.0, 0.0), 8.0, None).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].points, vec![(0.0, 0.0), (10.0, 0.0)]);
+        assert_eq!(parts[1].points, vec![(30.0, 0.0), (40.0, 0.0)]);
+    }
+
+    #[test]
+    fn split_stroke_wide_gum_erases_whole_short_stroke() {
+        let s = Stroke::new(vec![(0.0, 0.0), (10.0, 0.0)], 2.0, color()).unwrap();
+        let parts = split_stroke(&s, (5.0, 0.0), 8.0, None).unwrap();
+        assert!(parts.is_empty()); // todos los vértices dentro del círculo
+    }
+
+    #[test]
+    fn split_stroke_sweep_removes_points_between_passes() {
+        // El barrido (5,0)→(15,0) recorre el trazo: borra el vértice (10,0)
+        // aunque NO está en ningún círculo (radio efectivo 2 pt). Los
+        // extremos (0,0),(2,0) y (18,0),(20,0) quedan como dos trozos.
+        let s = Stroke::new(
+            vec![
+                (0.0, 0.0),
+                (2.0, 0.0),
+                (10.0, 0.0),
+                (18.0, 0.0),
+                (20.0, 0.0),
+            ],
+            2.0,
+            color(),
+        )
+        .unwrap();
+        let parts = split_stroke(&s, (15.0, 0.0), 1.0, Some((5.0, 0.0))).unwrap();
+        assert_eq!(parts.len(), 2);
+        // El recorte por intersección conserva la parte hasta el borde del
+        // primer círculo del barrido (x=5.5: círculo en 7.5, radio 2) y la
+        // parte final desde x=17 (círculo en 15, radio 2) — las motas
+        // intermedias se descartan.
+        assert_eq!(parts[0].points, vec![(0.0, 0.0), (2.0, 0.0), (5.5, 0.0)]);
+        assert_eq!(parts[1].points, vec![(18.0, 0.0), (20.0, 0.0)]);
+        // Sin barrido y con el círculo LEJOS de todos los segmentos
+        // (y=10, radio efectivo 2) → `None` (nada que recortar).
+        assert!(split_stroke(&s, (15.0, 10.0), 1.0, None).is_none());
+    }
+
+    #[test]
+    fn trim_highlight_splits_touched_line_at_eraser() {
+        let h = Highlight {
+            rects: vec![Rect::new(10.0, 20.0, 100.0, 12.0)],
+            color: color(),
+        };
+        let rects = trim_highlight(&h, (50.0, 26.0), 4.0, None).unwrap();
+        assert_eq!(rects.len(), 2);
+        assert_eq!(rects[0], Rect::new(10.0, 20.0, 40.0, 12.0));
+        assert_eq!(rects[1], Rect::new(50.0, 20.0, 60.0, 12.0));
+    }
+
+    #[test]
+    fn trim_highlight_keeps_untouched_lines_and_handles_edges() {
+        let h = Highlight {
+            rects: vec![
+                Rect::new(10.0, 20.0, 100.0, 12.0),
+                Rect::new(10.0, 40.0, 80.0, 12.0),
+            ],
+            color: color(),
+        };
+        // Toca la segunda línea: la primera se conserva intacta.
+        let rects = trim_highlight(&h, (20.0, 45.0), 4.0, None).unwrap();
+        assert!(rects.contains(&Rect::new(10.0, 20.0, 100.0, 12.0)));
+        assert_eq!(rects.len(), 3); // izquierda + derecha del corte + línea 1
+        // Toca a 1 pt del borde IZQUIERDO: el trozo izquierdo es un sliver
+        // (< 2 pt) y se descarta; el derecho queda casi completo (99 pt).
+        let rects = trim_highlight(&h, (11.0, 26.0), 4.0, None).unwrap();
+        assert_eq!(rects.len(), 2);
+        assert!(rects.contains(&Rect::new(10.0, 40.0, 80.0, 12.0)));
+        assert!(rects.contains(&Rect::new(11.0, 20.0, 99.0, 12.0)));
+    }
+
+    #[test]
+    fn trim_highlight_none_when_not_touched() {
+        let h = Highlight {
+            rects: vec![Rect::new(10.0, 20.0, 100.0, 12.0)],
+            color: color(),
+        };
+        assert!(trim_highlight(&h, (10.0, 60.0), 4.0, None).is_none());
+    }
+
+    #[test]
+    fn trim_highlight_sweep_hits_when_center_jumped_over() {
+        // La goma se mueve rápido: el CENTRO cae fuera del rect expandido
+        // (x=120 > 114) pero el barrido prev→center CRUZA la caja → corta.
+        let h = Highlight {
+            rects: vec![Rect::new(10.0, 20.0, 100.0, 12.0)],
+            color: color(),
+        };
+        // El barrido CRUZA la caja por la primera muestra (t=1/8 → x=19.375),
+        // así que el rect se parte en dos por ese x.
+        let rects = trim_highlight(&h, (120.0, 26.0), 4.0, Some((5.0, 26.0))).unwrap();
+        assert_eq!(rects.len(), 2);
+        assert!(rects.contains(&Rect::new(10.0, 20.0, 9.375, 12.0)));
+        assert!(rects.contains(&Rect::new(19.375, 20.0, 90.625, 12.0)));
+        // Sin barrido, el mismo centro NO toca nada.
+        assert!(trim_highlight(&h, (120.0, 26.0), 4.0, None).is_none());
     }
 }

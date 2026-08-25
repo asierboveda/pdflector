@@ -53,20 +53,20 @@
 
 use std::time::Instant;
 
-use android_activity::input::{InputEvent, MotionAction};
+use android_activity::input::{Button, ButtonState, InputEvent, MotionAction};
 use android_activity::{AndroidApp, InputStatus};
 use log::warn;
 
-use crate::annotations::ToolKind;
+use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
 use crate::draw::{sheet_buttons, toolbar_buttons, toolbar_rect, viewer_top_chrome_buttons};
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
-    BookStatus, GRID_COLS, LibSort, ListDrag, Reader, UiMode, grid_cell_h, grid_cell_w, grid_gap,
-    grid_pad, lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w, lib_cont_gap,
-    lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
+    BookStatus, GRID_COLS, LibSort, ListDrag, PickRow, PickerKind, Reader, UiMode, grid_cell_h,
+    grid_cell_w, grid_gap, grid_pad, lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w,
+    lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
     lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
-    lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h, picker_row_h,
-    picker_visible_rows, sheet_h, viewer_bottom_chrome_h, viewer_top_chrome_h,
+    lib_section_title_h, page_badge_rect, picker_btn_w, picker_header_h, picker_row_h, sheet_h,
+    viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 
@@ -130,6 +130,11 @@ enum GestureKind {
     /// activa: el siguiente Down vuelve a dibujar). SOLO entra con STYLUS:
     /// los dedos NUNCA dibujan (separación dedo/stylus — ver `Pan`).
     ToolDrawing,
+    /// Un dedo (STYLUS con el botón DOWN del boli pulsado): BORRADO. Cada
+    /// Move hace hit-test contra las anotaciones de la página y las elimina
+    /// en vivo (ver `Reader::{begin,update,end}_erase_gesture`); al levantar
+    /// se persiste UNA vez. No crea anotaciones ni entra en el undo.
+    Erase,
     /// Un dedo (DEDO, con herramienta activa): mover la página (pan) — "los
     /// gestos con la mano son para mover/zoom". `start` es la posición del
     /// Down y `pan0` el pan de partida; cada Move fija
@@ -447,6 +452,14 @@ fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {
 ///   descarta);
 /// - un dedo que se desliza más de `TAP_SLOP` y no es un pull cancela el tap
 ///   (sin scroll: el arrastre se eliminó por decisión del autor).
+///
+/// Botones del boli en un MotionEvent (state=botones pulsados, action=boton del evento).
+#[derive(Clone, Copy, Debug)]
+struct PenButtons {
+    state: ButtonState,
+    action: Button,
+}
+
 fn handle_motion(
     reader: &mut Reader,
     app: &AndroidApp,
@@ -454,7 +467,33 @@ fn handle_motion(
     pts: Vec<(i32, f32, f32)>,
     up_idx: Option<usize>,
     stylus: bool,
+    buttons: PenButtons,
 ) {
+    // FASE A — CALIBRACIÓN DE BOTONES DEL BOLI (ver CHANGELOG 2026-08-25):
+    // este boli reporta los bits estándar (0x20 primary / 0x40 secondary),
+    // verificados en aire y contacto. Log a debug! para diagnóstico futuro.
+    if stylus
+        && matches!(
+            action,
+            MotionAction::Down | MotionAction::Move | MotionAction::Up
+        )
+    {
+        log::debug!(
+            "pen_buttons: {action:?} stylus buttons=0x{:x}",
+            buttons.state.0
+        );
+    }
+    if matches!(
+        action,
+        MotionAction::ButtonPress | MotionAction::ButtonRelease
+    ) {
+        log::debug!(
+            "pen_buttons: {action:?} action_button={:?} (0x{:x}) ptr={}",
+            buttons.action,
+            u32::from(buttons.action),
+            pts.len()
+        );
+    }
     if reader.mode == UiMode::Picker || reader.mode == UiMode::Library {
         handle_picker_motion(reader, app, action, pts, up_idx);
         return;
@@ -469,30 +508,50 @@ fn handle_motion(
             // solo entra si el dedo NO se levanta antes de `LONG_PRESS_MS` y
             // NO se mueve más de `TAP_SLOP` (pull del sheet o cancelación).
             reader.gesture.pointers = pts;
-            // Herramienta de anotación activa (Fase 3.5): el Down en la
-            // página (fuera del "chrome" de la UI — botón flotante y barra)
-            // empieza un GESTO DE HERRAMIENTA (boli/resaltador) en vez de un
-            // tap: el arrastre dibuja y al soltar se crea la anotación. Los
-            // gestos existentes no se rompen: con la herramienta Navegar
-            // (la barra cerrada) esto no aplica y todo sigue igual.
-            if reader.tool != ToolKind::Navigate
-                && reader.gesture.pointers.len() == 1
+            // CONTROL TOTAL CON EL BOLI (sin menús): el Down del STYLUS sobre
+            // la página (fuera del chrome de la UI) o dibuja (Ink/Highlight
+            // según el modo persistido del boli, SIEMPRE activo) o BORRA si
+            // trae el botón DOWN pulsado. El dedo sigue navegando igual
+            // (tap/pinch/pan); los gestos existentes no se rompen.
+            if reader.gesture.pointers.len() == 1
                 && let Some(&(_, x, y)) = reader.gesture.pointers.first()
                 && !reader.chrome_hit(x, y)
             {
-                // SEPARACIÓN DEDO/STYLUS: solo el lápiz dibuja con la
-                // herramienta activa; el dedo (con herramienta activa) hace
-                // PAN (mover el documento) y con dos dedos PINCH (zoom).
+                // SEPARACIÓN DEDO/STYLUS: solo el lápiz dibuja/borra; los
+                // dedos (y la palma) navegan (pan/pinch).
                 if stylus {
-                    log::info!("tool gesture iniciado con STYLUS");
-                    reader.begin_tool_gesture(x, y);
+                    // El modo ERASE nunca coexiste con un gesto de tinta en
+                    // curso: si hay trazo, este Down no hace nada (el trazo
+                    // actual termina como estaba).
                     if reader.tool_gesture.is_some() {
-                        reader.gesture.kind = GestureKind::ToolDrawing;
-                        return; // gesto de herramienta: sin tap ni long-press
+                        return;
                     }
-                } else {
-                    // Dedo: modo mano — pan 1 dedo (el pinch 2 dedos lo
-                    // convierte el PointerDown). Sin tap ni long-press.
+                    if buttons.state.0 & PEN_BTN_ERASE.0 != 0 {
+                        // [C] BORRAR: botón DOWN mantenido + tocar el PDF.
+                        if reader.begin_erase_gesture(x, y) {
+                            reader.gesture.kind = GestureKind::Erase;
+                            return; // borrado: sin tap ni long-press
+                        }
+                    } else {
+                        // [A] Dibujar SIEMPRE, según el modo persistido del
+                        // boli (sin depender de la barra de herramientas).
+                        let mode_tool = match reader.pen_mode {
+                            PenMode::Ink => ToolKind::Ink,
+                            PenMode::Highlight => ToolKind::Highlight,
+                        };
+                        reader.begin_tool_gesture(x, y, mode_tool);
+                        if reader.tool_gesture.is_some() {
+                            reader.gesture.kind = GestureKind::ToolDrawing;
+                            return; // gesto de herramienta: sin tap ni long-press
+                        }
+                    }
+                    // Si no arrancó gesto (p. ej. fuera de la página), el
+                    // Down sigue como tap normal.
+                } else if reader.tool != ToolKind::Navigate {
+                    // Dedo con herramienta ACTIVA (barra): modo mano — pan 1
+                    // dedo (el pinch 2 dedos lo convierte el PointerDown).
+                    // Con la barra cerrada (tool == Navigate) el dedo cae al
+                    // TAP normal (página) — el boli controla la anotación.
                     // Palm rejection por tiempo: tras escribir con stylus, se
                     // ignora el táctil un margen (evita pans/zooms de la palma).
                     if reader.should_ignore_touch() {
@@ -527,13 +586,17 @@ fn handle_motion(
             if reader.should_ignore_touch() {
                 return;
             }
-            // PALM REJECTION mientras se dibuja con el STYLUS: si la mano u
-            // otro dedo toca durante un trazo del lápiz, ese segundo puntero
-            // NO es un pinch — se IGNORA por completo (el trazo sigue; nada
-            // de zoom/reescala). Arregla el "parpadeo" al escribir sobre
-            // trazos existentes: al apoyar la palma al soltar, el código
+            // PALM REJECTION mientras se dibuja/borra con el STYLUS: si la
+            // mano u otro dedo toca durante un trazo del lápiz, ese segundo
+            // puntero NO es un pinch — se IGNORA por completo (el trazo
+            // sigue; nada de zoom/reescala). Arregla el "parpadeo" al escribir
+            // sobre trazos existentes: al apoyar la palma al soltar, el código
             // convertía el gesto en pinch y la página reescalaba de golpe.
-            if matches!(reader.gesture.kind, GestureKind::ToolDrawing) && stylus {
+            if matches!(
+                reader.gesture.kind,
+                GestureKind::ToolDrawing | GestureKind::Erase
+            ) && stylus
+            {
                 return;
             }
             // Segundo dedo: pinch. Distancia inicial = base del factor de
@@ -551,6 +614,11 @@ fn handle_motion(
                 // pinch — la herramienta sigue activa para el siguiente Down.
                 if matches!(reader.gesture.kind, GestureKind::ToolDrawing) {
                     reader.cancel_tool_gesture();
+                }
+                // Durante el BORRADO el segundo puntero no es un pinch: se
+                // ignora (el borrado continúa; ver palm rejection arriba).
+                if matches!(reader.gesture.kind, GestureKind::Erase) {
+                    return;
                 }
                 begin_pinch_gesture(reader, &reader.gesture.pointers.clone());
             }
@@ -646,6 +714,12 @@ fn handle_motion(
                     let (_, cx, cy) = reader.gesture.pointers[0];
                     reader.update_tool_gesture(cx, cy);
                 }
+                GestureKind::Erase if reader.gesture.pointers.len() == 1 => {
+                    // Arrastre de BORRADO: hit-test del punto y eliminación
+                    // en vivo (la anotación desaparece bajo el boli).
+                    let (_, cx, cy) = reader.gesture.pointers[0];
+                    reader.update_erase_gesture(cx, cy);
+                }
                 GestureKind::Pan { start, pan0 } if reader.gesture.pointers.len() == 1 => {
                     // Dedo con herramienta activa: mover el documento (pan).
                     let (_, cx, cy) = reader.gesture.pointers[0];
@@ -696,6 +770,10 @@ fn handle_motion(
                     // al texto; un toque sin arrastre se descarta).
                     reader.end_tool_gesture();
                 }
+                GestureKind::Erase => {
+                    // Fin del borrado: persiste UNA vez si algo se eliminó.
+                    reader.end_erase_gesture();
+                }
                 GestureKind::Pan { .. } => {
                     // Fin del pan con dedo: no hay nada que asentar (el pan
                     // ya quedó aplicado en cada Move).
@@ -735,14 +813,34 @@ fn handle_motion(
             // vista se quedaba con el bitmap viejo escalado (borroso) hasta
             // el siguiente pinch o cambio de página.
             let pinch_active = matches!(reader.gesture.kind, GestureKind::Pinch { .. });
+            let erasing = matches!(reader.gesture.kind, GestureKind::Erase);
             reader.gesture.pointers.clear();
             reader.gesture.kind = GestureKind::None;
             reader.gesture.press_at = None;
             reader.clear_selection();
-            reader.cancel_tool_gesture(); // el trazo en curso se descarta
+            if erasing {
+                // El borrado a medio terminar se persiste igual (la memoria
+                // manda: las anotaciones ya eliminadas no vuelven).
+                reader.end_erase_gesture();
+            } else {
+                reader.cancel_tool_gesture(); // el trazo en curso se descarta
+            }
             if pinch_active {
                 reader.set_zoom_sharp(reader.zoom);
             }
+        }
+        MotionAction::ButtonPress => {
+            // [B] Botón UP del boli: alterna el modo (funciona TAMBIÉN con
+            // el boli en el AIRE: ButtonPress llega sin contacto). Fuente de
+            // verdad de la calibración: `action_button()` en
+            // Press/Release.
+            if u32::from(buttons.action) == PEN_BTN_MODE.0 {
+                reader.toggle_pen_mode();
+            }
+        }
+        MotionAction::ButtonRelease => {
+            // Sin acción: el toggle se decide en el Press (un Press+Release
+            // no debe alternar dos veces).
         }
         _ => {} // HoverMove, Scroll, Outside, ...: sin gesto definido.
     }
@@ -785,20 +883,22 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         return;
     }
 
-    // CAMPO de búsqueda: "✕" limpia los filtros (si los hay); tocar el campo
-    // abre/cierra el panel de chips de letra/carpeta.
+    // CAMPO de búsqueda: la "✕" limpia el texto tecleado y cierra el
+    // teclado; tocar el campo abre el TECLADO del sistema (`jni::ime_*`).
     if y < search_y + search_hh {
         let field_right = reader.win_w as f32 - grid_pad(reader.win_w);
-        let has_filter = reader.lib_letter.is_some() || reader.lib_folder.is_some();
+        let has_filter = !reader.lib_query.is_empty()
+            || reader.lib_letter.is_some()
+            || reader.lib_folder.is_some();
         if has_filter {
             let xw = search_hh - 8.0;
             let xx = field_right - 14.0 - xw;
             if x >= xx && x < xx + xw {
-                reader.lib_clear_search();
+                reader.lib_clear_search(app);
                 return;
             }
         }
-        reader.lib_toggle_search();
+        reader.lib_open_keyboard(app);
         return;
     }
 
@@ -848,7 +948,9 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // scroll vertical).
     let yc = y - content_y0 + reader.lib_scroll;
     let win_w = reader.win_w;
-    let has_cont = !reader.lib_continue_reading().is_empty();
+    // Biblioteca minimalista: la sección Continue Reading está oculta (siempre
+    // `false`); el bloque de organización tampoco existe (rejilla directa).
+    let has_cont = reader.lib_has_cont();
 
     // EMPTY STATE: botón "Add PDF"/"Grant access" (misma geometría que el
     // render).
@@ -945,39 +1047,71 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 }
 
-/// Tap del picker: botones de la cabecera (Back/Rescan) o fila de la lista
-/// (abrir PDF). La geometría DEBE reflejar exactamente la de
-/// `render_picker_list` (mismas fórmulas de layout).
+/// Tap del picker: botones de la cabecera (Back/Rescan) o fila de la lista.
+/// El fallback interno (`PickerKind::Files`) abre el PDF; el selector de
+/// añadir (`PickerKind::Select`) lo CURA en la biblioteca (`add_selected`).
+/// La geometría DEBE reflejar exactamente la de `render_picker_list` (mismas
+/// fórmulas de layout).
 fn picker_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     let win_w = reader.win_w as f32;
     let row_h = picker_row_h(reader.win_h) as f32;
     let header_h = picker_header_h(reader.win_h) as f32;
     let status_h = if reader.status.is_some() { row_h } else { 0.0 };
     let btn_w = picker_btn_w(reader.win_w) as f32;
+    let selecting = reader.picker_kind == PickerKind::Select;
 
     // Cabecera: botones a la derecha (Back a la izquierda de Rescan).
     if y < header_h {
         let rescan_x = win_w - btn_w - 8.0;
         if x >= rescan_x {
-            reader.rescan(app);
+            if selecting {
+                reader.rescan_select(app);
+            } else {
+                reader.rescan(app);
+            }
             return;
         }
         let back_x = win_w - btn_w * 2.0 - 16.0;
-        if reader.doc.is_some() && x >= back_x && x < rescan_x {
-            reader.exit_picker();
+        if (reader.doc.is_some() || selecting) && x >= back_x && x < rescan_x {
+            if selecting {
+                reader.cancel_add(app);
+            } else {
+                reader.exit_picker();
+            }
             return;
         }
         return;
     }
 
-    // Franja de estado: no es seleccionable.
-    let rows_y0 = header_h + status_h;
+    // Franja de estado (no seleccionable) + barra de breadcrumb del gestor.
+    let crumbs = if reader.picker_has_crumb() {
+        row_h
+    } else {
+        0.0
+    };
+    let rows_y0 = header_h + status_h + crumbs;
     if y < rows_y0 {
+        // Tap en la barra de breadcrumb (dentro de una carpeta): subir un
+        // nivel del gestor de archivos.
+        if selecting && y >= header_h + status_h && reader.picker_has_crumb() {
+            reader.picker_sel_up();
+        }
         return;
     }
 
     let row = ((y - rows_y0) / row_h) as usize + reader.list_scroll;
-    if row < reader.pdf_list.len() {
+    if selecting {
+        // Gestor de archivos del selector: carpeta → entrar; PDF → curar.
+        if let Some(pr) = reader.picker_rows().get(row) {
+            match pr {
+                PickRow::Folder(name) => {
+                    let name = name.clone();
+                    reader.picker_sel_enter(&name);
+                }
+                PickRow::File(idx) => reader.add_selected(app, *idx),
+            }
+        }
+    } else if row < reader.picker_len() {
         let name = reader.pdf_list[row].name.clone();
         let path = reader.pdf_list[row].path.clone();
         if !reader.open_pdf(&path) {
@@ -1131,8 +1265,8 @@ fn handle_picker_motion(
                     // Arrastre VERTICAL: picker por filas, biblioteca por px.
                     if reader.mode == UiMode::Picker {
                         let row_h = picker_row_h(reader.win_h) as f32;
-                        let visible = picker_visible_rows(reader.win_h, reader.status.is_some());
-                        let max_scroll = reader.pdf_list.len().saturating_sub(visible);
+                        let max_scroll =
+                            reader.picker_len().saturating_sub(reader.picker_visible());
                         let s =
                             (drag.v0 - dy / row_h).round().clamp(0.0, max_scroll as f32) as usize;
                         if s != reader.list_scroll {
@@ -1207,7 +1341,18 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
                 } else {
                     None
                 };
-                handle_motion(reader, app, action, pts, up_idx, stylus);
+                handle_motion(
+                    reader,
+                    app,
+                    action,
+                    pts,
+                    up_idx,
+                    stylus,
+                    PenButtons {
+                        state: motion.button_state(),
+                        action: motion.action_button(),
+                    },
+                );
                 InputStatus::Handled
             }
             InputEvent::KeyEvent(_) | InputEvent::TextEvent(_) | InputEvent::TextAction(_) | _ => {

@@ -3,6 +3,126 @@
 > Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
 > Formato: `AAAA-MM-DD — Título`.
 
+## 2026-08-25 — Control total de anotaciones con el BOLI (sin menús)
+
+Toda la anotación se controla solo con el boli (S-Pen/Saber, TCL 9469X):
+
+- **A) Tocar con el boli SIEMPRE dibuja**: el boli pasa a dibujar (Ink) o
+  subrayar (Highlight) según el MODO actual sin depender de la barra de
+  herramientas; el dedo sigue navegando (tap página, pinch zoom — nunca
+  dibuja).
+- **B) Botón UP del boli (el SUPERIOR) = alternar modo** con toast
+  ("✏️ Pen" / "🖍️ Highlighter"). Calibrado en fase A: este boli reporta el botón
+  superior como `STYLUS_SECONDARY` (0x40) — INVERTIDO al estándar; las
+  constantes `PEN_BTN_MODE`/`PEN_BTN_ERASE` concentran la asignación. El
+  toggle funciona en CONTACTO; en el AIRE el "stylus-handwriting-event-
+  receiver" de Android 15 (window del sistema uid 1000, `INTERCEPTS_STYLUS`)
+  consume el hover del stylus — limitación del sistema, documentada en
+  `input.rs`/`annotations.rs`.
+- **C) Botón DOWN (el INFERIOR) + apoyar = GOMA REAL**: recorte parcial en
+  vivo (un trazo se PARTE en trozos por el barrido de la goma; un subrayado
+  se divide en rectos) con `pdf_core::{split_stroke,trim_highlight}` (puras,
+  con tests) + barrido continuo entre pasadas (`erase_last`). Se guarda una
+  sola vez al levantar; no entra en el undo (permanente).
+- **D) El modo se persiste** en `tool_state.json` (campo `mode`, cargado con
+  fallback `Ink` por retrocompatibilidad — `persist.rs` NO se tocó: el JSON
+  se lee/escribe como `Value` conservando ink_color/ink_width).
+- **E) Barra intacta y funcional** (Resaltar/Boli/↶/●/━/→); elegir Boli/
+  Resaltar en la barra sincroniza el modo persistido del boli.
+- **Fixes de la verificación en tablet**: (1) el dedo volvió a pasar página
+  (el Down reestructurado hacía pan a todo contacto — ahora solo con
+  herramienta activa); (2) el resaltador dibuja un RECT LIBRE (bbox del
+  trazo, altura de línea 13 pt) cuando no hay texto bajo el trazo — el boli
+  SIEMPRE pinta en modo Highlighter.
+- **Pulido (2ª iteración)**: (1) INDICADOR DE MODO en el visor: pill
+  minimalista abajo a la derecha con ✏️/🖍️ (`draw::render_mode_badge`, cacheada
+  en `Reader::mode_badge`, se refresca al alternar modo) — el usuario SIEMPRE
+  ve con qué va a dibujar; (2) el borrado del SUBRAYADO ahora usa barrido
+  (muestreo del segmento goma anterior→actual en `trim_highlight`): una goma
+  rápida ya no "salta" por encima de una línea de 13 pt sin recortarla.
+- **Pulido (3ª iteración, feedback del usuario)**: (1) ICONOS MINIMALISTAS
+  lineales (estilo del pack "minimalista" de IconScout, sin emojis): el boli
+  es una PLUMA diagonal dibujada con el rasterizador de tinta (cuerpo ancho +
+  punta fina) y el resaltador es el símbolo de TEXT0 SUBRAYADO (barra +
+  patillas finas); (2) BORRADO CON GOMA REAL MEJORADA: `split_stroke` recorta
+  los SEGMENTOS por intersección exacta círculo→segmento (el hueco es
+  exactamente el círculo de la goma, no un "mordisco" de vértices) con
+  barrido multi-círculo muestreado; (3) CURSOR DE GOMA visible durante el
+  borrado (círculo del tamaño real de la goma que sigue al boli) — el usuario
+  ve exactamente qué se va a borrar.
+
+## 2026-08-25 — Buscador con TECLADO real (sin chips A-Z) + biblioteca minimalista
+
+El buscador de la biblioteca pasa de chips de letra/carpeta a TEXTO LIBRE con
+el teclado del sistema, y la biblioteca queda en solo libros + buscador
+(estilo Readest):
+
+- **Teclado del sistema en NativeActivity** (`jni.rs` + `tools/ime/`): el
+  backend native-activity de android-activity 0.6 no entrega texto por la vía
+  nativa (set_text_input_state es NOP; TextEvent solo en game-activity, que
+  exige Activity Java). Vía implementada: helper Java MÍNIMO
+  (`tools/ime/ImeHelper.java`) compilado a dex con las tools del SDK
+  (`tools/ime/build.sh`, javac + d8 + android.jar), EMBEBIDO en el binario
+  (`include_bytes!`) y cargado en runtime con `DexClassLoader` desde
+  `files/ime/` (el dex se marca 0444: ART rechaza dexes writable). El helper
+  crea un EditText invisible en el hilo UI (`runOnUiThread`) y abre el IME;
+  Rust hace polling del texto en `tick` (`needs_tick` + ime_active).
+- **UI del buscador**: tocar "Buscar por título o carpeta..." abre el teclado;
+  el texto filtra la rejilla por subcadena case-insensitive MIENTRAS se
+  escribe; "✕" limpia y cierra el teclado; sin coincidencias → "Sin
+  resultados — toca ✕ para limpiar". Eliminados de la UI los chips A-Z y de
+  carpetas (código conservado, inactivo).
+- **Fix**: abrir un libro curado desde la rejilla (la uri es la RUTA LOCAL;
+  antes intentaba copiarla como content:// → "No content provider").
+
+## 2026-08-25 — Biblioteca minimalista estilo Readest (rejilla + buscador)
+
+La biblioteca se simplifica a SOLO libros + buscador, siguiendo el lenguaje
+visual de Readest:
+
+- **Se eliminaron de la UI la sección "Continue Reading" (recientes/leyendo
+  ahora) y los chips de ORGANIZACIÓN (sort "Recientes/Los leídos/Título/Autor"
+  y filtro "Todos/En lectura/Terminados/Por leer")** (`draw.rs`, `reader.rs`, `input.rs`):
+  la rejilla de portadas empieza justo bajo el campo de búsqueda
+  (`lib_grid_y0` = 8 px), sin títulos de sección intermedios.
+- El **buscador** se mantiene como único filtro: campo "Buscar por título o
+  carpeta..." + panel de chips de letra A-Z / carpetas (sin teclado, limitación
+  de native-activity documentada).
+- El orden de la rejilla queda FIJO por "añadido más reciente primero"
+  (`LibSort::RecentlyAdded` por defecto); los libros curados aparecen arriba.
+- Código del carousel/organización conservado con `#[allow(dead_code)]`
+  documentado (no se borra lógica, solo se desactiva de la UI).
+
+## 2026-08-25 — Biblioteca curada: altas por selector + tope fijo LRU (50)
+
+La biblioteca deja de ser un escaneo de MediaStore y pasa a ser CURADA:
+
+- **Arranque sin intent sin escaneo** (`reader.rs`, `lib.rs`): `Reader::new`
+  ya no llama a `rescan_library`; muestra SOLO lo registrado en
+  `internal/library.json` (`reload_curated_library`). Vacía → empty state
+  "Tu biblioteca está vacía + Añadir PDF". `Resume` tampoco re-consulta
+  MediaStore. Migración one-shot: instalaciones antiguas con PDFs en
+  `internal/pdfs/` y registro vacío se auto-importan (added = ahora).
+- **Selector "＋ Añadir" GESTOR DE ARCHIVOS**: el botón de cabecera consulta
+  MediaStore en una lista TEMPORAL (`select_list`, nunca `library_list`) y
+  abre un navegador por CARPETAS (árbol de `RELATIVE_PATH`): las carpetas
+  del nivel actual primero (📁, en `primary`), los PDFs después (📄), con
+  barra de breadcrumb "⬆ …" para subir de nivel y "Atrás" para cancelar.
+  Se evita así la lista plana inabarcable de MediaStore. Tap en un PDF =
+  copiar a `internal/pdfs/` + contar páginas (MuPDF) + registrar progreso
+  (tope LRU aplicado).
+- **Tope fijo con evicción LRU** (`persist.rs`): `LIBRARY_MAX = 50`;
+  `enforce_library_limit(books, max)` (pura, con tests) devuelve las
+  expulsadas del menos recientemente leído al menos (nunca leído →
+  ordena por `added_unix`). Al añadir el 51º se borra fichero + portada
+  cacheada del expulsado y se muestra toast "Biblioteca llena — se eliminó X".
+- **Portadas por ruta local**: las entradas curadas usan su ruta local como
+  clave de portada; el pump renderiza por ruta (`render_thumb_path`) en vez
+  de fd content://. `ThumbCache::remove(key)` nuevo para purgar la portada
+  de un libro evictado (sin tocar la política LRU existente).
+- **Eliminado `rescan_library`**: la rejilla jamás lista PDFs del sistema por
+  sí sola ([7] verificado con 200 PDFs en Download — solo aparecen curados).
+
 ## 2026-08-25 — Iteración 3 — cierre de defectos visuales
 
 Cierre de defectos visuales, bugs residuales y pulido perceptual en `crates/pdf_android`:

@@ -45,6 +45,13 @@ use crate::annotations::{DEFAULT_INK_COLOR, STROKE_WIDTH_PT};
 /// Máximo de entradas de la lista de recientes (los últimos PDFs abiertos).
 pub(crate) const RECENTS_MAX: usize = 10;
 
+/// Tope FIJO de la BIBLIOTECA CURADA: al añadir el libro 51 se expulsa el
+/// menos recientemente leído (LRU, ver `enforce_library_limit`) y se borra su
+/// fichero de `internal/pdfs/` junto con su portada cacheada. 50 portadas de
+/// 240 px ≈ 11 MiB en la caché de portadas — dentro del presupuesto
+/// RSS < 150 MB (AGENTS.md §1).
+pub(crate) const LIBRARY_MAX: usize = 50;
+
 // ---------------------------------------------------------------------------
 // Progreso por libro (`library.json`): la biblioteca personal premium
 // ---------------------------------------------------------------------------
@@ -188,6 +195,47 @@ pub(crate) fn touch_progress(
         });
     }
     out
+}
+
+/// Clave LRU de un libro (MENOR = primer candidato a expulsión): un libro
+/// NUNCA leído ordena por `added_unix` (sello de alta); como
+/// `touch_progress` estampa `last_read_unix = added_unix` al crear el
+/// registro, para los no leídos `last_read_unix` ya ES ese instante. El
+/// fallback cubre registros legacy con sello ≤ 0.
+fn lru_key(b: &BookProgress) -> i64 {
+    if b.last_read_unix > 0 {
+        b.last_read_unix
+    } else {
+        b.added_unix
+    }
+}
+
+/// Aplica el tope de la biblioteca curada: conserva los `max` libros con
+/// clave LRU más ALTA y devuelve los expulsados ordenados del MENOS reciente
+/// al menos (víctima primero). Función PURA (sin fs ni reloj): borrar los
+/// ficheros y las portadas cacheadas lo hace el llamador. Con empates manda
+/// el orden de entrada (estable: los primeros del fichero expulsan antes).
+pub(crate) fn enforce_library_limit(
+    books: &[BookProgress],
+    max: usize,
+) -> (Vec<BookProgress>, Vec<BookProgress>) {
+    if books.len() <= max {
+        return (books.to_vec(), Vec::new());
+    }
+    let mut keyed: Vec<(i64, usize)> = books
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (lru_key(b), i))
+        .collect();
+    // Sort estable por clave: los empates conservan el orden de entrada.
+    keyed.sort_by_key(|e| e.0);
+    let cut = keyed.len() - max;
+    let evicted: Vec<BookProgress> = keyed[..cut].iter().map(|e| books[e.1].clone()).collect();
+    // Los conservados mantienen su orden relativo original (índices crecientes).
+    let mut kept_idx: Vec<usize> = keyed[cut..].iter().map(|e| e.1).collect();
+    kept_idx.sort_unstable();
+    let kept = kept_idx.into_iter().map(|i| books[i].clone()).collect();
+    (kept, evicted)
 }
 
 fn default_ink_width() -> f32 {
@@ -412,6 +460,70 @@ mod tests {
         let books = touch_progress(&books, "/x/b.pdf", 5, 20, 2);
         assert_eq!(books.len(), 2);
         assert!(progress_for(&books, "/x/a.pdf").is_some());
+    }
+
+    #[test]
+    fn limit_noop_when_under_max() {
+        let books = touch_progress(&[], "/x/a.pdf", 0, 10, 100);
+        let (kept, evicted) = enforce_library_limit(&books, LIBRARY_MAX);
+        assert_eq!(kept.len(), 1);
+        assert!(evicted.is_empty());
+    }
+
+    #[test]
+    fn limit_evicts_least_recently_read_first() {
+        let books = touch_progress(&[], "/x/a.pdf", 0, 10, 100);
+        let books = touch_progress(&books, "/x/b.pdf", 0, 10, 200);
+        let books = touch_progress(&books, "/x/c.pdf", 0, 10, 300);
+        let (kept, evicted) = enforce_library_limit(&books, 2);
+        assert_eq!(kept.len(), 2);
+        assert!(progress_for(&kept, "/x/b.pdf").is_some());
+        assert!(progress_for(&kept, "/x/c.pdf").is_some());
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].path, "/x/a.pdf");
+    }
+
+    #[test]
+    fn limit_never_read_sorts_by_added() {
+        // El libro "a" nunca se leyó (last_read == added = 500); el "b" sí
+        // (last_read = 100 < 500): pese a su sello de alta antiguo, "b" es
+        // el LRU y sale primero.
+        let books = touch_progress(&[], "/x/a.pdf", 0, 10, 500);
+        let books = touch_progress(&books, "/x/b.pdf", 0, 10, 50);
+        let books = touch_progress(&books, "/x/b.pdf", 4, 10, 100);
+        let (_, evicted) = enforce_library_limit(&books, 1);
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].path, "/x/b.pdf");
+    }
+
+    #[test]
+    fn limit_legacy_zero_last_read_falls_back_to_added() {
+        let old = BookProgress {
+            path: "/x/legacy.pdf".into(),
+            page: 0,
+            page_count: 10,
+            last_read_unix: 0,
+            added_unix: 42,
+        };
+        let books = touch_progress(&[old], "/x/new.pdf", 0, 10, 900);
+        let (_, evicted) = enforce_library_limit(&books, 1);
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].path, "/x/legacy.pdf");
+    }
+
+    #[test]
+    fn limit_multi_eviction_ordered_lru_first_and_keeps_newcomer() {
+        let books = touch_progress(&[], "/x/a.pdf", 0, 10, 100);
+        let books = touch_progress(&books, "/x/b.pdf", 0, 10, 200);
+        let books = touch_progress(&books, "/x/c.pdf", 0, 10, 300);
+        let books = touch_progress(&books, "/x/d.pdf", 0, 10, 400);
+        let (kept, evicted) = enforce_library_limit(&books, 2);
+        assert_eq!(kept.len(), 2);
+        assert!(progress_for(&kept, "/x/c.pdf").is_some());
+        assert!(progress_for(&kept, "/x/d.pdf").is_some());
+        assert_eq!(evicted.len(), 2);
+        assert_eq!(evicted[0].path, "/x/a.pdf"); // víctima principal
+        assert_eq!(evicted[1].path, "/x/b.pdf");
     }
 
     #[test]

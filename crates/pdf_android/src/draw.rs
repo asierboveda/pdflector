@@ -18,15 +18,14 @@ use pdf_core::{Annotated, Bitmap, Document, Highlight, Stroke, ViewTransform};
 use crate::annotations::ToolKind;
 use crate::persist;
 use crate::reader::{
-    AiPhase, GRID_CELL_PAD, GRID_COLS, Reader, entry_author, entry_title, grid_cell_h,
-    grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, human_size, lib_chip_h,
-    lib_chips, lib_cont_block_h, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x,
-    lib_cont_cover_h, lib_cont_cover_w, lib_content_y0, lib_empty_state_geom, lib_grid_y0,
-    lib_header_h, lib_org_chip_h, lib_org_chips, lib_org_y, lib_search_h, lib_section_title_h,
-    page_badge_size, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
-    picker_visible_rows, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad,
-    sheet_theme_btn_w, sheet_theme_y, title_from_name, truncate_name, viewer_bottom_chrome_h,
-    viewer_top_chrome_h,
+    AiPhase, GRID_CELL_PAD, GRID_COLS, PickRow, PickerKind, Reader, entry_author, entry_title,
+    grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, human_size,
+    lib_chip_h, lib_chips, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h,
+    lib_cont_cover_w, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
+    lib_org_chip_h, lib_org_chips, lib_search_h, page_badge_size, picker_btn_h, picker_btn_w,
+    picker_header_h, picker_row_h, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y,
+    sheet_pad, sheet_theme_btn_w, sheet_theme_y, title_from_name, truncate_name,
+    viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 use crate::theme;
 
@@ -2391,6 +2390,10 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
         p.base_300,
     ));
 
+    // Título según variante: fallback interno ("Abrir PDF") o selector de
+    // añadir ("Selecciona PDF": elige cuál de TODOS los PDFs del sistema
+    // pasa a la biblioteca curada).
+    let selecting = reader.picker_kind == PickerKind::Select;
     texts.push(CanvasText::new(
         pad,
         header_h as f32 * 0.62,
@@ -2398,7 +2401,11 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
         p.base_content,
         TextAlign::Left,
         true,
-        "Abrir PDF",
+        if selecting {
+            "Selecciona PDF"
+        } else {
+            "Abrir PDF"
+        },
     ));
 
     let btn_y = (header_h - btn_h) as f32 / 2.0;
@@ -2406,7 +2413,7 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
     let rescan_x = w as f32 - btn_w as f32 - 8.0;
     let btn_ts = theme::FONT_CAPTION;
 
-    if reader.doc.is_some() {
+    if reader.doc.is_some() || selecting {
         draw_button(
             &mut rects,
             &mut texts,
@@ -2438,7 +2445,8 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
     );
 
     // Franja de estado
-    let rows_y0 = header_h + status_h;
+    let crumbs = if reader.picker_has_crumb() { row_h } else { 0 };
+    let rows_y0 = header_h + status_h + crumbs;
     if let Some(status) = reader.status.as_deref() {
         rects.push(CanvasRect::sharp(
             0.0,
@@ -2466,13 +2474,75 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
         ));
     }
 
-    // Filas de PDFs
-    let visible = picker_visible_rows(h, reader.status.is_some());
+    // Barra de BREADCRUMB del gestor de archivos (selector de añadir dentro
+    // de una carpeta): muestra la ruta actual y, al tocarla, sube un nivel
+    // (`picker_sel_up` en `input`).
+    if reader.picker_has_crumb() {
+        let y0 = header_h as f32 + status_h as f32;
+        rects.push(CanvasRect::sharp(
+            0.0,
+            y0,
+            w as f32,
+            y0 + row_h as f32,
+            p.base_200,
+        ));
+        rects.push(CanvasRect::sharp(
+            0.0,
+            y0 + row_h as f32 - 1.0,
+            w as f32,
+            y0 + row_h as f32,
+            p.base_300,
+        ));
+        texts.push(CanvasText::new(
+            pad,
+            y0 + row_h as f32 * 0.66,
+            theme::FONT_CAPTION,
+            p.primary,
+            TextAlign::Left,
+            true,
+            format!("⬆  {}", reader.sel_dir.join("/")),
+        ));
+    }
+
+    // Filas del gestor: carpetas primero (📁), luego los PDFs del nivel
+    // actual (📄). El fallback interno (`PickerKind::Files`) lee `pdf_list`.
+    let rows: Vec<PickRow> = reader.picker_rows();
+    let visible = reader.picker_visible();
     let row_ts = theme::FONT_BODY;
     for i in 0..visible {
         let r = reader.list_scroll + i;
-        let Some(entry) = reader.pdf_list.get(r) else {
-            break;
+        let (label, size_str) = if selecting {
+            match rows.get(r) {
+                Some(PickRow::Folder(name)) => (format!("📁  {name}"), String::new()),
+                Some(PickRow::File(idx)) => {
+                    let Some(e) = reader.select_list.get(*idx) else {
+                        break;
+                    };
+                    let sz = if e.size > 0 {
+                        human_size(e.size.max(0) as u64)
+                    } else {
+                        String::new()
+                    };
+                    (format!("📄  {}", truncate_name(&e.name, 48)), sz)
+                }
+                None => break,
+            }
+        } else {
+            let Some(entry) = reader.pdf_list.get(r) else {
+                break;
+            };
+            let size_str = human_size(entry.size);
+            let char_w = row_ts * 0.55;
+            let size_w = size_str.chars().count() as f32 * char_w + pad;
+            let max_chars = (((w as f32 - pad * 3.0 - size_w) / char_w) as usize).max(1);
+            (
+                format!(
+                    "📄  {} [{}]",
+                    truncate_name(&entry.name, max_chars),
+                    entry.source
+                ),
+                size_str,
+            )
         };
         let y0 = (rows_y0 + (i as i32) * row_h) as f32;
         let bg = if i % 2 == 0 { p.base_100 } else { p.base_200 };
@@ -2485,20 +2555,12 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
             p.base_300,
         ));
 
-        let size_str = human_size(entry.size);
-        let char_w = row_ts * 0.55;
-        let size_w = size_str.chars().count() as f32 * char_w + pad;
-        let max_chars = (((w as f32 - pad * 3.0 - size_w) / char_w) as usize).max(1);
-        let label = format!(
-            "📄  {} [{}]",
-            truncate_name(&entry.name, max_chars),
-            entry.source
-        );
+        let is_folder = matches!(rows.get(r), Some(PickRow::Folder(_)));
         texts.push(CanvasText::new(
             pad,
             y0 + row_h as f32 * 0.64,
             row_ts,
-            p.base_content,
+            if is_folder { p.primary } else { p.base_content },
             TextAlign::Left,
             true,
             label,
@@ -2716,10 +2778,6 @@ pub(crate) fn render_library_zone(
         return None;
     }
     let yof = -band_origin as f32; // contenido − origen de banda
-    let pad = grid_pad(w);
-    let has_cont = !reader.lib_continue_reading().is_empty();
-    let cont_block_h = lib_cont_block_h(w, reader.win_h, has_cont);
-    let section_title_h = lib_section_title_h(reader.win_h);
     let p = reader.theme.palette();
 
     let mut rects: Vec<CanvasRect> = Vec::new();
@@ -2737,45 +2795,10 @@ pub(crate) fn render_library_zone(
         let shift = -(content_y0 as f32 + band_origin as f32);
         draw_empty_state(reader, &mut rects, &mut texts, shift);
     } else {
-        // 1. Sección "Continue Reading" (título estático)
-        texts.push(CanvasText::new(
-            pad,
-            yof + section_title_h * 0.72,
-            theme::FONT_LABEL_CAPS,
-            p.neutral_content,
-            TextAlign::Left,
-            true,
-            "LEYENDO AHORA",
-        ));
-
-        // 2. Título de "My Library" (la rejilla principal).
-        let my_lib_y = yof + cont_block_h + section_title_h * 0.72;
-        texts.push(CanvasText::new(
-            pad,
-            my_lib_y,
-            theme::FONT_LABEL_CAPS,
-            p.neutral_content,
-            TextAlign::Left,
-            true,
-            "TU COLECCIÓN",
-        ));
-
-        // 3. Etiquetas "ORDENAR"/"ESTADO" del bloque de organización
-        for (row, label_text) in ["ORDENAR", "ESTADO"].iter().enumerate() {
-            let org_y0 = yof + lib_org_y(w, reader.win_h, has_cont, row);
-            texts.push(CanvasText::new(
-                pad,
-                org_y0 + lib_org_chip_h(reader.win_h) * 0.74,
-                theme::FONT_LABEL_CAPS,
-                p.neutral_content,
-                TextAlign::Left,
-                false,
-                *label_text,
-            ));
-        }
-
-        // 4. REJILLA 3×3 (lista FILTRADA): solo las filas que intersectan la banda
-        let grid_y0 = lib_grid_y0(w, reader.win_h, has_cont);
+        // REJILLA 3×3 (lista FILTRADA): solo las filas que intersectan la
+        // banda. Biblioteca minimalista (estilo Readest): sin Continue
+        // Reading, sin títulos de sección y sin organización.
+        let grid_y0 = lib_grid_y0(w, reader.win_h, reader.lib_has_cont());
         let cell_h = grid_cell_h(w);
         let cell_w = grid_cell_w(w);
         let cover_w = grid_cover_w(w);
@@ -2886,15 +2909,17 @@ pub(crate) fn render_library_zone(
             }
         }
 
-        // 5. Sin resultados con filtro activo
+        // 5. Sin resultados con filtro activo (buscador con teclado o
+        // filtros legacy conservados).
         if reader.lib_filtered.is_empty()
-            && (reader.lib_letter.is_some()
+            && (!reader.lib_query.is_empty()
+                || reader.lib_letter.is_some()
                 || reader.lib_folder.is_some()
                 || reader.lib_status.is_some())
         {
             texts.push(CanvasText::new(
                 w as f32 / 2.0,
-                yof + cont_block_h + section_title_h + 24.0,
+                yof + 24.0,
                 theme::FONT_BODY,
                 p.neutral_content,
                 TextAlign::Center,
@@ -2909,6 +2934,138 @@ pub(crate) fn render_library_zone(
 
 /// Render de la fila HORIZONTAL del carousel de "Continue Reading" a un
 /// bitmap (ancho = extensión total de las tarjetas, alto = tarjeta).
+/// Tamaño y posición del indicador de MODO del boli (overlay abajo a la
+/// derecha del visor, simétrico al indicador de página): pill pequeña con el
+/// icono minimalista del modo (✏️ / 🖍️).
+pub(crate) fn mode_badge_rect(win_w: i32, win_h: i32) -> (i32, i32, i32, i32) {
+    let (bw, bh) = (56i32, (win_h / 60).max(30));
+    let pad = (win_w / 96).max(8);
+    (win_w - bw - pad, win_h - bh - pad, win_w - pad, win_h - pad)
+}
+
+/// Render del indicador de MODO del boli (pill con el icono ✏️/🖍️). Cacheado
+/// en `Reader::mode_badge`; se invalida al alternar modo, cambiar de ventana
+/// o al abrir/cerrar el chrome del visor.
+pub(crate) fn render_mode_badge(reader: &Reader) -> Option<Bitmap> {
+    let (l, t, r, b) = mode_badge_rect(reader.win_w, reader.win_h);
+    let (bw, bh) = ((r - l) as usize, (b - t) as usize);
+    let p = reader.theme.palette();
+    let (bg, border, text) = (p.badge_bg(), p.badge_border(), p.badge_text());
+    let mut rects = Vec::new();
+    let f = 999.0f32;
+    rects.push(CanvasRect::rounded(
+        0.0, 0.0, bw as f32, bh as f32, f, border,
+    ));
+    rects.push(CanvasRect::rounded(
+        1.0,
+        1.0,
+        bw as f32 - 1.0,
+        bh as f32 - 1.0,
+        f,
+        bg,
+    ));
+    // Símbolo MINIMALISTA lineal (sin emojis): el boli es una PLUMA
+    // diagonal dibujada con el rasterizador de tinta (cuerpo ancho + punta
+    // fina); el resaltador es el símbolo de texto subrayado (barra + dos
+    // patillas finas).
+    match reader.pen_mode {
+        crate::annotations::PenMode::Ink => {
+            // badge_text() es u32 ARGB → Color de tinta del rasterizador.
+            let ink = pdf_core::Color {
+                r: (text >> 16) as u8,
+                g: (text >> 8) as u8,
+                b: text as u8,
+                a: 255,
+            };
+            let mut bmp = jni_text_bitmap(bw as i32, bh as i32, theme::TRANSPARENT, &rects, &[])?;
+            // Cuerpo de la pluma (diagonal) + punta fina.
+            draw_ink_segment_on_frame(
+                &mut bmp,
+                (14.0, bh as f32 - 6.0),
+                (bw as f32 - 20.0, 11.0),
+                4.0,
+                ink,
+                1.0,
+                0,
+                0,
+            );
+            draw_ink_segment_on_frame(
+                &mut bmp,
+                (bw as f32 - 20.0, 11.0),
+                (bw as f32 - 8.0, 5.0),
+                1.2,
+                ink,
+                1.0,
+                0,
+                0,
+            );
+            Some(bmp)
+        }
+        crate::annotations::PenMode::Highlight => {
+            // Barra de subrayado + patillas verticales finas (rotulador
+            // marcando texto).
+            let (bar_y, bar_h) = (bh as f32 / 2.0 - 1.5, 3.0f32);
+            rects.push(CanvasRect::rounded(
+                11.0,
+                bar_y,
+                bw as f32 - 11.0,
+                bar_y + bar_h,
+                1.5,
+                text,
+            ));
+            let (leg_w, leg_h) = (3.0f32, bar_y - 7.0);
+            rects.push(CanvasRect::sharp(
+                13.0,
+                6.0,
+                13.0 + leg_w,
+                6.0 + leg_h,
+                text,
+            ));
+            rects.push(CanvasRect::sharp(
+                bw as f32 - 16.0,
+                6.0,
+                bw as f32 - 16.0 + leg_w,
+                6.0 + leg_h,
+                text,
+            ));
+            jni_text_bitmap(bw as i32, bh as i32, theme::TRANSPARENT, &rects, &[])
+        }
+    }
+}
+
+/// Cursor de la GOMA durante el borrado: círculo del tamaño REAL de la goma
+/// (`radius_px`, = radio en puntos × escala efectiva) con borde visible y
+/// relleno translúcido — el usuario ve exactamente qué se va a borrar.
+pub(crate) fn render_eraser_cursor(reader: &Reader, radius_px: i32) -> Option<Bitmap> {
+    let d = radius_px.max(4) * 2 + 8;
+    let p = reader.theme.palette();
+    // Relleno translúcido sutil (mismo tono del badge, alpha 0x66).
+    let fill = (p.badge_bg() & 0x00FF_FFFF) | 0x6600_0000;
+    let mut rects = Vec::new();
+    let rr = (d / 2) as f32;
+    rects.push(CanvasRect::rounded(
+        0.0,
+        0.0,
+        d as f32,
+        d as f32,
+        rr,
+        p.badge_border(),
+    ));
+    rects.push(CanvasRect::rounded(
+        1.0,
+        1.0,
+        d as f32 - 1.0,
+        d as f32 - 1.0,
+        rr - 1.0,
+        fill,
+    ));
+    jni_text_bitmap(d, d, theme::TRANSPARENT, &rects, &[])
+}
+
+/// Render de la fila horizontal del carousel de "Continue Reading". Desde la
+/// biblioteca minimalista (2026-08-25: rejilla + buscador, sección oculta)
+/// ya no se splices; se conserva por si se reintroduce.
+#[allow(dead_code)] // sección "Continue Reading" oculta por diseño
 pub(crate) fn render_carousel_row(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let books = reader.lib_continue_reading();
@@ -3140,6 +3297,10 @@ pub(crate) fn render_search_chip_row(reader: &Reader, row: usize) -> Option<Bitm
 }
 
 /// Render de la fila HORIZONTAL de chips de ORGANIZACIÓN `row` (0 = SORT, 1 = FILTER).
+/// Render de una fila de chips de ORGANIZACIÓN (sort/filter) de la
+/// biblioteca. Desde la biblioteca minimalista (2026-08-25) ya no se
+/// splices; se conserva por si se reintroduce el bloque de organización.
+#[allow(dead_code)] // organización (sort/filter) oculta por diseño
 pub(crate) fn render_org_chip_row(reader: &Reader, row: usize) -> Option<Bitmap> {
     let chips = lib_org_chips(reader, row);
     if chips.is_empty() {
@@ -3300,6 +3461,11 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
 /// Resumen del filtro de BÚSQUEDA activo para el campo ("M" / "Download" /
 /// "M · Download"): texto mostrable + si hay filtro (para el "✕").
 fn search_summary(reader: &Reader) -> (String, bool) {
+    // Buscador con TECLADO: el texto tecleado es el filtro principal.
+    if !reader.lib_query.is_empty() {
+        return (reader.lib_query.clone(), true);
+    }
+    // Filtros legacy por letra/carpeta (sin UI desde 2026-08-25).
     let mut parts = Vec::new();
     if let Some(l) = reader.lib_letter {
         parts.push(l.to_string());

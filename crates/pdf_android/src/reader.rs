@@ -25,13 +25,14 @@ use pdf_core::{
     PageTextCache, Rect, RenderEngine, Stroke, TextSpan,
 };
 
+use crate::annotations::{ERASE_HIT_RADIUS_PT, ERASE_HL_PAD_PT, PenMode};
 use crate::annotations::{INK_PALETTE, STROKE_WIDTHS, ToolGesture, ToolKind};
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
 use crate::draw::{
     ButtonRect, PageAnnots, PageBlit, ai_panel_layout, blit_composed, blit_lib_fade, blit_library,
     blit_page, compose_frame, compose_library_snapshot, paste_lib_thumbs, raster_tool_layer,
-    render_ai_panel, render_carousel_row, render_library_header, render_library_zone,
-    render_org_chip_row, render_page_badge, render_picker_list, render_search_chip_row,
+    render_ai_panel, render_eraser_cursor, render_library_header, render_library_zone,
+    render_mode_badge, render_page_badge, render_picker_list, render_search_chip_row,
     render_sel_menu, render_sheet, render_toast, render_toolbar, render_viewer_bottom_chrome,
     render_viewer_top_chrome, sel_menu_layout, splice_row, toolbar_rect,
 };
@@ -63,10 +64,37 @@ pub(crate) struct LaunchPdf {
 pub(crate) enum UiMode {
     /// Visor de página (render + gestos existentes).
     Viewer,
-    /// Picker: lista de PDFs de los directorios de la app (fallback interno).
+    /// Picker: lista de PDFs de los directorios de la app (fallback interno)
+    /// o selector de "＋ Añadir" (ver `PickerKind`).
     Picker,
-    /// Biblioteca: PDFs del sistema vía MediaStore (carpeta + nombre).
+    /// Biblioteca CURADA: solo los libros registrados en
+    /// `internal/library.json` (`persist::load_progress`); SIN escaneo de
+    /// MediaStore. Altas vía el selector de `add_book`.
     Library,
+}
+
+/// Qué lista muestra el modo `UiMode::Picker`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PickerKind {
+    /// Fallback interno histórico (PDFs de los directorios de la app);
+    /// lista `pdf_list`, tap = abrir.
+    Files,
+    /// Selector de "＋ Añadir": TODOS los PDFs del sistema vía MediaStore;
+    /// lista TEMPORAL `select_list` (nunca `library_list`: la rejilla curada
+    /// no cambia hasta confirmar la selección). Tap = copiar a
+    /// `internal/pdfs/` + registrar en `library.json` (`add_selected`).
+    Select,
+}
+
+/// Una fila del selector de añadir (`PickerKind::Select`): una CARPETA del
+/// gestor de archivos (para entrar) o un PDF (índice en `select_list`, para
+/// curar).
+#[derive(Clone, Debug)]
+pub(crate) enum PickRow {
+    /// Carpeta (nombre visible del nivel actual; al tocarla se entra).
+    Folder(String),
+    /// PDF: índice en `select_list` (se copia a `internal/pdfs/`).
+    File(usize),
 }
 
 /// Una entrada de la lista del picker.
@@ -101,8 +129,8 @@ pub(crate) struct LibraryEntry {
 }
 
 /// Resultado de una consulta a MediaStore: lista + estado del permiso y del
-/// error (para el mensaje de estado de la biblioteca). Construido en
-/// `jni::query_media_store`, consumido en `Reader::rescan_library`.
+/// error (para el mensaje de estado). Construido en `jni::query_media_store`,
+/// consumido en `Reader::add_book`/`rescan_select` (selector de añadir).
 pub(crate) struct LibraryScan {
     pub(crate) entries: Vec<LibraryEntry>,
     /// ¿Concedido el acceso a todos los archivos (API 30+) o no requerido (≤ 12)?
@@ -141,7 +169,11 @@ pub(crate) enum LibSort {
 /// no terminado, con su progreso persistido (página, total, %). Construido
 /// en `Reader::lib_continue_reading` a partir de `recents.json` +
 /// `library.json`; lo consumen el render (`draw`), el tap (`input`) y el
-/// pump de portadas (`Reader::pump_thumbs`).
+/// pump de portadas (`Reader::pump_thumbs`). Desde la biblioteca minimalista
+/// (2026-08-25, rejilla + buscador sin sección Continue Reading), solo el
+/// pump lee `path`/`name`; el resto de campos y el draw se conservan por si
+/// se reintroduce la sección.
+#[allow(dead_code)] // sección "Continue Reading" oculta por diseño
 pub(crate) struct ContinueBook {
     /// Ruta local absoluta (clave del documento; abre con `open_pdf_at`).
     pub(crate) path: String,
@@ -424,11 +456,13 @@ pub(crate) fn lib_section_title_h(win_h: i32) -> f32 {
 }
 
 /// Ancho (px) de la portada de una tarjeta de "Continue Reading" (2:3).
+#[allow(dead_code)] // sección "Continue Reading" oculta por diseño (2026-08-25)
 pub(crate) fn lib_cont_cover_w(win_h: i32) -> f32 {
     lib_cont_cover_h(win_h) / 1.5
 }
 
 /// Alto (px) de la portada de una tarjeta (proporción 2:3).
+#[allow(dead_code)] // sección "Continue Reading" oculta por diseño (2026-08-25)
 pub(crate) fn lib_cont_cover_h(win_h: i32) -> f32 {
     lib_cont_card_h(win_h) - 32.0
 }
@@ -493,11 +527,12 @@ pub(crate) fn lib_org_y(win_w: i32, win_h: i32, has_cont: bool, row: usize) -> f
         + row as f32 * (lib_org_chip_h(win_h) + lib_org_gap())
 }
 
-/// Y (px) del borde superior de la REJILLA en coords de CONTENIDO (tras el
-/// bloque de Continue Reading, el título de "My Library" y el bloque de
-/// organización).
-pub(crate) fn lib_grid_y0(win_w: i32, win_h: i32, has_cont: bool) -> f32 {
-    lib_cont_block_h(win_w, win_h, has_cont) + lib_section_title_h(win_h) + lib_org_block_h(win_h)
+/// Y (px) del borde superior de la REJILLA en coords de CONTENIDO.
+/// Biblioteca MINIMALISTA (estilo Readest): sin Continue Reading, sin
+/// títulos de sección y sin chips de organización — la rejilla arranca
+/// justo bajo el campo de búsqueda con un pequeño aire de 8 px.
+pub(crate) fn lib_grid_y0(_win_w: i32, _win_h: i32, _has_cont: bool) -> f32 {
+    8.0
 }
 
 /// Alto total (px) del contenido scrolleable de la biblioteca (Continue
@@ -947,9 +982,23 @@ pub(crate) struct Reader {
     pub(crate) gesture: GestureState,
     /// Modo de UI actual (visor de página o picker de PDFs).
     pub(crate) mode: UiMode,
-    /// PDFs encontrados en los directorios de la app (picker).
+    /// PDFs encontrados en los directorios de la app (picker fallback).
     pub(crate) pdf_list: Vec<PdfEntry>,
-    /// PDFs del sistema devueltos por MediaStore (biblioteca, rejilla 3×3).
+    /// Qué variante del picker está activa (fallback o selector de añadir).
+    pub(crate) picker_kind: PickerKind,
+    /// Lista TEMPORAL del selector de "＋ Añadir" (todos los PDFs de
+    /// MediaStore). NUNCA es `library_list`: la biblioteca curada solo
+    /// cambia al confirmar una selección (`Reader::add_selected`).
+    pub(crate) select_list: Vec<LibraryEntry>,
+    /// Ruta de CARPETAS abierta en el gestor de archivos del selector de
+    /// añadir (segmentos de RELATIVE_PATH; vacío = raíz). Al entrar en una
+    /// carpeta solo se ven sus PDFs y subcarpetas (`picker_rows`), evitando
+    /// la lista plana inabarcable de MediaStore.
+    pub(crate) sel_dir: Vec<String>,
+    /// Biblioteca CURADA mostrada en la rejilla: una entrada por registro de
+    /// `internal/library.json` cuyo PDF sigue en disco (uri = RUTA LOCAL,
+    /// folder = "PDF"). La construye `reload_curated_library`; jamás la
+    /// escribe un escaneo del sistema.
     pub(crate) library_list: Vec<LibraryEntry>,
     /// ¿Concedido el acceso a todos los archivos (API 30+) o asumido (≤ 12)?
     pub(crate) permission_granted: bool,
@@ -977,15 +1026,25 @@ pub(crate) struct Reader {
     /// Scroll horizontal (px) de la fila de chips de FILTER (organización).
     pub(crate) lib_filter_x: f32,
     /// Filtro de letra inicial activo ('A'..='Z', '#' = dígito/otro); None =
-    /// sin filtro de letra. Es la búsqueda por NOMBRE SIN teclado, presentada
-    /// como el panel del campo de búsqueda (ver `lib_chips`).
+    /// sin filtro de letra. Quedó sin UI desde el buscador con TECLADO
+    /// (2026-08-25): siempre None, el código se conserva por compatibilidad.
     pub(crate) lib_letter: Option<char>,
     /// Filtro de carpeta activo (RELATIVE_PATH, p. ej. "Download/"); None =
-    /// sin filtro de carpeta. Es la búsqueda por CARPETA SIN teclado.
+    /// sin filtro de carpeta. Quedó sin UI desde el buscador con TECLADO:
+    /// siempre None, el código se conserva por compatibilidad.
     pub(crate) lib_folder: Option<String>,
     /// ¿El campo de búsqueda está desplegado? (true → panel de chips de
-    /// letra/carpeta visible bajo el campo; el contenido baja).
+    /// letra/carpeta visible bajo el campo). Siempre false desde el buscador
+    /// con TECLADO (2026-08-25): el panel de chips A-Z/carpetas se eliminó
+    /// de la UI; el código se conserva por compatibilidad.
     pub(crate) lib_search_open: bool,
+    /// Texto del BUSCADOR CON TECLADO: filtro por subcadena (case-
+    /// insensitive) sobre el TÍTULO del libro, según lo que el usuario teclea
+    /// en el IME (`jni::ime_*`). Vacío = sin filtro.
+    pub(crate) lib_query: String,
+    /// ¿El teclado del buscador está abierto? true → `tick` hace polling del
+    /// texto del EditText invisible (`jni::ime_text`) y re-filtra la rejilla.
+    pub(crate) ime_active: bool,
     /// Orden de "My Library" (chips de sort: Recently Added / Recently Read /
     /// Title / Author).
     pub(crate) lib_sort: LibSort,
@@ -1046,6 +1105,19 @@ pub(crate) struct Reader {
     /// izquierda, tap = página siguiente), cacheado: se invalida al cambiar
     /// ventana, página o modo oscuro.
     page_badge: Option<Bitmap>,
+    /// Bitmap del indicador de MODO del boli (overlay abajo a la derecha,
+    /// ✏️/🖍️): se invalida al alternar modo o cambiar ventana — el usuario
+    /// siempre ve en qué modo va a dibujar el boli.
+    mode_badge: Option<Bitmap>,
+    /// Posición de pantalla de la GOMA durante el borrado (None = sin gesto
+    /// de borrado): dibuja el cursor circular (`eraser_cursor`) para que el
+    /// usuario vea exactamente qué área se va a borrar.
+    erase_pt: Option<(f32, f32)>,
+    /// Radio del cursor de la goma en PÍXELES (radio en puntos × escala
+    /// efectiva; fijo durante el gesto — el zoom no cambia mientras se borra).
+    erase_r_px: f32,
+    /// Bitmap cacheado del cursor circular de la goma (se regenera por gesto).
+    eraser_cursor: Option<Bitmap>,
     /// Caché LRU de portadas de la biblioteca (content:// URI → portada de la
     /// página 1, `THUMB_W` px de ancho). Se limpia al abrir un PDF: las
     /// portadas y la `PageCache` del visor no compiten por el mismo
@@ -1150,6 +1222,19 @@ pub(crate) struct Reader {
     /// selección de texto (long-press) queda desactivada mientras esté
     /// activa (`input::tick_gestures`).
     pub(crate) tool: ToolKind,
+    /// Modo del BOLI persistido (`PenMode`): el boli dibuja (Ink) o subraya
+    /// (Highlight) SIEMPRE que toca el PDF, sin depender de la barra de
+    /// herramientas; el botón UP del boli lo alterna (`toggle_pen_mode`) y se
+    /// guarda en `tool_state.json`. La barra (Fase 3.5) sigue existiendo y
+    /// `set_tool` sincroniza este modo para que ambas entradas coincidan.
+    pub(crate) pen_mode: PenMode,
+    /// ¿El gesto de BORRADO en curso ha eliminado alguna anotación? Se guarda
+    /// `store.save` UNA vez al levantar (o cancelar) si cambió algo.
+    erase_dirty: bool,
+    /// Última posición de la GOMA en coords de página (para el barrido
+    /// continuo del borrado: un punto entre dos pasadas consecutivas también
+    /// se borra). None = sin barrido previo (primer Move del gesto).
+    erase_last: Option<(f32, f32)>,
     /// ¿La barra de herramientas del visor está visible? La muestra/oculta el
     /// botón flotante "✎" (esquina superior derecha); el botón "→" de la
     /// barra la cierra. Ocultar la barra **vuelve a modo navegación**
@@ -1243,6 +1328,9 @@ impl Reader {
             gesture: GestureState::new(),
             mode: UiMode::Library,
             pdf_list: Vec::new(),
+            picker_kind: PickerKind::Files,
+            select_list: Vec::new(),
+            sel_dir: Vec::new(),
             library_list: Vec::new(),
             permission_granted: false,
             sdk_int: android_sdk_int(),
@@ -1257,6 +1345,8 @@ impl Reader {
             lib_letter: None,
             lib_folder: None,
             lib_search_open: false,
+            lib_query: String::new(),
+            ime_active: false,
             lib_sort: LibSort::RecentlyAdded,
             lib_status: None,
             lib_books: persist::load_progress(app.internal_data_path().as_deref()),
@@ -1277,6 +1367,10 @@ impl Reader {
             sheet_anim: false,
             sheet_bitmap: None,
             page_badge: None,
+            mode_badge: None,
+            erase_pt: None,
+            erase_r_px: 0.0,
+            eraser_cursor: None,
             thumbs: ThumbCache::new(THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES),
             thumb_failed: HashSet::new(),
             lib_header: None,
@@ -1297,6 +1391,8 @@ impl Reader {
             toast: None,
             toast_bitmap: None,
             tool: ToolKind::Navigate,
+            erase_dirty: false,
+            erase_last: None,
             toolbar_open: false,
             toolbar_bitmap: None,
             ink_color: {
@@ -1307,6 +1403,7 @@ impl Reader {
                 let ts = persist::load_tool_state(app.internal_data_path().as_deref());
                 ts.ink_width
             },
+            pen_mode: load_pen_mode(app.internal_data_path().as_deref()),
             tool_gesture: None,
             session_ids: Vec::new(),
             gesture_base: None,
@@ -1359,8 +1456,8 @@ impl Reader {
             // Lanzamiento normal sin intent. Estado persistido (`persist`): si
             // el PDF guardado sigue accesible, se abre directamente en su
             // página/zoom/tema; si ya no existe (o no se puede abrir),
-            // se BORRA el estado y se abre la biblioteca MediaStore
-            // (rescan_library cae al picker interno si MediaStore está vacía).
+            // se BORRA el estado y se muestra la BIBLIOTECA CURADA
+            // (`internal/library.json`) — SIN escanear MediaStore.
             None => {
                 let restored =
                     if let Some(state) = persist::load_state(reader.internal_dir.as_deref()) {
@@ -1405,9 +1502,13 @@ impl Reader {
                     };
                 if !restored {
                     // Sin estado (primer arranque) o PDF ya no accesible:
-                    // limpiar el estado huérfano y abrir la biblioteca.
+                    // limpiar el estado huérfano y mostrar la BIBLIOTECA
+                    // CURADA. Sin intent NO hay escaneo de MediaStore: la
+                    // rejilla sale de `library.json` (con migración one-shot
+                    // de los PDFs que instalaciones antiguas dejaran en
+                    // `internal/pdfs/`); vacía → empty state con "Añadir PDF".
                     persist::clear_state(reader.internal_dir.as_deref());
-                    reader.rescan_library(app);
+                    reader.reload_curated_library(app);
                 }
             }
         }
@@ -1435,6 +1536,7 @@ impl Reader {
         self.lib_header = None;
         self.lib_band = None;
         self.page_badge = None;
+        self.mode_badge = None;
         self.sheet_bitmap = None;
         self.page_frame = None;
         self.list_dirty = true;
@@ -1449,6 +1551,7 @@ impl Reader {
         self.window = None;
         self.bitmap = None;
         self.page_badge = None;
+        self.mode_badge = None;
         self.sheet_bitmap = None;
         self.page_frame = None;
         self.list_dirty = true;
@@ -1517,10 +1620,9 @@ impl Reader {
                 }
             }
             UiMode::Picker => {
-                // Clamp del scroll si la lista menguó (rescan) o cambió la
-                // ventana (picker: filas de `picker_row_h`).
-                let visible = picker_visible_rows(self.win_h, self.status.is_some());
-                let max_scroll = self.pdf_list.len().saturating_sub(visible);
+                // Clamp del scroll si la lista menguó (rescan/cancel) o cambió
+                // la ventana (picker: filas de `picker_row_h`).
+                let max_scroll = self.picker_len().saturating_sub(self.picker_visible());
                 if self.list_scroll > max_scroll {
                     self.list_scroll = max_scroll;
                 }
@@ -1644,15 +1746,6 @@ impl Reader {
     fn rebuild_library_row(&mut self, zone: u8) {
         self.lib_row_dirty = None;
         match zone {
-            1 => {
-                // Carousel de Continue Reading → banda, bajo su título.
-                let row = render_carousel_row(self);
-                let x = self.lib_carousel_x as i32;
-                let y = lib_section_title_h(self.win_h) as i32;
-                if let (Some(row), Some((band, origin))) = (row, self.lib_band.as_mut()) {
-                    splice_row(band, &row, -x, y - *origin);
-                }
-            }
             2 | 3 => {
                 // Chips del panel de búsqueda → cabecera (zona fija).
                 let row = render_search_chip_row(self, (zone - 2) as usize);
@@ -1670,24 +1763,8 @@ impl Reader {
                     splice_row(h, &row, -x, y as i32);
                 }
             }
-            4 | 5 => {
-                // Chips de organización (sort/filter) → banda.
-                let row = render_org_chip_row(self, (zone - 4) as usize);
-                let x = if zone == 4 {
-                    self.lib_sort_x as i32
-                } else {
-                    self.lib_filter_x as i32
-                };
-                let y = lib_org_y(
-                    self.win_w,
-                    self.win_h,
-                    self.lib_has_cont(),
-                    (zone - 4) as usize,
-                ) as i32;
-                if let (Some(row), Some((band, origin))) = (row, self.lib_band.as_mut()) {
-                    splice_row(band, &row, -x, y - *origin);
-                }
-            }
+            // Zonas 1 (carousel), 4 y 5 (sort/filter) ya no existen en la
+            // biblioteca minimalista: sin filas que remendar.
             _ => {}
         }
     }
@@ -1722,34 +1799,13 @@ impl Reader {
         self.splice_band_rows();
     }
 
-    /// Remienda las filas horizontales de la BANDA (carousel + chips de
-    /// sort/filter) sobre la banda actual.
+    /// Remienda las filas horizontales de la BANDA sobre la banda actual.
+    /// Biblioteca MINIMALISTA (estilo Readest): NO hay carousel de Continue
+    /// Reading ni chips de sort/filter, así que no se remienda ninguna fila
+    /// en la banda (solo los chips del panel de BÚSQUEDA, que viven en la
+    /// cabecera fija).
     fn splice_band_rows(&mut self) {
-        let has_cont = self.lib_has_cont();
-        let cont_row = if has_cont {
-            render_carousel_row(self)
-        } else {
-            None
-        };
-        let sort_row = render_org_chip_row(self, 0);
-        let filter_row = render_org_chip_row(self, 1);
-        let carousel_x = self.lib_carousel_x as i32;
-        let sort_x = self.lib_sort_x as i32;
-        let filter_x = self.lib_filter_x as i32;
-        let cont_y = lib_section_title_h(self.win_h) as i32;
-        let sort_y = lib_org_y(self.win_w, self.win_h, has_cont, 0) as i32;
-        let filter_y = lib_org_y(self.win_w, self.win_h, has_cont, 1) as i32;
-        if let Some((band, origin)) = self.lib_band.as_mut() {
-            if let Some(row) = cont_row {
-                splice_row(band, &row, -carousel_x, cont_y - *origin);
-            }
-            if let Some(row) = sort_row {
-                splice_row(band, &row, -sort_x, sort_y - *origin);
-            }
-            if let Some(row) = filter_row {
-                splice_row(band, &row, -filter_x, filter_y - *origin);
-            }
-        }
+        // Sin filas horizontales en la banda (carousel/organización ocultos).
     }
 
     /// Tamaño de la página `page` en px de ventana a zoom 1 (cover × puntos
@@ -2067,6 +2123,19 @@ impl Reader {
                         (b, bx, by)
                     })
                 };
+                // Indicador de MODO del boli (abajo a la DERECHA, ✏️/🖍️): se
+                // renderiza y cachea con el mismo patrón que el de página.
+                if !self.chrome_visible && self.mode_badge.is_none() {
+                    self.mode_badge = render_mode_badge(self);
+                }
+                let mode_badge: Option<(&Bitmap, i32, i32)> = if self.chrome_visible {
+                    None
+                } else {
+                    self.mode_badge.as_ref().map(|b| {
+                        let (bx, by, _, _) = crate::draw::mode_badge_rect(self.win_w, self.win_h);
+                        (b, bx, by)
+                    })
+                };
                 // Overlays del visor en el MISMO buffer (un solo lock+present)
                 let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(8);
                 // Chrome del visor (barra superior e inferior) o badge
@@ -2079,6 +2148,23 @@ impl Reader {
                     }
                 } else if let Some((b, bx, by)) = badge {
                     overlays.push((b, bx, by));
+                }
+                if let Some((mb, mx, my)) = mode_badge {
+                    overlays.push((mb, mx, my));
+                }
+                // Cursor de la GOMA durante el borrado (círculo del tamaño
+                // real de la goma, sigue al boli).
+                if let Some((ex, ey)) = self.erase_pt {
+                    if self.eraser_cursor.is_none() && self.erase_r_px > 4.0 {
+                        self.eraser_cursor = render_eraser_cursor(self, self.erase_r_px as i32);
+                    }
+                    if let Some(eb) = self.eraser_cursor.as_ref() {
+                        overlays.push((
+                            eb,
+                            ex as i32 - (eb.width as i32) / 2,
+                            ey as i32 - (eb.height as i32) / 2,
+                        ));
+                    }
                 }
                 // Barra de herramientas (píldora)
                 if self.toolbar_open && self.toolbar_bitmap.is_none() {
@@ -2940,6 +3026,9 @@ impl Reader {
     #[allow(dead_code)] // el bucle usa `has_window()` (timeout fijo)
     pub(crate) fn needs_tick(&mut self) -> bool {
         self.repaint
+            // Buscador con teclado: mientras el IME esté abierto, `tick`
+            // hace polling del texto tecleado (re-filtra la rejilla en vivo).
+            || self.ime_active
             || self.tool_gesture.is_some()
             || self.sheet_anim
             || (self.chrome_visible && self.chrome_hide_at.is_some())
@@ -3060,6 +3149,9 @@ impl Reader {
     /// los eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
     /// despertar el loop en reposo).
     pub(crate) fn tick(&mut self, app: &AndroidApp) {
+        // Buscador con teclado: recoger lo tecleado y re-filtrar la rejilla
+        // (el IME escribe en un EditText invisible; ver `jni::ime_text`).
+        self.poll_ime_query(app);
         // Auto-ocultar chrome del visor tras ~2.5 s
         if self.chrome_visible
             && let Some(hide_at) = self.chrome_hide_at
@@ -3267,7 +3359,8 @@ impl Reader {
                 budget -= 1;
             }
         }
-        // Rejilla (clave = content:// URI).
+        // Rejilla (clave = URI content:// para entradas del sistema o RUTA
+        // local para las CURADAS — ver `reload_curated_library`).
         let (row0, rows) = self.lib_visible_grid_rows();
         for row in row0..row0 + rows {
             for col in 0..GRID_COLS {
@@ -3284,7 +3377,14 @@ impl Reader {
                 if self.thumbs.get(&uri).is_some() || self.thumb_failed.contains(&uri) {
                     continue;
                 }
-                match self.render_thumb(app, &uri) {
+                let rendered = if uri.starts_with("content:") {
+                    self.render_thumb(app, &uri)
+                } else {
+                    // Entrada CURADA: uri es una ruta local → portada por
+                    // ruta (mismo patrón que los recientes).
+                    self.render_thumb_path(&uri)
+                };
+                match rendered {
                     Some(bmp) => {
                         self.thumbs.insert(uri.clone(), bmp);
                         info!(
@@ -3664,9 +3764,63 @@ impl Reader {
     /// dibuja con el acento dorado (el `toolbar_bitmap` se invalida).
     pub(crate) fn set_tool(&mut self, tool: ToolKind) {
         self.tool = tool;
+        // La barra y el boli son DOS entradas al mismo estado: elegir Boli /
+        // Resaltador en la barra actualiza el modo persistido del boli (el
+        // boli dibujará ese modo al tocar el papel).
+        let sync = match tool {
+            ToolKind::Ink => self.pen_mode != PenMode::Ink,
+            ToolKind::Highlight => self.pen_mode != PenMode::Highlight,
+            ToolKind::Navigate => false,
+        };
+        if sync {
+            self.pen_mode = match tool {
+                ToolKind::Ink => PenMode::Ink,
+                _ => PenMode::Highlight,
+            };
+            self.persist_pen_mode();
+        }
         self.toolbar_bitmap = None; // los estados activos de los botones cambian
         if self.window.is_some() {
             self.blit();
+        }
+    }
+
+    /// [B] Botón UP del boli: alterna el modo (Ink ↔ Highlight), muestra el
+    /// toast con el modo NUEVO y lo persiste en `tool_state.json`. Lo llama
+    /// `input` desde `MotionAction::ButtonPress` (funciona con el boli en el
+    /// aire Y en contacto; algunos bolis no emiten ButtonPress — ver la
+    /// fuente de verdad doble en `input.rs`).
+    pub(crate) fn toggle_pen_mode(&mut self) {
+        self.pen_mode = match self.pen_mode {
+            PenMode::Ink => PenMode::Highlight,
+            PenMode::Highlight => PenMode::Ink,
+        };
+        self.persist_pen_mode();
+        self.mode_badge = None; // el indicador de esquina muestra el modo nuevo
+        self.show_toast(self.pen_mode.label());
+    }
+
+    /// Persiste el modo del boli en `tool_state.json` (campo "mode"). NO
+    /// toca `persist.rs` (fuera de alcance de esta tarea): lee el JSON
+    /// completo como `Value` (respetando lo que escribe `persist` —
+    /// ink_color/ink_width) y solo conserva/añade "mode".
+    fn persist_pen_mode(&self) {
+        let Some(dir) = self.internal_dir.as_deref() else {
+            return;
+        };
+        let path = dir.join("tool_state.json");
+        let mut v = fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        v["mode"] = serde_json::json!(match self.pen_mode {
+            PenMode::Ink => "Ink",
+            PenMode::Highlight => "Highlight",
+        });
+        if let Ok(text) = serde_json::to_string_pretty(&v)
+            && let Err(e) = fs::write(&path, text)
+        {
+            error!("persist pen_mode {}: {e}", path.display());
         }
     }
 
@@ -3904,15 +4058,15 @@ impl Reader {
     /// coordenadas de página y crea el `ToolGesture` en la página actual.
     /// El blit pasa a usar el frame compuesto + capa temporal (sin
     /// re-renderizar ni re-blitear la página) mientras el gesto dure.
-    pub(crate) fn begin_tool_gesture(&mut self, sx: f32, sy: f32) {
-        if self.tool == ToolKind::Navigate {
-            return;
+    pub(crate) fn begin_tool_gesture(&mut self, sx: f32, sy: f32, tool: ToolKind) -> bool {
+        if tool == ToolKind::Navigate {
+            return false;
         }
         let Some(pt) = self.screen_to_page(sx, sy) else {
-            return;
+            return false;
         };
         self.last_stylus_time = Some(std::time::Instant::now());
-        self.tool_gesture = Some(ToolGesture::new(self.page, self.tool, pt));
+        self.tool_gesture = Some(ToolGesture::new(self.page, tool, pt));
         self.tool_dirty = None;
         // TINTA DIRECTA (patrón Xournal++/GoodNotes): aseguramos que el
         // frame existe (si no, el primer blit lo compone) y guardamos una
@@ -3926,6 +4080,7 @@ impl Reader {
         if self.window.is_some() {
             self.blit();
         }
+        true
     }
 
     /// Gesto de herramienta: cada Move añade el punto (boli) o actualiza el
@@ -3939,11 +4094,14 @@ impl Reader {
         let Some(pt) = self.screen_to_page(sx, sy) else {
             return;
         };
+        // La herramienta del gesto EN CURSO (la puso `input` según el modo
+        // del boli); `self.tool` (barra) es irrelevante aquí.
+        let Some(tool) = self.tool_gesture.as_ref().map(|g| g.tool) else {
+            return;
+        };
         // Actualizar tiempo de stylus para palm rejection por tiempo
-        if self.tool != ToolKind::Navigate {
-            self.last_stylus_time = Some(std::time::Instant::now());
-        }
-        match self.tool {
+        self.last_stylus_time = Some(std::time::Instant::now());
+        match tool {
             ToolKind::Ink => {
                 // Punto descartado por distancia (no se pinta nada nuevo).
                 let pushed = {
@@ -4089,7 +4247,7 @@ impl Reader {
                     .and_then(|d| self.text_cache.get_or_extract(d, g.page).ok())
                     .map(|t| t.spans.clone())
                     .unwrap_or_default();
-                let gesture = Gesture::Points(g.points);
+                let gesture = Gesture::Points(g.points.clone());
                 if let Some(hl) =
                     pdf_core::highlight_under_gesture(&spans, &gesture, pdf_core::HIGHLIGHT_COLOR)
                 {
@@ -4102,9 +4260,33 @@ impl Reader {
                         self.show_toast("highlighted");
                     }
                 } else {
-                    // Sin líneas bajo el trazo (zona en blanco, PDF escaneado
-                    // o trazo demasiado corto): aviso, no se crea nada.
-                    self.show_toast("no text");
+                    // Sin líneas de texto bajo el trazo (zona en blanco o PDF
+                    // escaneado): el resaltador dibuja un RECT LIBRE con el
+                    // bbox del trazo (altura de línea ~13 pt) — el boli
+                    // SIEMPRE pinta algo en modo Highlighter.
+                    let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
+                    let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+                    for &(x, y) in &g.points {
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
+                    }
+                    let line_h = 13.0f32;
+                    let cy = (min_y + max_y) / 2.0 - line_h / 2.0;
+                    let rect = pdf_core::Rect::new(min_x, cy, (max_x - min_x).max(1.0), line_h);
+                    let hl = pdf_core::Highlight {
+                        rects: vec![rect],
+                        color: pdf_core::HIGHLIGHT_COLOR,
+                    };
+                    if let Some(id) = self
+                        .annotations
+                        .add(g.page as usize, Annotation::Highlight(hl))
+                    {
+                        self.session_ids.push(id);
+                        self.save_annotations();
+                        self.show_toast("highlighted");
+                    }
                 }
             }
             ToolKind::Navigate => {}
@@ -4145,6 +4327,142 @@ impl Reader {
             if self.window.is_some() {
                 self.blit();
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Borrado con el boli (botón DOWN mantenido + tocar el PDF): control
+    // total SIN menús ([C] de la tarea). El erase nunca coexiste con un
+    // gesto de tinta (`input` solo lo inicia si `tool_gesture` está libre) y
+    // NO entra en el undo de sesión (`session_ids` intacto; decisión:
+    // permanente).
+    // ---------------------------------------------------------------------
+
+    /// Comienza un gesto de borrado (Down del boli con el botón DOWN
+    /// pulsado). Devuelve false si no se pudo iniciar (ya hay tinta en curso
+    /// o el punto no cae en la página) — en ese caso `input` no entra en el
+    /// modo Erase.
+    pub(crate) fn begin_erase_gesture(&mut self, sx: f32, sy: f32) -> bool {
+        // El modo ERASE nunca coexiste con `tool_gesture` de dibujo: si hay
+        // tinta en curso, este Down no inicia borrado (el trazo sigue como
+        // estaba).
+        if self.tool_gesture.is_some() {
+            return false;
+        }
+        if self.screen_to_page(sx, sy).is_none() {
+            return false;
+        }
+        self.last_stylus_time = Some(std::time::Instant::now());
+        self.erase_dirty = false;
+        self.erase_last = None;
+        self.erase_pt = Some((sx, sy));
+        self.erase_r_px = self.eraser_radius_px();
+        self.eraser_cursor = None;
+        true
+    }
+
+    /// Radio del cursor de la goma en px (radio en puntos × escala efectiva).
+    fn eraser_radius_px(&self) -> f32 {
+        let scale = self
+            .doc
+            .as_ref()
+            .and_then(|d| d.page_size(self.page).ok())
+            .map(|(pw, ph)| initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom)
+            .unwrap_or(1.0);
+        ERASE_HIT_RADIUS_PT * scale
+    }
+
+    /// Arrastre de borrado: hit-test del punto (en coords de página) contra
+    /// TODAS las anotaciones de la página actual — incluidas las de
+    /// SESIONES ANTERIORES (el sidecar se carga en `load_annotations`). Cada
+    /// anotación cruzada se elimina EN VIVO (`AnnotationSet::remove`): el
+    /// frame de la página se invalida y el siguiente blit la recompone sin
+    /// ella — desaparece bajo el boli.
+    pub(crate) fn update_erase_gesture(&mut self, sx: f32, sy: f32) {
+        let Some(pt) = self.screen_to_page(sx, sy) else {
+            return;
+        };
+        self.last_stylus_time = Some(std::time::Instant::now());
+        // Cursor de la goma sigue al boli (el radio se calculó al empezar).
+        self.erase_pt = Some((sx, sy));
+        // Instantánea (id + copia) ANTES de mutar el set: remove/add durante
+        // el barrido no invalidan el préstamo.
+        let snapshot: Vec<(u64, pdf_core::Annotation)> = self
+            .annotations
+            .for_page(self.page as usize)
+            .iter()
+            .map(|a| (a.id, a.kind.clone()))
+            .collect();
+        let mut changed = false;
+        for (id, kind) in snapshot {
+            match &kind {
+                pdf_core::Annotation::Stroke(s) => {
+                    // GOMA REAL sobre trazo: se recorta (parte la línea en
+                    // trozos), no se elimina entera.
+                    if let Some(parts) = pdf_core::annotations::split_stroke(
+                        s,
+                        pt,
+                        ERASE_HIT_RADIUS_PT,
+                        self.erase_last,
+                    ) {
+                        self.annotations.remove(id);
+                        let mut kept = 0;
+                        for part in parts {
+                            if self
+                                .annotations
+                                .add(self.page as usize, pdf_core::Annotation::Stroke(part))
+                                .is_some()
+                            {
+                                kept += 1;
+                            }
+                        }
+                        info!("erase: stroke {id} -> {kept} piece(s)");
+                        changed = true;
+                    }
+                }
+                pdf_core::Annotation::Highlight(h) => {
+                    // GOMA REAL sobre subrayado: se parte en rectos (con
+                    // barrido: una goma rápida no salta la línea).
+                    if let Some(rects) = pdf_core::annotations::trim_highlight(
+                        h,
+                        pt,
+                        ERASE_HL_PAD_PT,
+                        self.erase_last,
+                    ) {
+                        self.annotations.remove(id);
+                        if !rects.is_empty() {
+                            self.annotations.add(
+                                self.page as usize,
+                                pdf_core::Annotation::Highlight(pdf_core::Highlight {
+                                    rects,
+                                    color: h.color,
+                                }),
+                            );
+                        }
+                        info!("erase: highlight {id} trimmed");
+                        changed = true;
+                    }
+                }
+                pdf_core::Annotation::TextNote(_) => {}
+            }
+        }
+        self.erase_last = Some(pt);
+        if changed {
+            self.erase_dirty = true;
+            self.page_frame = None;
+            self.mark_repaint();
+        }
+    }
+
+    /// Fin del borrado (Up o Cancel del sistema): persiste UNA sola vez si
+    /// algo se eliminó (`store.save`, hilo de fondo).
+    pub(crate) fn end_erase_gesture(&mut self) {
+        self.last_stylus_time = Some(std::time::Instant::now());
+        self.erase_pt = None;
+        self.eraser_cursor = None;
+        if self.erase_dirty {
+            self.erase_dirty = false;
+            self.save_annotations();
         }
     }
 
@@ -4389,11 +4707,10 @@ impl Reader {
         }
     }
 
-    /// Entra en la biblioteca MediaStore (botón "← Library" del sheet del
-    /// visor): re-consulta y deja de mostrar la página. El campo de búsqueda
-    /// arranca CERRADO. Si MediaStore está vacía y la carpeta interna de la
-    /// app tampoco tiene PDFs, se queda en la biblioteca mostrando el EMPTY
-    /// STATE (ver `rescan_library`).
+    /// Entra en la biblioteca (botón "← Library" del sheet del visor):
+    /// reconstruye la biblioteca CURADA desde `internal/library.json` y deja
+    /// de mostrar la página. El campo de búsqueda arranca CERRADO. Vacía →
+    /// EMPTY STATE ("Tu biblioteca está vacía" + botón "Añadir PDF").
     pub(crate) fn enter_library(&mut self, app: &AndroidApp) {
         self.mode = UiMode::Library;
         self.list_scroll = 0;
@@ -4422,14 +4739,14 @@ impl Reader {
         self.toolbar_bitmap = None;
         self.tool_gesture = None;
         self.session_ids.clear();
-        self.rescan_library(app);
+        self.lib_close_ime(app);
+        self.reload_curated_library(app);
     }
 
     /// Abre el picker interno (PDFs de los directorios de la app; el fallback
-    /// cuando MediaStore no sirve). Con el sheet rediseñado (2026-08-XX) ya no
-    /// hay botón "Open" en el visor: el picker queda accesible solo por el
-    /// fallback de `rescan_library` (MediaStore vacía). Se conserva el método
-    /// por si una fase futura reintroduce la entrada.
+    /// histórico). Con la biblioteca curada no hay ruta de UI hacia él (las
+    /// altas van por `add_book`); se conserva el método por si una fase
+    /// futura reintroduce la entrada.
     #[allow(dead_code)]
     pub(crate) fn open_picker(&mut self, app: &AndroidApp) {
         self.mode = UiMode::Picker;
@@ -4457,23 +4774,50 @@ impl Reader {
         self.redraw();
     }
 
-    /// Re-consulta MediaStore (botón "＋ Add book" / arranque / Resume de la
-    /// biblioteca). Actualiza la lista, el estado del permiso y el mensaje.
-    /// Si el permiso está concedido pero no hay PDFs en MediaStore ni en la
-    /// carpeta interna de la app, se queda en la biblioteca mostrando el
-    /// EMPTY STATE ("Your library is empty" + botón Add PDF); si la carpeta
-    /// interna sí tiene PDFs (no visibles en MediaStore), cae al picker como
-    /// fallback para no perder el acceso.
-    pub(crate) fn rescan_library(&mut self, app: &AndroidApp) {
-        self.grant_pending = false;
-        let scan = query_media_store(app, self.sdk_int);
-        self.library_list = scan.entries;
-        // Datos nuevos: el scroll vuelve al principio (vertical y horizontales)
-        // y se recalcula la lista filtrada (los filtros activos se CONSERVAN:
-        // si el usuario está viendo "Download/", el rescan no le cambia el
-        // filtro, solo refresca los datos).
-        self.refresh_lib_filtered();
-        self.permission_granted = scan.permission_granted;
+    /// Reconstruye la BIBLIOTECA CURADA desde `internal/library.json` — SIN
+    /// consultar MediaStore: una entrada `LibraryEntry` por registro cuyo PDF
+    /// sigue existiendo en disco (`uri` = RUTA LOCAL, `folder` = "PDF"; las
+    /// portadas y aperturas van por ruta). Antes de listar ejecuta la
+    /// MIGRACIÓN one-shot de instalaciones antiguas (`migrate_internal_pdfs`).
+    /// Vacía → empty state con "Añadir PDF".
+    pub(crate) fn reload_curated_library(&mut self, _app: &AndroidApp) {
+        self.mode = UiMode::Library;
+        self.picker_kind = PickerKind::Files; // el selector temporal queda fuera
+        // Re-leer los registros persistidos: la biblioteca debe reflejar
+        // cualquier alta/lectura hecha en otro punto del flujo.
+        self.lib_books = persist::load_progress(self.internal_dir.as_deref());
+        self.migrate_internal_pdfs();
+        // Solo los registros cuyo fichero SIGUE existiendo: un registro
+        // huérfano (borrado a mano o evictado) no pinta ninguna celda.
+        let mut entries = Vec::new();
+        for b in &self.lib_books {
+            let p = Path::new(&b.path);
+            if !p.is_file() {
+                continue;
+            }
+            let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            entries.push(LibraryEntry {
+                name,
+                folder: "PDF".to_string(),
+                uri: b.path.clone(),
+                size: 0,
+            });
+        }
+        info!(
+            "curated library: {} of {} records with file on disk",
+            entries.len(),
+            self.lib_books.len()
+        );
+        self.library_list = entries;
+        // La rejilla curada NO requiere permiso de almacenamiento (lee solo
+        // ficheros propios); quien lo necesita es el SELECTOR de añadir, y
+        // ese lo re-comprueba `query_media_store` al invocarse. Con true, el
+        // empty state ofrece "Añadir PDF" en vez de "Conceder acceso".
+        self.permission_granted = true;
+        // Datos nuevos: scroll al origen (vertical y horizontales) y lista
+        // filtrada recalculada; el sort activo ordena por added/read.
         self.list_scroll = 0;
         self.lib_scroll = 0.0;
         self.lib_carousel_x = 0.0;
@@ -4481,35 +4825,148 @@ impl Reader {
         self.lib_letters_x = 0.0;
         self.lib_sort_x = 0.0;
         self.lib_filter_x = 0.0;
+        self.refresh_lib_filtered();
         self.list_dirty = true;
-        if !self.permission_granted {
-            self.status = Some("All files access not granted — tap Grant".to_string());
-        } else if let Some(e) = scan.error {
-            self.status = Some(format!("MediaStore error: {e}"));
-        } else if self.library_list.is_empty() {
-            // Sin PDFs en MediaStore. ¿Y en la carpeta interna de la app?
-            // Si tampoco hay, EMPTY STATE en la biblioteca (botón "Add PDF");
-            // si la hay, picker como fallback para no perder el acceso.
-            self.pdf_list = scan_pdfs(app);
-            if self.pdf_list.is_empty() {
-                self.mode = UiMode::Library;
-                self.status = None;
-            } else {
-                self.mode = UiMode::Picker;
-                self.lib_header = None; // biblioteca fuera: liberar planos
-                self.lib_band = None;
-                self.lib_row_dirty = None;
-                self.status = Some("No PDFs in MediaStore — showing app folder".to_string());
-            }
-        } else {
-            self.status = None;
-        }
-        info!(
-            "library: {} PDFs (all-files-access: {})",
-            self.library_list.len(),
-            self.permission_granted
-        );
+        self.bitmap = None;
+        self.lib_header = None; // zona fija: se re-renderiza en el rebuild
+        self.lib_band = None;
+        self.lib_row_dirty = None;
         self.redraw();
+    }
+
+    /// MIGRACIÓN one-shot de instalaciones antiguas: versiones previas
+    /// copiaban los PDFs abiertos a `internal/pdfs/` sin registrarlos en
+    /// `library.json`. Si el registro está VACÍO y la carpeta NO, se importa
+    /// cada PDF como libro (added = ahora). Idempotente: tras guardar, el
+    /// registro deja de estar vacío y no vuelve a ejecutarse.
+    fn migrate_internal_pdfs(&mut self) {
+        if !self.lib_books.is_empty() {
+            return;
+        }
+        let Some(dir) = self.internal_dir.as_deref() else {
+            return;
+        };
+        let pdfs_dir = dir.join("pdfs");
+        let Ok(rd) = fs::read_dir(&pdfs_dir) else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("pdf")))
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        paths.sort();
+        let now = persist::unix_now();
+        let books: Vec<BookProgress> = paths
+            .iter()
+            .map(|p| BookProgress {
+                path: p.display().to_string(),
+                page: 0,
+                // Contar páginas exigiría abrir CADA PDF durante el arranque
+                // (launch time); el total real queda sellado en la primera
+                // apertura (`save_state` → `touch_progress`).
+                page_count: 0,
+                last_read_unix: now,
+                added_unix: now,
+            })
+            .collect();
+        info!(
+            "migration: imported {} PDFs from {} into library.json",
+            books.len(),
+            pdfs_dir.display()
+        );
+        self.lib_books = books;
+        persist::save_progress(self.internal_dir.as_deref(), &self.lib_books);
+    }
+
+    /// Nº de filas de la lista del picker según su variante (el fallback lee
+    /// `pdf_list`; el selector de añadir, la TEMPORAL `select_list`). Lo
+    /// consumen el clamp de scroll y el tap.
+    pub(crate) fn picker_len(&self) -> usize {
+        match self.picker_kind {
+            PickerKind::Files => self.pdf_list.len(),
+            // El selector de añadir navega por CARPETAS: las filas visibles
+            // son la vista actual del gestor (carpetas + PDFs), no la lista
+            // plana de MediaStore.
+            PickerKind::Select => self.picker_rows().len(),
+        }
+    }
+
+    /// Construye la vista ACTUAL del gestor de archivos del selector de
+    /// añadir: carpetas primero (únicas, del nivel actual) y luego los PDFs
+    /// directamente contenidos en `sel_dir`. Orden alfabético
+    /// (case-insensitive).
+    pub(crate) fn picker_rows(&self) -> Vec<PickRow> {
+        if self.picker_kind != PickerKind::Select {
+            return Vec::new();
+        }
+        let cur = self.sel_dir.join("/");
+        let mut folders: Vec<String> = Vec::new();
+        let mut files: Vec<usize> = Vec::new();
+        for (idx, e) in self.select_list.iter().enumerate() {
+            let f = e.folder.trim_end_matches('/');
+            if self.sel_dir.is_empty() {
+                // Raíz: carpeta = primer segmento; PDF = sin carpeta.
+                if f.is_empty() {
+                    files.push(idx);
+                } else if let Some(seg) = f.split('/').next()
+                    && !seg.is_empty()
+                    && !folders.iter().any(|x| x == seg)
+                {
+                    folders.push(seg.to_string());
+                }
+                continue;
+            }
+            // Nivel: PDF directo (== cur) o subcarpeta (siguiente segmento).
+            if f == cur {
+                files.push(idx);
+            } else if let Some(rest) = f.strip_prefix(&format!("{cur}/"))
+                && let Some(seg) = rest.split('/').next()
+                && !seg.is_empty()
+                && !folders.iter().any(|x| x == seg)
+            {
+                folders.push(seg.to_string());
+            }
+        }
+        folders.sort_by_key(|f| f.to_lowercase());
+        files.sort_by_key(|&i| self.select_list[i].name.to_lowercase());
+        let mut rows = Vec::with_capacity(folders.len() + files.len());
+        rows.extend(folders.into_iter().map(PickRow::Folder));
+        rows.extend(files.into_iter().map(PickRow::File));
+        rows
+    }
+
+    /// Entra en la carpeta `name` del gestor (push al breadcrumb).
+    pub(crate) fn picker_sel_enter(&mut self, name: &str) {
+        self.sel_dir.push(name.to_string());
+        self.list_scroll = 0;
+        self.list_dirty = true;
+        self.redraw();
+    }
+
+    /// Sube un nivel del gestor de archivos; en la raíz no hace nada.
+    pub(crate) fn picker_sel_up(&mut self) {
+        if self.sel_dir.pop().is_some() {
+            self.list_scroll = 0;
+            self.list_dirty = true;
+            self.redraw();
+        }
+    }
+
+    /// ¿El selector de añadir muestra la barra de breadcrumb (dentro de una
+    /// carpeta)? Añade una fila fija entre la cabecera y la lista.
+    pub(crate) fn picker_has_crumb(&self) -> bool {
+        self.picker_kind == PickerKind::Select && !self.sel_dir.is_empty()
+    }
+
+    /// Nº real de filas visibles del picker (resta la barra de breadcrumb
+    /// del selector de añadir cuando está visible).
+    pub(crate) fn picker_visible(&self) -> usize {
+        let crumbs = if self.picker_has_crumb() { 1 } else { 0 };
+        picker_visible_rows(self.win_h, self.status.is_some()).saturating_sub(crumbs)
     }
 
     /// Nº de filas de celdas de la rejilla de la biblioteca (3 columnas) con
@@ -4547,6 +5004,14 @@ impl Reader {
 
     /// ¿La entrada pasa el filtro de BÚSQUEDA activo (carpeta + letra inicial)?
     fn entry_passes(&self, e: &LibraryEntry) -> bool {
+        // Buscador CON TECLADO: subcadena case-insensitive sobre el título.
+        if !self.lib_query.is_empty() {
+            let q = self.lib_query.to_lowercase();
+            if !e.name.to_lowercase().contains(&q) {
+                return false;
+            }
+        }
+        // Filtros legacy por letra/carpeta (sin UI desde 2026-08-25).
         if let Some(f) = &self.lib_folder
             && !e.folder.eq_ignore_ascii_case(f)
         {
@@ -4797,15 +5262,14 @@ impl Reader {
     /// geometría por celda, p. ej. `lib_grid_cell_rect`): con `any` suele
     /// parar en el primer reciente (el más reciente es Reading casi siempre),
     /// sin alocar ni mirar el autor.
+    ///
+    /// Biblioteca MINIMALISTA (estilo Readest): la sección "Continue
+    /// Reading"/Recientes está OCULTA por diseño — la biblioteca es solo
+    /// rejilla + buscador. Devuelve SIEMPRE `false`; el resto del código
+    /// (geometría, tap, drag, pump de portadas) sigue referenciándola, así
+    /// que todo colapsa a alto 0 / sin datos sin tocar nada más.
     pub(crate) fn lib_has_cont(&self) -> bool {
-        if let Some(s) = self.lib_status
-            && s != BookStatus::Reading
-        {
-            return false;
-        }
-        self.lib_recents().iter().any(|r| {
-            persist::progress_for(&self.lib_books, &r.path).is_some_and(|p| !p.is_finished())
-        })
+        false
     }
 
     /// Autor de un libro por NOMBRE de fichero: busca la entrada de
@@ -4888,39 +5352,227 @@ impl Reader {
         self.redraw();
     }
 
-    /// "＋ Add book" (cabecera) / "Add PDF" (empty state): re-consulta
-    /// MediaStore y avisa con un toast cómo añadir PDFs a la biblioteca
-    /// (descargarlos a Descargas y abrirlos con PDFLector).
+    /// "＋ Añadir" (cabecera) / "Añadir PDF" (empty state): consulta
+    /// MediaStore en una LISTA TEMPORAL (`select_list`; NUNCA
+    /// `library_list`) y abre el selector (`UiMode::Picker` +
+    /// `PickerKind::Select`, título "Selecciona PDF") con TODOS los PDFs del
+    /// sistema para elegir cuál curar. La biblioteca no cambia hasta que el
+    /// usuario toca un PDF (`add_selected`).
     pub(crate) fn add_book(&mut self, app: &AndroidApp) {
-        self.rescan_library(app);
-        self.show_toast("Add PDFs to Downloads, then open with PDFLector");
-    }
-
-    /// Toggle del campo de búsqueda: abre/cierra el panel de chips de letra
-    /// y carpeta (el contenido baja/sube con `lib_search_panel_h`).
-    pub(crate) fn lib_toggle_search(&mut self) {
-        self.lib_search_open = !self.lib_search_open;
-        let max_v = self.lib_max_scroll();
-        if self.lib_scroll > max_v {
-            self.lib_scroll = max_v;
-        }
+        self.lib_close_ime(app);
+        let scan = query_media_store(app, self.sdk_int);
+        self.permission_granted = scan.permission_granted;
+        self.select_list = scan.entries;
+        self.sel_dir = Vec::new();
+        self.picker_kind = PickerKind::Select;
+        self.mode = UiMode::Picker;
+        self.list_scroll = 0;
+        self.status = if !self.permission_granted {
+            Some("All files access not granted — grant it in system Settings".to_string())
+        } else if let Some(e) = scan.error {
+            Some(format!("MediaStore error: {e}"))
+        } else if self.select_list.is_empty() {
+            Some("No PDFs found on the device".to_string())
+        } else {
+            None
+        };
+        info!("add picker: {} PDFs in MediaStore", self.select_list.len());
+        self.sheet_hide_now();
+        self.clear_selection(); // selección del visor: fuera (no pinta aquí)
+        self.close_ai_panel(); // panel de IA del visor: fuera
+        self.list_drag = None;
+        self.bitmap = None;
+        self.lib_header = None; // biblioteca fuera: liberar planos cedeados
+        self.lib_band = None;
+        self.lib_row_dirty = None;
         self.list_dirty = true;
         self.redraw();
     }
 
-    /// "✕" del campo de búsqueda: limpia los filtros activos (letra y
-    /// carpeta), cierra el panel y re-aplica (recalcula `lib_filtered`).
-    pub(crate) fn lib_clear_search(&mut self) {
-        self.lib_letter = None;
-        self.lib_folder = None;
-        self.lib_search_open = false;
+    /// "Reescanear" del selector de añadir: re-consulta MediaStore y refresca
+    /// SOLO la lista temporal (`select_list`); la biblioteca curada queda
+    /// intacta.
+    pub(crate) fn rescan_select(&mut self, app: &AndroidApp) {
+        let scan = query_media_store(app, self.sdk_int);
+        self.permission_granted = scan.permission_granted;
+        self.select_list = scan.entries;
+        self.sel_dir = Vec::new();
+        self.list_scroll = 0;
+        self.status = if !self.permission_granted {
+            Some("All files access not granted — grant it in system Settings".to_string())
+        } else if let Some(e) = scan.error {
+            Some(format!("MediaStore error: {e}"))
+        } else if self.select_list.is_empty() {
+            Some("No PDFs found on the device".to_string())
+        } else {
+            None
+        };
+        info!("rescan select: {} PDFs", self.select_list.len());
+        self.list_dirty = true;
+        self.redraw();
+    }
+
+    /// "Atrás" del selector de añadir: descarta la lista temporal y vuelve a
+    /// la biblioteca curada SIN ningún cambio.
+    pub(crate) fn cancel_add(&mut self, app: &AndroidApp) {
+        self.select_list = Vec::new();
+        self.reload_curated_library(app);
+    }
+
+    /// Confirmación del selector: copia el PDF elegido a `internal/pdfs/`
+    /// (nombre saneado), cuenta páginas abriéndolo con MuPDF, crea su
+    /// registro de progreso (`touch_progress`), aplica el TOPE `LIBRARY_MAX`
+    /// con evicción LRU (`enforce_library_limit`: borra fichero + portada
+    /// cacheada de cada expulsado), guarda `library.json` y reconstruye la
+    /// biblioteca curada. Toast si hubo expulsión.
+    pub(crate) fn add_selected(&mut self, app: &AndroidApp, index: usize) {
+        let Some(entry) = self.select_list.get(index).cloned() else {
+            return;
+        };
+        let Some(dir) = app.internal_data_path() else {
+            error!("add selected: internal_data_path unavailable");
+            return;
+        };
+        let pdfs_dir = dir.join("pdfs");
+        if let Err(e) = fs::create_dir_all(&pdfs_dir) {
+            error!("add selected: create_dir_all {}: {e}", pdfs_dir.display());
+            return;
+        }
+        let dest = pdfs_dir.join(sanitize_pdf_name(&entry.name));
+        match read_content_uri_bytes(app, &entry.uri) {
+            Some(bytes) => {
+                if let Err(e) = fs::write(&dest, &bytes) {
+                    error!("add selected: write {}: {e}", dest.display());
+                    self.status = Some(format!("Cannot copy {}", entry.name));
+                    self.list_dirty = true;
+                    self.redraw();
+                    return;
+                }
+            }
+            None => {
+                error!("add selected: cannot read {}", entry.uri);
+                self.status = Some(format!("Cannot read {}", entry.name));
+                self.list_dirty = true;
+                self.redraw();
+                return;
+            }
+        }
+        let engine = match MupdfEngine::new() {
+            Ok(e) => e,
+            Err(e) => {
+                error!("MupdfEngine::new: {e}");
+                self.status = Some(format!("Cannot open {}", entry.name));
+                self.list_dirty = true;
+                self.redraw();
+                return;
+            }
+        };
+        let page_count = match engine.open(&dest) {
+            Ok(doc) => doc.page_count(),
+            Err(e) => {
+                error!("add selected: cannot open {}: {e}", dest.display());
+                self.status = Some(format!("Invalid PDF {}", entry.name));
+                self.list_dirty = true;
+                self.redraw();
+                return;
+            }
+        };
+        let path = dest.display().to_string();
+        let now = persist::unix_now();
+        let books = persist::touch_progress(&self.lib_books, &path, 0, page_count, now);
+        let (books, evicted) = persist::enforce_library_limit(&books, persist::LIBRARY_MAX);
+        let mut victim: Option<String> = None;
+        for b in &evicted {
+            if b.path == path {
+                continue; // defensa: el recién añadido nunca es víctima
+            }
+            if let Err(e) = fs::remove_file(&b.path) {
+                warn!("evict: remove {}: {e}", b.path);
+            }
+            // La portada cacheada (clave = ruta local en la biblioteca
+            // curada) del libro borrado no debe quedar residente.
+            self.thumbs.remove(&b.path);
+            if victim.is_none() {
+                victim = Path::new(&b.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
+            }
+        }
+        self.lib_books = books;
+        persist::save_progress(self.internal_dir.as_deref(), &self.lib_books);
+        info!(
+            "added {path} ({page_count} pages); library {} books, {} evicted",
+            self.lib_books.len(),
+            evicted.len()
+        );
+        self.select_list = Vec::new();
+        self.reload_curated_library(app);
+        if let Some(name) = victim {
+            self.show_toast(&format!("Biblioteca llena — se eliminó {name}"));
+        }
+    }
+
+    /// "Buscar...": abre el TECLADO del sistema sobre el EditText invisible
+    /// (`jni::ime_attach`; ver `tools/ime/ImeHelper.java`) y activa el polling
+    /// de `tick`. El texto tecleado filtra la rejilla por subcadena.
+    pub(crate) fn lib_open_keyboard(&mut self, app: &AndroidApp) {
+        crate::jni::ime_attach(app, &self.lib_query);
+        self.ime_active = true;
+    }
+
+    /// "✕" del campo de búsqueda: limpia el texto tecleado, cierra el
+    /// teclado y re-aplica (recalcula `lib_filtered`; vuelve a verse toda la
+    /// biblioteca).
+    pub(crate) fn lib_clear_search(&mut self, app: &AndroidApp) {
+        self.lib_query.clear();
+        crate::jni::ime_set_text(app, "");
+        self.ime_active = false;
+        crate::jni::ime_hide(app);
         self.apply_filter();
     }
 
-    /// Abre un documento de la biblioteca: copia los bytes de su content://
-    /// URI a `internal/pdfs/` (ContentResolver.openInputStream) y lo abre con
-    /// MuPDF. Devuelve false (estado intacto) si algo falla.
+    /// Cierra el teclado del buscador si está abierto (al entrar al visor,
+    /// al abrir el selector de añadir, etc.). No toca el texto del filtro.
+    pub(crate) fn lib_close_ime(&mut self, app: &AndroidApp) {
+        if self.ime_active {
+            self.ime_active = false;
+            crate::jni::ime_hide(app);
+        }
+    }
+
+    /// Polling del texto tecleado (llamado desde `tick`): si cambió, se
+    /// re-filtra la rejilla (busca mientras se escribe, sin botón).
+    fn poll_ime_query(&mut self, app: &AndroidApp) {
+        if !self.ime_active {
+            return;
+        }
+        let Some(t) = crate::jni::ime_text(app) else {
+            return;
+        };
+        if t != self.lib_query {
+            self.lib_query = t;
+            self.refresh_lib_filtered();
+            let max_v = self.lib_max_scroll();
+            if self.lib_scroll > max_v {
+                self.lib_scroll = max_v;
+            }
+            self.list_dirty = true;
+            self.redraw();
+        }
+    }
+
+    /// Abre un documento de la biblioteca. Entrada CURADA: `uri` es la RUTA
+    /// LOCAL del fichero ya copiado en `internal/pdfs/` → abrir directo sin
+    /// copiar (`open_pdf_at`, reanuda en la página guardada). Entrada
+    /// clásica de MediaStore (content://) → copia los bytes a `internal/
+    /// pdfs/` y abre con MuPDF. Devuelve false (estado intacto) si algo falla.
     pub(crate) fn open_library_entry(&mut self, app: &AndroidApp, entry: &LibraryEntry) -> bool {
+        // Biblioteca CURADA: el fichero ya está en `internal/pdfs/`.
+        if Path::new(&entry.uri).is_file() {
+            self.lib_close_ime(app);
+            let start = crate::persist::progress_for(&self.lib_books, &entry.uri).map(|p| p.page);
+            return self.open_pdf_at(&entry.uri, start);
+        }
         let Some(dir) = app.internal_data_path() else {
             error!("open library: internal_data_path unavailable");
             return false;
@@ -4954,6 +5606,7 @@ impl Reader {
         let path = dest.display().to_string();
         // Reanudar en la página guardada si el libro ya se empezó
         // (registro de progreso de `library.json`); si no, página 1.
+        self.lib_close_ime(app);
         let start = crate::persist::progress_for(&self.lib_books, &path).map(|p| p.page);
         self.open_pdf_at(&path, start)
     }
@@ -4966,5 +5619,29 @@ impl Reader {
         self.list_dirty = true;
         info!("rescan: {} PDFs", self.pdf_list.len());
         self.redraw();
+    }
+}
+
+/// Lee el modo del boli persistido en `tool_state.json` (campo "mode":
+/// "Ink" | "Highlight"). RETROCOMPATIBLE: un fichero viejo sin el campo (o
+/// con un valor desconocido) carga como `Ink`. Best-effort, como el resto de
+/// la persistencia. NO toca `persist.rs` (fuera de alcance de esta tarea):
+/// el JSON completo se lee como `Value`; al guardar (`persist_pen_mode`)
+/// solo se conserva/añade "mode", respetando lo que escribe `persist`
+/// (ink_color/ink_width).
+fn load_pen_mode(internal_dir: Option<&Path>) -> PenMode {
+    let Some(dir) = internal_dir else {
+        return PenMode::Ink;
+    };
+    let path = dir.join("tool_state.json");
+    let Ok(text) = fs::read_to_string(&path) else {
+        return PenMode::Ink;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return PenMode::Ink;
+    };
+    match v.get("mode").and_then(|m| m.as_str()) {
+        Some("Highlight") => PenMode::Highlight,
+        _ => PenMode::Ink,
     }
 }

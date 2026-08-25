@@ -31,7 +31,59 @@
 //! página↔pantalla solo depende de la escala `cover × zoom` y de la posición
 //! de la página; ver `Reader::screen_to_page`).
 
+use android_activity::input::ButtonState;
 use pdf_core::Color;
+
+/// Botón "UP" del boli: alterna el modo del boli Ink ↔ Highlight
+/// (`Reader::toggle_pen_mode`), también con el boli en el AIRE (los eventos
+/// `MotionAction::ButtonPress` llegan sin contacto).
+///
+/// CALIBRACIÓN (Fase A, ver CHANGELOG 2026-08-25): en este boli el botón
+/// SUPERIOR (el del toggle) reporta `AMOTION_EVENT_BUTTON_STYLUS_SECONDARY`
+/// (0x40) y el INFERIOR (el del borrado) `STYLUS_PRIMARY` (0x20) — INVERTIDO
+/// respecto al estándar Android. Verificado en el logcat `pen_buttons` de la
+/// TCL 9469X (ButtonPress en el aire y `button_state` en contacto). Si otro
+/// boli reportara distinto, se intercambian ESTAS dos constantes, no el flujo.
+pub(crate) const PEN_BTN_MODE: ButtonState = ButtonState(0x40);
+
+/// Botón "DOWN" del boli: MANTENIDO + boli apoyado = BORRAR con GOMA real
+/// (recorta trazos y subrayados; ver `pdf_core::{split_stroke,trim_highlight}`
+/// y `Reader::{begin,update,end}_erase_gesture`). Calibrado en el botón
+/// INFERIOR de este boli (0x20).
+pub(crate) const PEN_BTN_ERASE: ButtonState = ButtonState(0x20);
+
+/// Radio de hit-test del borrado en puntos DE PÁGINA: distancia punto→seg-
+/// mento < este radio (+ `width/2` del trazo; ver `pdf_core::stroke_hit`).
+/// 8 pt ≈ el ancho de un trazo grueso de boli + margen cómodo de borrado.
+pub(crate) const ERASE_HIT_RADIUS_PT: f32 = 8.0;
+
+/// Expansión del hit-test del borrado contra HIGHLIGHTS: el punto debe caer
+/// dentro del rect del resaltador expandido 4 pt (ver `pdf_core::
+/// highlight_hit`) — un subrayado fino se borra fácil sin tocar exacto.
+pub(crate) const ERASE_HL_PAD_PT: f32 = 4.0;
+
+/// Modo del boli (control total SIN menús: el boli dibuja/subraya según este
+/// modo; el botón UP lo alterna). Se persiste en `tool_state.json` (campo
+/// "mode") — retrocompatible: un fichero viejo sin el campo carga como
+/// `Ink` (`#[serde(default)]` no hace falta porque `load_pen_mode` parsea
+/// con fallback a `Ink`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PenMode {
+    /// Boli: tinta freehand.
+    Ink,
+    /// Resaltador: subraya el texto bajo el trazo.
+    Highlight,
+}
+
+impl PenMode {
+    /// Etiqueta del modo para el toast del toggle ("✏️ Pen" / "🖍️ Highlighter")
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            PenMode::Ink => "✏️ Pen",
+            PenMode::Highlight => "🖍️ Highlighter",
+        }
+    }
+}
 
 /// Grosor del trazo nuevo del boli en puntos PDF (PDF points, 1/72"). En
 /// pantalla se dibuja a `width × scale` px (ver `Reader::tool_overlay`), así
