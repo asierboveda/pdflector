@@ -153,7 +153,17 @@ pub(crate) enum ToolKind {
 /// Gesto de herramienta EN CURSO (dedo o lápiz bajado con una herramienta
 /// activa): puntos en coordenadas de página (puntos PDF). Al levantar,
 /// `Reader::end_tool_gesture` lo convierte en una anotación guardada
-/// (`Highlight` para el resaltador, `Stroke` suavizado para el boli).
+/// (`Highlight` para el resaltador; para el boli, la POLILÍNEA MUESTREADA
+/// de la curva midpoint — cero pop, ver abajo).
+///
+/// ## Máquina midpoint (Bézier cuadrática por puntos medios)
+///
+/// Con puntos de control P0..Pn, el trazo en vivo es exactamente la
+/// polilínea estampada: tramo recto P0→M1 (Mk = punto medio P(k-1)Pk),
+/// curvas cuadráticas M(k-1)→Mk con control P(k-1), y remate M(n-1)→Pn al
+/// soltar. La misma polilínea muestreada (`ink_pts`) se PERSISTE en el
+/// `Stroke`: el replay lineal de `pdf_core::overlay` la une y reproduce el
+/// trazo 1:1 — sin `smooth_polyline` ni re-rasterizado al soltar (cero pop).
 #[derive(Clone, Debug)]
 pub(crate) struct ToolGesture {
     /// Página (0-based) sobre la que se dibuja. Fija en el `Down`; el trazo
@@ -165,8 +175,16 @@ pub(crate) struct ToolGesture {
     /// Ancla del gesto en página (el punto del Down): para el resaltador
     /// define una esquina del rect de selección.
     pub(crate) anchor: (f32, f32),
-    /// Vértices en coordenadas de página (el `Down` + cada `Move`).
+    /// Vértices crudos en coordenadas de página (el `Down` + cada `Move`).
+    /// Para el resaltador: puntos del gesto (bbox). Para el boli: puntos de
+    /// control Pk de la máquina midpoint (bbox + degenerate check).
     pub(crate) points: Vec<(f32, f32)>,
+    /// Último punto medio M(k-1) estampado (inicio de la próxima curva).
+    /// `None` hasta el segundo punto (el primer tramo es recto P0→M1).
+    pub(crate) prev_mid: Option<(f32, f32)>,
+    /// Polilínea MUESTREADA de lo estampado en el frame (coords de página):
+    /// se persiste tal cual en el `Stroke` — replay 1:1 (ver doc del tipo).
+    pub(crate) ink_pts: Vec<(f32, f32)>,
 }
 
 impl ToolGesture {
@@ -177,6 +195,8 @@ impl ToolGesture {
             tool,
             anchor: pt,
             points: vec![pt],
+            prev_mid: None,
+            ink_pts: vec![pt],
         }
     }
 

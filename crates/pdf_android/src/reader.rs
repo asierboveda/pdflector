@@ -1440,6 +1440,9 @@ pub(crate) struct Reader {
     /// `take_repaint()` devuelve true. Evita el backpressure de 16 ms del
     /// BufferQueue al presentar a >60 Hz.
     repaint: bool,
+    /// Probe de telemetría (solo logcat, costo cero en release sin log): el
+    /// último dirty rect del gesto de tinta, logueado en el blit que lo pinta.
+    take_repaint_probe: Option<(i32, i32, i32, i32)>,
     /// Último instante en que el STYLUS tocó la pantalla (para palm rejection
     /// por tiempo: tras escribir, se ignora el táctil del dedo/palma durante
     /// ~500ms para evitar pans/zooms accidentales al apoyar la mano).
@@ -1578,6 +1581,7 @@ impl Reader {
             session_ids: Vec::new(),
             gesture_base: None,
             tool_dirty: None,
+            take_repaint_probe: None,
             repaint: false,
             last_stylus_time: None,
             render_rx: None,
@@ -2579,6 +2583,20 @@ impl Reader {
             self.win_h,
             t0.elapsed().as_secs_f64() * 1000.0
         );
+        // Telemetría lápiz (medición TCL): dirty rect del gesto por frame.
+        if let Some((x0, y0, x1, y1)) = self.take_repaint_probe {
+            self.take_repaint_probe = None;
+            info!(
+                "ink_dirty {}x{} px ({}x{} @ {},{}): {:.2} ms",
+                x1 - x0,
+                y1 - y0,
+                x1 - x0,
+                y1 - y0,
+                x0,
+                y0,
+                t0.elapsed().as_secs_f64() * 1000.0
+            );
+        }
     }
 
     /// Cambia a la página `page` (0-based) — modo UNA HOJA: `page` se fija
@@ -4347,50 +4365,104 @@ impl Reader {
         self.last_stylus_time = Some(std::time::Instant::now());
         match tool {
             ToolKind::Ink => {
-                // Punto descartado por distancia (no se pinta nada nuevo).
-                let pushed = {
+                // Máquina midpoint: Pk entra, Mk = (P(k-1)+Pk)/2, se estampa
+                // la curva M(k-1)→Mk con control P(k-1) (o el tramo recto
+                // inicial P0→M1 si k==1). push() filtra casi-duplicados
+                // (d < 0.25 pt): si el punto no avanza, no hay curva nueva.
+                // Sin expect: un gesto SIEMPRE tiene el ancla del Down, pero
+                // un estado corrupto no debe tumbar el visor.
+                let (last, prev_mid, page) = {
                     let Some(g) = self.tool_gesture.as_mut() else {
                         return;
                     };
-                    let last = *g.points.last().expect("anchor en el Down");
+                    let Some(&last) = g.points.last() else {
+                        return;
+                    };
                     let n0 = g.points.len();
                     g.push(pt);
                     if g.points.len() == n0 {
-                        None
-                    } else {
-                        Some((g.page, last))
+                        return;
                     }
+                    (last, g.prev_mid, g.page)
                 };
-                let Some((page, last)) = pushed else {
-                    return;
-                };
-                // STAMPING INCREMENTAL: pintar solo el tramo nuevo (último →
-                // actual) directamente sobre el frame, con el MISMO
-                // rasterizador que los trazos guardados. La tinta queda en la
-                // página desde el primer tramo — sin capas temporales.
+                // STAMPING INCREMENTAL: la curva midpoint se rasteriza DIRECTO
+                // en el frame (tinta desde el primer tramo, sin capas) y su
+                // muestreo se acumula en `ink_pts` — lo estampado ES el trazo
+                // final (cero pop al soltar; ver `end_tool_gesture`).
                 let xform = self.page_screen_xform(page);
+                let mid = ((last.0 + pt.0) / 2.0, (last.1 + pt.1) / 2.0);
                 if let (Some(frame), Some((_, _, scale, dx, dy))) =
                     (self.page_frame.as_mut(), xform)
-                    && let Some(bbox) = crate::draw::draw_ink_segment_on_frame(
-                        frame,
-                        last,
-                        pt,
-                        self.ink_width,
-                        self.ink_color,
-                        scale,
-                        dx,
-                        dy,
-                    )
                 {
-                    self.tool_dirty = Some(match self.tool_dirty {
-                        Some((x0, y0, x1, y1)) => (
-                            x0.min(bbox.0),
-                            y0.min(bbox.1),
-                            x1.max(bbox.2),
-                            y1.max(bbox.3),
+                    let mut disc = [(0i32, 0i32); crate::draw::INK_DISC_CAP];
+                    // Brocha de 1 px si la capacidad no alcanza (escala extrema).
+                    let dn =
+                        crate::draw::ink_disc_for((self.ink_width * scale).max(1.0), &mut disc)
+                            .unwrap_or(1);
+                    let drawn = match prev_mid {
+                        None => crate::draw::draw_ink_segment_on_frame(
+                            frame,
+                            last,
+                            mid,
+                            self.ink_width,
+                            self.ink_color,
+                            scale,
+                            dx,
+                            dy,
+                        )
+                        .map(|bbox| (bbox, 6usize)),
+                        // El raster devuelve el n que usó: muestrear ink_pts
+                        // con ese MISMO n → polilínea persistida 1:1 con lo
+                        // estampado (una sola fuente de verdad para N).
+                        Some(m0) => crate::draw::draw_ink_quad_bezier_on_frame(
+                            frame,
+                            m0,
+                            last,
+                            mid,
+                            self.ink_width,
+                            self.ink_color,
+                            scale,
+                            dx,
+                            dy,
+                            &disc[..dn],
                         ),
-                        None => bbox,
-                    });
+                    };
+                    if let Some((bbox, steps)) = drawn {
+                        // Muestrear en página la MISMA curva que se rasterizó
+                        // (el replay lineal entre muestras densas reproduce la
+                        // curva): el tramo recto inicial aporta solo su extremo
+                        // (P0→M1 se reproduce idéntica por definición).
+                        let Some(g) = self.tool_gesture.as_mut() else {
+                            return;
+                        };
+                        let a = prev_mid.unwrap_or(last);
+                        for i in 1..=steps {
+                            let t = i as f32 / steps as f32;
+                            let om = 1.0 - t;
+                            let q = if prev_mid.is_some() {
+                                (
+                                    om * om * a.0 + 2.0 * om * t * last.0 + t * t * mid.0,
+                                    om * om * a.1 + 2.0 * om * t * last.1 + t * t * mid.1,
+                                )
+                            } else {
+                                (a.0 + t * (mid.0 - a.0), a.1 + t * (mid.1 - a.1))
+                            };
+                            g.ink_pts.push(q);
+                        }
+                        self.take_repaint_probe = Some(bbox);
+                        self.tool_dirty = Some(match self.tool_dirty {
+                            Some((x0, y0, x1, y1)) => (
+                                x0.min(bbox.0),
+                                y0.min(bbox.1),
+                                x1.max(bbox.2),
+                                y1.max(bbox.3),
+                            ),
+                            None => bbox,
+                        });
+                    }
+                }
+                if let Some(g) = self.tool_gesture.as_mut() {
+                    g.prev_mid = Some(mid);
                 }
             }
             ToolKind::Highlight => {
@@ -4406,15 +4478,19 @@ impl Reader {
     /// Gesto de herramienta: al levantar el dedo convierte el gesto en una
     /// anotación GUARDADA (persistida en el sidecar):
     ///
-    /// - **Boli**: `smooth_polyline` (Catmull-Rom, el suavizado del motor)
-    ///   sobre los puntos capturados → `Stroke` con `STROKE_WIDTH_PT` y el
-    ///   color actual. Un gesto sin arrastre (un toque) se descarta.
+    /// - **Boli**: la polilínea MUESTREADA de la curva midpoint (`ink_pts`,
+    ///   lo estampado en vivo) simplificada con Douglas-Peucker fino →
+    ///   `Stroke` con el grosor/color actuales. Cero pop: el frame no se
+    ///   re-pinta. Un gesto sin arrastre (un toque) se descarta.
     /// - **Resaltador**: `pdf_core::highlight_under_gesture` selecciona las
     ///   líneas de texto bajo el trazo (extracción perezosa, solo ahora) y
     ///   crea el `Highlight` alineado al texto; "no text" si no hay líneas.
     ///
     /// El id nuevo se apunta en `session_ids` para el undo.
-    pub(crate) fn end_tool_gesture(&mut self) {
+    /// `(sx, sy)` = posición del Up (remate M_last→P_up en el boli; las
+    /// muestras de history ya se estamparon por el drain previo, así que el
+    /// hueco que cierra es solo el último tramo hasta el punto de soltar).
+    pub(crate) fn end_tool_gesture(&mut self, sx: f32, sy: f32) {
         let Some(g) = self.tool_gesture.take() else {
             return;
         };
@@ -4450,35 +4526,67 @@ impl Reader {
             }
             return;
         }
+        let mut g = g;
         match g.tool {
             ToolKind::Ink => {
-                // Suavizado Catmull-Rom del motor: 6 subdivisiones por
-                // segmento (suficiente para que el trazo no se vea
-                // poligonal; la serialización guarda solo los puntos
-                // suavizados). Fase C: antes de suavizar se simplifica con
-                // Douglas-Peucker (epsilon 1.5 pt) — un trazo de 100+
-                // puntos del dedo baja a ~15-20 sin perder forma, y el
-                // rasterizado/guardado pagan menos.
-                // DP solo cuando el trazo es LARGO (≥40 pts) y con epsilon
-                // suave (0.8 pt): conserva la forma manuscrita; un trazo
-                // corto/curvo se envía tal cual al suavizado.
-                let simplified = if g.points.len() >= 40 {
-                    pdf_core::simplify_polyline(&g.points, 0.8)
+                // REMATE M_last→P_up: la máquina midpoint estampa hasta el
+                // último punto medio; el tramo final hasta el punto de soltar
+                // se cierra AQUÍ (recto, como el esquema midpoint). El drain
+                // de history del Up ya estampó las muestras intermedias, así
+                // que el tramo es corto — pero sin esto la tinta quedaría a
+                // medio camino del punto real de soltar. Tres fases para no
+                // solapar préstamos: computar → estampar → acumular.
+                let end_pt = self.screen_to_page(sx, sy);
+                let xform = self.page_screen_xform(g.page);
+                let m_last = g.prev_mid.or_else(|| g.ink_pts.last().copied());
+                if let (Some(m_last), Some(end_pt), Some((_, _, fscale, fdx, fdy))) =
+                    (m_last, end_pt, xform)
+                    && m_last != end_pt
+                {
+                    if let Some(frame) = self.page_frame.as_mut() {
+                        let bbox = crate::draw::draw_ink_segment_on_frame(
+                            frame,
+                            m_last,
+                            end_pt,
+                            self.ink_width,
+                            self.ink_color,
+                            fscale,
+                            fdx,
+                            fdy,
+                        );
+                        if let Some(bbox) = bbox {
+                            self.tool_dirty = Some(match self.tool_dirty {
+                                Some((x0, y0, x1, y1)) => (
+                                    x0.min(bbox.0),
+                                    y0.min(bbox.1),
+                                    x1.max(bbox.2),
+                                    y1.max(bbox.3),
+                                ),
+                                None => bbox,
+                            });
+                        }
+                    }
+                    // El remate entra en ink_pts (tramo recto: el endpoint
+                    // basta para el replay 1:1 de la línea).
+                    g.ink_pts.push(end_pt);
+                }
+                // CERO POP: lo estampado en vivo ES el trazo final. Se
+                // persiste la polilínea MUESTREADA de la curva midpoint
+                // (`ink_pts`) simplificada con Douglas-Peucker fino
+                // (ε 0.35 pt ≈ 0.7 px a 2 px/pt: replay < 1 px del vivo —
+                // invisible). Sin Catmull-Rom ni re-rasterizado: la tinta del
+                // frame no se toca.
+                let sampled = if g.ink_pts.len() >= 40 {
+                    pdf_core::simplify_polyline(&g.ink_pts, 0.35)
                 } else {
-                    g.points.clone()
+                    g.ink_pts.clone()
                 };
-                let pts = pdf_core::smooth_polyline(&simplified, 6);
-                if let Some(s) = Stroke::new(pts, self.ink_width, self.ink_color)
+                if let Some(s) = Stroke::new(sampled, self.ink_width, self.ink_color)
                     && let Some(id) = self.annotations.add(g.page as usize, Annotation::Stroke(s))
                 {
                     self.session_ids.push(id);
                     self.save_annotations();
                     self.show_toast("ink");
-                    // TINTA DIRECTA: el trazo ya se vio crecer tramo a tramo;
-                    // ahora se "implementa": restaurar la base (sin tinta) y
-                    // pintar el trazo final suavizado sobre su bbox — la
-                    // página no se recompone, solo esa zona.
-                    self.ink_finalize_on_frame(g.page);
                 }
             }
             ToolKind::Highlight => {
@@ -4535,27 +4643,16 @@ impl Reader {
             }
             ToolKind::Navigate => {}
         }
-        // Si el gesto fue de TINTA: `ink_finalize_on_frame` YA se llevó
-        // `gesture_base` y dejó `page_frame` correcto (base + trazo final) y
-        // `tool_dirty` con su bbox — NO volver a tomar la base aquí (bug
-        // detectado 2026-08-24: la doble-toma invalidaba el frame y
-        // recomponía TODAS las anotaciones al escribir encima de trazos
-        // existentes → cada trazo tardaba 10-20 ms más y con 276 anotaciones
-        // el UI se atascaba).
-        let mut patched = false;
-        if g.tool == ToolKind::Ink {
-            self.gesture_base = None; // ya consumida por ink_finalize_on_frame
-            patched = true;
-        } else {
-            self.gesture_base = None;
-        }
-        if !patched {
-            self.page_frame = None;
-        }
-        // Ink: tool_dirty ya es el bbox del trazo final (dirty rect limpio);
-        // Highlight: el siguiente blit repinta completo (capa temporal fuera).
+        // CERO POP: para Ink el frame YA contiene el trazo definitivo (se
+        // estampó incrementalmente con la misma polilínea que se persiste):
+        // NO se restaura `gesture_base` ni se re-pinta nada. La base se
+        // conserva hasta aquí para cancel/degenerate; se libera ahora.
+        self.gesture_base = None;
         if g.tool != ToolKind::Ink {
+            // Highlight: el siguiente blit repinta completo (capa temporal
+            // fuera); su dirty acumulado ya no representa el frame.
             self.tool_dirty = None;
+            self.page_frame = None;
         }
         if self.window.is_some() {
             self.blit();
@@ -4629,17 +4726,35 @@ impl Reader {
         self.last_stylus_time = Some(std::time::Instant::now());
         // Cursor de la goma sigue al boli (el radio se calculó al empezar).
         self.erase_pt = Some((sx, sy));
-        // Instantánea (id + copia) ANTES de mutar el set: remove/add durante
-        // el barrido no invalidan el préstamo.
-        let snapshot: Vec<(u64, pdf_core::Annotation)> = self
+        // Snapshot SOLO de IDS (sin clonar el `Annotation` completo): cada
+        // id se resuelve contra el estado VIGENTE dentro del bucle (el set
+        // puede mutar en iteraciones anteriores). Con history a 240 Hz (hasta
+        // 16 muestras/evento) esto elimina el coste dominante del borrado:
+        // antes se clonaba el set entero POR MUESTRA; ahora solo un Vec de
+        // u64 por llamada.
+        let snapshot: Vec<u64> = self
             .annotations
             .for_page(self.page as usize)
             .iter()
-            .map(|a| (a.id, a.kind.clone()))
+            .map(|a| a.id)
             .collect();
         let mut changed = false;
-        for (id, kind) in snapshot {
-            match &kind {
+        for id in snapshot {
+            // El kind se lee POR REFERENCIA en cada iteración (el set puede
+            // haber mutado en las anteriores): CERO clones por muestra —
+            // split_stroke/trim_highlight trabajan sobre &Stroke/&Highlight y
+            // solo remove/add tocan el set (después del hit-test). Con 276
+            // trazos y el boli tocando 0-2 por muestra, este bucle es memcpy
+            // de ids + hit-tests, nada más.
+            let Some(ann) = self
+                .annotations
+                .for_page(self.page as usize)
+                .into_iter()
+                .find(|a| a.id == id)
+            else {
+                continue; // anotación ya eliminada/repicada por el barrido
+            };
+            match &ann.kind {
                 pdf_core::Annotation::Stroke(s) => {
                     // GOMA REAL sobre trazo: se recorta (parte la línea en
                     // trozos), no se elimina entera.
@@ -4673,13 +4788,14 @@ impl Reader {
                         ERASE_HL_PAD_PT,
                         self.erase_last,
                     ) {
+                        let color = h.color; // Copy: último uso del borrow del set
                         self.annotations.remove(id);
                         if !rects.is_empty() {
                             self.annotations.add(
                                 self.page as usize,
                                 pdf_core::Annotation::Highlight(pdf_core::Highlight {
                                     rects,
-                                    color: h.color,
+                                    color,
                                 }),
                             );
                         }
@@ -4708,36 +4824,6 @@ impl Reader {
             self.erase_dirty = false;
             self.save_annotations();
         }
-    }
-
-    /// TINTA DIRECTA (final): al soltar el boli, restaura el frame desde la
-    /// base capturada al empezar (sin la tinta en curso) y pinta el trazo
-    /// final guardado (suavizado) sobre su bbox. `tool_dirty` queda con el
-    /// bbox para el blit por vsync; nadie más se toca.
-    fn ink_finalize_on_frame(&mut self, page: u32) {
-        let Some(base) = self.gesture_base.take() else {
-            return;
-        };
-        let xform = self.page_screen_xform(page);
-        let Some((_, _, scale, dx, dy)) = xform else {
-            self.page_frame = Some(base);
-            return;
-        };
-        let mut frame = base;
-        if let Some(&id) = self.session_ids.last()
-            && let Some(ann) = self
-                .annotations
-                .for_page(page as usize)
-                .into_iter()
-                .find(|a| a.id == id)
-            && let Annotation::Stroke(s) = &ann.kind
-        {
-            let pts: Vec<(f32, f32)> = s.points.clone();
-            self.tool_dirty = crate::draw::draw_ink_polyline_on_frame(
-                &mut frame, &pts, s.width, s.color, scale, dx, dy,
-            );
-        }
-        self.page_frame = Some(frame);
     }
 
     /// ¿El punto de pantalla cae en el "chrome" de las herramientas (el

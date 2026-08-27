@@ -53,7 +53,7 @@
 
 use std::time::Instant;
 
-use android_activity::input::{Button, ButtonState, InputEvent, MotionAction};
+use android_activity::input::{Button, ButtonState, InputEvent, MotionAction, MotionEvent};
 use android_activity::{AndroidApp, InputStatus};
 use log::warn;
 
@@ -771,9 +771,14 @@ fn handle_motion(
                 }
                 GestureKind::ToolDrawing => {
                     // Fin del gesto de herramienta: convierte el trazo en una
-                    // anotación guardada (boli suavizado / resaltador alineado
-                    // al texto; un toque sin arrastre se descarta).
-                    reader.end_tool_gesture();
+                    // anotación guardada (curva midpoint muestreada /
+                    // resaltador alineado al texto; un toque sin arrastre se
+                    // descarta). La posición del Up cierra el remate
+                    // M_last→P_up (el drain de history anterior ya estampó
+                    // las muestras intermedias).
+                    if let Some((_, ux, uy)) = up {
+                        reader.end_tool_gesture(ux, uy);
+                    }
                 }
                 GestureKind::Erase => {
                     // Fin del borrado: persiste UNA vez si algo se eliminó.
@@ -1553,6 +1558,12 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
         let read = iter.next(|event| match event {
             InputEvent::MotionEvent(motion) => {
                 let action = motion.action();
+                // HISTORY 240 Hz del boli (Ink y Erase): drenar las muestras
+                // batcheadas ANTES del evento real (orden temporal). También
+                // en el Up: su history cierra el trazo sin cuerda recta final.
+                if matches!(action, MotionAction::Move | MotionAction::Up) {
+                    feed_stylus_history(reader, motion);
+                }
                 let pts: Vec<(i32, f32, f32)> = motion
                     .pointers()
                     .map(|p| (p.pointer_id(), p.x(), p.y()))
@@ -1592,6 +1603,57 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
         });
         if !read {
             break;
+        }
+    }
+}
+
+/// Tope de muestras históricas consumidas por evento del boli: Android
+/// batchea a 240 Hz; si el looper se retrasa, el history acumularía un
+/// retraso enorme. Cap duro conservando las más RECIENTES (`skip(len - cap)`:
+/// las viejas ya son latencia perdida, no se redibujan).
+const STYLUS_HISTORY_CAP: usize = 16;
+
+/// ¿La herramienta del puntero es lápiz/borrador físico?
+fn is_stylus_tool(t: android_activity::input::ToolType) -> bool {
+    matches!(
+        t,
+        android_activity::input::ToolType::Stylus | android_activity::input::ToolType::Eraser
+    )
+}
+
+/// Alimenta UNA muestra del boli al gesto en curso (la máquina de estados la
+/// lleva el evento real en `handle_motion`; aquí solo el trazo/goma). Replica
+/// los brazos Move de ToolDrawing/Erase (mismos guards: un puntero, kind
+/// activo): los puntos históricos encadenan `update_tool_gesture` (curva
+/// midpoint) o `update_erase_gesture` (`erase_last` barre sin huecos).
+fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32) {
+    match reader.gesture.kind {
+        GestureKind::ToolDrawing if reader.gesture.pointers.len() == 1 => {
+            reader.update_tool_gesture(x, y);
+        }
+        GestureKind::Erase if reader.gesture.pointers.len() == 1 => {
+            reader.update_erase_gesture(x, y);
+        }
+        _ => {}
+    }
+}
+
+/// Drena el history de los punteros stylus del evento (Move/Up) con cap
+/// `STYLUS_HISTORY_CAP`. Sin Vec intermedio: iteración directa sobre
+/// `p.history()` (ExactSizeIterator; `skip` conserva las recientes).
+///
+/// NOTA de alcance: el drain solo alimenta el gesto EN CURSO
+/// (ToolDrawing/Erase con un puntero). El FILTRO stylus vs palma del
+/// Down/PointerDown lo hace `handle_motion` (flag `stylus` +
+/// `pointers.len() == 1`): si el panel multiplexa palma+stylus en un solo
+/// MotionEvents, ese evento nunca arranca un trazo — el drain no cambia ese
+/// comportamiento.
+fn feed_stylus_history(reader: &mut Reader, motion: &MotionEvent) {
+    for p in motion.pointers().filter(|p| is_stylus_tool(p.tool_type())) {
+        let hist = p.history();
+        let skip = hist.len().saturating_sub(STYLUS_HISTORY_CAP);
+        for hp in hist.skip(skip) {
+            feed_stylus_sample(reader, hp.x(), hp.y());
         }
     }
 }

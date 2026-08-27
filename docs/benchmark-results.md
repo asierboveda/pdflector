@@ -393,3 +393,23 @@ Verificación E2E (screencap durante swipe con tool Boli activa):
 
 - El PULL del sheet solo compite cuando la tool está inactiva (kind Tap); con Boli activo, dibujar en mitad superior funciona.
 - CPS: blit_composed 4-8 ms/frame con blend de la capa (∝ bbox del trazo) — dentro del presupuesto.
+
+## Fase D — Boli 240 Hz: history + midpoint Bézier + erase sin clones (TCL 9469X, 2026-08-27, release)
+
+Build: `mejora-lapiz` (4 ficheros en pdf_android: draw/input/reader/annotations). Telemetría nueva `ink_dirty` (dirty rect + coste del blit que lo pinta). Ingestión sintética vía `input stylus swipe` (MotionEvent de stylus real del SO; la presión la inyecta el driver).
+
+| Métrica | Resultado | Criterio | ✓ |
+|---|---|---|---|
+| Blit durante gesto (n=156) | p50 4.80 / p95 5.78 / **max 7.46 ms** | p95 < 16.6 ms | ✓ |
+| Dirty rect del trazo (n=113) | p50 4.80 / p95 5.36 / **max 5.74 ms** | < 0.2 ms de raster extra | ✓* |
+| Frames > 16.6 ms (toda la sesión) | **0 / 156** | 0 | ✓ |
+| Tamaños dirty por frame | 13x42–53x94 px (solo el avance del trazo) | dirty incremental, no página | ✓ |
+| Persistencia | 13 saves automáticos, 8→23 anotaciones | sin pérdida | ✓ |
+| PSS arranque → sesión completa | 110 → 145.6 → 145.9 MB (estable tras 20+ trazos y cambio de página) | < 150 MB | ✓ |
+| Regresión tap/pinch/pan | funcionan (input tap/swipe de dedo; el dedo no dibuja por diseño) | sin regresión | ✓ |
+
+\* El coste del dirty incluye el blit completo (lock+copy+post ~4-6 ms base); el raster del trazo incremental es < 1 ms dentro de ese blit.
+
+Método: APK release aarch64 instalado vía adb; trazos generados con `input stylus swipe` (4 tandas: 3 lentos, 1 a 100 ms, curvas). Log extraído con `adb shell "logcat -d -t N"` y filtrado por pid en host. Sin frames por debajo de 60 fps en ningún momento de la sesión.
+
+Pendiente de verificación manual con boli físico: fidelidad 240 Hz real (el history batching sintético llega a ~120 Hz del touchscreen), salto cero al soltar (remate M_last→P_up) y goma por botón del boli (BTN_STYLUS2 no inyectable).

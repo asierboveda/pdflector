@@ -1064,6 +1064,9 @@ pub(crate) fn draw_ink_segment_on_frame(
     let width_px = (width_pt * scale).max(1.0);
     let pad = (width_px / 2.0).ceil() + 1.0;
     let pts = [a, b];
+    let mut disc = [(0i32, 0i32); INK_DISC_CAP];
+    // Brocha de 1 px si la capacidad no alcanza (escala extrema).
+    let dn = ink_disc_for(width_px, &mut disc).unwrap_or(1);
     let dst = frame.data.as_mut_ptr();
     draw_polyline(
         dst,
@@ -1072,7 +1075,7 @@ pub(crate) fn draw_ink_segment_on_frame(
         w,
         4,
         &pts,
-        width_px,
+        &disc[..dn],
         [color.r, color.g, color.b, color.a],
     );
     let (x0, y0) = (a.0.min(b.0) - pad, a.1.min(b.1) - pad);
@@ -1082,61 +1085,6 @@ pub(crate) fn draw_ink_segment_on_frame(
         y0.floor().max(0.0) as i32,
         x1.ceil().min(w as f32) as i32,
         y1.ceil().min(h as f32) as i32,
-    ))
-}
-
-/// Pinta una polilínea de tinta completa (en px de ventana, ya
-/// transformada) sobre un bitmap RGBA del tamaño de la ventana — para el
-/// trazo final al soltar (misma pinta que el stamping). Devuelve el bbox.
-pub(crate) fn draw_ink_polyline_on_frame(
-    frame: &mut Bitmap,
-    screen_pts: &[(f32, f32)],
-    width_pt: f32,
-    color: pdf_core::Color,
-    scale: f32,
-    dx: i32,
-    dy: i32,
-) -> Option<(i32, i32, i32, i32)> {
-    if screen_pts.len() < 2 {
-        return None;
-    }
-    let w = frame.width as usize;
-    let h = frame.height as usize;
-    if w == 0 || h == 0 {
-        return None;
-    }
-    let pts: Vec<(f32, f32)> = screen_pts
-        .iter()
-        .map(|&(px, py)| (px * scale + dx as f32, py * scale + dy as f32))
-        .collect();
-    let width_px = (width_pt * scale).max(1.0);
-    let dst = frame.data.as_mut_ptr();
-    draw_polyline(
-        dst,
-        w,
-        h,
-        w,
-        4,
-        &pts,
-        width_px,
-        [color.r, color.g, color.b, color.a],
-    );
-    let pad = (width_px / 2.0).ceil() + 1.0;
-    let mut min_x = f32::INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
-    for &(x, y) in &pts {
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
-    }
-    Some((
-        (min_x - pad).floor().max(0.0) as i32,
-        (min_y - pad).floor().max(0.0) as i32,
-        (max_x + pad).ceil().min(w as f32) as i32,
-        (max_y + pad).ceil().min(h as f32) as i32,
     ))
 }
 
@@ -1162,6 +1110,9 @@ fn draw_stroke(
         .map(|&(px, py)| (px * scale + dx as f32, py * scale + dy as f32))
         .collect();
     let width_px = (width_pt * scale).max(1.0);
+    let mut disc = [(0i32, 0i32); INK_DISC_CAP];
+    // Brocha de 1 px si la capacidad no alcanza (escala extrema).
+    let dn = ink_disc_for(width_px, &mut disc).unwrap_or(1);
     draw_polyline(
         dst,
         dst_w,
@@ -1169,7 +1120,7 @@ fn draw_stroke(
         dst_stride,
         bpp,
         &pts,
-        width_px,
+        &disc[..dn],
         [color.r, color.g, color.b, color.a],
     );
 }
@@ -1191,6 +1142,126 @@ fn draw_stroke(
 //
 // 8 parámetros posicionales de un blit (raw pointer + dimensiones): mismo
 // patrón que `copy_region` y `blit_page_scaled`; se acepta el allow.
+/// Radio de una brocha (los offsets se generan ordenados por fila desde −r,
+/// así que el primer offset lleva `ox = −r`; brocha vacía → radio 0).
+fn disc_r(disc: &[(i32, i32)]) -> i32 {
+    disc.first().map_or(0, |&(ox, _)| -ox)
+}
+
+/// Capacidad de offsets del disco de radio `r` (peor caso, disco completo).
+pub(crate) const INK_DISC_CAP: usize = 160;
+
+fn disc_cap(r: i32) -> usize {
+    ((std::f32::consts::PI * (r as f32 + 0.5).powi(2)).ceil() as usize).max(1)
+}
+
+/// Construye la brocha circular de radio `r` px (offsets del disco, centrada
+/// en el origen) en el buffer FIJO `out`. Devuelve el número de offsets
+/// escritos. Sin allocs: los callers usan un array en stack
+/// (`[(i32, i32); INK_DISC_CAP]` cubre radio ≤ 7 px, el preset más grueso a
+/// escala ~2 px/pt). Radio ≤ 1 → solo el centro (trazo fino = 1 px).
+fn ink_disc(r: i32, out: &mut [(i32, i32)]) -> usize {
+    if r <= 1 {
+        out[0] = (0, 0);
+        1
+    } else {
+        let r2 = (r as i64) * (r as i64);
+        let mut k = 0usize;
+        for oy in -r..=r {
+            for ox in -r..=r {
+                if (ox as i64) * (ox as i64) + (oy as i64) * (oy as i64) <= r2 {
+                    out[k] = (ox, oy);
+                    k += 1;
+                }
+            }
+        }
+        k
+    }
+}
+
+/// Rellena `disc` con la brocha de tinta para un ancho `width_px` (radio
+/// `⌈width_px/2⌉`, mínimo 1). Devuelve el nº de offsets escritos, o `None`
+/// si la capacidad no alcanza (escala extrema: el caller degrada a brocha de
+/// 1 px — nunca pánico).
+pub(crate) fn ink_disc_for(width_px: f32, disc: &mut [(i32, i32)]) -> Option<usize> {
+    let r = ((width_px / 2.0).ceil().max(1.0)) as i32;
+    if disc.len() < disc_cap(r) {
+        return None;
+    }
+    Some(ink_disc(r, disc))
+}
+
+/// Pinta UNA curva de Bézier cuadrática de tinta (tramo en vivo, patrón
+/// midpoint Xournal++/GoodNotes) directamente sobre un bitmap RGBA del
+/// tamaño de la ventana (`frame`): transforma los tres puntos de página a
+/// pantalla con `scale/dx/dy`, subdivide en `N = clamp(⌈L/8⌉, 2, 6)` tramos
+/// (L = cuerda A→B) evaluados en un buffer FIJO de stack (sin Vec) y dibuja
+/// con `draw_polyline` usando la brocha precalculada `disc`. Devuelve
+/// `(dirty rect, n)`: el bbox exacto (hull de control ± pad, clampeado a la
+/// ventana) y el N de subdivisión usado — el caller muestrea la curva con
+/// ese MISMO n en `ink_pts`, así la polilínea persistida es 1:1 con lo
+/// estampado (una sola fuente de verdad para N).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_ink_quad_bezier_on_frame(
+    frame: &mut Bitmap,
+    p0: (f32, f32),
+    pc: (f32, f32),
+    p1: (f32, f32),
+    width_pt: f32,
+    color: pdf_core::Color,
+    scale: f32,
+    dx: i32,
+    dy: i32,
+    disc: &[(i32, i32)],
+) -> Option<((i32, i32, i32, i32), usize)> {
+    let w = frame.width as usize;
+    let h = frame.height as usize;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let a = (p0.0 * scale + dx as f32, p0.1 * scale + dy as f32);
+    let c = (pc.0 * scale + dx as f32, pc.1 * scale + dy as f32);
+    let b = (p1.0 * scale + dx as f32, p1.1 * scale + dy as f32);
+    let width_px = (width_pt * scale).max(1.0);
+    let pad = (width_px / 2.0).ceil() + 1.0;
+    // Subdivisión en stack: N ≤ 6 tramos → 7 puntos (capacidad 13 por
+    // seguridad; la fórmula garantiza ≤ 7).
+    let len = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+    let n = ((len / 8.0).ceil() as usize).clamp(2, 6);
+    let mut q = [(0.0f32, 0.0f32); 13];
+    for (i, slot) in q.iter_mut().take(n + 1).enumerate() {
+        let t = i as f32 / n as f32;
+        let om = 1.0 - t;
+        *slot = (
+            om * om * a.0 + 2.0 * om * t * c.0 + t * t * b.0,
+            om * om * a.1 + 2.0 * om * t * c.1 + t * t * b.1,
+        );
+    }
+    let dst = frame.data.as_mut_ptr();
+    draw_polyline(
+        dst,
+        w,
+        h,
+        w,
+        4,
+        &q[..=n],
+        disc,
+        [color.r, color.g, color.b, color.a],
+    );
+    // Dirty exacto: hull de control (la curva queda dentro) + pad, clampeado.
+    let (min_x, min_y) = (a.0.min(c.0).min(b.0) - pad, a.1.min(c.1).min(b.1) - pad);
+    let (max_x, max_y) = (a.0.max(c.0).max(b.0) + pad, a.1.max(c.1).max(b.1) + pad);
+    Some((
+        (
+            min_x.floor().max(0.0) as i32,
+            min_y.floor().max(0.0) as i32,
+            max_x.ceil().min(w as f32) as i32,
+            max_y.ceil().min(h as f32) as i32,
+        ),
+        n,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_polyline(
     dst: *mut u8,
@@ -1199,29 +1270,16 @@ fn draw_polyline(
     dst_stride: usize,
     bpp: usize,
     pts: &[(f32, f32)],
-    width_px: f32,
+    disc: &[(i32, i32)],
     color: [u8; 4],
 ) {
     if pts.len() < 2 || dst_w == 0 || dst_h == 0 {
         return;
     }
-    let r = ((width_px / 2.0).ceil().max(1.0)) as i32;
-    // Brocha: offsets del disco de radio r (centro + vecinos). Radio 1 → solo
-    // el centro (trazo fino = una línea de 1 px, sin solapamientos extra).
-    let disc: Vec<(i32, i32)> = if r == 1 {
-        vec![(0, 0)]
-    } else {
-        let r2 = (r as i64) * (r as i64);
-        let mut d = Vec::with_capacity((2 * r as usize + 1).pow(2));
-        for oy in -r..=r {
-            for ox in -r..=r {
-                if (ox as i64) * (ox as i64) + (oy as i64) * (oy as i64) <= r2 {
-                    d.push((ox, oy));
-                }
-            }
-        }
-        d
-    };
+    // Brocha PRECALCULADA por el llamador (offsets del disco; ver `ink_disc`):
+    // sin allocs por llamada. Radio 1 (grosor ≤ 2 px, el caso normal) es un
+    // solo píxel por punto de línea.
+    let r = disc_r(disc);
     let (xmin, ymin) = (-(r as f32), -(r as f32));
     let (xmax, ymax) = (dst_w as f32 + r as f32, dst_h as f32 + r as f32);
     let mut last = pts[0];
@@ -1234,7 +1292,7 @@ fn draw_polyline(
                 y0.round() as i32,
                 x1.round() as i32,
                 y1.round() as i32,
-                |x, y| stamp(dst, dst_w, dst_h, dst_stride, bpp, x, y, &disc, color),
+                |x, y| stamp(dst, dst_w, dst_h, dst_stride, bpp, x, y, disc, color),
             );
         }
         last = p;
