@@ -403,9 +403,11 @@ pub(crate) const LIB_FADE_MS: f32 = 0.18;
 // párrafo", así que la latencia importa); IMAGEN → Gemini con
 // gemini-flash-latest (el modelo de visión de Groq fue RETIRADO y devuelve
 // 403 — ver `GEMINI_MODEL`).
-pub(crate) const GROQ_API_KEY: &str = include_str!("../groq_key.txt");
 pub(crate) const GROQ_MODEL: &str = "llama-3.3-70b-versatile";
-pub(crate) const GOOGLE_API_KEY: &str = include_str!("../google_key.txt");
+// Claves de API generadas por `build.rs` (env vars o ficheros gitignored
+// groq_key.txt / google_key.txt). Vacías si no hay claves → la IA queda
+// deshabilitada en runtime y el build no se rompe (ver .example files).
+include!(concat!(env!("OUT_DIR"), "/keys.rs"));
 /// Modelo de GEMINI para "Preguntar a la IA" cuando la selección es una
 /// ecuación/gráfico (Fase 5): en ese caso se manda el PNG del crop de la
 /// selección a `GeminiClient::explain_image` (pdf_core::ai), que usa ESTE
