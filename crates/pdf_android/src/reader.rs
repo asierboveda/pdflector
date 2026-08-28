@@ -1416,10 +1416,6 @@ pub(crate) struct Reader {
     /// InitWindow y TerminateWindow (y solo si la creación EGL tuvo éxito —
     /// sin fallback al blit SW: si EGL falla, el visor no pinta).
     gpu: Option<Gpu>,
-    /// Página cuya textura ya está subida al contexto GPU: cambia → sube
-    /// (`page_loaded` de `Gpu` guarda además el zoom; este campo decide
-    /// CUÁNDO borrar textura vieja: cambio de documento).
-    gpu_page: Option<u32>,
     /// Repintado pendiente (coalescing por vsync): sigue vivo para Library/
     /// Picker (SW) y para pedir frames GPU (el bucle llama `blit` una vez
     /// por iteración tras `take_repaint()`).
@@ -1571,7 +1567,6 @@ impl Reader {
             pen_mode: load_pen_mode(app.internal_data_path().as_deref()),
             tool_gesture: None,
             session_ids: Vec::new(),
-            gpu_page: None,
             repaint: false,
             take_repaint_probe: None,
             gpu: None,
@@ -1711,7 +1706,6 @@ impl Reader {
             match self.gpu.as_mut() {
                 Some(g) => {
                     g.recreate_surface(&window);
-                    self.gpu_page = None;
                 }
                 None => {
                     // SAFETY: EGL/GLES sobre una NativeWindow válida de
@@ -1721,7 +1715,6 @@ impl Reader {
                         warn!("gpu: EGL init failed — Viewer en SW");
                     }
                     self.gpu = gpu;
-                    self.gpu_page = None;
                 }
             }
         }

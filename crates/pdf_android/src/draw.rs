@@ -394,10 +394,7 @@ fn draw_polyline(
     draw_polyline_pub(dst, dst_w, dst_h, dst_stride, bpp, pts, disc, color)
 }
 
-/// Envoltorio público interno de [`draw_polyline`]: lo usa el raster de la
-/// capa efímera de predicción (`pred_layer`, auditoría fix A) que dibuja en
-/// un bitmap alfa propio con el MISMO rasterizador que los tramos
-/// confirmados (tinta en vivo idéntica a la definitiva).
+/// Envoltorio público interno de [`draw_polyline`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_polyline_pub(
     dst: *mut u8,
