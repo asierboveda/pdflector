@@ -1,0 +1,29 @@
+[package]
+name = "pdf_spike"
+version = "0.1.0"
+edition.workspace = true
+description = "Spike Fase 0 (PLAN-PARIDAD-STYLUS-NATIVO): comparar presentación software vs EGL/GLES y latencia punta-tinta."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Mismo backend NativeActivity que pdf_android (MIT): mismo poll de eventos
+# con history de MotionEvent ya validado en la TCL.
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.15"
+log = "0.4"
+
+[package.metadata.android]
+package = "com.pdflector.spike"
+
+[package.metadata.android.application]
+label = "PDFLector Spike"
+
+[package.metadata.android.signing.release]
+path = "/home/asierboveda/.android/debug.keystore"
+keystore_password = "android"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 35

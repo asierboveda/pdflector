@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/pdf_core", "crates/pdf_app", "crates/pdf_bench", "crates/pdf_android"]
+members = ["crates/pdf_core", "crates/pdf_app", "crates/pdf_bench", "crates/pdf_android", "crates/pdf_spike"]
 # pdf_android es Android-only (android-activity aborta en host): queda fuera de
 # los comandos sin -p (build/clippy/test en la raíz) y se compila solo con
 # --target aarch64-linux-android -p pdf_android.
