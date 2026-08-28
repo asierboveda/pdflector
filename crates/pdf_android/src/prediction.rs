@@ -102,6 +102,7 @@ pub fn pressure_width(w_base: f32, pressure: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     /// Trazo recto a 6 px/ms (trazo rápido real): predicción a 16 ms acierta

@@ -21,21 +21,21 @@ use log::{error, info, warn};
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::store::{AnnotationStore, sidecar_path};
 use pdf_core::{
-    Annotated, Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight,
-    PageTextCache, Rect, RenderEngine, Stroke, TextSpan,
+    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
+    RenderEngine, Stroke, TextSpan,
 };
 
 use crate::annotations::{ERASE_HIT_RADIUS_PT, ERASE_HL_PAD_PT, PenMode};
 use crate::annotations::{INK_PALETTE, STROKE_WIDTHS, ToolGesture, ToolKind};
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
 use crate::draw::{
-    ButtonRect, PageAnnots, PageBlit, ai_panel_layout, blit_composed, blit_lib_fade, blit_library,
-    blit_page, compose_frame, compose_library_snapshot, paste_lib_thumbs, raster_tool_layer,
+    ButtonRect, ai_panel_layout, blit_library, compose_library_snapshot, paste_lib_thumbs,
     render_ai_panel, render_eraser_cursor, render_library_header, render_library_zone,
     render_mode_badge, render_page_badge, render_picker_list, render_search_chip_row,
     render_sel_menu, render_sheet, render_toast, render_toolbar, render_viewer_bottom_chrome,
     render_viewer_top_chrome, sel_menu_layout, splice_row, toolbar_rect,
 };
+use crate::gpu::Gpu;
 use crate::input::GestureState;
 use crate::jni::{
     android_sdk_int, launch_intent_pdf, open_content_fd, query_media_store, read_content_uri_bytes,
@@ -1066,13 +1066,13 @@ pub(crate) struct Reader {
     /// normales; la inversión de modo oscuro se aplica al blitear
     /// (`draw::blit_page`). SOLO se dibuja la página actual (modo UNA HOJA);
     /// las vecinas solo se cachean.
-    cache: PageCache,
+    pub(crate) cache: PageCache,
     /// Zoom con el que están renderizados los bitmaps de la caché (1.0 =
     /// escala *cover* base; el re-render nítido al soltar el pinch pone
     /// `rendered_zoom = self.zoom`). El blit usa el zoom RELATIVO
     /// `zoom / rendered_zoom`: 1:1 nítido para bitmaps recién renderizados,
     /// escala vecino-más-cercano del bitmap viejo durante el pinch.
-    rendered_zoom: f32,
+    pub(crate) rendered_zoom: f32,
     /// Factor de zoom continuo (1.0 = página completa *cover*).
     pub(crate) zoom: f32,
     /// Desplazamiento de anclaje del pinch (px, f32): el punto de pantalla
@@ -1082,8 +1082,8 @@ pub(crate) struct Reader {
     /// base del blit (`dx/dy`); persiste entre gestos y páginas (el zoom
     /// también): pasar de página conserva la misma región de lectura.
     /// 0 = sin desplazamiento.
-    pan_x: f32,
-    pan_y: f32,
+    pub(crate) pan_x: f32,
+    pub(crate) pan_y: f32,
     /// Anclaje del pinch en curso: centro del pinch en px de ventana
     /// (ax, ay), zoom al iniciar el gesto (z0) y pan de partida (pan_x0,
     /// pan_y0). Se fija en `begin_pinch` (PointerDown del segundo dedo), se
@@ -1094,17 +1094,6 @@ pub(crate) struct Reader {
     /// biblioteca; 0 por ahora).
     offset_x: i32,
     offset_y: i32,
-    /// Frame de página compuesto (fondo, página actual, capa de anotaciones
-    /// e indicador "N / total") en un `Bitmap` RGBA8 del tamaño de la ventana.
-    /// Se compone UNA vez al empezar a deslizar el sheet (`sheet_progress > 0`,
-    /// en `blit`) y se reutiliza mientras el sheet esté visible: cada frame de
-    /// la animación/arrastre copia este bitmap (`draw::blit_composed`, memcpy
-    /// ~1-2 ms) + el overlay del sheet, en vez de re-blitear la página
-    /// completa en cada paso (~25-40 ms/frame — la CAUSA del lag del sheet;
-    /// ver `blit` y `draw::compose_frame`). Se invalida (None) al cambiar
-    /// página, zoom, modo oscuro, ventana o documento; se libera al cerrar el
-    /// sheet del todo.
-    page_frame: Option<Bitmap>,
     /// Dimensiones actuales de la ventana (px).
     pub(crate) win_w: i32,
     pub(crate) win_h: i32,
@@ -1258,24 +1247,24 @@ pub(crate) struct Reader {
     /// Bitmap del sheet de ajustes (render Canvas+JNI, alto `win_h / 2`),
     /// cacheado: se invalida al cambiar ventana, página o modo oscuro y se
     /// LIBERA al cerrar del todo (`progress == 0`).
-    sheet_bitmap: Option<Bitmap>,
+    pub(crate) sheet_bitmap: Option<Bitmap>,
     /// Bitmap del indicador de página "N / total" (overlay abajo a la
     /// izquierda, tap = página siguiente), cacheado: se invalida al cambiar
     /// ventana, página o modo oscuro.
-    page_badge: Option<Bitmap>,
+    pub(crate) page_badge: Option<Bitmap>,
     /// Bitmap del indicador de MODO del boli (overlay abajo a la derecha,
     /// ✏️/🖍️): se invalida al alternar modo o cambiar ventana — el usuario
     /// siempre ve en qué modo va a dibujar el boli.
-    mode_badge: Option<Bitmap>,
+    pub(crate) mode_badge: Option<Bitmap>,
     /// Posición de pantalla de la GOMA durante el borrado (None = sin gesto
     /// de borrado): dibuja el cursor circular (`eraser_cursor`) para que el
     /// usuario vea exactamente qué área se va a borrar.
-    erase_pt: Option<(f32, f32)>,
+    pub(crate) erase_pt: Option<(f32, f32)>,
     /// Radio del cursor de la goma en PÍXELES (radio en puntos × escala
     /// efectiva; fijo durante el gesto — el zoom no cambia mientras se borra).
-    erase_r_px: f32,
+    pub(crate) erase_r_px: f32,
     /// Bitmap cacheado del cursor circular de la goma (se regenera por gesto).
-    eraser_cursor: Option<Bitmap>,
+    pub(crate) eraser_cursor: Option<Bitmap>,
     /// Caché LRU de portadas de la biblioteca (content:// URI → portada de la
     /// página 1, `THUMB_W` px de ancho). Se limpia al abrir un PDF: las
     /// portadas y la `PageCache` del visor no compiten por el mismo
@@ -1291,7 +1280,7 @@ pub(crate) struct Reader {
     /// re-renderiza SÓLO cuando cambia la estructura (datos, filtros, panel
     /// de búsqueda, estado, tamaño de ventana), NUNCA por frame de scroll
     /// (el blit copia la zona fija + la banda de contenido, ver `lib_band`).
-    /// Es el análogo de `page_frame` del visor para la biblioteca.
+    /// Es el análogo del frame compuesto del visor para la biblioteca.
     pub(crate) lib_header: Option<Bitmap>,
     /// Bitmap CACHEADO del contenido scrolleable de la biblioteca (Continue
     /// Reading + My Library + rejilla o empty state): una BANDA de alto =
@@ -1372,7 +1361,7 @@ pub(crate) struct Reader {
     pub(crate) toast: Option<(String, Instant)>,
     /// Bitmap cacheado del aviso breve (`draw::render_toast`), None sin
     /// aviso o con texto nuevo (se re-renderiza al cambiarlo).
-    toast_bitmap: Option<Bitmap>,
+    pub(crate) toast_bitmap: Option<Bitmap>,
     /// Herramienta de anotación activa en el visor (Fase 3.5): Navegar
     /// (gestos normales) / Resaltar / Boli. Con una herramienta distinta de
     /// Navegar el arrastre de UN dedo (o el lápiz de la tablet) dibuja en
@@ -1403,7 +1392,7 @@ pub(crate) struct Reader {
     /// Bitmap cacheado de la barra de herramientas (píldora con los botones
     /// Resaltar/Boli/↶/●/→, `draw::render_toolbar`). Se invalida al alternar
     /// herramienta/color, al cambiar el modo oscuro o al redimensionar.
-    toolbar_bitmap: Option<Bitmap>,
+    pub(crate) toolbar_bitmap: Option<Bitmap>,
     /// Color actual de la tinta del boli (cicla con el botón "●" de la
     /// barra; arranca en `DEFAULT_INK_COLOR`).
     pub(crate) ink_color: Color,
@@ -1423,25 +1412,20 @@ pub(crate) struct Reader {
     /// anotaciones nuevas de la sesión (no las cargadas del sidecar): el
     /// undo no toca trabajo de otras sesiones (decisión documentada).
     pub(crate) session_ids: Vec<u64>,
-    /// Copia del frame de página al EMPEZAR el gesto de tinta (sin el
-    /// trazo en curso): al soltar se restaura y se pinta el trazo final
-    /// suavizado sobre ella — "tinta directa" (patrón Xournal++/GoodNotes):
-    /// durante el gesto cada tramo se stampa al frame; al soltar solo se
-    /// re-pinta el bbox del trazo, nunca la página completa. 12MB una vez
-    /// por trazo (~4ms).
-    gesture_base: Option<Bitmap>,
-    /// Unión de los bboxes (px de ventana) del trazo en curso entre dos
-    /// Moves consecutivos: el "dirty rect" del blit por Move (solo se
-    /// repinta esa zona del frame, no los 12 MB completos). Se actualiza en
-    /// cada Move y se limpia al terminar el gesto (`end_tool_gesture`).
-    tool_dirty: Option<(i32, i32, i32, i32)>,
-    /// Repintado pendiente (coalescing por vsync): `update_tool_gesture`
-    /// solo marca; el bucle principal hace UN blit por iteración cuando
-    /// `take_repaint()` devuelve true. Evita el backpressure de 16 ms del
-    /// BufferQueue al presentar a >60 Hz.
+    /// Contexto GPU del visor (Fase 2, ADR-006): EGL/GLES2. Some entre
+    /// InitWindow y TerminateWindow (y solo si la creación EGL tuvo éxito —
+    /// sin fallback al blit SW: si EGL falla, el visor no pinta).
+    gpu: Option<Gpu>,
+    /// Página cuya textura ya está subida al contexto GPU: cambia → sube
+    /// (`page_loaded` de `Gpu` guarda además el zoom; este campo decide
+    /// CUÁNDO borrar textura vieja: cambio de documento).
+    gpu_page: Option<u32>,
+    /// Repintado pendiente (coalescing por vsync): sigue vivo para Library/
+    /// Picker (SW) y para pedir frames GPU (el bucle llama `blit` una vez
+    /// por iteración tras `take_repaint()`).
     repaint: bool,
-    /// Probe de telemetría (solo logcat, costo cero en release sin log): el
-    /// último dirty rect del gesto de tinta, logueado en el blit que lo pinta.
+    /// Probe de telemetría (solo logcat): mantenido para comparar el coste
+    /// del frame completo GPU con el dirty rect de la Fase 1 (ink_dirty).
     take_repaint_probe: Option<(i32, i32, i32, i32)>,
     /// Fase 1 USI: ancla temporal del gesto (event_time del Down, base
     /// System.nanoTime) — los t_ms de las muestras se re-escalan contra ella.
@@ -1452,12 +1436,6 @@ pub(crate) struct Reader {
     /// Ancla temporal del gesto en curso (ns, System.nanoTime del Down del
     /// boli); la lee `feed_stylus_history` para re-escalar los timestamps.
     pub(crate) gesture_t0_ns: u64,
-    /// Capa efímera del tramo predicho (Fase 1, auditoría fix A): bitmap
-    /// ALFA con el segmento M_last→P_pred, en coords de ventana (bitmap, x,
-    /// y). Se reconstruye por muestra y se funde SOLO en el blit en curso —
-    /// nunca se quema en `page_frame` (los bigotes de predicción en giros
-    /// quedarían permanentes). En Up deja de regenerarse → desaparece.
-    pred_layer: Option<(pdf_core::Bitmap, i32, i32)>,
     /// Último instante en que el STYLUS tocó la pantalla (para palm rejection
     /// por tiempo: tras escribir, se ignora el táctil del dedo/palma durante
     /// ~500ms para evitar pans/zooms accidentales al apoyar la mano).
@@ -1470,7 +1448,7 @@ pub(crate) struct Reader {
     render_seq: u64,
     /// Página ANTERIOR dibujable mientras llega el render de la nueva (si
     /// está en caché): evita el parpadeo en blanco al pasar página.
-    fallback_page: Option<u32>,
+    pub(crate) fallback_page: Option<u32>,
 }
 
 /// Mensaje del worker de render asíncrono: un bitmap listo a la escala
@@ -1498,7 +1476,6 @@ impl Reader {
             pinch: None,
             offset_x: 0,
             offset_y: 0,
-            page_frame: None,
             win_w: 0,
             win_h: 0,
             gesture: GestureState::new(),
@@ -1594,14 +1571,13 @@ impl Reader {
             pen_mode: load_pen_mode(app.internal_data_path().as_deref()),
             tool_gesture: None,
             session_ids: Vec::new(),
-            gesture_base: None,
-            tool_dirty: None,
+            gpu_page: None,
+            repaint: false,
             take_repaint_probe: None,
+            gpu: None,
             pending_t0_ns: None,
             pending_pressure: None,
             gesture_t0_ns: 0,
-            pred_layer: None,
-            repaint: false,
             last_stylus_time: None,
             render_rx: None,
             render_seq: 0,
@@ -1728,6 +1704,27 @@ impl Reader {
         {
             warn!("set_buffers_geometry(R8G8B8A8_UNORM): {e}");
         }
+        // El pipeline del visor es GPU (EGL): el contexto se crea UNA vez con
+        // la primera ventana de Viewer y sobrevive a surfaces nuevas
+        // (recreate_surface). En modos SW (Library/Picker) no se toca.
+        if self.mode == UiMode::Viewer {
+            match self.gpu.as_mut() {
+                Some(g) => {
+                    g.recreate_surface(&window);
+                    self.gpu_page = None;
+                }
+                None => {
+                    // SAFETY: EGL/GLES sobre una NativeWindow válida de
+                    // android_activity; fallo → Viewer cae al camino SW.
+                    let gpu = unsafe { Gpu::new(&window) };
+                    if gpu.is_none() {
+                        warn!("gpu: EGL init failed — Viewer en SW");
+                    }
+                    self.gpu = gpu;
+                    self.gpu_page = None;
+                }
+            }
+        }
         self.window = Some(window);
     }
 
@@ -1741,7 +1738,6 @@ impl Reader {
         self.page_badge = None;
         self.mode_badge = None;
         self.sheet_bitmap = None;
-        self.page_frame = None;
         self.list_dirty = true;
         // Nueva ventana → posible nueva escala cover: las páginas de la caché
         // se reutilizan si el tamaño no cambió; el redraw detecta el cambio de
@@ -1751,12 +1747,14 @@ impl Reader {
 
     /// `TerminateWindow`: soltar la ventana (drop → `ANativeWindow_release`).
     pub(crate) fn terminate_window(&mut self) {
+        if let Some(g) = self.gpu.as_mut() {
+            g.drop_surface();
+        }
         self.window = None;
         self.bitmap = None;
         self.page_badge = None;
         self.mode_badge = None;
         self.sheet_bitmap = None;
-        self.page_frame = None;
         self.list_dirty = true;
     }
 
@@ -1781,7 +1779,6 @@ impl Reader {
             self.chrome_top_bitmap = None;
             self.chrome_bottom_bitmap = None;
             self.sheet_bitmap = None;
-            self.page_frame = None;
             self.toolbar_bitmap = None; // la barra reescala con la ventana
         }
         match self.mode {
@@ -1819,7 +1816,6 @@ impl Reader {
                 }
                 if self.sheet_progress <= 0.0 {
                     self.sheet_bitmap = None;
-                    self.page_frame = None; // liberar el frame al cerrar del todo
                 }
             }
             UiMode::Picker => {
@@ -2056,24 +2052,13 @@ impl Reader {
     /// fórmula que `blit` usa para `dx` sin pan. Lineal en `z`; en el
     /// anclaje Y la base es 0 (el borde superior de la página actual está
     /// fijo en el borde superior del viewport — modo UNA HOJA, sin scroll).
-    fn centered_base(win: i32, doc: f32, z: f32) -> f32 {
+    pub(crate) fn centered_base(win: i32, doc: f32, z: f32) -> f32 {
         (win as f32 - doc * z) / 2.0
     }
 
-    /// Transformación página→pantalla del trazo (la MISMA que usa el blit):
-    /// `scale = cover × zoom`, origen `(dx, dy)` con el centrado cover + pan.
-    /// `None` si no se puede resolver el tamaño de página.
-    fn page_screen_xform(&self, page: u32) -> Option<(f32, f32, f32, i32, i32)> {
-        let (pw, ph) = self.doc.as_ref()?.page_size(page).ok()?;
-        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
-        let scale = cover * self.zoom;
-        if !scale.is_finite() || scale <= 0.0 {
-            return None;
-        }
-        let dx =
-            (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round() as i32;
-        let dy = self.pan_y.round() as i32;
-        Some((pw, ph, scale, dx, dy))
+    /// Tamaño de página en puntos PDF (`None` si no hay documento o falla).
+    pub(crate) fn page_size_pt(&self, page: u32) -> Option<(f32, f32)> {
+        self.doc.as_ref()?.page_size(page).ok()
     }
 
     /// Fórmula de anclaje del pinch: el pan (px) que, a zoom `z`, deja fijo
@@ -2208,7 +2193,7 @@ impl Reader {
     ///   sheet de ajustes) van después en el mismo buffer. Zoom RELATIVO
     ///   `zoom / rendered_zoom`: 1:1 nítido para bitmaps recién renderizados
     ///   y escala vecino-más-cercana durante el pinch (sin re-render). Con el
-    ///   sheet visible se usa el FRAME COMPUESTO (`page_frame`, ver abajo):
+    ///   sheet visible solo se copia el overlay del sheet sobre el frame GPU:
     ///   el frame se compone una vez y cada frame de la animación copia ese
     ///   bitmap (`draw::blit_composed`) + el overlay del sheet — la PÁGINA
     ///   NO se re-blitea en cada paso de la animación (el fix del lag del
@@ -2233,324 +2218,35 @@ impl Reader {
         };
         match self.mode {
             UiMode::Viewer => {
-                // Piezas del blit de la página actual (una sola hoja): bitmap
-                // cacheado (`peek`, sin promoción LRU — el blit solo lee; la
-                // recencia la fija el render/prefetch), centrado horizontal
-                // cover + pan de anclaje (puede ser negativo con zoom > 1: se
-                // recortan los bordes de la página) y la capa de anotaciones.
-                let blit_zoom = if self.rendered_zoom.is_finite() && self.rendered_zoom > 0.0 {
-                    self.zoom / self.rendered_zoom
-                } else {
-                    1.0
-                };
-                let page_blit: Option<PageBlit> = {
-                    // Render asíncrono + cambio de página: mientras la página
-                    // NUEVA no está en caché, se muestra la ANTERIOR (si la
-                    // tiene el fallback) — sin parpadeo en blanco.
-                    let bmp = self
-                        .cache
-                        .peek(self.page)
-                        .or_else(|| self.fallback_page.and_then(|p| self.cache.peek(p)));
-                    bmp.map(|bmp| {
-                        let dx = (((self.win_w as f32 - bmp.width as f32 * blit_zoom) / 2.0)
-                            + self.pan_x)
-                            .round() as i32;
-                        // Una sola hoja: sin columna ni scroll_y → dy = pan.
-                        let dy = self.pan_y.round() as i32;
-                        PageBlit {
-                            bitmap: bmp,
-                            dx,
-                            dy,
-                            zoom: blit_zoom,
-                        }
-                    })
-                };
-                // Anotaciones de la página, en orden de dibujo (z): trazos y
-                // highlights guardados (Stroke/Highlight; TextNote no se
-                // dibuja aún). Los highlights se dibujan DEBAJO de los trazos
-                // (`draw::draw_annotations`); el trazo/highlight en curso no
-                // existe (no hay modo dibujo; el rect de selección en vivo va
-                // aparte, ver `sel_rect` abajo).
-                let anns: Option<PageAnnots> = page_blit.as_ref().and_then(|pb| {
-                    let page_anns = self.annotations.for_page(self.page as usize);
-                    let strokes: Vec<&Stroke> = page_anns
-                        .iter()
-                        .filter_map(|a| match &a.kind {
-                            Annotation::Stroke(s) => Some(s),
-                            _ => None,
-                        })
-                        .collect();
-                    let highlights: Vec<&Highlight> = page_anns
-                        .iter()
-                        .filter_map(|a| match &a.kind {
-                            Annotation::Highlight(h) => Some(h),
-                            _ => None,
-                        })
-                        .collect();
-                    if strokes.is_empty() && highlights.is_empty() {
-                        return None;
-                    }
-                    // scale = cover × zoom: px de ventana por punto PDF (la
-                    // misma escala efectiva del blit). Si no se puede saber el
-                    // tamaño de la página (render fallido), escala degradada.
-                    let scale = match self.doc.as_ref().and_then(|d| d.page_size(self.page).ok()) {
-                        Some((pw, ph)) => initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom,
-                        None => blit_zoom,
-                    };
-                    Some(PageAnnots {
-                        dx: pb.dx,
-                        dy: pb.dy,
-                        scale,
-                        strokes,
-                        highlights,
-                    })
-                });
-                // Rect de selección en vivo/fijado (px de ventana, recortado
-                // a los bordes de la PÁGINA por `sel_screen_rect`): se dibuja
-                // como capa translúcida sobre la página, antes de los
-                // overlays (`draw::blit_page`/`compose_frame`).
-                let sel_rect = self.sel_screen_rect();
-                // Aviso breve ("copied", ...): bitmap cacheado materializado
-                // aquí para que las dos rutas de blit (normal y frame
-                // compuesto del sheet) lo usen como overlay.
+                // FASE 2 (ADR-006): presentación por GPU (EGL/GLES2). La
+                // página es una textura (subida SOLO al cambiar página o
+                // re-render nítido), la tinta es geometría (strips con AA),
+                // los overlays son quads de los bitmaps Canvas+JNI ya
+                // generados y el present es `eglSwapBuffers` (spike 1: p50
+                // 0.17 ms). Sin dirty rect CPU: frame completo por vsync.
+                //
+                // Materialización de overlays (misma que el blit SW): los
+                // bitmaps se generan aquí si faltan y `present_viewer` los
+                // sube como texturas cacheadas por puntero.
                 if self.toast.is_some() && self.toast_bitmap.is_none() {
                     self.toast_bitmap = render_toast(self);
                 }
-                let toast_ov: Option<(&Bitmap, i32, i32)> = self.toast_bitmap.as_ref().map(|tb| {
-                    let (_, by, _, _) = page_badge_rect(self.win_w, self.win_h);
-                    let tx = (self.win_w - tb.width as i32) / 2;
-                    let ty = by - tb.height as i32 - 8;
-                    (tb, tx, ty)
-                });
-                // Indicador de página (abajo a la izquierda, cuando el chrome está oculto)
-                let badge: Option<(&Bitmap, i32, i32)> = if self.chrome_visible {
-                    None
-                } else {
-                    self.page_badge.as_ref().map(|b| {
-                        let (bx, by, _, _) = page_badge_rect(self.win_w, self.win_h);
-                        (b, bx, by)
-                    })
-                };
-                // Indicador de MODO del boli (abajo a la DERECHA, ✏️/🖍️): se
-                // renderiza y cachea con el mismo patrón que el de página.
                 if !self.chrome_visible && self.mode_badge.is_none() {
                     self.mode_badge = render_mode_badge(self);
                 }
-                let mode_badge: Option<(&Bitmap, i32, i32)> = if self.chrome_visible {
-                    None
-                } else {
-                    self.mode_badge.as_ref().map(|b| {
-                        let (bx, by, _, _) = crate::draw::mode_badge_rect(self.win_w, self.win_h);
-                        (b, bx, by)
-                    })
-                };
-                // Overlays del visor en el MISMO buffer (un solo lock+present)
-                let mut overlays: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(8);
-                // Chrome del visor (barra superior e inferior) o badge
-                if self.chrome_visible {
-                    if let Some(top) = self.chrome_top_bitmap.as_ref() {
-                        overlays.push((top, 0, 0));
-                    }
-                    if let Some(bot) = self.chrome_bottom_bitmap.as_ref() {
-                        overlays.push((bot, 0, self.win_h - bot.height as i32));
-                    }
-                } else if let Some((b, bx, by)) = badge {
-                    overlays.push((b, bx, by));
+                if self.erase_pt.is_some() && self.eraser_cursor.is_none() && self.erase_r_px > 4.0
+                {
+                    self.eraser_cursor = render_eraser_cursor(self, self.erase_r_px as i32);
                 }
-                if let Some((mb, mx, my)) = mode_badge {
-                    overlays.push((mb, mx, my));
-                }
-                // Cursor de la GOMA durante el borrado (círculo del tamaño
-                // real de la goma, sigue al boli).
-                if let Some((ex, ey)) = self.erase_pt {
-                    if self.eraser_cursor.is_none() && self.erase_r_px > 4.0 {
-                        self.eraser_cursor = render_eraser_cursor(self, self.erase_r_px as i32);
-                    }
-                    if let Some(eb) = self.eraser_cursor.as_ref() {
-                        overlays.push((
-                            eb,
-                            ex as i32 - (eb.width as i32) / 2,
-                            ey as i32 - (eb.height as i32) / 2,
-                        ));
-                    }
-                }
-                // Barra de herramientas (píldora)
                 if self.toolbar_open && self.toolbar_bitmap.is_none() {
                     self.toolbar_bitmap = render_toolbar(self);
                 }
-                if let Some(tb) = self.toolbar_bitmap.as_ref() {
-                    let (tx, ty, _, _) = toolbar_rect(self.win_w, self.win_h);
-                    overlays.push((tb, tx as i32, ty as i32));
-                }
-                if let Some(menu) = self.sel_menu.as_ref() {
-                    overlays.push((&menu.bitmap, menu.x, menu.y));
-                }
-                if let Some(panel) = self.ai_panel.as_ref() {
-                    overlays.push((&panel.bitmap, panel.x, panel.y));
-                }
-                if let Some((tb, tx, ty)) = toast_ov {
-                    overlays.push((tb, tx, ty));
-                }
-                if self.sheet_progress > 0.0
-                    && let Some(s) = self.sheet_bitmap.as_ref()
-                {
-                    let slide =
-                        (sheet_h(self.win_h) as f32 * (1.0 - self.sheet_progress)).round() as i32;
-                    overlays.push((s, 0, -slide));
-                }
-                // Capa temporal del gesto de herramienta EN CURSO (trazo del
-                // boli / rect del resaltador): rasterizada por Move en un
-                // bitmap del bbox del trazo (pdf_core::overlay) y copiada con
-                // alfa-blend sobre el frame en `blit_composed` — el visor NO
-                // re-blitea la página por evento de movimiento (req. 5).
-                // Tinta directa (Ink): el trazo se stampa al frame, no hay
-                // capa temporal. El tool_layer solo existe para el resaltador
-                // (rect translúcido que se re-encaja al soltar).
-                let tool_layer: Option<(Bitmap, i32, i32)> =
-                    if self.tool == ToolKind::Highlight && self.tool_gesture.is_some() {
-                        self.tool_overlay()
-                    } else {
-                        None
-                    };
-                let use_frame = self.sheet_progress > 0.0
-                    || self.tool_gesture.is_some()
-                    || self.page_frame.is_some();
-                if use_frame {
-                    // Sheet visible: frame compuesto + overlay del sheet. El
-                    // frame (fondo + página + anotaciones + indicador) se
-                    // compone UNA vez al empezar a deslizar y se reutiliza
-                    // mientras el sheet esté visible: cada frame de la
-                    // animación/arrastre copia el frame (memcpy ~1-2 ms) +
-                    // el sheet, en vez de re-blitear la página completa
-                    // (~25-40 ms/frame — la CAUSA del lag del sheet).
-                    if self.page_frame.is_none() {
-                        let composed = compose_frame(
-                            self.win_w,
-                            self.win_h,
-                            bg,
-                            self.dark,
-                            page_blit.as_ref(),
-                            anns.as_ref(),
-                            sel_rect,
-                            badge,
-                        );
-                        self.page_frame = Some(composed);
-                    }
-                    if let Some(frame) = self.page_frame.as_ref() {
-                        // El frame ya incluye el indicador y el rect de
-                        // selección: la capa temporal del trazo en curso
-                        // (blend), la barra de herramientas, el menú, el
-                        // aviso breve y el sheet como overlays opacos.
-                        let mut sheet_ov: Vec<(&Bitmap, i32, i32)> = Vec::with_capacity(6);
-                        if let Some(tb) = self.toolbar_bitmap.as_ref() {
-                            let (tx, ty, _, _) = toolbar_rect(self.win_w, self.win_h);
-                            sheet_ov.push((tb, tx as i32, ty as i32));
-                        }
-                        if let Some(menu) = self.sel_menu.as_ref() {
-                            sheet_ov.push((&menu.bitmap, menu.x, menu.y));
-                        }
-                        if let Some(panel) = self.ai_panel.as_ref() {
-                            sheet_ov.push((&panel.bitmap, panel.x, panel.y));
-                        }
-                        if let Some((tb, tx, ty)) = toast_ov {
-                            sheet_ov.push((tb, tx, ty));
-                        }
-                        if let Some(s) = self.sheet_bitmap.as_ref() {
-                            let slide = (sheet_h(self.win_h) as f32 * (1.0 - self.sheet_progress))
-                                .round() as i32;
-                            sheet_ov.push((s, 0, -slide));
-                        }
-                        // Dirty rect: durante el gesto SOLO se repinta la
-                        // unión de bboxes (tinta directa: cada tramo ya está
-                        // en el frame via stamping; el blend de capa solo
-                        // existe para el resaltador, que es un rect
-                        // translúcido que se re-encaja al soltar).
-                        let blend = if self.tool == ToolKind::Highlight {
-                            tool_layer.as_ref().map(|(b, x, y)| (b, *x, *y))
-                        } else {
-                            None
-                        };
-                        // Auditoría fix A: la capa efímera del tramo
-                        // predicho se funde en el blit (no en page_frame).
-                        // blit_composed acepta una sola blend_layer: en el
-                        // gesto de boli SOLO existe pred_layer (el
-                        // tool_layer es del resaltador); no colisionan.
-                        let blend = blend.or(self.pred_layer.as_ref().map(|(b, x, y)| (b, *x, *y)));
-                        let dirty = if self.sheet_progress <= 0.0 && self.tool_gesture.is_some() {
-                            // Auditoría fix C: el gesto lo decide
-                            // `tool_gesture` (el boli dibuja con la barra
-                            // cerrada — `self.tool` queda Navigate y el
-                            // dirty caería a blit completo).
-                            let gesture_tool = self
-                                .tool_gesture
-                                .as_ref()
-                                .map(|g| g.tool)
-                                .unwrap_or(ToolKind::Navigate);
-                            if gesture_tool == ToolKind::Ink {
-                                // Tinta directa: el dirty lo fija el stamping.
-                                self.tool_dirty
-                            } else if let Some((b, x, y)) = &tool_layer {
-                                let cur = (
-                                    (*x).max(0),
-                                    (*y).max(0),
-                                    (x + b.width as i32).min(self.win_w),
-                                    (y + b.height as i32).min(self.win_h),
-                                );
-                                self.tool_dirty = Some(match self.tool_dirty {
-                                    Some((px0, py0, px1, py1)) => (
-                                        px0.min(cur.0),
-                                        py0.min(cur.1),
-                                        px1.max(cur.2),
-                                        py1.max(cur.3),
-                                    ),
-                                    None => cur,
-                                });
-                                self.tool_dirty
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        if let Some(d) = dirty {
-                            crate::draw::blit_composed_dirty(window, frame, &sheet_ov, blend, d);
-                        } else {
-                            blit_composed(window, frame, &sheet_ov, blend);
-                        }
-                    } else {
-                        // Defensa: frame no disponible (compose falló) → blit
-                        // normal con el sheet como overlay.
-                        blit_page(
-                            window,
-                            bg,
-                            self.dark,
-                            page_blit.as_ref(),
-                            anns.as_ref(),
-                            sel_rect,
-                            &overlays,
-                        );
-                    }
-                } else {
-                    blit_page(
-                        window,
-                        bg,
-                        self.dark,
-                        page_blit.as_ref(),
-                        anns.as_ref(),
-                        sel_rect,
-                        &overlays,
-                    );
-                }
-                // Transición al abrir un libro: fundir el snapshot de la
-                // biblioteca/picker sobre la página durante `LIB_FADE_MS`
-                // (segundo present TRANSITORIO ~12 frames, alfa decreciente;
-                // la biblioteca ya no se pinta, solo se funde).
-                if let Some((started, snap)) = &self.lib_fade {
-                    let t = started.elapsed().as_secs_f32();
-                    let alpha = (1.0 - t / LIB_FADE_MS).clamp(0.0, 1.0);
-                    if alpha > 0.0 {
-                        blit_lib_fade(window, snap, (alpha * 255.0).round() as u8);
-                    }
+                // Present GPU: se toma el Gpu del Option (take) para poder
+                // pasar `&self`Reader sin conflicto de préstamos — el
+                // present solo LEE el Reader.
+                if let Some(mut g) = self.gpu.take() {
+                    g.present_viewer(self);
+                    self.gpu = Some(g);
                 }
             }
             UiMode::Library => {
@@ -2611,13 +2307,17 @@ impl Reader {
                 }
             },
         }
-        info!(
-            "blit {}x{}: {:.2} ms (lock+copy+unlock_and_post)",
-            self.win_w,
-            self.win_h,
-            t0.elapsed().as_secs_f64() * 1000.0
-        );
-        // Telemetría lápiz (medición TCL): dirty rect del gesto por frame.
+        // Log solo en las rutas SW (Library/Picker): el visor GPU tiene su
+        // propio `gl_present` (comparable con el spike). El probe de tinta
+        // mantiene el nombre de evento para comparar con la Fase 1.
+        if self.mode != UiMode::Viewer {
+            info!(
+                "blit {}x{}: {:.2} ms (lock+copy+unlock_and_post)",
+                self.win_w,
+                self.win_h,
+                t0.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         if let Some((x0, y0, x1, y1)) = self.take_repaint_probe {
             self.take_repaint_probe = None;
             info!(
@@ -2647,8 +2347,6 @@ impl Reader {
         self.page = page;
         self.page_badge = None; // el indicador "N / total" cambia
         self.sheet_bitmap = None; // el indicador del sheet cambia
-        self.page_frame = None; // el frame de la animación del sheet cambia
-        self.tool_dirty = None;
         info!("page {}", self.page + 1);
         // Cambio de página SIN congelar: si la nueva está en caché (prefetch
         // previo), el blit es inmediato; si no, se muestra la página ANTERIOR
@@ -2733,7 +2431,6 @@ impl Reader {
             anchor: (ax, ay),
             cur: (ax, ay),
         });
-        self.page_frame = None; // el frame compuesto incluiría el rect viejo
         if self.window.is_some() {
             self.blit();
         }
@@ -2745,7 +2442,6 @@ impl Reader {
         if let Some(s) = self.sel.as_mut() {
             s.cur = (cx, cy);
         }
-        self.page_frame = None;
         if self.window.is_some() {
             self.blit();
         }
@@ -2777,7 +2473,6 @@ impl Reader {
         let had = self.sel.is_some() || self.sel_menu.is_some();
         self.sel = None;
         self.sel_menu = None;
-        self.page_frame = None;
         if had && self.window.is_some() {
             self.blit();
         }
@@ -3020,7 +2715,6 @@ impl Reader {
             // selección de texto (misma sesión).
             self.session_ids.push(id);
             self.save_annotations();
-            self.page_frame = None; // el frame compuesto tendría el highlight viejo
             self.show_toast("highlighted");
         } else {
             self.show_toast("highlight failed");
@@ -3305,7 +2999,7 @@ impl Reader {
     /// Down (px, positivo = hacia abajo). El progreso sigue al dedo
     /// (`dy / alto del sheet`, recortado a [0, 1]) y se redibuja el frame.
     /// El redraw es BARATO con el sheet visible: `blit` usa el frame de
-    /// página compuesto (`page_frame`, memcpy) + el overlay del sheet, NO
+    /// copiar el overlay del sheet sobre el frame, NO
     /// re-blitea la página completa (ver `blit`) — la animación del sheet
     /// no degrada el frame time.
     pub(crate) fn drag_sheet(&mut self, dy: f32) {
@@ -3342,7 +3036,6 @@ impl Reader {
         self.sheet_progress = 0.0;
         self.sheet_anim = false;
         self.sheet_bitmap = None;
-        self.page_frame = None;
     }
 
     /// Muestra el chrome del visor (barra superior e inferior) y programa el auto-hide a 4.5s.
@@ -3406,9 +3099,8 @@ impl Reader {
         // sondea el canal SIN bloquear; al llegar el mensaje se actualiza el
         // panel (fase Answer/Error) y se libera el receptor. Mientras tanto el
         // poll con timeout se mantiene vivo vía `needs_tick` (ai_rx.is_some).
-        if self.ai_rx.is_some() {
+        if let Some(rx) = self.ai_rx.as_ref() {
             let outcome = {
-                let rx = self.ai_rx.as_ref().unwrap();
                 match rx.try_recv() {
                     Ok(Ok(answer)) => Some((answer, AiPhase::Answer)),
                     Ok(Err(e)) => Some((format!("Error: {e}"), AiPhase::Error)),
@@ -3454,7 +3146,6 @@ impl Reader {
             }
             if self.sheet_progress <= 0.0 {
                 self.sheet_bitmap = None; // liberar el bitmap al cerrar del todo
-                self.page_frame = None; // liberar también el frame compuesto
             }
             self.redraw();
         }
@@ -3798,7 +3489,6 @@ impl Reader {
             self.pan_x = 0.0;
             self.pan_y = 0.0;
             self.zoom = zoom;
-            self.page_frame = None; // el frame compuesto del sheet tiene el zoom viejo
             if self.window.is_some() {
                 self.blit();
             }
@@ -3834,7 +3524,6 @@ impl Reader {
             }
         }
         self.zoom = zoom;
-        self.page_frame = None; // el frame compuesto del sheet tiene el zoom viejo
         // Redraw de solo blit: reutiliza los bitmaps de la caché (escala de la
         // última renderización, `rendered_zoom`); `blit` escala la página
         // actual con el zoom nuevo. El render y el reescalado de ventana los
@@ -3923,7 +3612,6 @@ impl Reader {
         // evita 3 renders gigantes de golpe) y, al llegar, `poll_render` fija
         // `rendered_zoom` y repintea (1:1 nítido). El presupuesto de píxeles
         // (launch_render) acota el bitmap para no petar la RAM.
-        self.page_frame = None;
         self.launch_render(vec![self.page], zoom, false);
         info!("zoom {:.3}", self.zoom);
         self.save_state();
@@ -3939,7 +3627,6 @@ impl Reader {
         self.dark = self.theme.is_dark();
         self.page_badge = None;
         self.sheet_bitmap = None;
-        self.page_frame = None;
         self.toolbar_bitmap = None;
         self.chrome_top_bitmap = None;
         self.chrome_bottom_bitmap = None;
@@ -3959,7 +3646,6 @@ impl Reader {
         self.dark = self.theme.is_dark();
         self.page_badge = None;
         self.sheet_bitmap = None;
-        self.page_frame = None;
         self.toolbar_bitmap = None;
         self.chrome_top_bitmap = None;
         self.chrome_bottom_bitmap = None;
@@ -4346,7 +4032,6 @@ impl Reader {
             return;
         }
         self.save_annotations();
-        self.page_frame = None; // el frame tendría la anotación borrada
         self.show_toast("undo");
     }
 
@@ -4374,18 +4059,10 @@ impl Reader {
             g.times_ms[0] = 0.0;
         }
         self.gesture_t0_ns = t0;
-        self.tool_dirty = None;
-        // TINTA DIRECTA (patrón Xournal++/GoodNotes): aseguramos que el
-        // frame existe (si no, el primer blit lo compone) y guardamos una
-        // COPIA BASE — durante el gesto cada tramo se stampa al frame; al
-        // soltar se restaura la base y se pinta el trazo final en su bbox.
-        // Nunca se recomponen las anotaciones al empezar un trazo.
-        if self.page_frame.is_none() && self.window.is_some() {
-            self.blit(); // compone el frame (página + anotaciones guardadas)
-        }
-        self.gesture_base = self.page_frame.clone();
+        // FASE 2: la tinta es geometría GPU por frame — sin frame base que
+        // clonar ni stamping. El siguiente blit pinta página + gesto.
         if self.window.is_some() {
-            self.blit();
+            self.mark_repaint();
         }
         true
     }
@@ -4410,196 +4087,44 @@ impl Reader {
         self.last_stylus_time = Some(std::time::Instant::now());
         match tool {
             ToolKind::Ink => {
-                // Máquina midpoint: Pk entra, Mk = (P(k-1)+Pk)/2, se estampa
-                // la curva M(k-1)→Mk con control P(k-1) (o el tramo recto
-                // inicial P0→M1 si k==1). push() filtra casi-duplicados
-                // (d < 0.25 pt): si el punto no avanza, no hay curva nueva.
-                // Sin expect: un gesto SIEMPRE tiene el ancla del Down, pero
-                // un estado corrupto no debe tumbar el visor.
-                let (last, prev_mid, page, w_px_pt) = {
-                    let Some(g) = self.tool_gesture.as_mut() else {
-                        return;
-                    };
-                    let Some(&last) = g.points.last() else {
-                        return;
-                    };
-                    let n0 = g.points.len();
-                    g.push_with_pressure(pt, t_ms, pressure);
-                    if g.points.len() == n0 {
-                        return;
-                    }
-                    // Grosor del tramo que entra: curva de presión (plan
-                    // Área C) sobre el grosor base de página del gesto.
-                    let w = crate::prediction::pressure_width(self.ink_width, g.last_pressure());
-                    (last, g.prev_mid, g.page, w)
+                // Máquina midpoint: Pk entra, Mk = (P(k-1)+Pk)/2. push()
+                // filtra casi-duplicados (d < 0.25 pt): si el punto no
+                // avanza, no hay curva nueva.
+                // FASE 2: sin stamping en bitmap — la curva midpoint se
+                // dibuja como geometría GPU en el próximo present y sus
+                // muestras se acumulan en `ink_pts` (persistencia idéntica
+                // a la Fase 1: el replay lineal reproduce la curva).
+                let Some(g) = self.tool_gesture.as_mut() else {
+                    return;
                 };
-                // STAMPING INCREMENTAL: la curva midpoint se rasteriza DIRECTO
-                // en el frame (tinta desde el primer tramo, sin capas) y su
-                // muestreo se acumula en `ink_pts` — lo estampado ES el trazo
-                // final (cero pop al soltar; ver `end_tool_gesture`).
-                let xform = self.page_screen_xform(page);
+                let Some(&last) = g.points.last() else {
+                    return;
+                };
+                let n0 = g.points.len();
+                g.push_with_pressure(pt, t_ms, pressure);
+                if g.points.len() == n0 {
+                    return;
+                }
                 let mid = ((last.0 + pt.0) / 2.0, (last.1 + pt.1) / 2.0);
-                if let (Some(frame), Some((_, _, scale, dx, dy))) =
-                    (self.page_frame.as_mut(), xform)
-                {
-                    let mut disc = [(0i32, 0i32); crate::draw::INK_DISC_CAP];
-                    // Brocha del grosor CON presión (w_px_pt ya lo lleva);
-                    // 1 px si la capacidad no alcanza (escala extrema).
-                    let dn = crate::draw::ink_disc_for((w_px_pt * scale).max(1.0), &mut disc)
-                        .unwrap_or(1);
-                    let drawn = match prev_mid {
-                        None => crate::draw::draw_ink_segment_on_frame(
-                            frame,
-                            last,
-                            mid,
-                            w_px_pt,
-                            self.ink_color,
-                            scale,
-                            dx,
-                            dy,
+                let prev_mid = g.prev_mid;
+                // Muestrear en página la MISMA curva midpoint que dibuja el
+                // present (una sola fuente de verdad para la polilínea).
+                let a = prev_mid.unwrap_or(last);
+                let steps = 6usize;
+                for i in 1..=steps {
+                    let t = i as f32 / steps as f32;
+                    let om = 1.0 - t;
+                    let q = if prev_mid.is_some() {
+                        (
+                            om * om * a.0 + 2.0 * om * t * last.0 + t * t * mid.0,
+                            om * om * a.1 + 2.0 * om * t * last.1 + t * t * mid.1,
                         )
-                        .map(|bbox| (bbox, 6usize)),
-                        // El raster devuelve el n que usó: muestrear ink_pts
-                        // con ese MISMO n → polilínea persistida 1:1 con lo
-                        // estampado (una sola fuente de verdad para N).
-                        Some(m0) => crate::draw::draw_ink_quad_bezier_on_frame(
-                            frame,
-                            m0,
-                            last,
-                            mid,
-                            w_px_pt,
-                            self.ink_color,
-                            scale,
-                            dx,
-                            dy,
-                            &disc[..dn],
-                        ),
+                    } else {
+                        (a.0 + t * (mid.0 - a.0), a.1 + t * (mid.1 - a.1))
                     };
-                    if let Some((bbox, steps)) = drawn {
-                        // Muestrear en página la MISMA curva que se rasterizó
-                        // (el replay lineal entre muestras densas reproduce la
-                        // curva): el tramo recto inicial aporta solo su extremo
-                        // (P0→M1 se reproduce idéntica por definición).
-                        let Some(g) = self.tool_gesture.as_mut() else {
-                            return;
-                        };
-                        let a = prev_mid.unwrap_or(last);
-                        for i in 1..=steps {
-                            let t = i as f32 / steps as f32;
-                            let om = 1.0 - t;
-                            let q = if prev_mid.is_some() {
-                                (
-                                    om * om * a.0 + 2.0 * om * t * last.0 + t * t * mid.0,
-                                    om * om * a.1 + 2.0 * om * t * last.1 + t * t * mid.1,
-                                )
-                            } else {
-                                (a.0 + t * (mid.0 - a.0), a.1 + t * (mid.1 - a.1))
-                            };
-                            g.ink_pts.push(q);
-                        }
-                        self.take_repaint_probe = Some(bbox);
-                        self.tool_dirty = Some(match self.tool_dirty {
-                            Some((x0, y0, x1, y1)) => (
-                                x0.min(bbox.0),
-                                y0.min(bbox.1),
-                                x1.max(bbox.2),
-                                y1.max(bbox.3),
-                            ),
-                            None => bbox,
-                        });
-                    }
+                    g.ink_pts.push(q);
                 }
-                if let Some(g) = self.tool_gesture.as_mut() {
-                    g.prev_mid = Some(mid);
-                }
-                // CAPA EFÍMERA (Fase 1, ADR-006; auditoría fix A): se
-                // proyecta P_pred a Δt=16 ms desde la ÚLTIMA muestra
-                // confirmada (t real del USI, no asumido) y el segmento
-                // M_last→P_pred se rasteriza en un BITMAP ALFA transitorio
-                // (`pred_layer`) — NUNCA en `page_frame` (no hay marcha
-                // atrás: un efímero en dirección vieja quedaría como bigote
-                // permanente en curvas/letras). El blit lo funde con
-                // alpha-blend SOLO en este frame; en el siguiente se
-                // reconstruye desde cero y el viejo desaparece. En Up no se
-                // regenera → muere sin dejar rastro; el remate real lo hace
-                // `end_tool_gesture` con la muestra confirmada.
-                let mut window = [crate::prediction::Sample {
-                    x: 0.0,
-                    y: 0.0,
-                    t: 0.0,
-                }; 3];
-                let nwin = self
-                    .tool_gesture
-                    .as_ref()
-                    .map(|g| g.recent_window(&mut window))
-                    .unwrap_or(0);
-                if nwin >= 2
-                    && let Some((px, py)) = crate::prediction::predict_hermite(
-                        &window[..nwin],
-                        crate::prediction::PREDICTION_DT_MS,
-                    )
-                    && let Some(g) = self.tool_gesture.as_ref()
-                    && let Some(m_last) = g.prev_mid
-                    && let Some((pw, ph)) = self.doc.as_ref().and_then(|d| d.page_size(g.page).ok())
-                    && m_last != (px, py)
-                {
-                    // Coordenadas de página → ventana (misma geometría del
-                    // blit: cover × zoom + pan).
-                    let cover = initial_scale(pw, ph, self.win_w, self.win_h);
-                    let scale = cover * self.zoom;
-                    let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x)
-                        .round();
-                    let dy = self.pan_y.round();
-                    let (ax, ay) = (m_last.0 * scale + dx, m_last.1 * scale + dy);
-                    let (bx, by) = (px * scale + dx, py * scale + dy);
-                    // Bitmap alfa del bbox del segmento (pad = radio de la
-                    // brocha): fondo transparente, tinta con el alpha del
-                    // color → el blend del blit la funde sobre la página.
-                    let pad = ((w_px_pt * scale) / 2.0).ceil() + 1.0;
-                    let l = (ax.min(bx) - pad).floor().max(0.0) as i32;
-                    let t = (ay.min(by) - pad).floor().max(0.0) as i32;
-                    let r = (ax.max(bx) + pad).ceil().min(self.win_w as f32) as i32;
-                    let b = (ay.max(by) + pad).ceil().min(self.win_h as f32) as i32;
-                    if r > l && b > t {
-                        let lw = (r - l) as usize;
-                        let lh = (b - t) as usize;
-                        let mut data = vec![0u8; lw * lh * 4];
-                        // El trazo se dibuja con coords de ventana
-                        // desplazadas al origen del bitmap.
-                        let seg = [
-                            (ax - l as f32, ay - t as f32),
-                            (bx - l as f32, by - t as f32),
-                        ];
-                        let mut disc = [(0i32, 0i32); crate::draw::INK_DISC_CAP];
-                        // Brocha de 1 px si la capacidad no alcanza.
-                        let dn = crate::draw::ink_disc_for((w_px_pt * scale).max(1.0), &mut disc)
-                            .unwrap_or(1);
-                        crate::draw::draw_polyline_pub(
-                            data.as_mut_ptr(),
-                            lw,
-                            lh,
-                            lw,
-                            4,
-                            &seg,
-                            &disc[..dn],
-                            [
-                                self.ink_color.r,
-                                self.ink_color.g,
-                                self.ink_color.b,
-                                self.ink_color.a,
-                            ],
-                        );
-                        self.pred_layer = Some((
-                            pdf_core::Bitmap {
-                                width: lw as u32,
-                                height: lh as u32,
-                                data,
-                            },
-                            l,
-                            t,
-                        ));
-                    }
-                }
+                g.prev_mid = Some(mid);
             }
             ToolKind::Highlight => {
                 if let Some(g) = self.tool_gesture.as_mut() {
@@ -4654,56 +4179,24 @@ impl Reader {
             max_y = max_y.max(y);
         }
         if max_x - min_x < min_d_pt && max_y - min_y < min_d_pt {
-            // Restaurar la base: un toque sin arrastre no deja tinta fantasma
-            // (la tinta stampada durante los Moves se descarta con la base).
-            self.page_frame = self.gesture_base.take();
+            // Un toque sin arrastre: sin gesto, sin anotación. La tinta que
+            // el present dibujó era solo geometría del frame — muere sola.
             if self.window.is_some() {
-                self.blit();
+                self.mark_repaint();
             }
             return;
         }
         let mut g = g;
         match g.tool {
             ToolKind::Ink => {
-                // REMATE M_last→P_up: la máquina midpoint estampa hasta el
-                // último punto medio; el tramo final hasta el punto de soltar
-                // se cierra AQUÍ (recto, como el esquema midpoint). El drain
-                // de history del Up ya estampó las muestras intermedias, así
-                // que el tramo es corto — pero sin esto la tinta quedaría a
-                // medio camino del punto real de soltar. Tres fases para no
-                // solapar préstamos: computar → estampar → acumular.
+                // REMATE M_last→P_up: entra en ink_pts (tramo recto: el
+                // endpoint basta para el replay 1:1 de la línea). El present
+                // GPU ya no lo estampa — el próximo frame dibuja la página
                 let end_pt = self.screen_to_page(sx, sy);
-                let xform = self.page_screen_xform(g.page);
-                let m_last = g.prev_mid.or_else(|| g.ink_pts.last().copied());
-                if let (Some(m_last), Some(end_pt), Some((_, _, fscale, fdx, fdy))) =
-                    (m_last, end_pt, xform)
+                if let (Some(m_last), Some(end_pt)) =
+                    (g.prev_mid.or_else(|| g.ink_pts.last().copied()), end_pt)
                     && m_last != end_pt
                 {
-                    if let Some(frame) = self.page_frame.as_mut() {
-                        let bbox = crate::draw::draw_ink_segment_on_frame(
-                            frame,
-                            m_last,
-                            end_pt,
-                            self.ink_width,
-                            self.ink_color,
-                            fscale,
-                            fdx,
-                            fdy,
-                        );
-                        if let Some(bbox) = bbox {
-                            self.tool_dirty = Some(match self.tool_dirty {
-                                Some((x0, y0, x1, y1)) => (
-                                    x0.min(bbox.0),
-                                    y0.min(bbox.1),
-                                    x1.max(bbox.2),
-                                    y1.max(bbox.3),
-                                ),
-                                None => bbox,
-                            });
-                        }
-                    }
-                    // El remate entra en ink_pts (tramo recto: el endpoint
-                    // basta para el replay 1:1 de la línea).
                     g.ink_pts.push(end_pt);
                 }
                 // CERO POP: lo estampado en vivo ES el trazo final. Se
@@ -4779,31 +4272,19 @@ impl Reader {
             }
             ToolKind::Navigate => {}
         }
-        // CERO POP: para Ink el frame YA contiene el trazo definitivo (se
-        // estampó incrementalmente con la misma polilínea que se persiste):
-        // NO se restaura `gesture_base` ni se re-pinta nada. La base se
-        // conserva hasta aquí para cancel/degenerate; se libera ahora.
-        self.gesture_base = None;
-        if g.tool != ToolKind::Ink {
-            // Highlight: el siguiente blit repinta completo (capa temporal
-            // fuera); su dirty acumulado ya no representa el frame.
-            self.tool_dirty = None;
-            self.page_frame = None;
-        }
+        // FASE 2: la tinta es geometría GPU — el próximo present pinta la
+        // página con el Stroke ya persistido (sin frame base que restaurar).
         if self.window.is_some() {
-            self.blit();
+            self.mark_repaint();
         }
     }
 
     /// Gesto de herramienta cancelado (segundo dedo, Cancel del sistema,
     /// ocultar la barra): descarta el trazo en curso sin crear anotación.
     pub(crate) fn cancel_tool_gesture(&mut self) {
-        if self.tool_gesture.take().is_some() {
-            // Restaurar la base (quitar la tinta a medio pintar) si existía.
-            self.page_frame = self.gesture_base.take();
-            if self.window.is_some() {
-                self.blit();
-            }
+        if self.tool_gesture.take().is_some() && self.window.is_some() {
+            // El present GPU ya no dibuja el gesto: un frame normal.
+            self.mark_repaint();
         }
     }
 
@@ -4945,7 +4426,6 @@ impl Reader {
         self.erase_last = Some(pt);
         if changed {
             self.erase_dirty = true;
-            self.page_frame = None;
             self.mark_repaint();
         }
     }
@@ -4973,68 +4453,6 @@ impl Reader {
             }
         }
         false
-    }
-
-    /// Capa temporal del gesto de herramienta en curso: rasteriza el trazo
-    /// del boli o el rect del resaltador en un bitmap del tamaño de su bbox
-    /// de pantalla (`draw::raster_tool_layer`, pdf_core::overlay) con la
-    /// misma transformación del blit (`scale = cover × zoom`, esquina con
-    /// pan). Coste ∝ bbox del trazo — el presupuesto del requisito 5.
-    fn tool_overlay(&self) -> Option<(Bitmap, i32, i32)> {
-        let g = self.tool_gesture.as_ref()?;
-        let (pw, ph) = self.doc.as_ref()?.page_size(g.page).ok()?;
-        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
-        let scale = cover * self.zoom;
-        if !scale.is_finite() || scale <= 0.0 {
-            return None;
-        }
-        let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round();
-        let dy = self.pan_y.round();
-        let xform = pdf_core::ViewTransform {
-            zoom: scale,
-            offset_x: dx,
-            offset_y: dy,
-        };
-        // Anotación TEMPORAL (no está en el set): con los puntos en curso.
-        let kind = match g.tool {
-            ToolKind::Ink => {
-                // Un solo punto aún no es un trazo: duplicarlo desplazado
-                // dibuja un punto de tinta (el `Stroke::new` exige ≥ 2).
-                let pts = if g.points.len() >= 2 {
-                    g.points.clone()
-                } else {
-                    vec![g.anchor, (g.anchor.0 + 0.01, g.anchor.1)]
-                };
-                let s = Stroke::new(pts, self.ink_width, self.ink_color)?;
-                Annotation::Stroke(s)
-            }
-            ToolKind::Highlight => {
-                let cur = g.points.last().copied().unwrap_or(g.anchor);
-                Annotation::Highlight(Highlight {
-                    rects: vec![Rect::new(
-                        g.anchor.0,
-                        g.anchor.1,
-                        cur.0 - g.anchor.0,
-                        cur.1 - g.anchor.1,
-                    )],
-                    color: pdf_core::HIGHLIGHT_COLOR,
-                })
-            }
-            ToolKind::Navigate => return None,
-        };
-        // Padding para que la media brocha del trazo (y su AA de 1 px) no se
-        // recorte en el borde del bitmap temporal.
-        let pad = if g.tool == ToolKind::Ink {
-            (self.ink_width * scale * 0.5).ceil() + 1.0
-        } else {
-            0.0
-        };
-        let ann = Annotated {
-            id: 0,
-            page_idx: g.page as usize,
-            kind,
-        };
-        raster_tool_layer(self.win_w, self.win_h, xform, &ann, pad)
     }
 
     /// Persiste la posición actual (ruta, página, zoom) + modo oscuro en

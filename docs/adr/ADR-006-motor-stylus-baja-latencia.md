@@ -88,3 +88,22 @@ físico (no automatizable por adb).
    dentro del margen sobre los 150 MB.
 4. El panel soporta 120 Hz: la migración EGL habilita activarlo como fase
    posterior (p95 objetivo < 8.3 ms), sin cambios de arquitectura.
+
+## Fase 2 — Presentación EGL/GLES2 en el visor (2026-08-28)
+
+Implementación de la decisión 1: `crates/pdf_android/src/gpu.rs` (FFI EGL/GLES2 propio,
+~1200 líneas, sin crates nuevas — khronos-egl descartado). El visor presenta con
+`eglSwapBuffers`: página como textura perezosa (key `(page, rendered_zoom, len)`;
+TexImage2D solo al cambiar tamaño, TexSubImage2D si no), tinta como TRIANGLE_STRIP
+(2 vértices/punto, normal perpendicular, AA en FS) con curvas midpoint muestreadas
+en página (la misma polilínea `ink_pts` que se persiste: una sola fuente de verdad),
+overlays como quads de bitmaps Canvas+JNI premultiplicados (cache FIFO ≤8 por puntero
+con copia owned), dark mode como uniform `uDark`. Library/Picker conservan el camino
+SW con dirty rect; el ciclo Viewer↔Library hace `drop_surface`/`recreate_surface`
+(el contexto EGL sobrevive). `page_frame`/`gesture_base`/`pred_layer`/`tool_dirty`
+desaparecen del Reader (~1700 líneas eliminadas en draw.rs/reader.rs).
+
+Estado: clippy verde (`-D warnings -D clippy::unwrap_used`), pdf_core intacto (70/70).
+EGL/GLES2 verificado en TCL (Mali-G57 MC2, 2200x1440, PSS 52.9 MB). Medición p50/p95
+del `gl_present` en gesto: PENDIENTE (tablet con keyguard durante la sesión; ver
+`docs/benchmark-results.md`, Fase 2).

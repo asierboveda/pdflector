@@ -467,6 +467,7 @@ pub(crate) fn clear_state(internal_dir: Option<&Path>) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]

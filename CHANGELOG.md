@@ -3,6 +3,17 @@
 > Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
 > Formato: `AAAA-MM-DD — Título`.
 
+## 2026-08-28 — Fase 2 (ADR-006): presentación del visor con EGL/GLES2
+
+Cutover del modo Viewer a `eglSwapBuffers` (`gpu.rs`, FFI EGL/GLES2 propio, sin crates
+nuevas): página como textura perezosa, tinta como TRIANGLE_STRIP con la misma polilínea
+midpoint que se persiste, overlays como quads de bitmaps Canvas+JNI, dark mode como
+uniform. Library/Picker siguen en SW; Viewer↔Library hace drop/recreate surface con el
+contexto EGL vivo. ~1700 líneas de rasterización muerta eliminadas (draw.rs/reader.rs).
+pdf_core intacto (70/70); clippy `-D warnings -D clippy::unwrap_used` verde; PSS TCL
+52.9 MB. Medición p50/p95 del present en gesto pendiente (tablet con keyguard; ver
+`docs/benchmark-results.md`).
+
 ## 2026-08-26 — Tarea 3/3: Library — Contenido SettingsMenu (☰) + SettingsModel
 
 Implementación completa de las 5 secciones del SettingsMenu desplegable (☰) estilo Readest:

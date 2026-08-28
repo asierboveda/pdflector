@@ -413,3 +413,30 @@ Build: `mejora-lapiz` (4 ficheros en pdf_android: draw/input/reader/annotations)
 Método: APK release aarch64 instalado vía adb; trazos generados con `input stylus swipe` (4 tandas: 3 lentos, 1 a 100 ms, curvas). Log extraído con `adb shell "logcat -d -t N"` y filtrado por pid en host. Sin frames por debajo de 60 fps en ningún momento de la sesión.
 
 Pendiente de verificación manual con boli físico: fidelidad 240 Hz real (el history batching sintético llega a ~120 Hz del touchscreen), salto cero al soltar (remate M_last→P_up) y goma por botón del boli (BTN_STYLUS2 no inyectable).
+
+## Fase 2 — Presentación EGL/GLES2 en el visor (TCL 9469X, 2026-08-28, release)
+
+Cutover de la presentación del modo Viewer de `ANativeWindow_lock`+memcpy a `eglSwapBuffers`
+(`crates/pdf_android/src/gpu.rs`, FFI EGL/GLES2 propio sin crates nuevas). Página = textura
+(subida solo al cambiar página/re-render), tinta = TRIANGLE_STRIP con AA, overlays = quads
+de bitmaps Canvas+JNI, dark mode = uniform `uDark`. Library/Picker siguen en SW (dirty rect).
+
+| Métrica | Resultado | Criterio | ✓ |
+|---|---|---|---|
+| `gl_present` arranque (2200x1440, Mali-G57 MC2) | 38.5 → 12.5 → 11.1 ms (calentamiento) / estacionario 6.0–11.0 ms (swap 1.8–6.0 ms) | p50 < 0.5 / p95 < 1.0 ms CPU | ⚠ parcial |
+| PSS con EGL activo (arranque, página en caché) | 57.7 → 52.9 MB | < 150 MB | ✓ |
+| pdf_core | sin cambios (`git diff` vacío), 70/70 tests | intacto | ✓ |
+| clippy (`-D warnings -D clippy::unwrap_used`, all-targets) | verde | verde | ✓ |
+
+⚠ **Medición incompleta**: la tablet quedó con el keyguard activo durante la sesión
+automatizada (bloqueo por inactividad a mitad de pruebas) y solo se capturaron los 3 frames
+de arranque + 3 de la primera interacción. NO hay distribución p50/p95 del `gl_present` con
+trazo activo ni recuento de frames > 16.6 ms en gesto. Los 6 frames observados (5.98–12.48 ms
+incluido swap) son consistentes con el spike 1 (present p50 0.17 ms + swap vsync-bloqueante),
+pero el swap domina la medida del log actual — falta separar present CPU de swap para el
+criterio p50 < 0.5 ms.
+
+Pendiente (requiere tablet desbloqueada): sesión de tinta con `input stylus swipe` (≥100 muestras
+de `gl_present`), separación de `swap_ms` del coste de draw calls, recuento frames > 16.6 ms,
+pan/zoom con GPU, Library↔Viewer (drop/recreate surface), dark mode, y verificación manual con
+boli físico (salto cero al soltar, goma BTN_STYLUS2).

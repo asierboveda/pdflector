@@ -345,6 +345,7 @@ use log::info;
 mod annotations;
 mod cache;
 mod draw;
+mod gpu;
 mod input;
 mod jni;
 mod persist;
