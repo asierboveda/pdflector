@@ -165,10 +165,11 @@ mod tests {
             });
         }
         let (px, py) = predict_hermite(&h, 16.0).unwrap();
-        // Retrocediendo a -6 px/ms: la predicción continúa hacia atrás,
-        // amortiguada; nunca se dispara hacia adelante.
-        assert!(px < 352.0, "px={}", px);
-        assert!(px > 180.0, "px={}", px);
+        // Retrocediendo a -6 px/ms desde x=172: la predicción continúa hacia
+        // atrás x ≈ 172 − 6·16 = 76 (amortiguada por el clamp de a; auditoría
+        // fix B: la cota anterior px > 180 era un error del test — el valor
+        // correcto es ~76, no un latigazo). Rango correcto: (50, 170).
+        assert!(px > 50.0 && px < 170.0, "px={}", px);
         assert!((py - 500.0).abs() < 60.0);
     }
 

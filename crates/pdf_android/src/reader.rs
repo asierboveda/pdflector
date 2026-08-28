@@ -1452,6 +1452,12 @@ pub(crate) struct Reader {
     /// Ancla temporal del gesto en curso (ns, System.nanoTime del Down del
     /// boli); la lee `feed_stylus_history` para re-escalar los timestamps.
     pub(crate) gesture_t0_ns: u64,
+    /// Capa efímera del tramo predicho (Fase 1, auditoría fix A): bitmap
+    /// ALFA con el segmento M_last→P_pred, en coords de ventana (bitmap, x,
+    /// y). Se reconstruye por muestra y se funde SOLO en el blit en curso —
+    /// nunca se quema en `page_frame` (los bigotes de predicción en giros
+    /// quedarían permanentes). En Up deja de regenerarse → desaparece.
+    pred_layer: Option<(pdf_core::Bitmap, i32, i32)>,
     /// Último instante en que el STYLUS tocó la pantalla (para palm rejection
     /// por tiempo: tras escribir, se ignora el táctil del dedo/palma durante
     /// ~500ms para evitar pans/zooms accidentales al apoyar la mano).
@@ -1594,6 +1600,7 @@ impl Reader {
             pending_t0_ns: None,
             pending_pressure: None,
             gesture_t0_ns: 0,
+            pred_layer: None,
             repaint: false,
             last_stylus_time: None,
             render_rx: None,
@@ -2463,8 +2470,23 @@ impl Reader {
                         } else {
                             None
                         };
+                        // Auditoría fix A: la capa efímera del tramo
+                        // predicho se funde en el blit (no en page_frame).
+                        // blit_composed acepta una sola blend_layer: en el
+                        // gesto de boli SOLO existe pred_layer (el
+                        // tool_layer es del resaltador); no colisionan.
+                        let blend = blend.or(self.pred_layer.as_ref().map(|(b, x, y)| (b, *x, *y)));
                         let dirty = if self.sheet_progress <= 0.0 && self.tool_gesture.is_some() {
-                            if self.tool == ToolKind::Ink {
+                            // Auditoría fix C: el gesto lo decide
+                            // `tool_gesture` (el boli dibuja con la barra
+                            // cerrada — `self.tool` queda Navigate y el
+                            // dirty caería a blit completo).
+                            let gesture_tool = self
+                                .tool_gesture
+                                .as_ref()
+                                .map(|g| g.tool)
+                                .unwrap_or(ToolKind::Navigate);
+                            if gesture_tool == ToolKind::Ink {
                                 // Tinta directa: el dirty lo fija el stamping.
                                 self.tool_dirty
                             } else if let Some((b, x, y)) = &tool_layer {
@@ -4490,15 +4512,17 @@ impl Reader {
                 if let Some(g) = self.tool_gesture.as_mut() {
                     g.prev_mid = Some(mid);
                 }
-                // CAPA EFÍMERA (Fase 1, ADR-006): proyecta P_pred a Δt=16 ms
-                // desde la ÚLTIMA muestra confirmada (t real del USI, no
-                // asumido) y estampa M_last→P_pred con el MISMO color. Es
-                // "efímero" porque el próximo confirmado parte del mismo
-                // M_last: cuando la muestra real llega, su tramo confirmado
-                // sobreescribe visualmente la zona del efímero (el efímero
-                // es la extensión más allá de la punta, corregida por la
-                // curva del siguiente tramo). En Up NO se re-estampa: el
-                // remate real de `end_tool_gesture` cierra el trazo.
+                // CAPA EFÍMERA (Fase 1, ADR-006; auditoría fix A): se
+                // proyecta P_pred a Δt=16 ms desde la ÚLTIMA muestra
+                // confirmada (t real del USI, no asumido) y el segmento
+                // M_last→P_pred se rasteriza en un BITMAP ALFA transitorio
+                // (`pred_layer`) — NUNCA en `page_frame` (no hay marcha
+                // atrás: un efímero en dirección vieja quedaría como bigote
+                // permanente en curvas/letras). El blit lo funde con
+                // alpha-blend SOLO en este frame; en el siguiente se
+                // reconstruye desde cero y el viejo desaparece. En Up no se
+                // regenera → muere sin dejar rastro; el remate real lo hace
+                // `end_tool_gesture` con la muestra confirmada.
                 let mut window = [crate::prediction::Sample {
                     x: 0.0,
                     y: 0.0,
@@ -4516,30 +4540,64 @@ impl Reader {
                     )
                     && let Some(g) = self.tool_gesture.as_ref()
                     && let Some(m_last) = g.prev_mid
-                    && let Some((_, _, fscale, fdx, fdy)) = self.page_screen_xform(g.page)
-                    && let Some(frame) = self.page_frame.as_mut()
+                    && let Some((pw, ph)) = self.doc.as_ref().and_then(|d| d.page_size(g.page).ok())
                     && m_last != (px, py)
                 {
-                    let bbox_pred = crate::draw::draw_ink_segment_on_frame(
-                        frame,
-                        m_last,
-                        (px, py),
-                        w_px_pt,
-                        self.ink_color,
-                        fscale,
-                        fdx,
-                        fdy,
-                    );
-                    if let Some(bbox) = bbox_pred {
-                        self.tool_dirty = Some(match self.tool_dirty {
-                            Some((x0, y0, x1, y1)) => (
-                                x0.min(bbox.0),
-                                y0.min(bbox.1),
-                                x1.max(bbox.2),
-                                y1.max(bbox.3),
-                            ),
-                            None => bbox,
-                        });
+                    // Coordenadas de página → ventana (misma geometría del
+                    // blit: cover × zoom + pan).
+                    let cover = initial_scale(pw, ph, self.win_w, self.win_h);
+                    let scale = cover * self.zoom;
+                    let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x)
+                        .round();
+                    let dy = self.pan_y.round();
+                    let (ax, ay) = (m_last.0 * scale + dx, m_last.1 * scale + dy);
+                    let (bx, by) = (px * scale + dx, py * scale + dy);
+                    // Bitmap alfa del bbox del segmento (pad = radio de la
+                    // brocha): fondo transparente, tinta con el alpha del
+                    // color → el blend del blit la funde sobre la página.
+                    let pad = ((w_px_pt * scale) / 2.0).ceil() + 1.0;
+                    let l = (ax.min(bx) - pad).floor().max(0.0) as i32;
+                    let t = (ay.min(by) - pad).floor().max(0.0) as i32;
+                    let r = (ax.max(bx) + pad).ceil().min(self.win_w as f32) as i32;
+                    let b = (ay.max(by) + pad).ceil().min(self.win_h as f32) as i32;
+                    if r > l && b > t {
+                        let lw = (r - l) as usize;
+                        let lh = (b - t) as usize;
+                        let mut data = vec![0u8; lw * lh * 4];
+                        // El trazo se dibuja con coords de ventana
+                        // desplazadas al origen del bitmap.
+                        let seg = [
+                            (ax - l as f32, ay - t as f32),
+                            (bx - l as f32, by - t as f32),
+                        ];
+                        let mut disc = [(0i32, 0i32); crate::draw::INK_DISC_CAP];
+                        // Brocha de 1 px si la capacidad no alcanza.
+                        let dn = crate::draw::ink_disc_for((w_px_pt * scale).max(1.0), &mut disc)
+                            .unwrap_or(1);
+                        crate::draw::draw_polyline_pub(
+                            data.as_mut_ptr(),
+                            lw,
+                            lh,
+                            lw,
+                            4,
+                            &seg,
+                            &disc[..dn],
+                            [
+                                self.ink_color.r,
+                                self.ink_color.g,
+                                self.ink_color.b,
+                                self.ink_color.a,
+                            ],
+                        );
+                        self.pred_layer = Some((
+                            pdf_core::Bitmap {
+                                width: lw as u32,
+                                height: lh as u32,
+                                data,
+                            },
+                            l,
+                            t,
+                        ));
                     }
                 }
             }
