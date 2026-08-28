@@ -27,9 +27,9 @@
 
 pub mod prediction;
 
-use android_activity::ndk::native_window::NativeWindow;
-use android_activity::input::MotionAction;
 use android_activity::InputStatus;
+use android_activity::input::MotionAction;
+use android_activity::ndk::native_window::NativeWindow;
 use android_activity::{AndroidApp, MainEvent, PollEvent};
 use log::{info, warn};
 use std::time::Instant;
@@ -82,7 +82,12 @@ mod egl {
             share: EGLContext,
             attrs: *const i32,
         ) -> EGLContext;
-        pub fn eglMakeCurrent(dpy: EGLDisplay, draw: EGLSurface, read: EGLSurface, ctx: EGLContext) -> u32;
+        pub fn eglMakeCurrent(
+            dpy: EGLDisplay,
+            draw: EGLSurface,
+            read: EGLSurface,
+            ctx: EGLContext,
+        ) -> u32;
         pub fn eglSwapBuffers(dpy: EGLDisplay, surface: EGLSurface) -> u32;
         pub fn eglDestroySurface(dpy: EGLDisplay, surface: EGLSurface) -> u32;
         pub fn eglDestroyContext(dpy: EGLDisplay, ctx: EGLContext) -> u32;
@@ -134,7 +139,9 @@ impl EglCtx {
             ];
             let mut cfg = [std::ptr::null_mut() as egl::EGLConfig; 1];
             let mut n = 0i32;
-            if egl::eglChooseConfig(dpy, attribs.as_ptr(), cfg.as_mut_ptr(), 1, &mut n) == 0 || n < 1 {
+            if egl::eglChooseConfig(dpy, attribs.as_ptr(), cfg.as_mut_ptr(), 1, &mut n) == 0
+                || n < 1
+            {
                 warn!("eglChooseConfig: {} configs", n);
                 return None;
             }
@@ -158,7 +165,11 @@ impl EglCtx {
                 warn!("eglMakeCurrent failed");
                 return None;
             }
-            Some(EglCtx { display: dpy, surface: surf, context: ctx })
+            Some(EglCtx {
+                display: dpy,
+                surface: surf,
+                context: ctx,
+            })
         }
     }
 
@@ -229,7 +240,11 @@ impl Spike {
     }
 
     fn toggle(&mut self) {
-        self.mode = if self.mode == Mode::Sw { Mode::Egl } else { Mode::Sw };
+        self.mode = if self.mode == Mode::Sw {
+            Mode::Egl
+        } else {
+            Mode::Sw
+        };
         info!("spike_mode {}", self.mode.name());
     }
 
@@ -240,7 +255,9 @@ impl Spike {
             warn!("lock failed");
             return;
         };
-        let Some(bpp) = guard.format().bytes_per_pixel() else { return };
+        let Some(bpp) = guard.format().bytes_per_pixel() else {
+            return;
+        };
         // En ndk 0.9 width/height/stride/bpp ya son usize.
         let (w, h, stride, bpp) = (guard.width(), guard.height(), guard.stride(), bpp);
         let base = guard.bits() as *mut u8;
@@ -259,7 +276,11 @@ impl Spike {
                         let (px, py) = (xi + dx, yi + dy);
                         if (0..w as i32).contains(&px) && (0..h as i32).contains(&py) {
                             let off = (py as usize * stride + px as usize) * bpp;
-                            std::ptr::copy_nonoverlapping([20u8, 20, 20, 255].as_ptr(), base.add(off), 4);
+                            std::ptr::copy_nonoverlapping(
+                                [20u8, 20, 20, 255].as_ptr(),
+                                base.add(off),
+                                4,
+                            );
                         }
                     }
                 }
@@ -288,15 +309,25 @@ impl Spike {
                     // Nivel de rojo ligado a la x del último punto: frente
                     // de color medible en cámara lenta.
                     let last = pts.last().or(self.last.as_ref());
-                    let r = last.map(|(x, _)| (x / self.win_w.max(1) as f32).clamp(0.05, 0.95)).unwrap_or(0.5);
+                    let r = last
+                        .map(|(x, _)| (x / self.win_w.max(1) as f32).clamp(0.05, 0.95))
+                        .unwrap_or(0.5);
                     unsafe { ctx.present(self.win_w, self.win_h, [r, 0.85, 0.2, 1.0]) };
                 }
             }
         }
         let now = Instant::now();
-        info!("spike_present {} {:.2}", self.mode.name(), (now - t0).as_secs_f64() * 1000.0);
+        info!(
+            "spike_present {} {:.2}",
+            self.mode.name(),
+            (now - t0).as_secs_f64() * 1000.0
+        );
         if let Some(prev) = self.last_present {
-            info!("spike_frame {} {:.2}", self.mode.name(), (now - prev).as_secs_f64() * 1000.0);
+            info!(
+                "spike_frame {} {:.2}",
+                self.mode.name(),
+                (now - prev).as_secs_f64() * 1000.0
+            );
         }
         self.last_present = Some(now);
     }
@@ -316,78 +347,82 @@ fn android_main(app: AndroidApp) {
     let mut running = true;
 
     while running {
-        app.poll_events(Some(std::time::Duration::from_millis(16)), |event| match event {
-            PollEvent::Main(MainEvent::InitWindow { .. }) | PollEvent::Main(MainEvent::WindowResized { .. }) => {
-                if let Some(w) = app.native_window() {
-                    spike.win_w = w.width();
-                    spike.win_h = w.height();
-                    // Redibujar el fondo al (re)crear la ventana.
-                    let w2 = w.clone();
-                    spike.present(Some(&w2), &[]);
+        app.poll_events(
+            Some(std::time::Duration::from_millis(16)),
+            |event| match event {
+                PollEvent::Main(MainEvent::InitWindow { .. })
+                | PollEvent::Main(MainEvent::WindowResized { .. }) => {
+                    if let Some(w) = app.native_window() {
+                        spike.win_w = w.width();
+                        spike.win_h = w.height();
+                        // Redibujar el fondo al (re)crear la ventana.
+                        let w2 = w.clone();
+                        spike.present(Some(&w2), &[]);
+                    }
+                    spike.last = None;
                 }
-                spike.last = None;
-            }
-            PollEvent::Main(MainEvent::TerminateWindow { .. }) => {
-                spike.egl = None;
-            }
-            PollEvent::Main(MainEvent::Destroy) => running = false,
-            PollEvent::Main(MainEvent::InputAvailable) => {
-                if let Ok(mut iter) = app.input_events_iter() {
-                    while iter.next(|ev| match ev {
-                        android_activity::input::InputEvent::MotionEvent(m) => {
-                            // Latencia de entrega evento→app: event_time usa
-                            // CLOCK_MONOTONIC (no wall clock). Comparamos contra
-                            // clock_gettime(CLOCK_MONOTONIC) vía Instant? Instant
-                            // también es CLOCK_MONOTONIC en Android, pero sus
-                            // instantes no son comparables con el epoch. Para
-                            // no introducir una métrica errónea, el delta
-                            // evento→procesado se obtiene con systrace/Perfetto
-                            // (protocolo §4.2); aquí solo se marca el instante
-                            // de procesado en el log.
-                            let _ = m.event_time();
+                PollEvent::Main(MainEvent::TerminateWindow { .. }) => {
+                    spike.egl = None;
+                }
+                PollEvent::Main(MainEvent::Destroy) => running = false,
+                PollEvent::Main(MainEvent::InputAvailable) => {
+                    if let Ok(mut iter) = app.input_events_iter() {
+                        while iter.next(|ev| match ev {
+                            android_activity::input::InputEvent::MotionEvent(m) => {
+                                // Latencia de entrega evento→app: event_time usa
+                                // CLOCK_MONOTONIC (no wall clock). Comparamos contra
+                                // clock_gettime(CLOCK_MONOTONIC) vía Instant? Instant
+                                // también es CLOCK_MONOTONIC en Android, pero sus
+                                // instantes no son comparables con el epoch. Para
+                                // no introducir una métrica errónea, el delta
+                                // evento→procesado se obtiene con systrace/Perfetto
+                                // (protocolo §4.2); aquí solo se marca el instante
+                                // de procesado en el log.
+                                let _ = m.event_time();
 
-                            let Some(p) = m.pointers().next() else {
-                                return InputStatus::Handled;
-                            };
-                            let (x, y) = (p.x(), p.y());
-                            match m.action() {
-                                MotionAction::Down => {
-                                    spike.last = Some((x, y));
-                                    spike.moved = false;
-                                }
-                                MotionAction::Move => {
-                                    spike.moved = true;
-                                    // History del evento: muestras a 240 Hz
-                                    // agrupadas (mismo drain que pdf_android).
-                                    let mut pts: Vec<(f32, f32)> = Vec::new();
-                                    for hp in p.history() {
-                                        pts.push((hp.x(), hp.y()));
+                                let Some(p) = m.pointers().next() else {
+                                    return InputStatus::Handled;
+                                };
+                                let (x, y) = (p.x(), p.y());
+                                match m.action() {
+                                    MotionAction::Down => {
+                                        spike.last = Some((x, y));
+                                        spike.moved = false;
                                     }
-                                    pts.push((x, y));
-                                    let win = app.native_window();
-                                    spike.present(win.as_ref(), &pts);
-                                }
-                                MotionAction::Up => {
-                                    if !spike.moved {
-                                        spike.toggle();
+                                    MotionAction::Move => {
+                                        spike.moved = true;
+                                        // History del evento: muestras a 240 Hz
+                                        // agrupadas (mismo drain que pdf_android).
+                                        let mut pts: Vec<(f32, f32)> = Vec::new();
+                                        for hp in p.history() {
+                                            pts.push((hp.x(), hp.y()));
+                                        }
+                                        pts.push((x, y));
+                                        let win = app.native_window();
+                                        spike.present(win.as_ref(), &pts);
                                     }
-                                    spike.last = None;
+                                    MotionAction::Up => {
+                                        if !spike.moved {
+                                            spike.toggle();
+                                        }
+                                        spike.last = None;
+                                    }
+                                    MotionAction::Cancel => spike.last = None,
+                                    _ => {}
                                 }
-                                MotionAction::Cancel => spike.last = None,
-                                _ => {}
+                                InputStatus::Handled
                             }
-                            InputStatus::Handled
-                        }
-                        android_activity::input::InputEvent::KeyEvent(_) => {
-                            running = false;
-                            InputStatus::Handled
-                        }
-                        _ => InputStatus::Unhandled,
-                    }) {}
+                            android_activity::input::InputEvent::KeyEvent(_) => {
+                                running = false;
+                                InputStatus::Handled
+                            }
+                            _ => InputStatus::Unhandled,
+                        }) {}
+                    }
                 }
-            }
-            _ => {}
-        });
+                _ => {}
+            },
+        );
     }
     info!("spike: fin");
 }

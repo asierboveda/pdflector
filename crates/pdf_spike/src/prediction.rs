@@ -36,7 +36,12 @@ fn lowpass(prev: f32, new: f32, alpha: f32) -> f32 {
 ///
 /// * `alpha_v`/`alpha_a`: constantes de tiempo del filtro paso-bajo (0..1;
 ///   menor = más suave = más retraso de fase).
-pub fn predict_taylor(hist: &[Sample], dt_ms: f32, alpha_v: f32, alpha_a: f32) -> Option<(f32, f32)> {
+pub fn predict_taylor(
+    hist: &[Sample],
+    dt_ms: f32,
+    alpha_v: f32,
+    alpha_a: f32,
+) -> Option<(f32, f32)> {
     let n = hist.len();
     if n < 3 {
         return hist.last().map(|s| (s.x, s.y));
@@ -50,7 +55,10 @@ pub fn predict_taylor(hist: &[Sample], dt_ms: f32, alpha_v: f32, alpha_a: f32) -
     let a_raw = [(v2[0] - v1[0]) / dt12, (v2[1] - v1[1]) / dt12];
     // Suavizado exponencial (estado implícito por llamada: el caller reusa
     // la cola de historial; alpha alto = confianza en la muestra nueva).
-    let v = [lowpass(v1[0], v2[0], alpha_v), lowpass(v1[1], v2[1], alpha_v)];
+    let v = [
+        lowpass(v1[0], v2[0], alpha_v),
+        lowpass(v1[1], v2[1], alpha_v),
+    ];
     let a = [a_raw[0] * alpha_a, a_raw[1] * alpha_a];
     let last = s[2];
     let d = dt_ms;
@@ -99,7 +107,10 @@ pub fn predict_hermite(hist: &[Sample], dt_ms: f32, alpha_v: f32) -> Option<(f32
         let dt2 = (a.t - c.t).max(1.0);
         let v_prev = [(a.x - c.x) / dt2, (a.y - c.y) / dt2];
         let clamp = |x: f32| x.clamp(-0.02, 0.02);
-        [clamp(lowpass(v_prev[0] - v_seg[0], 0.0, 0.15)), clamp(lowpass(v_prev[1] - v_seg[1], 0.0, 0.15))]
+        [
+            clamp(lowpass(v_prev[0] - v_seg[0], 0.0, 0.15)),
+            clamp(lowpass(v_prev[1] - v_seg[1], 0.0, 0.15)),
+        ]
     } else {
         [0.0; 2]
     };
@@ -153,7 +164,11 @@ mod tests {
     /// rápido real: 1440 px de pantalla cruzados en ~0.3 s).
     fn straight() -> Vec<Sample> {
         (0..20)
-            .map(|i| Sample { x: 100.0 + i as f32 * 25.0, y: 500.0, t: i as f32 * 5.0 })
+            .map(|i| Sample {
+                x: 100.0 + i as f32 * 25.0,
+                y: 500.0,
+                t: i as f32 * 5.0,
+            })
             .collect()
     }
 
@@ -163,7 +178,11 @@ mod tests {
         (0..20)
             .map(|i| {
                 let t = i as f32;
-                Sample { x: 100.0 + t * 25.0, y: 500.0 + t * t * 2.0, t: t * 5.0 }
+                Sample {
+                    x: 100.0 + t * 25.0,
+                    y: 500.0 + t * t * 2.0,
+                    t: t * 5.0,
+                }
             })
             .collect()
     }
@@ -216,7 +235,11 @@ mod tests {
 
     #[test]
     fn historial_corto_devuelve_ultimo() {
-        let h = vec![Sample { x: 1.0, y: 2.0, t: 0.0 }];
+        let h = vec![Sample {
+            x: 1.0,
+            y: 2.0,
+            t: 0.0,
+        }];
         assert_eq!(predict_taylor(&h, 16.0, 0.5, 0.5), Some((1.0, 2.0)));
         assert_eq!(predict_hermite(&h, 16.0, 0.5), Some((1.0, 2.0)));
         assert_eq!(predict_kalman(&h, 16.0), Some((1.0, 2.0)));
@@ -225,7 +248,13 @@ mod tests {
     #[test]
     fn sin_ruido_taylor_no_explota() {
         // Serie perfectamente constante: la predicción debe ser el propio punto.
-        let h: Vec<Sample> = (0..10).map(|i| Sample { x: 50.0, y: 50.0, t: i as f32 * 5.0 }).collect();
+        let h: Vec<Sample> = (0..10)
+            .map(|i| Sample {
+                x: 50.0,
+                y: 50.0,
+                t: i as f32 * 5.0,
+            })
+            .collect();
         let (px, py) = predict_taylor(&h, 16.0, 0.6, 0.3).unwrap();
         assert!(err((px, py), (50.0, 50.0)) < 0.01);
     }
