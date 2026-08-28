@@ -185,11 +185,29 @@ pub(crate) struct ToolGesture {
     /// Polilínea MUESTREADA de lo estampado en el frame (coords de página):
     /// se persiste tal cual en el `Stroke` — replay 1:1 (ver doc del tipo).
     pub(crate) ink_pts: Vec<(f32, f32)>,
+    /// Presión USI 2.0 normalizada [0,1] por muestra (paralela a `points`):
+    /// modula el grosor `w(p) = w_base·(0.6 + 0.8·p)` (plan Área C). Los
+    /// drivers sin presión reportan 0.5 (grosor neutro) — ver
+    /// `push_with_pressure`. Solo se llena en el boli (Ink).
+    pub(crate) pressures: Vec<f32>,
+    /// Timestamps en ms monótonos por muestra (paralela a `points`), del
+    /// `event_time` NDK del boli: Δt REAL entre muestras para el predictor
+    /// (los eventos a 240 Hz batcheados NO llegan uniformes). Base: el
+    /// timestamp del Down es t=0 del trazo.
+    pub(crate) times_ms: Vec<f32>,
 }
 
 impl ToolGesture {
     /// Empieza un gesto en `page` con el primer punto (el del `Down`).
-    pub(crate) fn new(page: u32, tool: ToolKind, pt: (f32, f32)) -> Self {
+    /// `t0_ms`: timestamp NDK del Down (ancla temporal del gesto);
+    /// `pressure`: presión inicial normalizada (0.5 si el driver no la da).
+    pub(crate) fn new(
+        page: u32,
+        tool: ToolKind,
+        pt: (f32, f32),
+        t0_ms: f32,
+        pressure: f32,
+    ) -> Self {
         Self {
             page,
             tool,
@@ -197,17 +215,19 @@ impl ToolGesture {
             points: vec![pt],
             prev_mid: None,
             ink_pts: vec![pt],
+            pressures: vec![pressure],
+            times_ms: vec![t0_ms],
         }
     }
 
-    /// Añade un punto, descartando los casi coincidentes con el anterior
-    /// (distancia < 0.25 pt ≈ < 1 px a zoom 4): los Move del táctil/lápiz
-    /// llegan a 60-120 Hz y un punto por evento hincharía la polilínea sin
-    /// aportar fidelidad. Para gaps grandes (>1pt, típico cuando el sistema
-    /// batchdea eventos o el lápiz va rápido), interpola puntos intermedios
-    /// lineales para evitar segmentos largos y angulosos (complementa el
-    /// history API del MotionEvent que no exponemos aún directamente).
-    pub(crate) fn push(&mut self, pt: (f32, f32)) {
+    /// Añade un punto con telemetría USI (presión + timestamp del evento):
+    /// en el boli, TODO punto de control lleva presión y Δt real.
+    /// Descarta casi-duplicados (distancia < 0.25 pt ≈ < 1 px a zoom 4):
+    /// los Move llegan a 240 Hz y un punto por muestra hincharía la
+    /// polilínea sin aportar fidelidad. Las series paralelas
+    /// `pressures`/`times_ms` se mantienen alineadas con `points` (el
+    /// guard corta ANTES de tocar las tres).
+    pub(crate) fn push_with_pressure(&mut self, pt: (f32, f32), t_ms: f32, pressure: f32) {
         if let Some(&last) = self.points.last() {
             let d2 = (pt.0 - last.0).powi(2) + (pt.1 - last.1).powi(2);
             if d2 < 0.0625 {
@@ -215,6 +235,31 @@ impl ToolGesture {
             }
         }
         self.points.push(pt);
+        self.pressures.push(pressure);
+        self.times_ms.push(t_ms);
+    }
+
+    /// Presión de la última muestra (grosor del próximo tramo): 0.5 si el
+    /// gesto no la reportó (vec vacío — nunca en el boli, pero el Highlight
+    /// comparte el tipo).
+    pub(crate) fn last_pressure(&self) -> f32 {
+        self.pressures.last().copied().unwrap_or(0.5)
+    }
+
+    /// Últimos N puntos con presión/tiempo, MÁS NUEVOS al final (ventana del
+    /// predictor). Copia a array fijo: cero alloc, sin Solapamiento con
+    /// `points`. N real ≤ 3 (el predictor solo usa 3).
+    pub(crate) fn recent_window(&self, out: &mut [crate::prediction::Sample; 3]) -> usize {
+        let n = self.points.len().min(3);
+        for (i, s) in out.iter_mut().take(n).enumerate() {
+            let j = self.points.len() - n + i;
+            *s = crate::prediction::Sample {
+                x: self.points[j].0,
+                y: self.points[j].1,
+                t: self.times_ms.get(j).copied().unwrap_or(0.0),
+            };
+        }
+        n
     }
 
     /// Actualiza el punto ACTUAL del resaltador (la otra esquina del rect de

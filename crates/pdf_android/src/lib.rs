@@ -348,6 +348,7 @@ mod draw;
 mod input;
 mod jni;
 mod persist;
+pub(crate) mod prediction;
 mod reader;
 mod thumbs;
 mod view;

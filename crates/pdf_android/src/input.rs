@@ -717,7 +717,10 @@ fn handle_motion(
                     // frame compuesto + la capa temporal del trazo (la página
                     // NO se re-blitea por evento — requisito 5).
                     let (_, cx, cy) = reader.gesture.pointers[0];
-                    reader.update_tool_gesture(cx, cy);
+                    // Move de dedo en ToolDrawing: sin telemetría USI →
+                    // Δt relativo al reloj del gesto (Instant base) y
+                    // presión neutra (el dedo no reporta presión).
+                    reader.update_tool_gesture(cx, cy, 0.0, 0.5);
                 }
                 GestureKind::Erase if reader.gesture.pointers.len() == 1 => {
                     // Arrastre de BORRADO: hit-test del punto y eliminación
@@ -1568,6 +1571,23 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
                     .pointers()
                     .map(|p| (p.pointer_id(), p.x(), p.y()))
                     .collect();
+                // Fase 1 USI: timestamp (ns, System.nanoTime) y presión del
+                // PRIMER pointer stylus — el ancla del Down (gesture_t0_ns)
+                // y la presión del evento real salen de aquí. En multitouch
+                // solo el stylus importa (guard pointers.len()==1 aguas
+                // abajo); si no hay stylus, (0, 0.5) neutros.
+                // Nota: `Pointer` (wrapper) no expone event_time (solo
+                // HistoricalPointer y el MotionEvent); el timestamp del
+                // evento real viene de `motion.event_time()` y es común a
+                // todos los pointers del batch. La presión sí es por pointer.
+                let stylus_t_ns = motion.event_time() as u64;
+                let stylus_pressure = motion
+                    .pointers()
+                    .find(|p| is_stylus_tool(p.tool_type()))
+                    .map(|p| normalize_pressure(p.pressure()))
+                    .unwrap_or(0.5);
+                reader.pending_t0_ns = Some(stylus_t_ns);
+                reader.pending_pressure = Some(stylus_pressure);
                 // Separación dedo/stylus (S-Pen, Saber): solo el STYLUS (o
                 // borrador/estilo invertido) dibuja con la herramienta
                 // activa; los dedos (y la palma) navegan (pan/pinch).
@@ -1626,10 +1646,14 @@ fn is_stylus_tool(t: android_activity::input::ToolType) -> bool {
 /// los brazos Move de ToolDrawing/Erase (mismos guards: un puntero, kind
 /// activo): los puntos históricos encadenan `update_tool_gesture` (curva
 /// midpoint) o `update_erase_gesture` (`erase_last` barre sin huecos).
-fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32) {
+///
+/// Fase 1 (USI 2.0): cada muestra lleva `t_ms` (timestamp NDK re-escalado al
+/// ancla del gesto) y `pressure` normalizada [0,1] — el predictor y el
+/// grosor dependiente de presión los consumen.
+fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32, t_ms: f32, pressure: f32) {
     match reader.gesture.kind {
         GestureKind::ToolDrawing if reader.gesture.pointers.len() == 1 => {
-            reader.update_tool_gesture(x, y);
+            reader.update_tool_gesture(x, y, t_ms, pressure);
         }
         GestureKind::Erase if reader.gesture.pointers.len() == 1 => {
             reader.update_erase_gesture(x, y);
@@ -1649,11 +1673,42 @@ fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32) {
 /// MotionEvents, ese evento nunca arranca un trazo — el drain no cambia ese
 /// comportamiento.
 fn feed_stylus_history(reader: &mut Reader, motion: &MotionEvent) {
+    let t0 = reader.gesture_t0_ns;
     for p in motion.pointers().filter(|p| is_stylus_tool(p.tool_type())) {
         let hist = p.history();
         let skip = hist.len().saturating_sub(STYLUS_HISTORY_CAP);
         for hp in hist.skip(skip) {
-            feed_stylus_sample(reader, hp.x(), hp.y());
+            // Timestamp NDK (System.nanoTime) → ms monótonos del gesto,
+            // re-escalados con el ancla tomada en el Down (gesture_t0_ns).
+            // La presión va por eje AXIS_PRESSURE (USI 2.0 la reporta;
+            // drivers sin presión dan 0.0 → neutral 0.5 en el gestor).
+            let t_ms = gesture_ms(hp.event_time(), t0);
+            let pressure = normalize_pressure(hp.pressure());
+            feed_stylus_sample(reader, hp.x(), hp.y(), t_ms, pressure);
         }
     }
+}
+
+/// Re-escala un timestamp NDK (ns, base System.nanoTime) a ms del gesto:
+/// `gesture_t0_ns` es el event_time del Down (ancla t=0). Sin ancla (0.0,
+/// p. ej. muestra de dedo tras un gesto borrado) devuelve 0.
+#[inline]
+fn gesture_ms(event_ns: i64, t0_ns: u64) -> f32 {
+    if t0_ns == 0 {
+        return 0.0;
+    }
+    let d = event_ns as i128 - t0_ns as i128;
+    // ns → ms con saturación i128→f32 (un gesto no dura horas; wrap no ocurre
+    // en relojes monótonos de Android de 64 bits, pero el cast no debe colar
+    // basura en el predictor si el driver reporta tiempos fuera de orden).
+    (d as f64 / 1_000_000.0).clamp(-1_000.0, 1_000.0) as f32
+}
+
+/// Normaliza la presión del driver a [0.5, 1] usable: USI 2.0 reporta
+/// [0,1] con 0.0 en hover/sin contacto; un 0.0 EXACTO en una muestra de
+/// Move suele ser "axis no reportado" (algunos firmwares) → 0.5 neutro
+/// (w_base) en vez de aplastar el trazo a 0.6·w.
+#[inline]
+fn normalize_pressure(raw: f32) -> f32 {
+    if raw <= 0.0 || raw > 1.0 { 0.5 } else { raw }
 }

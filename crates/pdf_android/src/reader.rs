@@ -1443,6 +1443,15 @@ pub(crate) struct Reader {
     /// Probe de telemetría (solo logcat, costo cero en release sin log): el
     /// último dirty rect del gesto de tinta, logueado en el blit que lo pinta.
     take_repaint_probe: Option<(i32, i32, i32, i32)>,
+    /// Fase 1 USI: ancla temporal del gesto (event_time del Down, base
+    /// System.nanoTime) — los t_ms de las muestras se re-escalan contra ella.
+    /// La fija `input` antes de `begin_tool_gesture`.
+    pub(crate) pending_t0_ns: Option<u64>,
+    /// Presión normalizada del último evento (0.5 si el driver no la da).
+    pub(crate) pending_pressure: Option<f32>,
+    /// Ancla temporal del gesto en curso (ns, System.nanoTime del Down del
+    /// boli); la lee `feed_stylus_history` para re-escalar los timestamps.
+    pub(crate) gesture_t0_ns: u64,
     /// Último instante en que el STYLUS tocó la pantalla (para palm rejection
     /// por tiempo: tras escribir, se ignora el táctil del dedo/palma durante
     /// ~500ms para evitar pans/zooms accidentales al apoyar la mano).
@@ -1582,6 +1591,9 @@ impl Reader {
             gesture_base: None,
             tool_dirty: None,
             take_repaint_probe: None,
+            pending_t0_ns: None,
+            pending_pressure: None,
+            gesture_t0_ns: 0,
             repaint: false,
             last_stylus_time: None,
             render_rx: None,
@@ -4328,7 +4340,18 @@ impl Reader {
             return false;
         };
         self.last_stylus_time = Some(std::time::Instant::now());
-        self.tool_gesture = Some(ToolGesture::new(self.page, tool, pt));
+        // Fase 1 USI: ancla temporal (event_time del Down, la fija `input`)
+        // y presión inicial. Sin ancla (driver sin timestamps) → t0=0 y las
+        // muestras degradan a la ventana sin Δt real (el predictor usa el
+        // clamp de dt mínimo); sin presión → 0.5 (w_base neutro).
+        let t0 = self.pending_t0_ns.take().unwrap_or(0);
+        let pressure = self.pending_pressure.take().unwrap_or(0.5);
+        self.tool_gesture = Some(ToolGesture::new(self.page, tool, pt, 0.0, pressure));
+        // El Down ES t=0: el campo se fija tras crear el gesto.
+        if let Some(g) = self.tool_gesture.as_mut() {
+            g.times_ms[0] = 0.0;
+        }
+        self.gesture_t0_ns = t0;
         self.tool_dirty = None;
         // TINTA DIRECTA (patrón Xournal++/GoodNotes): aseguramos que el
         // frame existe (si no, el primer blit lo compone) y guardamos una
@@ -4352,7 +4375,7 @@ impl Reader {
     /// (pantalla 60 Hz) bloquearía cada `unlock_and_post` ~16 ms (backpressure)
     /// → jitter/lag. Con un blit por vsync y dirty rect, el coste por frame es
     /// <1 ms y la latencia es ≤1 frame (16 ms).
-    pub(crate) fn update_tool_gesture(&mut self, sx: f32, sy: f32) {
+    pub(crate) fn update_tool_gesture(&mut self, sx: f32, sy: f32, t_ms: f32, pressure: f32) {
         let Some(pt) = self.screen_to_page(sx, sy) else {
             return;
         };
@@ -4371,7 +4394,7 @@ impl Reader {
                 // (d < 0.25 pt): si el punto no avanza, no hay curva nueva.
                 // Sin expect: un gesto SIEMPRE tiene el ancla del Down, pero
                 // un estado corrupto no debe tumbar el visor.
-                let (last, prev_mid, page) = {
+                let (last, prev_mid, page, w_px_pt) = {
                     let Some(g) = self.tool_gesture.as_mut() else {
                         return;
                     };
@@ -4379,11 +4402,14 @@ impl Reader {
                         return;
                     };
                     let n0 = g.points.len();
-                    g.push(pt);
+                    g.push_with_pressure(pt, t_ms, pressure);
                     if g.points.len() == n0 {
                         return;
                     }
-                    (last, g.prev_mid, g.page)
+                    // Grosor del tramo que entra: curva de presión (plan
+                    // Área C) sobre el grosor base de página del gesto.
+                    let w = crate::prediction::pressure_width(self.ink_width, g.last_pressure());
+                    (last, g.prev_mid, g.page, w)
                 };
                 // STAMPING INCREMENTAL: la curva midpoint se rasteriza DIRECTO
                 // en el frame (tinta desde el primer tramo, sin capas) y su
@@ -4395,16 +4421,16 @@ impl Reader {
                     (self.page_frame.as_mut(), xform)
                 {
                     let mut disc = [(0i32, 0i32); crate::draw::INK_DISC_CAP];
-                    // Brocha de 1 px si la capacidad no alcanza (escala extrema).
-                    let dn =
-                        crate::draw::ink_disc_for((self.ink_width * scale).max(1.0), &mut disc)
-                            .unwrap_or(1);
+                    // Brocha del grosor CON presión (w_px_pt ya lo lleva);
+                    // 1 px si la capacidad no alcanza (escala extrema).
+                    let dn = crate::draw::ink_disc_for((w_px_pt * scale).max(1.0), &mut disc)
+                        .unwrap_or(1);
                     let drawn = match prev_mid {
                         None => crate::draw::draw_ink_segment_on_frame(
                             frame,
                             last,
                             mid,
-                            self.ink_width,
+                            w_px_pt,
                             self.ink_color,
                             scale,
                             dx,
@@ -4419,7 +4445,7 @@ impl Reader {
                             m0,
                             last,
                             mid,
-                            self.ink_width,
+                            w_px_pt,
                             self.ink_color,
                             scale,
                             dx,
@@ -4463,6 +4489,58 @@ impl Reader {
                 }
                 if let Some(g) = self.tool_gesture.as_mut() {
                     g.prev_mid = Some(mid);
+                }
+                // CAPA EFÍMERA (Fase 1, ADR-006): proyecta P_pred a Δt=16 ms
+                // desde la ÚLTIMA muestra confirmada (t real del USI, no
+                // asumido) y estampa M_last→P_pred con el MISMO color. Es
+                // "efímero" porque el próximo confirmado parte del mismo
+                // M_last: cuando la muestra real llega, su tramo confirmado
+                // sobreescribe visualmente la zona del efímero (el efímero
+                // es la extensión más allá de la punta, corregida por la
+                // curva del siguiente tramo). En Up NO se re-estampa: el
+                // remate real de `end_tool_gesture` cierra el trazo.
+                let mut window = [crate::prediction::Sample {
+                    x: 0.0,
+                    y: 0.0,
+                    t: 0.0,
+                }; 3];
+                let nwin = self
+                    .tool_gesture
+                    .as_ref()
+                    .map(|g| g.recent_window(&mut window))
+                    .unwrap_or(0);
+                if nwin >= 2
+                    && let Some((px, py)) = crate::prediction::predict_hermite(
+                        &window[..nwin],
+                        crate::prediction::PREDICTION_DT_MS,
+                    )
+                    && let Some(g) = self.tool_gesture.as_ref()
+                    && let Some(m_last) = g.prev_mid
+                    && let Some((_, _, fscale, fdx, fdy)) = self.page_screen_xform(g.page)
+                    && let Some(frame) = self.page_frame.as_mut()
+                    && m_last != (px, py)
+                {
+                    let bbox_pred = crate::draw::draw_ink_segment_on_frame(
+                        frame,
+                        m_last,
+                        (px, py),
+                        w_px_pt,
+                        self.ink_color,
+                        fscale,
+                        fdx,
+                        fdy,
+                    );
+                    if let Some(bbox) = bbox_pred {
+                        self.tool_dirty = Some(match self.tool_dirty {
+                            Some((x0, y0, x1, y1)) => (
+                                x0.min(bbox.0),
+                                y0.min(bbox.1),
+                                x1.max(bbox.2),
+                                y1.max(bbox.3),
+                            ),
+                            None => bbox,
+                        });
+                    }
                 }
             }
             ToolKind::Highlight => {
