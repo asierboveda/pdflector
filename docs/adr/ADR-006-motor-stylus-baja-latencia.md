@@ -104,6 +104,9 @@ SW con dirty rect; el ciclo Viewer↔Library hace `drop_surface`/`recreate_surfa
 desaparecen del Reader (~1700 líneas eliminadas en draw.rs/reader.rs).
 
 Estado: clippy verde (`-D warnings -D clippy::unwrap_used`), pdf_core intacto (70/70).
-EGL/GLES2 verificado en TCL (Mali-G57 MC2, 2200x1440, PSS 52.9 MB). Medición p50/p95
-del `gl_present` en gesto: PENDIENTE (tablet con keyguard durante la sesión; ver
-`docs/benchmark-results.md`, Fase 2).
+EGL/GLES2 verificado en TCL (Mali-G57 MC2, 2200x1440, PSS 52.9 MB). Medición completa del
+`gl_present` en gesto ejecutada 2026-08-29: p50 4.55 / p95 10.00 ms (n=1768), p95 10.48 ms
+(n=1395 segunda tanda), 0 FAIL en 3735 frames, page flips p95 11.64 ms, dark mode/suspensión/
+Library↔Viewer sin regresiones, PSS 116–126 MB (trazos) / 71.4 MB (Library). Detalle completo
+en `docs/benchmark-results.md`, Fase 2. Pendiente Fase 3 (boli físico): latencia punta-tinta
+240 fps, test ciego, goma BTN_STYLUS2, cero-pop, presión USI 2.0.

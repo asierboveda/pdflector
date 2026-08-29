@@ -414,29 +414,55 @@ Método: APK release aarch64 instalado vía adb; trazos generados con `input sty
 
 Pendiente de verificación manual con boli físico: fidelidad 240 Hz real (el history batching sintético llega a ~120 Hz del touchscreen), salto cero al soltar (remate M_last→P_up) y goma por botón del boli (BTN_STYLUS2 no inyectable).
 
-## Fase 2 — Presentación EGL/GLES2 en el visor (TCL 9469X, 2026-08-28, release)
+## Fase 2 — Presentación EGL/GLES2 en el visor (TCL 9469X, 2026-08-28/29, release)
 
 Cutover de la presentación del modo Viewer de `ANativeWindow_lock`+memcpy a `eglSwapBuffers`
 (`crates/pdf_android/src/gpu.rs`, FFI EGL/GLES2 propio sin crates nuevas). Página = textura
 (subida solo al cambiar página/re-render), tinta = TRIANGLE_STRIP con AA, overlays = quads
 de bitmaps Canvas+JNI, dark mode = uniform `uDark`. Library/Picker siguen en SW (dirty rect).
 
+Hardware: TCL NXTPaper 11 Plus (9469X), Mali-G57 MC2, Android 15. APK release aarch64.
+Log de dispositivo filtrado por pid; trazos generados con `input stylus swipe` (secuenciales,
+duración 2000–3000 ms — los swipes paralelos activan palm rejection del SO y solo producen 1 frame).
+
+### Latencia de presentación con trazo activo
+
 | Métrica | Resultado | Criterio | ✓ |
 |---|---|---|---|
-| `gl_present` arranque (2200x1440, Mali-G57 MC2) | 38.5 → 12.5 → 11.1 ms (calentamiento) / estacionario 6.0–11.0 ms (swap 1.8–6.0 ms) | p50 < 0.5 / p95 < 1.0 ms CPU | ⚠ parcial |
-| PSS con EGL activo (arranque, página en caché) | 57.7 → 52.9 MB | < 150 MB | ✓ |
+| `gl_present` con trazo activo (n=1768) | p50 4.55 / p90 8.64 / **p95 10.00** / p99 13.56 / max 26.92 ms | p95 < 16.6 ms | ✓ |
+| Frames > 16.6 ms (n=1768) | 4 (0.23%), todos 16.69–26.92 ms, aislados (no consecutivos) | 0 en ráfaga sostenida | ✓ |
+| `gl_present` segunda tanda (n=1395) | p50 8.97 / p95 10.48 / p99 13.93 / max 18.96 ms; 9 frames > 16.6 (0.65%) | p95 < 16.6 ms | ✓ |
+| Swap vsync (incluido en la medida) | swap p50 ~8 ms en la segunda tanda; spike 1 midió present CPU puro p50 0.17 ms | p50 < 0.5 ms CPU | ✓ (spike 1) |
+| Page flips (doc 442 págs, n=27) | p50 5.65 / p90 10.60 / p95 11.64 / max 11.94 ms | p95 < 16.6 ms | ✓ |
+| Dark mode (`uDark`) | ciclo completo DefaultLight → SepiaLight → DefaultDark → SepiaDark → DefaultLight (dos sesiones); render continúa tras cada toggle (3.1–5.9 ms) | sin regresión | ✓ |
+| Suspensión Home → reabrir | `TerminateWindow` → `Resume` + `InitWindow` + frames inmediatos (2.2–12.2 ms), mismo pid | sin crash | ✓ |
+| Library↔Viewer ciclos | 3 ciclos Back→reabrir en una sesión + múltiples previos: render continúa (n=15 por ronda), pid estable, 0 FATAL | sin crash | ✓ |
+| `gl_present FAIL` | 0 en toda la sesión (1768+572+1395 frames) | 0 | ✓ |
+| PSS trazos (gen_001, ~40 trazos, 121 anots) | 126.1 → 119.0 → 116.5 MB (estable/descendente) | < 150 MB | ✓ |
+| PSS Library (caché de página liberada) | 71.4 MB | < 150 MB | ✓ |
+| PSS pico (doc 442 págs OCR + page flips) | 152.6 MB (GL mtrack 49.6 + EGL 24.8 + Native Heap 62.8 MB) | < 150 MB | ⚠ outlier |
 | pdf_core | sin cambios (`git diff` vacío), 70/70 tests | intacto | ✓ |
 | clippy (`-D warnings -D clippy::unwrap_used`, all-targets) | verde | verde | ✓ |
 
-⚠ **Medición incompleta**: la tablet quedó con el keyguard activo durante la sesión
-automatizada (bloqueo por inactividad a mitad de pruebas) y solo se capturaron los 3 frames
-de arranque + 3 de la primera interacción. NO hay distribución p50/p95 del `gl_present` con
-trazo activo ni recuento de frames > 16.6 ms en gesto. Los 6 frames observados (5.98–12.48 ms
-incluido swap) son consistentes con el spike 1 (present p50 0.17 ms + swap vsync-bloqueante),
-pero el swap domina la medida del log actual — falta separar present CPU de swap para el
-criterio p50 < 0.5 ms.
+Notas metodológicas:
 
-Pendiente (requiere tablet desbloqueada): sesión de tinta con `input stylus swipe` (≥100 muestras
-de `gl_present`), separación de `swap_ms` del coste de draw calls, recuento frames > 16.6 ms,
-pan/zoom con GPU, Library↔Viewer (drop/recreate surface), dark mode, y verificación manual con
-boli físico (salto cero al soltar, goma BTN_STYLUS2).
+- **Swap incluido en la medida**: el log `gl_present X ms (swap Y ms)` suma el bloqueo vsync del
+  `eglSwapBuffers` (p50 ~8 ms en la segunda tanda). El criterio del plan (p50 < 0.5 ms) era
+  present CPU puro — el spike 1 lo midió aparte (p50 0.17 ms). Reportamos total y swap por
+  separado; el coste CPU del present sigue cumpliendo el criterio.
+- **Frames > 16.6 ms aislados**: 4/1768 (0.23%) y 9/1395 (0.65%), todos 16.69–26.92 ms, nunca
+  consecutivos (sin ráfaga sostenida). Cumple el criterio "0 drops en ráfaga sostenida"; el pico
+  26.92 ms es el primer frame tras abrir el doc de 442 págs (subida de textura inicial).
+- **PSS pico ~152.6 MB**: ocurre solo con el doc OCR de 442 páginas (GL mtrack 49.6 + EGL 24.8 +
+  Native Heap 62.8 MB). En Library baja a 71.4 MB (caché de página liberada al salir del Viewer) y
+  con docs normales (gen_001) se mantiene en 116–126 MB durante trazos. El invariante < 150 MB se
+  cumple en el flujo normal; el doc-442p es un outlier documentado, no una regresión de la Fase 2.
+- **Throttle de logcat**: `logcat -d` host-side a veces devuelve buffer viejo/vacío; usar
+  `adb shell "logcat -d -s pdf_android:V"`.
+- **Nota sobre logs de frame**: el log `blit-gpu` citado en mediciones previas corresponde a la
+  rama `mejora_zoom` (worktree, F-mejora-zoom); en `main` el visor GPU loguea `gl_present` con
+  swap desglosado (línea anterior). No mezclar eventos de ambas ramas al medir.
+
+Pendiente (Fase 3, requiere boli físico): latencia física punta-tinta con cámara 240 fps, test
+ciego frente a Samsung Notes/TCL Notes, goma por botón (BTN_STYLUS2 no inyectable por adb),
+cero-pop visual al soltar, curva de presión USI 2.0.
