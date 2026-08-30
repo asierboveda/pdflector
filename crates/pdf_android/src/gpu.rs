@@ -84,7 +84,9 @@ pub mod ffi {
     pub const GL_VERTEX_SHADER: u32 = 0x8B31;
     pub const GL_COMPILE_STATUS: u32 = 0x8B81;
     pub const GL_LINK_STATUS: u32 = 0x8B82;
-
+    pub const GL_FRAMEBUFFER: u32 = 0x8D40;
+    pub const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
+    pub const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
     #[link(name = "EGL")]
     unsafe extern "C" {
         pub fn glBlendFuncSeparate(sfactor: u32, dfactor: u32, alpha_s: u32, alpha_d: u32);
@@ -213,6 +215,17 @@ pub mod ffi {
         pub fn glEnableVertexAttribArray(index: u32);
         pub fn glDisableVertexAttribArray(index: u32);
         pub fn glDrawArrays(mode: u32, first: i32, count: i32);
+        pub fn glGenFramebuffers(n: i32, framebuffers: *mut u32);
+        pub fn glDeleteFramebuffers(n: i32, framebuffers: *const u32);
+        pub fn glBindFramebuffer(target: u32, framebuffer: u32);
+        pub fn glFramebufferTexture2D(
+            target: u32,
+            attachment: u32,
+            textarget: u32,
+            texture: u32,
+            level: i32,
+        );
+        pub fn glCheckFramebufferStatus(target: u32) -> u32;
     }
 }
 
@@ -411,8 +424,31 @@ pub(crate) struct Gpu {
     vbo_ink: u32,
     // Texturas de overlays cacheadas (bitmap owned claveado por puntero).
     ovl_cache: Vec<OverlayTex>,
+
+    // --- Fase W1: Pipeline Dual FBO (Wet / Dry Ink) ---
+    dry_fbo: u32,
+    dry_tex: u32,
+    dry_dirty: bool,
+    dry_key: Option<DryKey>,
+
+    wet_fbo: u32,
+    wet_tex: u32,
 }
 
+/// Clave de invalidación de la capa base persistente (Dry FBO).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DryKey {
+    page: u32,
+    zoom_bits: u32,
+    pan_x: i32,
+    pan_y: i32,
+    ann_count: usize,
+    dark: bool,
+    chrome_visible: bool,
+    toolbar_open: bool,
+    sheet_progress_bits: u32,
+    has_toast: bool,
+}
 struct OverlayTex {
     /// Puntero del `Vec<u8>` del bitmap en `Reader`: la clave de la caché.
     key_ptr: *const u8,
@@ -501,8 +537,17 @@ impl Gpu {
             gpu.win_w = win.width();
             gpu.win_h = win.height();
             gl::glViewport(0, 0, gpu.win_w, gpu.win_h);
+
+            let (dry_fbo, dry_tex) = Self::create_fbo_with_tex(gpu.win_w, gpu.win_h);
+            let (wet_fbo, wet_tex) = Self::create_fbo_with_tex(gpu.win_w, gpu.win_h);
+            gpu.dry_fbo = dry_fbo;
+            gpu.dry_tex = dry_tex;
+            gpu.dry_dirty = true;
+            gpu.wet_fbo = wet_fbo;
+            gpu.wet_tex = wet_tex;
+
             info!(
-                "gpu: EGL/GLES2 ready {}x{} renderer {}",
+                "gpu: EGL/GLES2 ready {}x{} renderer {} (Dual FBO Wet/Dry active)",
                 gpu.win_w,
                 gpu.win_h,
                 gl_str(gl::glGetString(0x1F01)) // GL_RENDERER
@@ -510,6 +555,7 @@ impl Gpu {
             Some(gpu)
         }
     }
+
     unsafe fn make_resources(
         dpy: gl::EGLDisplay,
         cfg: gl::EGLConfig,
@@ -583,42 +629,18 @@ impl Gpu {
                 vbo_quad,
                 vbo_ink,
                 ovl_cache: Vec::new(),
+                dry_fbo: 0,
+                dry_tex: 0,
+                dry_dirty: true,
+                dry_key: None,
+                wet_fbo: 0,
+                wet_tex: 0,
             })
         }
     }
 
-    /// Activa o desactiva el modo Front-Buffer ("Wet Ink") para render directo.
-    ///
-    /// Utiliza `EGL_FRONT_BUFFER_AUTO_REFRESH_ANDROID` (0x314C) para saltarse
-    /// la cola de SurfaceFlinger durante el trazo activo y presentar a < 4 ms.
-    #[allow(dead_code)]
-    pub(crate) fn set_front_buffer_auto_refresh(&mut self, enable: bool) {
-        if self.front_buffer_active == enable {
-            return;
-        }
-        if let Some(surf) = self.surf {
-            unsafe {
-                let val = if enable {
-                    gl::EGL_TRUE as i32
-                } else {
-                    gl::EGL_FALSE as i32
-                };
-                let res = gl::eglSurfaceAttrib(
-                    self.dpy,
-                    surf,
-                    gl::EGL_FRONT_BUFFER_AUTO_REFRESH_ANDROID,
-                    val,
-                );
-                if res != 0 {
-                    self.front_buffer_active = enable;
-                }
-            }
-        }
-    }
-
     /// (Re)crea la surface para una ventana (resize / re-init del visor).
-    /// El contexto se conserva (las texturas siguen válidas); la viewport se
-    /// recalcula.
+    /// El contexto se conserva (las texturas siguen válidas); la viewport se recalcula.
     pub(crate) fn recreate_surface(&mut self, win: &NativeWindow) {
         unsafe {
             self.drop_surface_only();
@@ -642,6 +664,18 @@ impl Gpu {
             self.win_h = win.height();
             gl::glViewport(0, 0, self.win_w, self.win_h);
             self.page_loaded = None; // tamaño de ventana nuevo: reevaluar
+
+            // Recrear FBOs con la nueva resolución
+            Self::destroy_fbo_with_tex(self.dry_fbo, self.dry_tex);
+            Self::destroy_fbo_with_tex(self.wet_fbo, self.wet_tex);
+            let (dry_fbo, dry_tex) = Self::create_fbo_with_tex(self.win_w, self.win_h);
+            let (wet_fbo, wet_tex) = Self::create_fbo_with_tex(self.win_w, self.win_h);
+            self.dry_fbo = dry_fbo;
+            self.dry_tex = dry_tex;
+            self.dry_dirty = true;
+            self.dry_key = None;
+            self.wet_fbo = wet_fbo;
+            self.wet_tex = wet_tex;
         }
     }
 
@@ -655,6 +689,15 @@ impl Gpu {
 
     unsafe fn drop_surface_only(&mut self) {
         unsafe {
+            Self::destroy_fbo_with_tex(self.dry_fbo, self.dry_tex);
+            Self::destroy_fbo_with_tex(self.wet_fbo, self.wet_tex);
+            self.dry_fbo = 0;
+            self.dry_tex = 0;
+            self.wet_fbo = 0;
+            self.wet_tex = 0;
+            self.dry_dirty = true;
+            self.dry_key = None;
+
             if let Some(s) = self.surf.take() {
                 gl::eglMakeCurrent(
                     self.dpy,
@@ -756,7 +799,7 @@ impl Gpu {
         }
     }
 
-    // ------------------------------------------------- quads
+    // ------------------------------------------------- quads y overlays
 
     /// Dibuja un quad texturizado (bitmap `b` con esquina en (x,y) px). El
     /// bitmap llega PREmultiplicado (Canvas+JNI) — la textura se sube tal
@@ -842,12 +885,7 @@ impl Gpu {
         }
     }
 
-    /// Textura (cacheada) de un bitmap de overlay. La clave es el PUNTERO
-    /// del `Vec<u8>` del bitmap: los bitmaps de overlay viven en `Reader`
-    /// y son estables entre frames (se regeneran raramente y al hacerlo se
-    /// invalida la caché). El `key_ptr` de la entrada garantiza que el
-    /// puntero claveado no se recicle mientras la textura exista (la copia
-    /// owned del `Vec` mantiene el allocator vivo).
+    /// Textura (cacheada) de un bitmap de overlay.
     fn overlay_tex(&mut self, b: &Bitmap) -> u32 {
         let key = b.data.as_ptr();
         if let Some(o) = self.ovl_cache.iter().find(|o| o.key_ptr == key) {
@@ -903,14 +941,12 @@ impl Gpu {
         tex
     }
 
-    /// Quad opaco/color en px de pantalla (tinta directa del resaltador,
-    /// sel rect: fill + borde).
+    /// Quad opaco/color en px de pantalla.
     fn draw_solid_quad(&mut self, l: f32, t: f32, r: f32, b: f32, rgba: [u8; 4]) {
         if !l.is_finite() || !t.is_finite() || !r.is_finite() || !b.is_finite() {
             return;
         }
         self.draw_ink_triangles(&[
-            // 2 triángulos con hw = 0 (sin AA — quad duro).
             InkVert {
                 x: l,
                 y: t,
@@ -1064,58 +1100,216 @@ impl Gpu {
         }
     }
 
-    // ------------------------------------------------- frame completo
+    // ------------------------------------------------- FBO helpers y Pipeline Wet/Dry
 
-    /// Present completo del visor por GPU (sustituye a `Reader::blit` en el
-    /// modo Viewer). Reconstruye el frame desde la textura de página +
-    /// geometría de tinta + quads de overlay en CADA frame: el coste es GPU
-    /// (pocos triángulos), no memcpy de 12 MB — el dirty rect CPU del
-    /// pipeline SW desaparece.
-    pub(crate) fn present_viewer(&mut self, reader: &Reader) {
-        let t0 = std::time::Instant::now();
-        if !self.has_surface() {
+    /// Invalida explícitamente la capa base (Dry FBO) para forzar su re-render.
+    #[allow(dead_code)]
+    pub(crate) fn invalidate_dry(&mut self) {
+        self.dry_dirty = true;
+    }
+
+    /// Crea un Framebuffer Object (FBO) con textura RGBA8 adjunta del tamaño dado.
+    unsafe fn create_fbo_with_tex(w: i32, h: i32) -> (u32, u32) {
+        if w <= 0 || h <= 0 {
+            return (0, 0);
+        }
+        unsafe {
+            let mut fbo = 0u32;
+            let mut tex = 0u32;
+            gl::glGenFramebuffers(1, &mut fbo);
+            gl::glGenTextures(1, &mut tex);
+
+            gl::glBindTexture(gl::GL_TEXTURE_2D, tex);
+            gl::glTexImage2D(
+                gl::GL_TEXTURE_2D,
+                0,
+                gl::GL_RGBA as i32,
+                w,
+                h,
+                0,
+                gl::GL_RGBA,
+                gl::GL_UNSIGNED_BYTE,
+                std::ptr::null(),
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_MIN_FILTER,
+                gl::GL_LINEAR as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_MAG_FILTER,
+                gl::GL_LINEAR as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_WRAP_S,
+                gl::GL_CLAMP_TO_EDGE as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_WRAP_T,
+                gl::GL_CLAMP_TO_EDGE as i32,
+            );
+
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, fbo);
+            gl::glFramebufferTexture2D(
+                gl::GL_FRAMEBUFFER,
+                gl::GL_COLOR_ATTACHMENT0,
+                gl::GL_TEXTURE_2D,
+                tex,
+                0,
+            );
+
+            let status = gl::glCheckFramebufferStatus(gl::GL_FRAMEBUFFER);
+            if status != gl::GL_FRAMEBUFFER_COMPLETE {
+                warn!("glCheckFramebufferStatus failed: 0x{:x}", status);
+            }
+
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+            gl::glBindTexture(gl::GL_TEXTURE_2D, 0);
+
+            (fbo, tex)
+        }
+    }
+
+    unsafe fn destroy_fbo_with_tex(fbo: u32, tex: u32) {
+        unsafe {
+            if fbo != 0 {
+                gl::glDeleteFramebuffers(1, &fbo);
+            }
+            if tex != 0 {
+                gl::glDeleteTextures(1, &tex);
+            }
+        }
+    }
+
+    /// Dibuja una textura a pantalla completa en el framebuffer actualmente vinculado.
+    fn draw_fullscreen_texture(&mut self, tex: u32, alpha: f32) {
+        if tex == 0 {
             return;
         }
-        let p = reader.theme.palette();
-        let bg = if reader.doc.is_none() {
-            crate::theme::ERROR_BG_RGBA
-        } else {
-            p.rgba_bg()
-        };
-        self.clear(bg);
-        // --- página (textura + MVP del zoom/pan) ---
-        // Una sola transform para TODO el frame (página + tinta): el
-        // pipeline SW redondea dx/dy — replicar para no desalinear la tinta
-        // respecto al texto al re-renderizar.
-        let mut page_drawn = false;
-        let mut scale = 1.0f32;
-        let (mut page_dx, mut page_dy) = (0.0f32, 0.0f32);
-        if let Some(bmp) = reader
-            .cache
-            .peek(reader.page)
-            .or_else(|| reader.fallback_page.and_then(|pg| reader.cache.peek(pg)))
-        {
-            let blit_zoom = if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
-                reader.zoom / reader.rendered_zoom
+        unsafe {
+            gl::glActiveTexture(gl::GL_TEXTURE0);
+            gl::glBindTexture(gl::GL_TEXTURE_2D, tex);
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_MIN_FILTER,
+                gl::GL_LINEAR as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_MAG_FILTER,
+                gl::GL_LINEAR as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_WRAP_S,
+                gl::GL_CLAMP_TO_EDGE as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_WRAP_T,
+                gl::GL_CLAMP_TO_EDGE as i32,
+            );
+
+            gl::glUseProgram(self.prog_ovl.prog);
+            let m = mat3_scale_translate(1.0, 1.0, 0.0, 0.0);
+            gl::glUniformMatrix3fv(self.prog_ovl.u_mvp, 1, 0, m.as_ptr());
+            gl::glUniform2f(self.prog_ovl.u_res, self.win_w as f32, self.win_h as f32);
+            gl::glUniform1i(self.prog_ovl.u_tex, 0);
+            gl::glUniform1f(self.prog_ovl.u_alpha, alpha);
+
+            let (w, h) = (self.win_w as f32, self.win_h as f32);
+            let pos = [0.0f32, 0.0, w, 0.0, 0.0, h, w, h];
+            // Invertimos Y en el UV porque el FBO de OpenGL guarda el frame invertido verticalmente respecto a ventana
+            let uv = [0.0f32, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0];
+            let mut verts: [f32; 24] = [0.0; 24];
+            for i in 0..4 {
+                verts[i * 6] = pos[i * 2];
+                verts[i * 6 + 1] = pos[i * 2 + 1];
+                verts[i * 6 + 2] = uv[i * 2];
+                verts[i * 6 + 3] = uv[i * 2 + 1];
+            }
+            gl::glBindBuffer(gl::GL_ARRAY_BUFFER, self.vbo_quad);
+            gl::glBufferData(
+                gl::GL_ARRAY_BUFFER,
+                std::mem::size_of_val(&verts) as isize,
+                verts.as_ptr() as *const u8,
+                gl::GL_STREAM_DRAW,
+            );
+            gl::glEnableVertexAttribArray(self.prog_ovl.a_pos as u32);
+            gl::glVertexAttribPointer(
+                self.prog_ovl.a_pos as u32,
+                2,
+                gl::GL_FLOAT,
+                0,
+                24,
+                std::ptr::null(),
+            );
+            gl::glEnableVertexAttribArray(self.prog_ovl.a_uv as u32);
+            gl::glVertexAttribPointer(
+                self.prog_ovl.a_uv as u32,
+                2,
+                gl::GL_FLOAT,
+                0,
+                24,
+                8 as *const u8,
+            );
+            gl::glDrawArrays(gl::GL_TRIANGLE_STRIP, 0, 4);
+            gl::glDisableVertexAttribArray(self.prog_ovl.a_pos as u32);
+            gl::glDisableVertexAttribArray(self.prog_ovl.a_uv as u32);
+            gl::glBindBuffer(gl::GL_ARRAY_BUFFER, 0);
+        }
+    }
+
+    /// Renderiza la capa base persistente (Dry FBO).
+    /// Se invoca ÚNICAMENTE cuando cambia la página, zoom, pan, anotaciones o UI.
+    fn render_dry(&mut self, reader: &Reader) {
+        if self.dry_fbo == 0 || self.dry_tex == 0 {
+            return;
+        }
+        unsafe {
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, self.dry_fbo);
+            gl::glViewport(0, 0, self.win_w, self.win_h);
+
+            let p = reader.theme.palette();
+            let bg = if reader.doc.is_none() {
+                crate::theme::ERROR_BG_RGBA
             } else {
-                1.0
+                p.rgba_bg()
             };
-            let pw = bmp.width as f32 * blit_zoom;
-            // El dispatcher NO sube: `upload_page_if_needed` compara contra
-            // su registro interno (página, zoom, len) — sube SOLO al cambiar.
-            self.upload_page_if_needed(reader.page, reader.rendered_zoom, bmp);
-            self.set_tex_filter();
-            page_dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
-            page_dy = reader.pan_y.round();
-            unsafe {
+            self.clear(bg);
+
+            // 1. Dibujar página PDF
+            let mut page_drawn = false;
+            let mut scale = 1.0f32;
+            let (mut page_dx, mut page_dy) = (0.0f32, 0.0f32);
+            if let Some(bmp) = reader
+                .cache
+                .peek(reader.page)
+                .or_else(|| reader.fallback_page.and_then(|pg| reader.cache.peek(pg)))
+            {
+                let blit_zoom = if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
+                    reader.zoom / reader.rendered_zoom
+                } else {
+                    1.0
+                };
+                let pw = bmp.width as f32 * blit_zoom;
+                self.upload_page_if_needed(reader.page, reader.rendered_zoom, bmp);
+                page_dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
+                page_dy = reader.pan_y.round();
+
                 gl::glUseProgram(self.prog_tex.prog);
                 gl::glActiveTexture(gl::GL_TEXTURE0);
                 gl::glBindTexture(gl::GL_TEXTURE_2D, self.page_tex);
+                self.set_tex_filter();
                 let m = mat3_scale_translate(blit_zoom, blit_zoom, page_dx, page_dy);
                 gl::glUniformMatrix3fv(self.prog_tex.u_mvp, 1, 0, m.as_ptr());
                 gl::glUniform2f(self.prog_tex.u_res, self.win_w as f32, self.win_h as f32);
                 gl::glUniform1i(self.prog_tex.u_tex, 0);
                 gl::glUniform1i(self.prog_tex.u_dark, if reader.dark { 1 } else { 0 });
+
                 let (x1, y1) = (bmp.width as f32, bmp.height as f32);
                 let pos = [0.0f32, 0.0, x1, 0.0, 0.0, y1, x1, y1];
                 let uv = [0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
@@ -1155,48 +1349,107 @@ impl Gpu {
                 gl::glDisableVertexAttribArray(self.prog_tex.a_pos as u32);
                 gl::glDisableVertexAttribArray(self.prog_tex.a_uv as u32);
                 gl::glBindBuffer(gl::GL_ARRAY_BUFFER, 0);
-            }
-            page_drawn = true;
-        }
 
-        // --- tinta (highlights + trazos guardados, en orden z) ---
-        // La MISMA transform redondeada que la página (page_dx/page_dy):
-        // desalinearlas movería la tinta respecto al texto. La escala de
-        // anotaciones es cover × zoom (puntos PDF → px de ventana).
-        if page_drawn {
-            if let Some((pw, ph)) = reader.page_size_pt(reader.page) {
-                scale =
-                    crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h) * reader.zoom;
+                page_drawn = true;
             }
-            let dx = page_dx;
-            let dy = page_dy;
-            let anns = reader.annotations.for_page(reader.page as usize);
-            // Highlights: quads translúcidos del color (DEBAJO de la tinta).
-            for a in &anns {
-                if let pdf_core::Annotation::Highlight(h) = &a.kind {
-                    for r in &h.rects {
-                        let r = r.normalized();
-                        let (x0, y0) = (r.x * scale + dx, r.y * scale + dy);
-                        let (x1, y1) = ((r.x + r.w) * scale + dx, (r.y + r.h) * scale + dy);
-                        let rgba = [h.color.r, h.color.g, h.color.b, h.color.a];
-                        self.draw_solid_quad(x0, y0, x1, y1, rgba);
+
+            // 2. Dibujar anotaciones consolidadas
+            if page_drawn {
+                if let Some((pw, ph)) = reader.page_size_pt(reader.page) {
+                    scale = crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h)
+                        * reader.zoom;
+                }
+                let dx = page_dx;
+                let dy = page_dy;
+                let anns = reader.annotations.for_page(reader.page as usize);
+                for a in &anns {
+                    if let pdf_core::Annotation::Highlight(h) = &a.kind {
+                        for r in &h.rects {
+                            let r = r.normalized();
+                            let (x0, y0) = (r.x * scale + dx, r.y * scale + dy);
+                            let (x1, y1) = ((r.x + r.w) * scale + dx, (r.y + r.h) * scale + dy);
+                            let rgba = [h.color.r, h.color.g, h.color.b, h.color.a];
+                            self.draw_solid_quad(x0, y0, x1, y1, rgba);
+                        }
+                    }
+                }
+                for a in &anns {
+                    if let pdf_core::Annotation::Stroke(s) = &a.kind {
+                        let pts: Vec<(f32, f32)> = s
+                            .points
+                            .iter()
+                            .map(|&(x, y)| (x * scale + dx, y * scale + dy))
+                            .collect();
+                        let hw = (s.width * scale / 2.0).max(0.5);
+                        self.draw_polyline_gpu(
+                            &pts,
+                            hw,
+                            [s.color.r, s.color.g, s.color.b, s.color.a],
+                        );
                     }
                 }
             }
-            // Trazos guardados: strips gruesos.
-            for a in &anns {
-                if let pdf_core::Annotation::Stroke(s) = &a.kind {
-                    let pts: Vec<(f32, f32)> = s
-                        .points
-                        .iter()
-                        .map(|&(x, y)| (x * scale + dx, y * scale + dy))
-                        .collect();
-                    let hw = (s.width * scale / 2.0).max(0.5);
-                    self.draw_polyline_gpu(&pts, hw, [s.color.r, s.color.g, s.color.b, s.color.a]);
+
+            // 3. Overlays de UI (badges, chrome, toolbar, toast)
+            let mut ovl = OverlayList::new();
+            OverlayList::collect_viewer(reader, &mut ovl);
+            for (b, x, y) in ovl.items {
+                self.draw_bitmap(b, x, y, 1.0);
+            }
+
+            if reader.sheet_progress > 0.0
+                && let Some(s) = reader.sheet_bitmap.as_ref()
+            {
+                let slide = (crate::reader::sheet_h(reader.win_h) as f32
+                    * (1.0 - reader.sheet_progress))
+                    .round() as i32;
+                self.draw_bitmap(s, 0, -slide, 1.0);
+            }
+
+            if let Some((started, snap)) = &reader.lib_fade {
+                let t = started.elapsed().as_secs_f32();
+                let alpha = (1.0 - t / crate::LIB_FADE_MS).clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    self.draw_bitmap(snap, 0, 0, alpha);
                 }
             }
-            // Gesto en curso: tinta (curva midpoint) o rect del resaltador.
+
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+        }
+    }
+
+    /// Renderiza la capa de tinta en vuelo (Wet FBO transparente).
+    fn render_wet(&mut self, reader: &Reader) {
+        if self.wet_fbo == 0 || self.wet_tex == 0 {
+            return;
+        }
+        unsafe {
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, self.wet_fbo);
+            gl::glViewport(0, 0, self.win_w, self.win_h);
+
+            // Limpieza a transparente puro
+            gl::glClearColor(0.0, 0.0, 0.0, 0.0);
+            gl::glClear(gl::GL_COLOR_BUFFER_BIT);
+
             if let Some(g) = reader.tool_gesture.as_ref() {
+                let mut scale = 1.0f32;
+                if let Some((pw, ph)) = reader.page_size_pt(reader.page) {
+                    scale = crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h)
+                        * reader.zoom;
+                }
+                let blit_zoom = if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
+                    reader.zoom / reader.rendered_zoom
+                } else {
+                    1.0
+                };
+                let pw = reader
+                    .cache
+                    .peek(reader.page)
+                    .map(|b| b.width as f32 * blit_zoom)
+                    .unwrap_or(0.0);
+                let dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
+                let dy = reader.pan_y.round();
+
                 match g.tool {
                     crate::annotations::ToolKind::Ink => {
                         let pts: Vec<(f32, f32)> = g
@@ -1217,7 +1470,8 @@ impl Gpu {
                                 reader.ink_color.a,
                             ],
                         );
-                        // Remate en vivo: M_last → posición actual del boli.
+
+                        // Remate M_last -> posición actual
                         if let (Some(m_last), Some(&last)) = (g.prev_mid, g.points.last())
                             && m_last != last
                         {
@@ -1233,6 +1487,28 @@ impl Gpu {
                                     reader.ink_color.a,
                                 ],
                             );
+                        }
+
+                        // Proyección Kalman
+                        if let Some((px, py)) = g.predicted_pt {
+                            let start_pt = g
+                                .prev_mid
+                                .or_else(|| g.points.last().copied())
+                                .unwrap_or(g.anchor);
+                            if start_pt != (px, py) {
+                                let a = (start_pt.0 * scale + dx, start_pt.1 * scale + dy);
+                                let b = (px * scale + dx, py * scale + dy);
+                                self.draw_polyline_gpu(
+                                    &[a, b],
+                                    hw,
+                                    [
+                                        reader.ink_color.r,
+                                        reader.ink_color.g,
+                                        reader.ink_color.b,
+                                        reader.ink_color.a,
+                                    ],
+                                );
+                            }
                         }
                     }
                     crate::annotations::ToolKind::Highlight => {
@@ -1251,34 +1527,8 @@ impl Gpu {
                     _ => {}
                 }
             }
-            // Tramo EFÍMERO de predicción Kalman (google/ink-stroke-modeler):
-            // proyección dinámica hacia adelante a 25–30 ms sin sobre-elongaciones en esquinas.
-            if let Some(g) = reader.tool_gesture.as_ref()
-                && g.tool == crate::annotations::ToolKind::Ink
-                && let Some((px, py)) = g.predicted_pt
-            {
-                let start_pt = g
-                    .prev_mid
-                    .or_else(|| g.points.last().copied())
-                    .unwrap_or(g.anchor);
-                if start_pt != (px, py) {
-                    let w = crate::prediction::pressure_width(reader.ink_width, g.last_pressure());
-                    let hw = (w * scale / 2.0).max(0.5);
-                    let a = (start_pt.0 * scale + dx, start_pt.1 * scale + dy);
-                    let b = (px * scale + dx, py * scale + dy);
-                    self.draw_polyline_gpu(
-                        &[a, b],
-                        hw,
-                        [
-                            reader.ink_color.r,
-                            reader.ink_color.g,
-                            reader.ink_color.b,
-                            reader.ink_color.a,
-                        ],
-                    );
-                }
-            }
-            // Cursor de la goma: disco translúcido del radio real.
+
+            // Cursor de goma si aplica
             if let Some((ex, ey)) = reader.erase_pt {
                 let r = reader.erase_r_px;
                 let rgba = [0x88u8, 0x88, 0x88, 0x66];
@@ -1289,40 +1539,71 @@ impl Gpu {
                 }
                 self.draw_polyline_gpu(&pts, 1.5, rgba);
             }
-            // Rect de selección (fill + borde) en px de ventana.
+
+            // Rect de selección (fill + borde) en px de ventana
             if let Some((l, t, r, b)) = reader.sel_screen_rect() {
                 self.draw_solid_quad(l, t, r, b, crate::theme::SEL_FILL_RGBA);
                 self.draw_sel_border(l, t, r, b);
             }
+
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+        }
+    }
+
+    /// Present completo del visor por GPU con arquitectura Dual FBO (Wet/Dry).
+    ///
+    /// - Capa Dry: se re-renderiza SOLO al cambiar página, zoom, tema o al soltar el lápiz.
+    ///   Durante la escritura activa, la base NUNCA se limpia ni se re-renderiza (CERO parpadeo).
+    /// - Capa Wet: dibuja únicamente el avance del trazo activo + predicción Kalman en FBO transparente.
+    /// - Composición: compone `dry_fbo ⊕ wet_fbo` en el framebuffer 0 (la ventana visible).
+    pub(crate) fn present_viewer(&mut self, reader: &Reader) {
+        let t0 = std::time::Instant::now();
+        if !self.has_surface() {
+            return;
         }
 
-        // --- overlays (quads texturizados de los bitmaps Canvas+JNI) ---
-        let mut ovl = OverlayList::new();
-        OverlayList::collect_viewer(reader, &mut ovl);
-        for (b, x, y) in ovl.items {
-            self.draw_bitmap(b, x, y, 1.0);
+        // 1. Comprobar si la capa Dry (base persistente) está sucia
+        let anns_count = reader.annotations.for_page(reader.page as usize).len();
+        let key = DryKey {
+            page: reader.page,
+            zoom_bits: reader.zoom.to_bits(),
+            pan_x: reader.pan_x.round() as i32,
+            pan_y: reader.pan_y.round() as i32,
+            ann_count: anns_count,
+            dark: reader.dark,
+            chrome_visible: reader.chrome_visible,
+            toolbar_open: reader.toolbar_open,
+            sheet_progress_bits: (reader.sheet_progress * 100.0).round() as u32,
+            has_toast: reader.toast.is_some(),
+        };
+
+        if self.dry_dirty || self.dry_key != Some(key) {
+            self.render_dry(reader);
+            self.dry_dirty = false;
+            self.dry_key = Some(key);
         }
 
-        // Sheet deslizante (mismo conjunto, offset Y por la animación).
-        if reader.sheet_progress > 0.0
-            && let Some(s) = reader.sheet_bitmap.as_ref()
-        {
-            let slide = (crate::reader::sheet_h(reader.win_h) as f32
-                * (1.0 - reader.sheet_progress))
-                .round() as i32;
-            self.draw_bitmap(s, 0, -slide, 1.0);
+        // 2. Renderizar capa Wet si hay trazo o goma activa
+        let has_wet = reader.tool_gesture.is_some() || reader.erase_pt.is_some();
+        if has_wet {
+            self.render_wet(reader);
         }
 
-        // Transición biblioteca→visor: snapshot con alfa decreciente.
-        if let Some((started, snap)) = &reader.lib_fade {
-            let t = started.elapsed().as_secs_f32();
-            let alpha = (1.0 - t / crate::LIB_FADE_MS).clamp(0.0, 1.0);
-            if alpha > 0.0 {
-                self.draw_bitmap(snap, 0, 0, alpha);
+        // 3. Composición final en framebuffer 0 (la ventana visible)
+        unsafe {
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+            gl::glViewport(0, 0, self.win_w, self.win_h);
+
+            // Dibujar capa Dry base
+            self.draw_fullscreen_texture(self.dry_tex, 1.0);
+
+            // Componer encima la capa Wet transparente con premultiplied alpha
+            if has_wet {
+                self.draw_fullscreen_texture(self.wet_tex, 1.0);
             }
         }
 
-        // --- present ---
+        // 4. Present / swap atómico a 120 Hz
         let Some(surf) = self.surf else { return };
         let swap_t0 = std::time::Instant::now();
         let ok = unsafe { gl::eglSwapBuffers(self.dpy, surf) != 0 };
