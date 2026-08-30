@@ -52,8 +52,11 @@ pub mod ffi {
     pub const EGL_OPENGL_ES2_BIT: i32 = 0x0004;
     pub const EGL_NONE: i32 = 0x3038;
     pub const EGL_CONTEXT_CLIENT_VERSION: i32 = 0x3098;
+    #[allow(dead_code)]
     pub const EGL_FRONT_BUFFER_AUTO_REFRESH_ANDROID: i32 = 0x314C;
+    #[allow(dead_code)]
     pub const EGL_TRUE: u32 = 1;
+    #[allow(dead_code)]
     pub const EGL_FALSE: u32 = 0;
 
     // GLES2 constants (public Khronos values).
@@ -145,6 +148,7 @@ pub mod ffi {
         ) -> u32;
         pub fn eglSwapBuffers(dpy: EGLDisplay, surface: EGLSurface) -> u32;
         pub fn eglSwapInterval(dpy: EGLDisplay, interval: i32) -> u32;
+        #[allow(dead_code)]
         pub fn eglSurfaceAttrib(
             dpy: EGLDisplay,
             surface: EGLSurface,
@@ -160,6 +164,7 @@ pub mod ffi {
         pub fn glClearColor(r: f32, g: f32, b: f32, a: f32);
         pub fn glClear(mask: u32);
         pub fn glViewport(x: i32, y: i32, w: i32, h: i32);
+        #[allow(dead_code)]
         pub fn glFlush();
         pub fn glUseProgram(p: GLhandle);
         pub fn glGetUniformLocation(p: GLhandle, name: *const u8) -> i32;
@@ -389,6 +394,7 @@ pub(crate) struct Gpu {
     surf: Option<gl::EGLSurface>,
     win_w: i32,
     win_h: i32,
+    #[allow(dead_code)]
     front_buffer_active: bool,
     prog_tex: QuadProg,
     prog_ovl: QuadProg,
@@ -585,6 +591,7 @@ impl Gpu {
     ///
     /// Utiliza `EGL_FRONT_BUFFER_AUTO_REFRESH_ANDROID` (0x314C) para saltarse
     /// la cola de SurfaceFlinger durante el trazo activo y presentar a < 4 ms.
+    #[allow(dead_code)]
     pub(crate) fn set_front_buffer_auto_refresh(&mut self, enable: bool) {
         if self.front_buffer_active == enable {
             return;
@@ -629,6 +636,7 @@ impl Gpu {
                 warn!("eglMakeCurrent (recreate) failed");
                 return;
             }
+            gl::eglSwapInterval(self.dpy, 1);
             self.surf = Some(surf);
             self.win_w = win.width();
             self.win_h = win.height();
@@ -1290,15 +1298,8 @@ impl Gpu {
             }
         }
 
-        // --- Dual-layer Front-Buffer control (Google GLFrontBufferedRenderer pattern) ---
-        let is_wet_ink = reader.tool_gesture.is_some();
-        self.set_front_buffer_auto_refresh(is_wet_ink);
-
         // --- present ---
         let Some(surf) = self.surf else { return };
-        unsafe {
-            gl::glFlush();
-        }
         let swap_t0 = std::time::Instant::now();
         let ok = unsafe { gl::eglSwapBuffers(self.dpy, surf) != 0 };
         let swap_ms = swap_t0.elapsed().as_secs_f64() * 1000.0;
