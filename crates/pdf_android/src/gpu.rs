@@ -436,6 +436,7 @@ pub(crate) struct Gpu {
     // Búfers de trabajo prealocados: cero alocaciones en el hot path (Fase W3)
     ink_scratch: Vec<InkVert>,
     pts_scratch: Vec<(f32, f32)>,
+    current_swap_interval: i32,
 }
 
 /// Clave de invalidación de la capa base persistente (Dry FBO).
@@ -635,6 +636,7 @@ impl Gpu {
                 wet_tex: 0,
                 ink_scratch: Vec::with_capacity(2048),
                 pts_scratch: Vec::with_capacity(1024),
+                current_swap_interval: 1,
             })
         }
     }
@@ -1100,6 +1102,17 @@ impl Gpu {
     #[allow(dead_code)]
     pub(crate) fn invalidate_dry(&mut self) {
         self.dry_dirty = true;
+    }
+
+    /// Fija el swap interval de EGL si difiere del actual (0 = inmediato, 1 = 120 Hz vsync).
+    pub(crate) fn set_swap_interval(&mut self, interval: i32) {
+        if self.current_swap_interval == interval {
+            return;
+        }
+        unsafe {
+            gl::eglSwapInterval(self.dpy, interval);
+            self.current_swap_interval = interval;
+        }
     }
 
     /// Crea un Framebuffer Object (FBO) con textura RGBA8 adjunta del tamaño dado.
@@ -1602,7 +1615,12 @@ impl Gpu {
             }
         }
 
-        // 4. Present / swap atómico a 120 Hz
+        // 4. Conmutación dinámica de swap interval:
+        // Durante trazo activo (Wet Ink), eglSwapInterval(0) despacha inmediatamente
+        // al display sin bloqueo de VSYNC (< 4 ms). En commit/reposo, eglSwapInterval(1) a 120 Hz.
+        let target_swap_interval = if has_wet { 0 } else { 1 };
+        self.set_swap_interval(target_swap_interval);
+
         let Some(surf) = self.surf else { return };
         let swap_t0 = std::time::Instant::now();
         let ok = unsafe { gl::eglSwapBuffers(self.dpy, surf) != 0 };
