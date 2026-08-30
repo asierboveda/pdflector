@@ -1630,6 +1630,9 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
             }
         });
         if !read {
+            if reader.take_repaint() {
+                reader.blit();
+            }
             break;
         }
     }

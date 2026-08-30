@@ -87,6 +87,8 @@ pub mod ffi {
     pub const GL_FRAMEBUFFER: u32 = 0x8D40;
     pub const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
     pub const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
+    #[allow(dead_code)]
+    pub const GL_SCISSOR_TEST: u32 = 0x0C11;
     #[link(name = "EGL")]
     unsafe extern "C" {
         pub fn glBlendFuncSeparate(sfactor: u32, dfactor: u32, alpha_s: u32, alpha_d: u32);
@@ -226,6 +228,8 @@ pub mod ffi {
             level: i32,
         );
         pub fn glCheckFramebufferStatus(target: u32) -> u32;
+        #[allow(dead_code)]
+        pub fn glScissor(x: i32, y: i32, width: i32, height: i32);
     }
 }
 
@@ -413,19 +417,14 @@ pub(crate) struct Gpu {
     prog_ovl: QuadProg,
     prog_ink: InkProg,
     page_tex: u32,
-    // Dimensiones de la textura de página ya subida (para decidir
-    // realloc vs TexSubImage).
     page_tex_w: i32,
     page_tex_h: i32,
-    // Identidad del contenido subido: (página, zoom de render, len) — sube
-    // SOLO cuando cambia.
     page_loaded: Option<(u32, f32, u32)>,
     vbo_quad: u32,
     vbo_ink: u32,
-    // Texturas de overlays cacheadas (bitmap owned claveado por puntero).
     ovl_cache: Vec<OverlayTex>,
 
-    // --- Fase W1: Pipeline Dual FBO (Wet / Dry Ink) ---
+    // --- Fase W1/W2/W3: Pipeline Dual FBO (Wet / Dry Ink) ---
     dry_fbo: u32,
     dry_tex: u32,
     dry_dirty: bool,
@@ -433,6 +432,10 @@ pub(crate) struct Gpu {
 
     wet_fbo: u32,
     wet_tex: u32,
+
+    // Búfers de trabajo prealocados: cero alocaciones en el hot path (Fase W3)
+    ink_scratch: Vec<InkVert>,
+    pts_scratch: Vec<(f32, f32)>,
 }
 
 /// Clave de invalidación de la capa base persistente (Dry FBO).
@@ -449,12 +452,9 @@ struct DryKey {
     sheet_progress_bits: u32,
     has_toast: bool,
 }
+
 struct OverlayTex {
-    /// Puntero del `Vec<u8>` del bitmap en `Reader`: la clave de la caché.
     key_ptr: *const u8,
-    /// Copia owned del buffer del bitmap: NUNCA se lee (solo el puntero es
-    /// la clave) pero evita que el allocator recicle la dirección mientras
-    /// la textura exista.
     _keep: Vec<u8>,
     tex: u32,
 }
@@ -565,8 +565,6 @@ impl Gpu {
         unsafe {
             gl::glDisable(0x0B71); // GL_DEPTH_TEST
             gl::glEnable(gl::GL_BLEND);
-            // Los bitmaps Android (Canvas) llegan PREmultiplicados; el buffer
-            // de ventana es premultiplicado: componer con ONE / ONE_MINUS_SRC_ALPHA.
             gl::glBlendFuncSeparate(
                 gl::GL_ONE,
                 gl::GL_ONE_MINUS_SRC_ALPHA,
@@ -635,12 +633,13 @@ impl Gpu {
                 dry_key: None,
                 wet_fbo: 0,
                 wet_tex: 0,
+                ink_scratch: Vec::with_capacity(2048),
+                pts_scratch: Vec::with_capacity(1024),
             })
         }
     }
 
     /// (Re)crea la surface para una ventana (resize / re-init del visor).
-    /// El contexto se conserva (las texturas siguen válidas); la viewport se recalcula.
     pub(crate) fn recreate_surface(&mut self, win: &NativeWindow) {
         unsafe {
             self.drop_surface_only();
@@ -663,7 +662,7 @@ impl Gpu {
             self.win_w = win.width();
             self.win_h = win.height();
             gl::glViewport(0, 0, self.win_w, self.win_h);
-            self.page_loaded = None; // tamaño de ventana nuevo: reevaluar
+            self.page_loaded = None;
 
             // Recrear FBOs con la nueva resolución
             Self::destroy_fbo_with_tex(self.dry_fbo, self.dry_tex);
@@ -679,8 +678,7 @@ impl Gpu {
         }
     }
 
-    /// Suelta la surface (sin tocar el contexto): requisito para volver al
-    /// camino SW (`ANativeWindow_lock`) sin violar el contrato de EGL.
+    /// Suelta la surface (sin tocar el contexto).
     pub(crate) fn drop_surface(&mut self) {
         if self.surf.is_some() {
             unsafe { self.drop_surface_only() };
@@ -728,10 +726,6 @@ impl Gpu {
 
     // ------------------------------------------------- página como textura
 
-    /// Sube/actualiza la textura de página SOLO si el contenido cambió
-    /// (`page`, `rendered_zoom`); `bmp` es el bitmap cacheado actual. El
-    /// modo oscuro NO participa: es un uniform del shader, la textura guarda
-    /// SIEMPRE el bitmap normal (contrato de la caché SW).
     pub(crate) fn upload_page_if_needed(&mut self, page: u32, rendered_zoom: f32, bmp: &Bitmap) {
         if self.page_loaded == Some((page, rendered_zoom, bmp.data.len() as u32)) {
             return;
@@ -801,9 +795,6 @@ impl Gpu {
 
     // ------------------------------------------------- quads y overlays
 
-    /// Dibuja un quad texturizado (bitmap `b` con esquina en (x,y) px). El
-    /// bitmap llega PREmultiplicado (Canvas+JNI) — la textura se sube tal
-    /// cual y el blend premultiplicado global lo compone bien.
     fn draw_bitmap(&mut self, b: &Bitmap, x: i32, y: i32, alpha: f32) {
         let tex = self.overlay_tex(b);
         unsafe {
@@ -840,7 +831,7 @@ impl Gpu {
             gl::glUniform2f(self.prog_ovl.u_res, self.win_w as f32, self.win_h as f32);
             gl::glUniform1i(self.prog_ovl.u_tex, 0);
             gl::glUniform1f(self.prog_ovl.u_alpha, alpha);
-            // 2 triángulos en px de pantalla; UV del bitmap completo.
+
             let (bw, bh) = (b.width as f32, b.height as f32);
             let (x0, y0) = (x as f32, y as f32);
             let (x1, y1) = (x0 + bw, y0 + bh);
@@ -885,7 +876,6 @@ impl Gpu {
         }
     }
 
-    /// Textura (cacheada) de un bitmap de overlay.
     fn overlay_tex(&mut self, b: &Bitmap) -> u32 {
         let key = b.data.as_ptr();
         if let Some(o) = self.ovl_cache.iter().find(|o| o.key_ptr == key) {
@@ -941,7 +931,6 @@ impl Gpu {
         tex
     }
 
-    /// Quad opaco/color en px de pantalla.
     fn draw_solid_quad(&mut self, l: f32, t: f32, r: f32, b: f32, rgba: [u8; 4]) {
         if !l.is_finite() || !t.is_finite() || !r.is_finite() || !b.is_finite() {
             return;
@@ -986,8 +975,10 @@ impl Gpu {
         ]);
     }
 
-    /// Sube y dibuja vértices de tinta (TRIANGLE_STRIP/2 triángulos).
     fn draw_ink_triangles(&mut self, verts: &[InkVert]) {
+        if verts.is_empty() {
+            return;
+        }
         unsafe {
             gl::glUseProgram(self.prog_ink.prog);
             let id = mat3_scale_translate(1.0, 1.0, 0.0, 0.0);
@@ -1036,9 +1027,8 @@ impl Gpu {
         }
     }
 
-    /// Trazo como TRIANGLE_STRIP grueso: por cada punto genera 2 vértices
-    /// perpendiculares al segmento (mitad de grosor `hw`); AA analítico en
-    /// el fragment shader. `pts` en px de PANTALLA.
+    /// Trazo como TRIANGLE_STRIP: genera vértices directamente sobre `self.ink_scratch`
+    /// para cero alocaciones en heap en el hot path.
     fn draw_polyline_gpu(&mut self, pts: &[(f32, f32)], hw: f32, rgba: [u8; 4]) {
         if !hw.is_finite() || hw <= 0.0 {
             return;
@@ -1052,7 +1042,8 @@ impl Gpu {
             }
             return;
         }
-        let mut verts: Vec<InkVert> = Vec::with_capacity(pts.len() * 2);
+
+        self.ink_scratch.clear();
         for (i, &(x, y)) in pts.iter().enumerate() {
             if !x.is_finite() || !y.is_finite() {
                 continue;
@@ -1076,7 +1067,7 @@ impl Gpu {
             let (dx, dy) = (next.0 - prev.0, next.1 - prev.1);
             let len = (dx * dx + dy * dy).sqrt().max(1e-3);
             let (nx, ny) = (-dy / len, dx / len);
-            verts.push(InkVert {
+            self.ink_scratch.push(InkVert {
                 x: x + nx * hw,
                 y: y + ny * hw,
                 hw,
@@ -1085,7 +1076,7 @@ impl Gpu {
                 b: rgba[2],
                 a: rgba[3],
             });
-            verts.push(InkVert {
+            self.ink_scratch.push(InkVert {
                 x: x - nx * hw,
                 y: y - ny * hw,
                 hw,
@@ -1095,8 +1086,11 @@ impl Gpu {
                 a: rgba[3],
             });
         }
-        if !verts.is_empty() {
+
+        if !self.ink_scratch.is_empty() {
+            let verts = std::mem::take(&mut self.ink_scratch);
             self.draw_ink_triangles(&verts);
+            self.ink_scratch = verts;
         }
     }
 
@@ -1375,17 +1369,18 @@ impl Gpu {
                 }
                 for a in &anns {
                     if let pdf_core::Annotation::Stroke(s) = &a.kind {
-                        let pts: Vec<(f32, f32)> = s
-                            .points
-                            .iter()
-                            .map(|&(x, y)| (x * scale + dx, y * scale + dy))
-                            .collect();
+                        self.pts_scratch.clear();
+                        for &(x, y) in &s.points {
+                            self.pts_scratch.push((x * scale + dx, y * scale + dy));
+                        }
                         let hw = (s.width * scale / 2.0).max(0.5);
+                        let pts = std::mem::take(&mut self.pts_scratch);
                         self.draw_polyline_gpu(
                             &pts,
                             hw,
                             [s.color.r, s.color.g, s.color.b, s.color.a],
                         );
+                        self.pts_scratch = pts;
                     }
                 }
             }
@@ -1418,7 +1413,7 @@ impl Gpu {
         }
     }
 
-    /// Renderiza la capa de tinta en vuelo (Wet FBO transparente).
+    /// Renderiza la capa de tinta en vuelo (Wet FBO transparente) con glScissor acotado.
     fn render_wet(&mut self, reader: &Reader) {
         if self.wet_fbo == 0 || self.wet_tex == 0 {
             return;
@@ -1452,14 +1447,14 @@ impl Gpu {
 
                 match g.tool {
                     crate::annotations::ToolKind::Ink => {
-                        let pts: Vec<(f32, f32)> = g
-                            .ink_pts
-                            .iter()
-                            .map(|&(x, y)| (x * scale + dx, y * scale + dy))
-                            .collect();
+                        self.pts_scratch.clear();
+                        for &(x, y) in &g.ink_pts {
+                            self.pts_scratch.push((x * scale + dx, y * scale + dy));
+                        }
                         let w =
                             crate::prediction::pressure_width(reader.ink_width, g.last_pressure());
                         let hw = (w * scale / 2.0).max(0.5);
+                        let pts = std::mem::take(&mut self.pts_scratch);
                         self.draw_polyline_gpu(
                             &pts,
                             hw,
@@ -1470,6 +1465,7 @@ impl Gpu {
                                 reader.ink_color.a,
                             ],
                         );
+                        self.pts_scratch = pts;
 
                         // Remate M_last -> posición actual
                         if let (Some(m_last), Some(&last)) = (g.prev_mid, g.points.last())
@@ -1532,12 +1528,15 @@ impl Gpu {
             if let Some((ex, ey)) = reader.erase_pt {
                 let r = reader.erase_r_px;
                 let rgba = [0x88u8, 0x88, 0x88, 0x66];
-                let mut pts = Vec::with_capacity(37);
+                self.pts_scratch.clear();
                 for i in 0..=36 {
                     let ang = i as f32 * std::f32::consts::TAU / 36.0;
-                    pts.push((ex + ang.cos() * r, ey + ang.sin() * r));
+                    self.pts_scratch
+                        .push((ex + ang.cos() * r, ey + ang.sin() * r));
                 }
+                let pts = std::mem::take(&mut self.pts_scratch);
                 self.draw_polyline_gpu(&pts, 1.5, rgba);
+                self.pts_scratch = pts;
             }
 
             // Rect de selección (fill + borde) en px de ventana
@@ -1654,16 +1653,12 @@ impl<'a> OverlayList<'a> {
 
     /// Réplica EXACTA del orden/posiciones de `Reader::blit` (rama Viewer).
     fn collect_viewer(reader: &'a Reader, out: &mut Self) {
-        // Toast (bitmap cacheado materializado aquí como en el blit SW —
-        // la materialización es responsabilidad del Reader antes de llamar;
-        // si sigue None, no se pinta).
         if let Some(tb) = reader.toast_bitmap.as_ref() {
             let (_, by, _, _) = crate::reader::page_badge_rect(reader.win_w, reader.win_h);
             let tx = (reader.win_w - tb.width as i32) / 2;
             let ty = by - tb.height as i32 - 8;
             out.items.push((tb, tx, ty));
         }
-        // Chrome o badge de página.
         if reader.chrome_visible {
             if let Some(top) = reader.chrome_top_bitmap.as_ref() {
                 out.items.push((top, 0, 0));
@@ -1681,19 +1676,16 @@ impl<'a> OverlayList<'a> {
             let (bx, by, _, _) = crate::draw::mode_badge_rect(reader.win_w, reader.win_h);
             out.items.push((mb, bx, by));
         }
-        // Barra de herramientas.
         if let Some(tb) = reader.toolbar_bitmap.as_ref() {
             let (tx, ty, _, _) = crate::draw::toolbar_rect(reader.win_w, reader.win_h);
             out.items.push((tb, tx as i32, ty as i32));
         }
-        // Menú de selección / panel IA.
         if let Some(menu) = reader.sel_menu.as_ref() {
             out.items.push((&menu.bitmap, menu.x, menu.y));
         }
         if let Some(panel) = reader.ai_panel.as_ref() {
             out.items.push((&panel.bitmap, panel.x, panel.y));
         }
-        // Cursor de goma (bitmap) cuando existe.
         if let Some(eb) = reader.eraser_cursor.as_ref()
             && let Some((ex, ey)) = reader.erase_pt
         {
