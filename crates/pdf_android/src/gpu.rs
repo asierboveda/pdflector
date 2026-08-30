@@ -1085,6 +1085,7 @@ impl Gpu {
             page_dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
             page_dy = reader.pan_y.round();
             unsafe {
+                gl::glUseProgram(self.prog_tex.prog);
                 gl::glActiveTexture(gl::GL_TEXTURE0);
                 gl::glBindTexture(gl::GL_TEXTURE_2D, self.page_tex);
                 let m = mat3_scale_translate(blit_zoom, blit_zoom, page_dx, page_dy);
