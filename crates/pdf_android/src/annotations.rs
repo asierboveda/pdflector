@@ -195,19 +195,27 @@ pub(crate) struct ToolGesture {
     /// (los eventos a 240 Hz batcheados NO llegan uniformes). Base: el
     /// timestamp del Down es t=0 del trazo.
     pub(crate) times_ms: Vec<f32>,
+    /// Pipeline de modelado físico de trazo (`google/ink-stroke-modeler`).
+    pub(crate) modeler: crate::ink::InkStrokeModeler,
+    /// Punto predicho hacia adelante (25–30 ms) por el filtro de Kalman.
+    pub(crate) predicted_pt: Option<(f32, f32)>,
 }
 
 impl ToolGesture {
     /// Empieza un gesto en `page` con el primer punto (el del `Down`).
     /// `t0_ms`: timestamp NDK del Down (ancla temporal del gesto);
-    /// `pressure`: presión inicial normalizada (0.5 si el driver no la da).
+    /// `pressure`: presión inicial normalizada (0.5 si el driver no la da);
+    /// `w_base`: grosor base del lápiz configurado.
     pub(crate) fn new(
         page: u32,
         tool: ToolKind,
         pt: (f32, f32),
         t0_ms: f32,
         pressure: f32,
+        w_base: f32,
     ) -> Self {
+        let mut modeler = crate::ink::InkStrokeModeler::new(w_base);
+        let res = modeler.update(pt.0, pt.1, (t0_ms as f64 * 1e6) as u64, pressure);
         Self {
             page,
             tool,
@@ -217,6 +225,8 @@ impl ToolGesture {
             ink_pts: vec![pt],
             pressures: vec![pressure],
             times_ms: vec![t0_ms],
+            modeler,
+            predicted_pt: res.predicted_pt,
         }
     }
 
@@ -244,22 +254,6 @@ impl ToolGesture {
     /// comparte el tipo).
     pub(crate) fn last_pressure(&self) -> f32 {
         self.pressures.last().copied().unwrap_or(0.5)
-    }
-
-    /// Últimos N puntos con presión/tiempo, MÁS NUEVOS al final (ventana del
-    /// predictor). Copia a array fijo: cero alloc, sin Solapamiento con
-    /// `points`. N real ≤ 3 (el predictor solo usa 3).
-    pub(crate) fn recent_window(&self, out: &mut [crate::prediction::Sample; 3]) -> usize {
-        let n = self.points.len().min(3);
-        for (i, s) in out.iter_mut().take(n).enumerate() {
-            let j = self.points.len() - n + i;
-            *s = crate::prediction::Sample {
-                x: self.points[j].0,
-                y: self.points[j].1,
-                t: self.times_ms.get(j).copied().unwrap_or(0.0),
-            };
-        }
-        n
     }
 
     /// Actualiza el punto ACTUAL del resaltador (la otra esquina del rect de

@@ -4046,7 +4046,14 @@ impl Reader {
         // clamp de dt mínimo); sin presión → 0.5 (w_base neutro).
         let t0 = self.pending_t0_ns.take().unwrap_or(0);
         let pressure = self.pending_pressure.take().unwrap_or(0.5);
-        self.tool_gesture = Some(ToolGesture::new(self.page, tool, pt, 0.0, pressure));
+        self.tool_gesture = Some(ToolGesture::new(
+            self.page,
+            tool,
+            pt,
+            0.0,
+            pressure,
+            self.ink_width,
+        ));
         // El Down ES t=0: el campo se fija tras crear el gesto.
         if let Some(g) = self.tool_gesture.as_mut() {
             g.times_ms[0] = 0.0;
@@ -4080,25 +4087,32 @@ impl Reader {
         self.last_stylus_time = Some(std::time::Instant::now());
         match tool {
             ToolKind::Ink => {
-                // Máquina midpoint: Pk entra, Mk = (P(k-1)+Pk)/2. push()
-                // filtra casi-duplicados (d < 0.25 pt): si el punto no
-                // avanza, no hay curva nueva.
-                // FASE 2: sin stamping en bitmap — la curva midpoint se
-                // dibuja como geometría GPU en el próximo present y sus
-                // muestras se acumulan en `ink_pts` (persistencia idéntica
-                // a la Fase 1: el replay lineal reproduce la curva).
+                // Pipeline de modelado físico (google/ink-stroke-modeler):
+                // 1. Sanitiza el evento (240 Hz, noise gate 0.2 pt).
+                // 2. Simulación masa-resorte críticamente amortiguada (ζ = 1.0).
+                // 3. Estimación y proyección cinemática Kalman a 25–30 ms.
                 let Some(g) = self.tool_gesture.as_mut() else {
                     return;
                 };
+                let t_ns = self
+                    .gesture_t0_ns
+                    .saturating_add((t_ms as f64 * 1e6) as u64);
+                let model_res = g.modeler.update(pt.0, pt.1, t_ns, pressure);
+                g.predicted_pt = model_res.predicted_pt;
+                let confirmed_pt = model_res.confirmed_pt;
+
                 let Some(&last) = g.points.last() else {
                     return;
                 };
                 let n0 = g.points.len();
-                g.push_with_pressure(pt, t_ms, pressure);
+                g.push_with_pressure(confirmed_pt, t_ms, model_res.pressure);
                 if g.points.len() == n0 {
                     return;
                 }
-                let mid = ((last.0 + pt.0) / 2.0, (last.1 + pt.1) / 2.0);
+                let mid = (
+                    (last.0 + confirmed_pt.0) / 2.0,
+                    (last.1 + confirmed_pt.1) / 2.0,
+                );
                 let prev_mid = g.prev_mid;
                 // Muestrear en página la MISMA curva midpoint que dibuja el
                 // present (una sola fuente de verdad para la polilínea).
@@ -4144,7 +4158,7 @@ impl Reader {
     /// `(sx, sy)` = posición del Up (remate M_last→P_up en el boli; las
     /// muestras de history ya se estamparon por el drain previo, así que el
     /// hueco que cierra es solo el último tramo hasta el punto de soltar).
-    pub(crate) fn end_tool_gesture(&mut self, sx: f32, sy: f32) {
+    pub(crate) fn end_tool_gesture(&mut self, _sx: f32, _sy: f32) {
         let Some(g) = self.tool_gesture.take() else {
             return;
         };
@@ -4182,12 +4196,11 @@ impl Reader {
         let mut g = g;
         match g.tool {
             ToolKind::Ink => {
-                // REMATE M_last→P_up: entra en ink_pts (tramo recto: el
-                // endpoint basta para el replay 1:1 de la línea). El present
-                // GPU ya no lo estampa — el próximo frame dibuja la página
-                let end_pt = self.screen_to_page(sx, sy);
-                if let (Some(m_last), Some(end_pt)) =
-                    (g.prev_mid.or_else(|| g.ink_pts.last().copied()), end_pt)
+                // REMATE M_last→P_up: asienta la masa virtual con StrokeEndPredictor
+                // y tapering suave de presión sin "cero-pop".
+                let end_res = g.modeler.end_stroke();
+                let end_pt = end_res.confirmed_pt;
+                if let Some(m_last) = g.prev_mid.or_else(|| g.ink_pts.last().copied())
                     && m_last != end_pt
                 {
                     g.ink_pts.push(end_pt);

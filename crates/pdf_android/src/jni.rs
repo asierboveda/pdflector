@@ -70,6 +70,81 @@ pub(crate) fn keep_screen_on(app: &AndroidApp) {
         Err(e) => warn!("keep_screen_on: {e}"),
     }
 }
+/// Configura la tasa de refresco a 120 Hz en el WindowManager de Android.
+///
+/// Consulta los modos de display disponibles (`Display.getSupportedModes()`)
+/// y si encuentra un modo de 120 Hz (como en la TCL NXTPaper 11 Plus, modeId 1),
+/// establece `preferredDisplayModeId` y `preferredRefreshRate = 120.0f` en los
+/// LayoutParams de la ventana.
+pub(crate) fn enable_120hz(app: &AndroidApp) {
+    let Ok(vm) = JavaVM::singleton() else {
+        log::warn!("enable_120hz: sin JavaVM");
+        return;
+    };
+    let res: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+        env.with_local_frame(64, |env| {
+            let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
+            let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
+
+            let window = env
+                .call_method(
+                    activity.as_ref(),
+                    jni_str!("getWindow"),
+                    jni_sig!(sig = () -> android.view.Window),
+                    &[],
+                )?
+                .l()?;
+
+            let get_attrs_rt = jni::signature::RuntimeMethodSignature::from_str(
+                "()Landroid/view/WindowManager$LayoutParams;",
+            )?;
+            let get_attrs_sig = jni::signature::MethodSignature::from(&get_attrs_rt);
+            let params = env
+                .call_method(
+                    window.as_ref(),
+                    jni_str!("getAttributes"),
+                    get_attrs_sig,
+                    &[],
+                )?
+                .l()?;
+
+            // 1. Fijar preferredRefreshRate = 120.0f (API 30+)
+            let _ = env.set_field(
+                params.as_ref(),
+                jni_str!("preferredRefreshRate"),
+                jni_sig!(sig = float),
+                JValue::Float(120.0),
+            );
+
+            // 2. Fijar preferredDisplayModeId = 1 (TCL NXTPaper 11 Plus 120 Hz ModeId 1)
+            let _ = env.set_field(
+                params.as_ref(),
+                jni_str!("preferredDisplayModeId"),
+                jni_sig!(sig = int),
+                JValue::Int(1),
+            );
+
+            // Aplicar atributos a la ventana
+            let set_attrs_rt = jni::signature::RuntimeMethodSignature::from_str(
+                "(Landroid/view/WindowManager$LayoutParams;)V",
+            )?;
+            let set_attrs_sig = jni::signature::MethodSignature::from(&set_attrs_rt);
+            let _ = env.call_method(
+                window.as_ref(),
+                jni_str!("setAttributes"),
+                set_attrs_sig,
+                &[JValue::Object(params.as_ref())],
+            )?;
+
+            Ok(())
+        })
+    });
+
+    match res {
+        Ok(()) => info!("enable_120hz: modo 120 Hz solicitado a la ventana"),
+        Err(e) => warn!("enable_120hz: {e}"),
+    }
+}
 
 pub(crate) fn enter_immersive(app: &AndroidApp) {
     let Ok(vm) = JavaVM::singleton() else {

@@ -52,6 +52,9 @@ pub mod ffi {
     pub const EGL_OPENGL_ES2_BIT: i32 = 0x0004;
     pub const EGL_NONE: i32 = 0x3038;
     pub const EGL_CONTEXT_CLIENT_VERSION: i32 = 0x3098;
+    pub const EGL_FRONT_BUFFER_AUTO_REFRESH_ANDROID: i32 = 0x314C;
+    pub const EGL_TRUE: u32 = 1;
+    pub const EGL_FALSE: u32 = 0;
 
     // GLES2 constants (public Khronos values).
     pub const GL_COLOR_BUFFER_BIT: u32 = 0x4000;
@@ -142,6 +145,12 @@ pub mod ffi {
         ) -> u32;
         pub fn eglSwapBuffers(dpy: EGLDisplay, surface: EGLSurface) -> u32;
         pub fn eglSwapInterval(dpy: EGLDisplay, interval: i32) -> u32;
+        pub fn eglSurfaceAttrib(
+            dpy: EGLDisplay,
+            surface: EGLSurface,
+            attribute: i32,
+            value: i32,
+        ) -> u32;
         pub fn eglDestroySurface(dpy: EGLDisplay, surface: EGLSurface) -> u32;
         pub fn eglDestroyContext(dpy: EGLDisplay, ctx: EGLContext) -> u32;
     }
@@ -151,6 +160,7 @@ pub mod ffi {
         pub fn glClearColor(r: f32, g: f32, b: f32, a: f32);
         pub fn glClear(mask: u32);
         pub fn glViewport(x: i32, y: i32, w: i32, h: i32);
+        pub fn glFlush();
         pub fn glUseProgram(p: GLhandle);
         pub fn glGetUniformLocation(p: GLhandle, name: *const u8) -> i32;
         pub fn glGetAttribLocation(p: GLhandle, name: *const u8) -> i32;
@@ -379,7 +389,7 @@ pub(crate) struct Gpu {
     surf: Option<gl::EGLSurface>,
     win_w: i32,
     win_h: i32,
-
+    front_buffer_active: bool,
     prog_tex: QuadProg,
     prog_ovl: QuadProg,
     prog_ink: InkProg,
@@ -556,6 +566,7 @@ impl Gpu {
                 surf: Some(surf),
                 win_w: 0,
                 win_h: 0,
+                front_buffer_active: false,
                 prog_tex,
                 prog_ovl,
                 prog_ink,
@@ -567,6 +578,34 @@ impl Gpu {
                 vbo_ink,
                 ovl_cache: Vec::new(),
             })
+        }
+    }
+
+    /// Activa o desactiva el modo Front-Buffer ("Wet Ink") para render directo.
+    ///
+    /// Utiliza `EGL_FRONT_BUFFER_AUTO_REFRESH_ANDROID` (0x314C) para saltarse
+    /// la cola de SurfaceFlinger durante el trazo activo y presentar a < 4 ms.
+    pub(crate) fn set_front_buffer_auto_refresh(&mut self, enable: bool) {
+        if self.front_buffer_active == enable {
+            return;
+        }
+        if let Some(surf) = self.surf {
+            unsafe {
+                let val = if enable {
+                    gl::EGL_TRUE as i32
+                } else {
+                    gl::EGL_FALSE as i32
+                };
+                let res = gl::eglSurfaceAttrib(
+                    self.dpy,
+                    surf,
+                    gl::EGL_FRONT_BUFFER_AUTO_REFRESH_ANDROID,
+                    val,
+                );
+                if res != 0 {
+                    self.front_buffer_active = enable;
+                }
+            }
         }
     }
 
@@ -1180,33 +1219,20 @@ impl Gpu {
                     _ => {}
                 }
             }
-            // Tramo EFÍMERO de predicción (M_last → P_pred): geometría de
-            // este frame — en el siguiente desaparece sola (sin "des-dibujar").
-            if reader.tool_gesture.as_ref().map(|g| g.tool)
-                == Some(crate::annotations::ToolKind::Ink)
+            // Tramo EFÍMERO de predicción Kalman (google/ink-stroke-modeler):
+            // proyección dinámica hacia adelante a 25–30 ms sin sobre-elongaciones en esquinas.
+            if let Some(g) = reader.tool_gesture.as_ref()
+                && g.tool == crate::annotations::ToolKind::Ink
+                && let Some((px, py)) = g.predicted_pt
             {
-                let mut window = [crate::prediction::Sample {
-                    x: 0.0,
-                    y: 0.0,
-                    t: 0.0,
-                }; 3];
-                let nwin = reader
-                    .tool_gesture
-                    .as_ref()
-                    .map(|g| g.recent_window(&mut window))
-                    .unwrap_or(0);
-                if nwin >= 2
-                    && let Some((px, py)) = crate::prediction::predict_hermite(
-                        &window[..nwin],
-                        crate::prediction::PREDICTION_DT_MS,
-                    )
-                    && let Some(g) = reader.tool_gesture.as_ref()
-                    && let Some(m_last) = g.prev_mid
-                    && m_last != (px, py)
-                {
+                let start_pt = g
+                    .prev_mid
+                    .or_else(|| g.points.last().copied())
+                    .unwrap_or(g.anchor);
+                if start_pt != (px, py) {
                     let w = crate::prediction::pressure_width(reader.ink_width, g.last_pressure());
                     let hw = (w * scale / 2.0).max(0.5);
-                    let a = (m_last.0 * scale + dx, m_last.1 * scale + dy);
+                    let a = (start_pt.0 * scale + dx, start_pt.1 * scale + dy);
                     let b = (px * scale + dx, py * scale + dy);
                     self.draw_polyline_gpu(
                         &[a, b],
@@ -1264,8 +1290,15 @@ impl Gpu {
             }
         }
 
+        // --- Dual-layer Front-Buffer control (Google GLFrontBufferedRenderer pattern) ---
+        let is_wet_ink = reader.tool_gesture.is_some();
+        self.set_front_buffer_auto_refresh(is_wet_ink);
+
         // --- present ---
         let Some(surf) = self.surf else { return };
+        unsafe {
+            gl::glFlush();
+        }
         let swap_t0 = std::time::Instant::now();
         let ok = unsafe { gl::eglSwapBuffers(self.dpy, surf) != 0 };
         let swap_ms = swap_t0.elapsed().as_secs_f64() * 1000.0;

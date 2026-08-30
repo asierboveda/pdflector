@@ -652,17 +652,17 @@ pub fn android_main(app: AndroidApp) {
     let mut running = true;
     crate::jni::enter_immersive(&app);
     crate::jni::keep_screen_on(&app);
+    crate::jni::enable_120hz(&app);
 
     while running {
-        // Timeout del poll SIEMPRE con ventana (16 ms → tick por vsync):
+        // Timeout del poll con ventana (8 ms → tick por vsync a 120 Hz):
         // con `poll_events(None)` (reposo) el looper de android-activity
         // puede quedarse dormido y PERDER los toques del visor (bug medido
         // en la TCL: el keyevent despertaba pero el touch no — la app
-        // "se quedaba pillada"). El tick es ligero (~µs) y el coste de
-        // batería de 60 wakeups/s es despreciable frente a la robustez.
-        // Sin ventana (o sin activity), el poll sigue bloqueante (guard).
+        // "se quedaba pillada"). A 120 Hz el tick a 8 ms garantiza que no se
+        // acumule lag de eventos. Sin ventana (o sin activity), el poll sigue bloqueante.
         let timeout = if reader.has_window() {
-            Some(std::time::Duration::from_millis(16))
+            Some(std::time::Duration::from_millis(8))
         } else {
             None
         };

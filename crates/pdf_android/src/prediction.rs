@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
-
+#![allow(dead_code)]
 //! Predicción de trazo (Fase 1 de PLAN-PARIDAD-STYLUS-NATIVO, ADR-006):
 //! proyecta la posición futura del boli Δt ms hacia delante para compensar el
 //! retraso del pipeline de presentación (1 vsync = 16 ms a 60 Hz).
@@ -14,7 +14,7 @@
 //! 3 muestras (arrays fijos `[f32; 2]`) — coste medido < 1 µs por evento
 //! (informe de la fase). Sin `unwrap`/`expect`; predicción degenerada
 //! (historial corto) = último punto conocido.
-
+#[allow(dead_code)]
 /// Punto del trazo en coords de PÁGINA + timestamp en ms (monótono, del
 /// `event_time` NDK del boli — no se asume intervalo uniforme).
 #[derive(Clone, Copy, Debug, PartialEq)]
