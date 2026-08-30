@@ -101,36 +101,46 @@ impl KalmanFilter1D {
         ];
 
         // 3. Medición H = [1, 0, 0]
-        let r = MEASUREMENT_NOISE_SIGMA * MEASUREMENT_NOISE_SIGMA;
+        let r = (MEASUREMENT_NOISE_SIGMA * MEASUREMENT_NOISE_SIGMA).max(1e-4);
         let residual = z - s0;
         let s_cov = p_prior[0][0] + r;
 
-        if s_cov.abs() < 1e-7 {
+        if !s_cov.is_finite() || s_cov < 1e-6 {
             return;
         }
 
         let inv_s = 1.0 / s_cov;
-        let k0 = p_prior[0][0] * inv_s;
-        let k1 = p_prior[1][0] * inv_s;
-        let k2 = p_prior[2][0] * inv_s;
+        let k0 = (p_prior[0][0] * inv_s).clamp(-2.0, 2.0);
+        let k1 = (p_prior[1][0] * inv_s).clamp(-100.0, 100.0);
+        let k2 = (p_prior[2][0] * inv_s).clamp(-1000.0, 1000.0);
 
-        // 4. Actualización del vector de estado
-        self.state[0] = s0 + k0 * residual;
-        self.state[1] = s1 + k1 * residual;
-        self.state[2] = s2 + k2 * residual;
+        // 4. Actualización del vector de estado con clamps defensivos
+        let next_pos = s0 + k0 * residual;
+        let next_vel = (s1 + k1 * residual).clamp(-10_000.0, 10_000.0);
+        let next_acc = (s2 + k2 * residual).clamp(-100_000.0, 100_000.0);
 
-        // 5. Actualización de covarianza P = (I - K*H) * P_prior
-        p_prior[0][0] -= k0 * p_prior[0][0];
+        if next_pos.is_finite() && next_vel.is_finite() && next_acc.is_finite() {
+            self.state[0] = next_pos;
+            self.state[1] = next_vel;
+            self.state[2] = next_acc;
+        } else {
+            self.state[0] = z;
+            self.state[1] = 0.0;
+            self.state[2] = 0.0;
+        }
+
+        // 5. Actualización simétrica y positiva de covarianza P = (I - K*H) * P_prior
+        p_prior[0][0] = (p_prior[0][0] - k0 * p_prior[0][0]).max(1e-4);
         p_prior[0][1] -= k0 * p_prior[0][1];
         p_prior[0][2] -= k0 * p_prior[0][2];
 
-        p_prior[1][0] -= k1 * p_prior[0][0];
-        p_prior[1][1] -= k1 * p_prior[0][1];
+        p_prior[1][0] = p_prior[0][1];
+        p_prior[1][1] = (p_prior[1][1] - k1 * p_prior[0][1]).max(1e-4);
         p_prior[1][2] -= k1 * p_prior[0][2];
 
-        p_prior[2][0] -= k2 * p_prior[0][0];
-        p_prior[2][1] -= k2 * p_prior[0][1];
-        p_prior[2][2] -= k2 * p_prior[0][2];
+        p_prior[2][0] = p_prior[0][2];
+        p_prior[2][1] = p_prior[1][2];
+        p_prior[2][2] = (p_prior[2][2] - k2 * p_prior[0][2]).max(1e-4);
 
         self.p = p_prior;
     }
@@ -138,7 +148,8 @@ impl KalmanFilter1D {
     /// Proyecta la posición en un horizonte temporal futuro $\Delta t$.
     #[inline]
     pub fn predict_future(&self, dt: f32) -> f32 {
-        self.state[0] + self.state[1] * dt + 0.5 * self.state[2] * dt * dt
+        let res = self.state[0] + self.state[1] * dt + 0.5 * self.state[2] * dt * dt;
+        if res.is_finite() { res } else { self.state[0] }
     }
 }
 
@@ -204,28 +215,42 @@ impl KalmanPredictor {
         let fx = self.filter_x.as_ref()?;
         let fy = self.filter_y.as_ref()?;
 
+        let pos_x = fx.state[0];
+        let pos_y = fy.state[0];
+
+        if !pos_x.is_finite() || !pos_y.is_finite() {
+            return None;
+        }
+
         let vx = fx.state[1];
         let vy = fy.state[1];
         let ax = fx.state[2];
         let ay = fy.state[2];
 
         let speed = (vx * vx + vy * vy).sqrt();
-        if speed < 1.0 {
+        if !speed.is_finite() || speed < 1.0 {
             // Reposo o movimiento imperceptible: sin proyección
-            return Some((fx.state[0], fy.state[0]));
+            return Some((pos_x, pos_y));
         }
 
         // Aceleración perpendicular (centrípeta): a_perp = |v_x * a_y - v_y * a_x| / speed
         let a_perp = (vx * ay - vy * ax).abs() / speed.max(1e-3);
 
         // Modulación dinámica del horizonte: a mayor aceleración angular, menor horizonte
-        let horizon_decay = 1.0 + a_perp * 0.005;
+        let horizon_decay = (1.0 + a_perp * 0.005).max(1.0);
         let effective_horizon =
             (self.horizon_s / horizon_decay).clamp(MIN_PREDICTION_HORIZON_S, self.horizon_s);
 
         let pred_x = fx.predict_future(effective_horizon);
         let pred_y = fy.predict_future(effective_horizon);
 
-        Some((pred_x, pred_y))
+        if pred_x.is_finite() && pred_y.is_finite() {
+            let max_lead = speed * self.horizon_s * 1.5;
+            let dx = (pred_x - pos_x).clamp(-max_lead, max_lead);
+            let dy = (pred_y - pos_y).clamp(-max_lead, max_lead);
+            Some((pos_x + dx, pos_y + dy))
+        } else {
+            Some((pos_x, pos_y))
+        }
     }
 }

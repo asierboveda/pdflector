@@ -906,6 +906,9 @@ impl Gpu {
     /// Quad opaco/color en px de pantalla (tinta directa del resaltador,
     /// sel rect: fill + borde).
     fn draw_solid_quad(&mut self, l: f32, t: f32, r: f32, b: f32, rgba: [u8; 4]) {
+        if !l.is_finite() || !t.is_finite() || !r.is_finite() || !b.is_finite() {
+            return;
+        }
         self.draw_ink_triangles(&[
             // 2 triángulos con hw = 0 (sin AA — quad duro).
             InkVert {
@@ -1001,23 +1004,41 @@ impl Gpu {
     /// perpendiculares al segmento (mitad de grosor `hw`); AA analítico en
     /// el fragment shader. `pts` en px de PANTALLA.
     fn draw_polyline_gpu(&mut self, pts: &[(f32, f32)], hw: f32, rgba: [u8; 4]) {
+        if !hw.is_finite() || hw <= 0.0 {
+            return;
+        }
         if pts.len() < 2 {
-            if let Some(&(x, y)) = pts.first() {
+            if let Some(&(x, y)) = pts.first()
+                && x.is_finite()
+                && y.is_finite()
+            {
                 self.draw_solid_quad(x - hw, y - hw, x + hw, y + hw, rgba);
             }
             return;
         }
         let mut verts: Vec<InkVert> = Vec::with_capacity(pts.len() * 2);
         for (i, &(x, y)) in pts.iter().enumerate() {
+            if !x.is_finite() || !y.is_finite() {
+                continue;
+            }
             let prev = if i > 0 { pts[i - 1] } else { (x, y) };
             let next = if i + 1 < pts.len() {
                 pts[i + 1]
             } else {
                 (x, y)
             };
+            let prev = if prev.0.is_finite() && prev.1.is_finite() {
+                prev
+            } else {
+                (x, y)
+            };
+            let next = if next.0.is_finite() && next.1.is_finite() {
+                next
+            } else {
+                (x, y)
+            };
             let (dx, dy) = (next.0 - prev.0, next.1 - prev.1);
             let len = (dx * dx + dy * dy).sqrt().max(1e-3);
-            // Normal perpendicular al segmento.
             let (nx, ny) = (-dy / len, dx / len);
             verts.push(InkVert {
                 x: x + nx * hw,
@@ -1038,7 +1059,9 @@ impl Gpu {
                 a: rgba[3],
             });
         }
-        self.draw_ink_triangles(&verts);
+        if !verts.is_empty() {
+            self.draw_ink_triangles(&verts);
+        }
     }
 
     // ------------------------------------------------- frame completo

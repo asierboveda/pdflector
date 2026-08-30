@@ -465,6 +465,7 @@ struct PenButtons {
     action: Button,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_motion(
     reader: &mut Reader,
     app: &AndroidApp,
@@ -473,6 +474,8 @@ fn handle_motion(
     up_idx: Option<usize>,
     stylus: bool,
     buttons: PenButtons,
+    event_time: i64,
+    stylus_pressure: f32,
 ) {
     // FASE A — CALIBRACIÓN DE BOTONES DEL BOLI (ver CHANGELOG 2026-08-25):
     // este boli reporta los bits estándar (0x20 primary / 0x40 secondary),
@@ -717,10 +720,13 @@ fn handle_motion(
                     // frame compuesto + la capa temporal del trazo (la página
                     // NO se re-blitea por evento — requisito 5).
                     let (_, cx, cy) = reader.gesture.pointers[0];
-                    // Move de dedo en ToolDrawing: sin telemetría USI →
-                    // Δt relativo al reloj del gesto (Instant base) y
-                    // presión neutra (el dedo no reporta presión).
-                    reader.update_tool_gesture(cx, cy, 0.0, 0.5);
+                    let t0 = reader.gesture_t0_ns;
+                    let t_ms = if stylus {
+                        gesture_ms(event_time, t0)
+                    } else {
+                        0.0
+                    };
+                    reader.update_tool_gesture(cx, cy, t_ms, stylus_pressure);
                 }
                 GestureKind::Erase if reader.gesture.pointers.len() == 1 => {
                     // Arrastre de BORRADO: hit-test del punto y eliminación
@@ -1614,6 +1620,8 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
                         state: motion.button_state(),
                         action: motion.action_button(),
                     },
+                    motion.event_time(),
+                    stylus_pressure,
                 );
                 InputStatus::Handled
             }
