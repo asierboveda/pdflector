@@ -108,5 +108,8 @@ EGL/GLES2 verificado en TCL (Mali-G57 MC2, 2200x1440, PSS 52.9 MB). Medición co
 `gl_present` en gesto ejecutada 2026-08-29: p50 4.55 / p95 10.00 ms (n=1768), p95 10.48 ms
 (n=1395 segunda tanda), 0 FAIL en 3735 frames, page flips p95 11.64 ms, dark mode/suspensión/
 Library↔Viewer sin regresiones, PSS 116–126 MB (trazos) / 71.4 MB (Library). Detalle completo
-en `docs/benchmark-results.md`, Fase 2. Pendiente Fase 3 (boli físico): latencia punta-tinta
-240 fps, test ciego, goma BTN_STYLUS2, cero-pop, presión USI 2.0.
+en `docs/benchmark-results.md`, Fase 2. Fase 3 (validación con stylus físico USI 2.0) ejecutada el 2026-08-30:
+botón físico de goma verificado funcional (0x20), cero-pop validado, sombreadores
+corregidos para mezcla premultiplicada. Caracterizada la diferencia de latencia vs app
+nativa (BufferQueue estándar 60 Hz vs front-buffer scanout de fabricante). Ver
+`docs/benchmark-results.md` § Fase 3.

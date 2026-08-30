@@ -256,7 +256,7 @@ uniform float uAlpha;
 varying vec2 vUV;
 void main() {
     vec4 c = texture2D(uTex, vUV);
-    gl_FragColor = vec4(c.rgb, c.a * uAlpha);
+    gl_FragColor = vec4(c.rgb * uAlpha, c.a * uAlpha);
 }
 \0";
 
@@ -282,8 +282,7 @@ precision mediump float;
 varying float vHw;
 varying vec4 vColor;
 void main() {
-    float alpha = smoothstep(vHw, vHw - 1.0, vHw * 0.5);
-    gl_FragColor = vec4(vColor.rgb, vColor.a * alpha);
+    gl_FragColor = vec4(vColor.rgb * vColor.a, vColor.a);
 }
 \0";
 
@@ -956,6 +955,9 @@ impl Gpu {
     /// el fragment shader. `pts` en px de PANTALLA.
     fn draw_polyline_gpu(&mut self, pts: &[(f32, f32)], hw: f32, rgba: [u8; 4]) {
         if pts.len() < 2 {
+            if let Some(&(x, y)) = pts.first() {
+                self.draw_solid_quad(x - hw, y - hw, x + hw, y + hw, rgba);
+            }
             return;
         }
         let mut verts: Vec<InkVert> = Vec::with_capacity(pts.len() * 2);

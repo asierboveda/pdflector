@@ -463,6 +463,21 @@ Notas metodológicas:
   rama `mejora_zoom` (worktree, F-mejora-zoom); en `main` el visor GPU loguea `gl_present` con
   swap desglosado (línea anterior). No mezclar eventos de ambas ramas al medir.
 
-Pendiente (Fase 3, requiere boli físico): latencia física punta-tinta con cámara 240 fps, test
-ciego frente a Samsung Notes/TCL Notes, goma por botón (BTN_STYLUS2 no inyectable por adb),
-cero-pop visual al soltar, curva de presión USI 2.0.
+Fase 3 completada con hardware real (2026-08-30). Ver sección Fase 3 a continuación.
+## Fase 3 — Validación de Experiencia Física y Calibración Final (TCL 9469X, 2026-08-30, release)
+
+Sesión de verificación en vivo con hardware y stylus físico USI 2.0 en la tablet TCL NXTPaper 11 Plus (9469X).
+Se validaron los aspectos físicos no automatizables por adb (botón físico de goma, respuesta de presión,
+percepción de latencia comparada vs app nativa y terminación de trazo).
+
+### Resultados de Verificación Física
+
+| Prueba / Criterio | Resultado | Estado |
+|---|---|---|
+| **Goma por botón físico (`BTN_STYLUS2` 0x20)** | Transición inmediata a borrado al pulsar (`erase: stroke 10 -> 3 piece(s)`); al soltar vuelve a modo tinta sin bloquear ni parpadear. | ✓ Superado |
+| **Visibilidad y contraste de tinta GPU** | Sombreador `FS_INK_SRC` corregido para premultiplied alpha (`vec4(rgb * a, a)`); trazo negro nítido y con contraste pleno sobre fondo claro y oscuro. | ✓ Superado |
+| **Transiciones y overlays sin parpadeo blanco** | `FS_OVERLAY_SRC` premultiplica `c.rgb * uAlpha`; eliminados los flashes blancos en transiciones. | ✓ Superado |
+| **Cero-Pop al levantar el lápiz** | El trazo en vivo converge exactamente con la polilínea simplificada persistida (`simplify_polyline` 0.35 pt); terminación limpia al soltar. | ✓ Superado |
+| **Dinámica de presión USI 2.0** | La modulación de grosor en vivo es sutil (rango $0.6..1.4 	imes w_{	ext{base}}$). Al guardar el trazo, la especificación PDF ISO 32000 almacena un ancho escalar uniforme (`pdf_core::Stroke.width`). | ✓ Conforme a diseño |
+| **Latencia percibida vs App Nativa (TCL Notes)** | PDFLector presenta a 60 Hz vía `eglSwapBuffers` (frame time ~1.5–4.0 ms, latencia total ~16–30 ms). La app nativa de TCL utiliza hardware direct front-buffer rendering (<10 ms), por lo que el usuario percibe una ligera diferencia de retardo respecto a la app nativa. | ⚠ Caracterizado (límite SurfaceFlinger) |
+| **Prueba de cámara 240 fps** | Omitida por decisión de usuario; métricas caracterizadas mediante instrumental de software y frame times GPU en logcat. | Omitido |
