@@ -346,6 +346,7 @@ mod annotations;
 mod cache;
 mod draw;
 mod gpu;
+pub mod ink;
 mod input;
 mod jni;
 mod persist;
