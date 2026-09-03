@@ -198,7 +198,9 @@ const CHAT_SYSTEM_PROMPT: &str = "Eres un asistente que responde preguntas sobre
 fn main() -> eframe::Result<()> {
     let initial_pdf = std::env::args().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1024.0, 768.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1024.0, 768.0])
+            .with_decorations(false),
         ..Default::default()
     };
     eframe::run_native(
@@ -398,6 +400,8 @@ struct App {
     highlight_rx: Option<Receiver<HighlightReply>>,
     /// The floating note input, `None` while no note is being written.
     note_input: Option<NoteInput>,
+    /// Fase 3 (Shell): Left sidebar toggle.
+    sidebar_open: bool,
     /// Annotations panel toggle (toolbar "Annotations").
     annot_panel_open: bool,
     /// Id of the annotation last jumped to from the panel (visual highlight
@@ -505,6 +509,7 @@ impl App {
             highlight_seq: 0,
             highlight_rx: None,
             note_input: None,
+            sidebar_open: true,
             annot_panel_open: false,
             annot_selected: None,
             pending_jump: None,
@@ -578,6 +583,7 @@ impl App {
         self.pending_highlights.clear();
         self.highlight_rx = None;
         self.note_input = None;
+        self.sidebar_open = true;
         self.annot_panel_open = false;
         self.annot_selected = None;
         self.pending_jump = None;
@@ -673,11 +679,49 @@ impl App {
     /// applies `invert_bitmap` on the way to the GPU. `last_get` is cleared
     /// so the re-issue is not throttled by the `GET_PAGE_RETRY` gate.
     fn apply_theme(&mut self, ctx: &egui::Context) {
-        ctx.set_visuals(if self.dark_mode {
+        use pdf_core::theme::{DesignTokens, ThemeColor, ThemeMode};
+        
+        let mode = if self.dark_mode { ThemeMode::Night } else { ThemeMode::Paper };
+        let tokens = match mode {
+            ThemeMode::Paper => DesignTokens::PAPER,
+            ThemeMode::Night => DesignTokens::NIGHT,
+        };
+        
+        let to_egui = |c: ThemeColor| egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
+        
+        let mut visuals = if self.dark_mode {
             egui::Visuals::dark()
         } else {
             egui::Visuals::light()
-        });
+        };
+        
+        // Apply RICOUI tokens
+        visuals.window_fill = to_egui(tokens.canvas);
+        visuals.panel_fill = to_egui(tokens.canvas);
+        
+        // Widget backgrounds
+        visuals.widgets.noninteractive.bg_fill = to_egui(tokens.canvas);
+        visuals.widgets.inactive.bg_fill = to_egui(tokens.surface);
+        visuals.widgets.hovered.bg_fill = to_egui(tokens.surface);
+        visuals.widgets.active.bg_fill = to_egui(tokens.surface);
+        
+        // Widget borders
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.border));
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.border));
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.accent));
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.accent));
+        
+        // Text/Icons
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.ink));
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.ink));
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.accent));
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.accent));
+        
+        // Minimal/Flat hardware-first aesthetic
+        visuals.window_shadow = egui::epaint::Shadow::NONE;
+        visuals.popup_shadow = egui::epaint::Shadow::NONE;
+        
+        ctx.set_visuals(visuals);
         self.textures.clear();
         self.last_get.clear();
     }
@@ -2099,151 +2143,155 @@ impl eframe::App for App {
             self.recents_dirty = false;
         }
 
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Fase 3.5: "Open PDF…" is now a menu: the file dialog plus
-                // the recently opened PDFs (persisted in eframe's storage,
-                // see `push_recent`/`save`). Clicking a recent opens it
-                // directly, skipping the dialog.
-                ui.menu_button("Open PDF…", |ui| {
-                    if ui.button("Choose file…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("PDF", &["pdf"])
-                            .pick_file()
-                        {
-                            match self.open(path.clone()) {
-                                Ok(()) => self.push_recent(path),
-                                Err(e) => self.status = format!("error opening: {e}"),
-                            }
-                        }
-                        ui.close();
+        // Header Flotante
+        egui::Window::new("Header")
+            .title_bar(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 16.0])
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .shadow(egui::epaint::Shadow::NONE) // Sin sombras pesadas
+                    .corner_radius(8.0)
+                    .inner_margin(8.0),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button(if self.sidebar_open { "◀" } else { "▶" }).clicked() {
+                        self.sidebar_open = !self.sidebar_open;
                     }
-                    if !self.recent_pdfs.is_empty() {
-                        ui.separator();
-                        ui.label(egui::RichText::new("Recents:").weak());
-                        // Clone: `self.open` needs `&mut self`, which would
-                        // clash with borrowing the list during iteration.
-                        for path in self.recent_pdfs.clone() {
-                            if ui.button(path.display().to_string()).clicked() {
+                    ui.separator();
+                    let doc_title = self.doc_name.as_deref().unwrap_or("Sin documento");
+                    ui.label(egui::RichText::new(doc_title).strong());
+                    ui.separator();
+                    // Placeholder: Sync icon & Search
+                    ui.label("☁ Sync");
+                    ui.label("🔍 Buscar");
+                });
+            });
+
+        // Sidebar Izquierdo (Ocultable)
+        if self.sidebar_open {
+            egui::SidePanel::left("sidebar")
+                .resizable(true)
+                .default_width(250.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_label(true, "Índice (TOC)");
+                        ui.selectable_label(false, "Miniaturas");
+                        ui.selectable_label(false, "Marcadores");
+                    });
+                    ui.separator();
+
+                    // Move existing Open PDF and tools here as secondary actions
+                    ui.menu_button("Open PDF…", |ui| {
+                        if ui.button("Choose file…").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("PDF", &["pdf"])
+                                .pick_file()
+                            {
                                 match self.open(path.clone()) {
                                     Ok(()) => self.push_recent(path),
                                     Err(e) => self.status = format!("error opening: {e}"),
                                 }
-                                ui.close();
+                            }
+                            ui.close();
+                        }
+                        if !self.recent_pdfs.is_empty() {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Recents:").weak());
+                            for path in self.recent_pdfs.clone() {
+                                if ui.button(path.display().to_string()).clicked() {
+                                    match self.open(path.clone()) {
+                                        Ok(()) => self.push_recent(path),
+                                        Err(e) => self.status = format!("error opening: {e}"),
+                                    }
+                                    ui.close();
+                                }
                             }
                         }
+                    });
+                    ui.separator();
+                    
+                    let has_doc = self.prefetcher.is_some();
+                    if ui.checkbox(&mut self.dark_mode, "Dark").changed() {
+                        self.apply_theme(ctx);
+                        if let Some(storage) = frame.storage_mut() {
+                            storage.set_string(KEY_DARK_MODE, self.dark_mode.to_string());
+                            storage.flush();
+                        }
+                    }
+                    ui.checkbox(&mut self.show_debug, "Debug");
+                    
+                    if has_doc {
+                        ui.toggle_value(&mut self.chat_open, "💬 Chat");
+                        ui.toggle_value(
+                            &mut self.annot_panel_open,
+                            format!("Anotaciones ({})", self.annotations.len()),
+                        );
+                    } else {
+                        ui.add_enabled(false, egui::Button::selectable(false, "💬 Chat"));
+                        ui.add_enabled(false, egui::Button::selectable(false, "Anotaciones"));
+                    }
+                    
+                    let export_busy = self.export_rx.is_some();
+                    if ui.add_enabled(has_doc && !export_busy, egui::Button::new("Export MD")).clicked() {
+                        self.start_export(ExportKind::Markdown);
+                    }
+                    if ui.add_enabled(has_doc && !export_busy, egui::Button::new("Export PDF")).clicked() {
+                        self.start_export(ExportKind::Pdf);
+                    }
+                    if ui.add_enabled(has_doc, egui::Button::new("Clear")).clicked() {
+                        self.annotations = AnnotationSet::new();
+                        self.save_annotations();
+                    }
+                    
+                    ui.add_space(20.0);
+                    ui.label(self.status_line());
+                    if let Some(note) = &self.status_note {
+                        ui.label(note);
                     }
                 });
-                let has_doc = self.prefetcher.is_some();
-                if ui
-                    .add_enabled(has_doc, egui::Button::new("-"))
-                    .on_hover_text("Zoom out")
-                    .clicked()
-                {
-                    self.set_zoom(self.zoom / ZOOM_STEP);
-                }
-                if ui
-                    .add_enabled(has_doc, egui::Button::new("+"))
-                    .on_hover_text("Zoom in")
-                    .clicked()
-                {
-                    self.set_zoom(self.zoom * ZOOM_STEP);
-                }
-                ui.label(format!("{:.0}%", self.zoom * 100.0))
-                    .on_hover_text("Ctrl+wheel or pinch: zoom — wheel: scroll");
-                // Fase 3/3.5 tool toggles: while a tool is active, the primary
-                // button over a page draws / highlights / notes instead of
-                // scrolling (see `handle_*_input`; scroll-by-drag is disabled,
-                // wheel and pinch still scroll). Exactly one tool is active at
-                // a time; deselecting (Scroll) restores normal drag-scrolling.
-                if has_doc {
-                    ui.selectable_value(&mut self.tool, ToolMode::Draw, "✏️ Draw")
-                        .on_hover_text("Draw mode: drag over a page to add a freehand stroke");
-                    ui.selectable_value(&mut self.tool, ToolMode::Highlight, "🖍 Highlight")
-                        .on_hover_text("Highlight mode: drag over text to highlight it");
-                    ui.selectable_value(&mut self.tool, ToolMode::Note, "📝 Note")
-                        .on_hover_text("Note mode: click on a page to add a text note");
-                } else {
-                    ui.add_enabled(false, egui::Button::selectable(false, "✏️ Draw"));
-                    ui.add_enabled(false, egui::Button::selectable(false, "🖍 Highlight"));
-                    ui.add_enabled(false, egui::Button::selectable(false, "📝 Note"));
-                }
-                ui.label(self.status_line());
-                ui.separator();
-                // Dark mode: instant toggle — the visible pages are
-                // re-uploaded inverted from the cache (see `apply_theme` and
-                // `upload_texture`; no engine re-render) and egui switches
-                // visuals. The preference is flushed to eframe's storage
-                // immediately so it survives a crash/kill, and again on
-                // autosave/exit via `App::save`.
-                if ui
-                    .checkbox(&mut self.dark_mode, "Dark")
-                    .on_hover_text("Invert pages (black background) and use the dark theme")
-                    .changed()
-                {
-                    self.apply_theme(ctx);
-                    if let Some(storage) = frame.storage_mut() {
-                        storage.set_string(KEY_DARK_MODE, self.dark_mode.to_string());
-                        storage.flush();
+        }
+
+        // Barra de Herramientas Flotante (Inferior Centro)
+        let has_doc = self.prefetcher.is_some();
+        egui::Window::new("Toolbar")
+            .title_bar(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -20.0])
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .shadow(egui::epaint::Shadow::NONE) // Sin sombras pesadas
+                    .corner_radius(24.0) // Estilo píldora
+                    .inner_margin(egui::Margin::symmetric(16, 8)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.tool, ToolMode::Scroll, "✋ Pan");
+                    ui.add_enabled(false, egui::Button::new("T Select")); // Placeholder
+                    
+                    if has_doc {
+                        ui.selectable_value(&mut self.tool, ToolMode::Draw, "✏️ Bolígrafo");
+                        ui.selectable_value(&mut self.tool, ToolMode::Highlight, "🖍 Subrayador");
+                        ui.selectable_value(&mut self.tool, ToolMode::Note, "📝 Nota");
+                        ui.add_enabled(false, egui::Button::new("Goma")); // Placeholder
+                    } else {
+                        ui.add_enabled(false, egui::Button::selectable(false, "✏️ Bolígrafo"));
+                        ui.add_enabled(false, egui::Button::selectable(false, "🖍 Subrayador"));
+                        ui.add_enabled(false, egui::Button::selectable(false, "📝 Nota"));
                     }
-                }
-                ui.checkbox(&mut self.show_debug, "Debug")
-                    .on_hover_text("Show the frame-time / RSS / cache overlay");
-                // Fase 5 chat toggle: opens the AI chat panel. Best-effort —
-                // it asks about the visible page's text, so it is disabled
-                // without an open document (same pattern as the Draw toggle).
-                if has_doc {
-                    ui.toggle_value(&mut self.chat_open, "💬 Chat")
-                } else {
-                    ui.add_enabled(false, egui::Button::selectable(false, "💬 Chat"))
-                }
-                .on_hover_text(
-                    "Chat IA: pregunta sobre la página visible (requiere Ollama en localhost:11434)",
-                );
-                // Fase 3.5 annotations panel toggle: opens the side panel
-                // with every annotation of the document (page + type +
-                // summary); clicking an entry jumps to its page.
-                if has_doc {
-                    ui.toggle_value(
-                        &mut self.annot_panel_open,
-                        format!("Anotaciones ({})", self.annotations.len()),
-                    )
-                } else {
-                    ui.add_enabled(false, egui::Button::selectable(false, "Anotaciones"))
-                }
-                .on_hover_text("Show all annotations; click one to jump to its page");
-                // Fase 3-4 closure: persistence, export, clear. Exports run
-                // on a background thread (`start_export`) and are disabled
-                // while one is in flight; the result appears in the status
-                // line. Clear empties the set and writes the empty sidecar.
-                let export_busy = self.export_rx.is_some();
-                if ui
-                    .add_enabled(has_doc && !export_busy, egui::Button::new("Export MD"))
-                    .on_hover_text("Exportar las anotaciones a Markdown (<pdf>.md, junto al PDF)")
-                    .clicked()
-                {
-                    self.start_export(ExportKind::Markdown);
-                }
-                if ui
-                    .add_enabled(has_doc && !export_busy, egui::Button::new("Export PDF"))
-                    .on_hover_text("Exportar un PDF anotado (<pdf>.annotated.pdf, junto al PDF)")
-                    .clicked()
-                {
-                    self.start_export(ExportKind::Pdf);
-                }
-                if ui
-                    .add_enabled(has_doc, egui::Button::new("Clear"))
-                    .on_hover_text("Borrar todas las anotaciones y guardar el sidecar vacío")
-                    .clicked()
-                {
-                    // A fresh set is the same as deleting every stroke (ids
-                    // restart from 0 — safe, no rows remain in the sidecar)
-                    // and the empty sidecar is written immediately.
-                    self.annotations = AnnotationSet::new();
-                    self.save_annotations();
-                }
+                    
+                    ui.separator();
+                    
+                    if ui.add_enabled(has_doc, egui::Button::new("-")).clicked() {
+                        self.set_zoom(self.zoom / ZOOM_STEP);
+                    }
+                    ui.label(format!("{:.0}%", self.zoom * 100.0));
+                    if ui.add_enabled(has_doc, egui::Button::new("+")).clicked() {
+                        self.set_zoom(self.zoom * ZOOM_STEP);
+                    }
+                });
             });
-        });
 
         // Fase 3.5 annotations panel: a right side panel listing every
         // annotation of the document (page + type + summary). Clicking an
@@ -2364,7 +2412,9 @@ impl eframe::App for App {
                 });
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
             // Zoom input (ctrl+wheel, trackpad pinch). egui routes ctrl+wheel
             // to `zoom_delta` and away from `smooth_scroll_delta`, so the
             // ScrollArea below does not also pan while zooming.
@@ -2401,24 +2451,37 @@ impl eframe::App for App {
             let prefetcher = self.prefetcher.take();
             match prefetcher.as_ref() {
                 None => {
-                    ui.label("Open a PDF to begin (or pass a path as argument).");
-                    // Fase 3.5: the empty state also offers the recently
-                    // opened PDFs (same list as the Open menu), so a fresh
-                    // start is one click away.
-                    if !self.recent_pdfs.is_empty() {
-                        ui.add_space(12.0);
-                        ui.label(egui::RichText::new("Recents:").strong());
-                        // Clone: `self.open` needs `&mut self`, which would
-                        // clash with borrowing the list during iteration.
-                        for path in self.recent_pdfs.clone() {
-                            if ui.button(path.display().to_string()).clicked() {
-                                match self.open(path.clone()) {
-                                    Ok(()) => self.push_recent(path),
-                                    Err(e) => self.status = format!("error opening: {e}"),
+                    // Placeholder visual que simula el PDF
+                    let (rect, _response) = ui.allocate_exact_size(
+                        ui.available_size(),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(
+                        rect.shrink(20.0),
+                        egui::CornerRadius::same(12),
+                        egui::Color32::from_gray(230),
+                    );
+                    
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                            ui.add_space(rect.height() / 2.0 - 60.0);
+                            ui.heading(egui::RichText::new("Canvas del PDF (Placeholder)").color(egui::Color32::from_gray(100)));
+                            ui.label(egui::RichText::new("Abre un PDF para comenzar.").color(egui::Color32::from_gray(120)));
+                            
+                            if !self.recent_pdfs.is_empty() {
+                                ui.add_space(16.0);
+                                ui.label(egui::RichText::new("Recientes:").strong().color(egui::Color32::from_gray(120)));
+                                for path in self.recent_pdfs.clone() {
+                                    if ui.button(path.display().to_string()).clicked() {
+                                        match self.open(path.clone()) {
+                                            Ok(()) => self.push_recent(path),
+                                            Err(e) => self.status = format!("error opening: {e}"),
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }
+                        });
+                    });
                 }
                 Some(p) => {
                     let total = self.page_count as usize;
