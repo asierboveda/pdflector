@@ -80,6 +80,7 @@ pub mod ffi {
     pub const GL_ARRAY_BUFFER: u32 = 0x8892;
     pub const GL_STREAM_DRAW: u32 = 0x88E0;
     pub const GL_TRIANGLE_STRIP: u32 = 0x0005;
+    pub const GL_TRIANGLES: u32 = 0x0004;
     pub const GL_FRAGMENT_SHADER: u32 = 0x8B30;
     pub const GL_VERTEX_SHADER: u32 = 0x8B31;
     pub const GL_COMPILE_STATUS: u32 = 0x8B81;
@@ -235,20 +236,28 @@ pub mod ffi {
 
 use ffi as gl;
 
-/// Vertex de tinta: posición en PANTALLA (px, y abajo) + semi-grosor del
-/// trazo en px de pantalla (para el AA del fragment) + RGBA8.
+/// Vertex de tinta: posición en PANTALLA (px, y abajo) + offset perpendicular
+/// con signo (AA por ancho) + semi-ancho del centro + centro del punto
+/// (disco redondo de tapas/juntas) + RGBA8.
 #[repr(C)]
 struct InkVert {
     x: f32,
     y: f32,
+    /// Offset perpendicular CON SIGNO (±hw) al centro de línea: `abs(d)` =
+    /// distancia al centro en el fragment shader (AA por ancho).
+    d: f32,
+    /// Semi-ancho del trazo en px de pantalla (centro de la línea).
     hw: f32,
+    /// Centro del punto (disco redondo de tapas/juntas; 0 en la cinta).
+    cx: f32,
+    cy: f32,
     r: u8,
     g: u8,
     b: u8,
     a: u8,
 }
 
-const INK_VERT_SIZE: usize = std::mem::size_of::<InkVert>(); // 16 bytes
+const INK_VERT_SIZE: usize = std::mem::size_of::<InkVert>(); // 28 bytes
 
 // ---------------------------------------------------------------- Shaders
 
@@ -294,27 +303,50 @@ void main() {
 
 const VS_INK_SRC: &[u8] = b"
 attribute vec2 aPos;
+attribute float aD;
 attribute float aHw;
+attribute vec2 aCenter;
 attribute vec4 aColor;
 uniform mat3 uMvp;
 uniform vec2 uRes;
+varying vec2 vPos;
+varying float vD;
 varying float vHw;
+varying vec2 vCenter;
 varying vec4 vColor;
 void main() {
     vec2 px = (uMvp * vec3(aPos, 1.0)).xy;
     vec2 ndc = vec2(2.0 * px.x / uRes.x - 1.0, 1.0 - 2.0 * px.y / uRes.y);
     gl_Position = vec4(ndc, 0.0, 1.0);
+    vPos = px;
+    vD = aD;
     vHw = aHw;
+    vCenter = aCenter;
     vColor = aColor;
 }
 \0";
 
 const FS_INK_SRC: &[u8] = b"
 precision mediump float;
+uniform float uRound;
+varying vec2 vPos;
+varying float vD;
 varying float vHw;
+varying vec2 vCenter;
 varying vec4 vColor;
 void main() {
-    gl_FragColor = vec4(vColor.rgb * vColor.a, vColor.a);
+    float aa = 1.0;
+    float alpha;
+    if (vHw <= 0.0) {
+        alpha = 1.0;
+    } else if (uRound > 0.5) {
+        // Disco redondo: distancia desde el fragmento al centro del punto.
+        alpha = 1.0 - smoothstep(vHw - aa, vHw, distance(vPos, vCenter));
+    } else {
+        // Cinta: distancia perpendicular al centro de la linea (AA por ancho).
+        alpha = 1.0 - smoothstep(vHw - aa, vHw, abs(vD));
+    }
+    gl_FragColor = vec4(vColor.rgb * vColor.a * alpha, vColor.a * alpha);
 }
 \0";
 
@@ -334,10 +366,13 @@ struct QuadProg {
 struct InkProg {
     prog: u32,
     a_pos: i32,
+    a_d: i32,
     a_hw: i32,
+    a_center: i32,
     a_color: i32,
     u_mvp: i32,
     u_res: i32,
+    u_round: i32,
 }
 
 fn compile(typ: u32, src: &[u8]) -> Option<u32> {
@@ -599,10 +634,13 @@ impl Gpu {
             let prog_ink = InkProg {
                 prog: p,
                 a_pos: gl::glGetAttribLocation(p, c"aPos".as_ptr()),
+                a_d: gl::glGetAttribLocation(p, c"aD".as_ptr()),
                 a_hw: gl::glGetAttribLocation(p, c"aHw".as_ptr()),
+                a_center: gl::glGetAttribLocation(p, c"aCenter".as_ptr()),
                 a_color: gl::glGetAttribLocation(p, c"aColor".as_ptr()),
                 u_mvp: gl::glGetUniformLocation(p, c"uMvp".as_ptr()),
                 u_res: gl::glGetUniformLocation(p, c"uRes".as_ptr()),
+                u_round: gl::glGetUniformLocation(p, c"uRound".as_ptr()),
             };
             let mut vbo_quad = 0u32;
             gl::glGenBuffers(1, &mut vbo_quad);
@@ -937,47 +975,63 @@ impl Gpu {
         if !l.is_finite() || !t.is_finite() || !r.is_finite() || !b.is_finite() {
             return;
         }
-        self.draw_ink_triangles(&[
-            InkVert {
-                x: l,
-                y: t,
-                hw: 0.0,
-                r: rgba[0],
-                g: rgba[1],
-                b: rgba[2],
-                a: rgba[3],
-            },
-            InkVert {
-                x: r,
-                y: t,
-                hw: 0.0,
-                r: rgba[0],
-                g: rgba[1],
-                b: rgba[2],
-                a: rgba[3],
-            },
-            InkVert {
-                x: l,
-                y: b,
-                hw: 0.0,
-                r: rgba[0],
-                g: rgba[1],
-                b: rgba[2],
-                a: rgba[3],
-            },
-            InkVert {
-                x: r,
-                y: b,
-                hw: 0.0,
-                r: rgba[0],
-                g: rgba[1],
-                b: rgba[2],
-                a: rgba[3],
-            },
-        ]);
+        self.draw_ink_triangles(
+            &[
+                InkVert {
+                    x: l,
+                    y: t,
+                    d: 0.0,
+                    hw: 0.0,
+                    cx: 0.0,
+                    cy: 0.0,
+                    r: rgba[0],
+                    g: rgba[1],
+                    b: rgba[2],
+                    a: rgba[3],
+                },
+                InkVert {
+                    x: r,
+                    y: t,
+                    d: 0.0,
+                    hw: 0.0,
+                    cx: 0.0,
+                    cy: 0.0,
+                    r: rgba[0],
+                    g: rgba[1],
+                    b: rgba[2],
+                    a: rgba[3],
+                },
+                InkVert {
+                    x: l,
+                    y: b,
+                    d: 0.0,
+                    hw: 0.0,
+                    cx: 0.0,
+                    cy: 0.0,
+                    r: rgba[0],
+                    g: rgba[1],
+                    b: rgba[2],
+                    a: rgba[3],
+                },
+                InkVert {
+                    x: r,
+                    y: b,
+                    d: 0.0,
+                    hw: 0.0,
+                    cx: 0.0,
+                    cy: 0.0,
+                    r: rgba[0],
+                    g: rgba[1],
+                    b: rgba[2],
+                    a: rgba[3],
+                },
+            ],
+            false,
+            gl::GL_TRIANGLE_STRIP,
+        );
     }
 
-    fn draw_ink_triangles(&mut self, verts: &[InkVert]) {
+    fn draw_ink_triangles(&mut self, verts: &[InkVert], round: bool, mode: u32) {
         if verts.is_empty() {
             return;
         }
@@ -986,6 +1040,7 @@ impl Gpu {
             let id = mat3_scale_translate(1.0, 1.0, 0.0, 0.0);
             gl::glUniformMatrix3fv(self.prog_ink.u_mvp, 1, 0, id.as_ptr());
             gl::glUniform2f(self.prog_ink.u_res, self.win_w as f32, self.win_h as f32);
+            gl::glUniform1f(self.prog_ink.u_round, if round { 1.0 } else { 0.0 });
             gl::glBindBuffer(gl::GL_ARRAY_BUFFER, self.vbo_ink);
             gl::glBufferData(
                 gl::GL_ARRAY_BUFFER,
@@ -1003,6 +1058,15 @@ impl Gpu {
                 stride,
                 std::ptr::null(),
             );
+            gl::glEnableVertexAttribArray(self.prog_ink.a_d as u32);
+            gl::glVertexAttribPointer(
+                self.prog_ink.a_d as u32,
+                1,
+                gl::GL_FLOAT,
+                0,
+                stride,
+                8 as *const u8,
+            );
             gl::glEnableVertexAttribArray(self.prog_ink.a_hw as u32);
             gl::glVertexAttribPointer(
                 self.prog_ink.a_hw as u32,
@@ -1010,7 +1074,16 @@ impl Gpu {
                 gl::GL_FLOAT,
                 0,
                 stride,
-                8 as *const u8,
+                12 as *const u8,
+            );
+            gl::glEnableVertexAttribArray(self.prog_ink.a_center as u32);
+            gl::glVertexAttribPointer(
+                self.prog_ink.a_center as u32,
+                2,
+                gl::GL_FLOAT,
+                0,
+                stride,
+                16 as *const u8,
             );
             gl::glEnableVertexAttribArray(self.prog_ink.a_color as u32);
             gl::glVertexAttribPointer(
@@ -1019,11 +1092,13 @@ impl Gpu {
                 gl::GL_UNSIGNED_BYTE,
                 1,
                 stride,
-                12 as *const u8,
+                24 as *const u8,
             );
-            gl::glDrawArrays(gl::GL_TRIANGLE_STRIP, 0, verts.len() as i32);
+            gl::glDrawArrays(mode, 0, verts.len() as i32);
             gl::glDisableVertexAttribArray(self.prog_ink.a_pos as u32);
+            gl::glDisableVertexAttribArray(self.prog_ink.a_d as u32);
             gl::glDisableVertexAttribArray(self.prog_ink.a_hw as u32);
+            gl::glDisableVertexAttribArray(self.prog_ink.a_center as u32);
             gl::glDisableVertexAttribArray(self.prog_ink.a_color as u32);
             gl::glBindBuffer(gl::GL_ARRAY_BUFFER, 0);
         }
@@ -1046,10 +1121,13 @@ impl Gpu {
         }
 
         self.ink_scratch.clear();
+        self.pts_scratch.clear();
         for (i, &(x, y)) in pts.iter().enumerate() {
             if !x.is_finite() || !y.is_finite() {
                 continue;
             }
+            // Punto válido: se usa para el disco redondo (tapa y junta).
+            self.pts_scratch.push((x, y));
             let prev = if i > 0 { pts[i - 1] } else { (x, y) };
             let next = if i + 1 < pts.len() {
                 pts[i + 1]
@@ -1069,10 +1147,14 @@ impl Gpu {
             let (dx, dy) = (next.0 - prev.0, next.1 - prev.1);
             let len = (dx * dx + dy * dy).sqrt().max(1e-3);
             let (nx, ny) = (-dy / len, dx / len);
+            // Cinta: offset perpendicular CON SIGNO (±hw) para el AA por ancho.
             self.ink_scratch.push(InkVert {
                 x: x + nx * hw,
                 y: y + ny * hw,
+                d: hw,
                 hw,
+                cx: x,
+                cy: y,
                 r: rgba[0],
                 g: rgba[1],
                 b: rgba[2],
@@ -1081,7 +1163,10 @@ impl Gpu {
             self.ink_scratch.push(InkVert {
                 x: x - nx * hw,
                 y: y - ny * hw,
+                d: -hw,
                 hw,
+                cx: x,
+                cy: y,
                 r: rgba[0],
                 g: rgba[1],
                 b: rgba[2],
@@ -1089,10 +1174,44 @@ impl Gpu {
             });
         }
 
+        let ribbon = std::mem::take(&mut self.ink_scratch);
+        if !ribbon.is_empty() {
+            self.draw_ink_triangles(&ribbon, false, gl::GL_TRIANGLE_STRIP);
+        }
+        self.ink_scratch = ribbon;
+
+        // Tapas Y JUNTAS REDONDAS: disco (quad + distancia radial en el FS)
+        // en cada punto. Al unirse a la cinta, el trazo queda con extremos y
+        // esquinas redondeados (nada de "cuadrados").
+        self.ink_scratch.clear();
+        for &(x, y) in &self.pts_scratch {
+            let corners = [
+                (x - hw, y - hw),
+                (x + hw, y - hw),
+                (x + hw, y + hw),
+                (x - hw, y - hw),
+                (x + hw, y + hw),
+                (x - hw, y + hw),
+            ];
+            for &(px, py) in &corners {
+                self.ink_scratch.push(InkVert {
+                    x: px,
+                    y: py,
+                    d: 0.0,
+                    hw,
+                    cx: x,
+                    cy: y,
+                    r: rgba[0],
+                    g: rgba[1],
+                    b: rgba[2],
+                    a: rgba[3],
+                });
+            }
+        }
         if !self.ink_scratch.is_empty() {
-            let verts = std::mem::take(&mut self.ink_scratch);
-            self.draw_ink_triangles(&verts);
-            self.ink_scratch = verts;
+            let caps = std::mem::take(&mut self.ink_scratch);
+            self.draw_ink_triangles(&caps, true, gl::GL_TRIANGLES);
+            self.ink_scratch = caps;
         }
     }
 
