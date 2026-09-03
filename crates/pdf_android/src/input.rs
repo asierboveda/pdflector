@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Input multitáctil: máquina de gestos del visor (tap/pinch/pull del sheet)
-//! y taps/arrastre de las listas (picker interno y biblioteca MediaStore).
+//! Input multitáctil: máquina de gestos del visor (tap/pinch/sheet) y
+//! taps/arrastre de las listas (picker interno y biblioteca MediaStore).
 //!
 //! Módulo resultante de la partición de `lib.rs` (2026-08-13): `lib` solo
 //! llama a `handle_input`; los gestos tocan `Reader` a través de sus campos y
@@ -18,12 +18,11 @@
 //! son DOS cambios de página. El pinch con dos dedos
 //! sigue haciendo zoom (factor RELATIVO + anclado, `Reader::begin_pinch`).
 //!
-//! El **sheet de ajustes** (panel deslizante desde el borde superior, la
-//! mitad de la ventana; ver `Reader::sheet_*` y `draw::render_sheet`) se
-//! revela con un arrastre de UN dedo que empieza en la MITAD SUPERIOR y baja
-//! (más de `TAP_SLOP`): el panel sigue al dedo y al soltar se queda abierto si
-//! pasó de la mitad. Con el sheet visible, un arrastre vertical lo mueve
-//! (subir = cerrar) y un TAP fuera del panel lo cierra; un tap dentro pulsa
+//! El **sheet de ajustes** (panel desde el borde superior, la mitad de la
+//! ventana; ver `Reader::sheet_*` y `draw::render_sheet`) se abre con TAP en
+//! la barra superior del chrome (el pull-down se eliminó). Con el sheet
+//! visible, un arrastre vertical lo mueve (subir = cerrar) y un TAP fuera
+//! del panel lo cierra; un tap dentro pulsa
 //! sus botones (Back/Open/Dark/−10/N/+10, misma geometría que
 //! `draw::sheet_buttons`). El gesto del sheet NO choca con el tap de página
 //! (el tap es < `TAP_SLOP` de movimiento) ni con el pinch (2 dedos → zoom,
@@ -100,10 +99,9 @@ enum GestureKind {
         start_x: f32,
         start_y: f32,
     },
-    /// Un dedo: arrastre VERTICAL que controla el sheet de ajustes (revelado
-    /// con un tirón hacia abajo desde la mitad superior; con el sheet visible,
-    /// subir/bajar lo mueve). `start_y` = Y del Down; el progreso del sheet
-    /// sigue a `dy = y − start_y` (`Reader::drag_sheet`).
+    /// Un dedo: arrastre VERTICAL que mueve el sheet de ajustes YA visible
+    /// (subir/bajar). `start_y` = Y del Down; el progreso del sheet sigue
+    /// a `dy = y − start_y` (`Reader::drag_sheet`).
     Pull {
         start_y: f32,
     },
@@ -221,6 +219,9 @@ fn viewer_chrome_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) -> b
                 return true;
             }
         }
+        // Sin gesto pull-down: el sheet se abre/cierra con tap en la barra
+        // superior (el tap central gobierna el chrome + ajustes).
+        reader.toggle_sheet();
         reader.touch_chrome();
         return true;
     }
@@ -645,17 +646,11 @@ fn handle_motion(
                         reader.gesture.press_at = None;
                         let (dx, dy) = (cx - start_x, cy - start_y);
                         let sheet_visible = reader.sheet_progress > 0.0;
-                        // ¿Pull del sheet? (1 dedo, deslizamiento vertical
-                        // dominante):
-                        // - sheet cerrado: tirar hacia abajo desde la mitad
-                        //   superior (el gesto de revelado del enunciado);
-                        // - sheet visible: cualquier arrastre vertical lo
-                        //   mueve (bajar = mantener/abrir, subir = cerrar).
-                        let pull = if sheet_visible {
-                            dy.abs() > dx.abs()
-                        } else {
-                            dy > 0.0 && start_y < reader.win_h as f32 / 2.0
-                        };
+                        // ¿Arrastre del sheet? Solo con el sheet YA visible:
+                        // moverlo (bajar = mantener/abrir, subir = cerrar).
+                        // El pull-down con el sheet cerrado se eliminó: los
+                        // ajustes se abren con tap en la barra superior.
+                        let pull = sheet_visible && dy.abs() > dx.abs();
                         if pull {
                             reader.begin_sheet_drag();
                             reader.gesture.kind = GestureKind::Pull { start_y };

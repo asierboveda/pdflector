@@ -3114,6 +3114,17 @@ impl Reader {
             self.sheet_anim = true;
         }
     }
+    /// Abre/cierra el sheet CON animación (tap en la barra superior del
+    /// chrome): `tick` anima el progreso y `blit` materializa el bitmap al
+    /// hacerse visible. Sustituye al antiguo gesto pull-down (eliminado).
+    pub(crate) fn toggle_sheet(&mut self) {
+        if self.sheet_progress > 0.0 || self.sheet_open {
+            self.hide_sheet();
+        } else {
+            self.sheet_open = true;
+            self.sheet_anim = true;
+        }
+    }
 
     /// Oculta el sheet INMEDIATAMENTE (sin animación): al entrar en la
     /// biblioteca o al abrir otro documento el estado del visor se reinicia.
