@@ -3,6 +3,14 @@
 > Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
 > Formato: `AAAA-MM-DD — Título`.
 
+## 2026-09-03 — Integración zoom + UI/UX sobre main (ADR-008)
+
+Merge `ui_ux` (tokens RICOUI en `pdf_core::theme` + shell inmersivo egui) y port
+F3.1/F3.2/F3.3 de `mejora_zoom` (worker persistente, debounce 350 ms, display
+lists). F2 GLES3 y F1 desktop descartados (superseded, ver ADR-008). TCL 9469X:
+APK release arranca en 361 ms sin FATAL, PSS 105 MB tras abrir 500 págs (+5 MB
+vs base). `pdf_core` 151/151; clippy lib limpio.
+
 ## 2026-08-28 — Fase 2 (ADR-006): presentación del visor con EGL/GLES2
 
 Cutover del modo Viewer a `eglSwapBuffers` (`gpu.rs`, FFI EGL/GLES2 propio, sin crates
