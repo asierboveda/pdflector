@@ -346,25 +346,39 @@ fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
 
 /// Ejecuta la acción de un tap simple en `(x, y)`.
 fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
+    // La UI (barra de herramientas, menús, sheet, chrome) responde SIEMPRE,
+    // también con herramienta de anotación activa: el dedo debe poder ir a
+    // Biblioteca o abrir ajustes sin cambiar antes a navegación. Solo el tap
+    // sobre la PÁGINA queda supeditado a la herramienta.
     if reader.toolbar_open && toolbar_tap(reader, app, x, y) {
-        return;
-    }
-    if reader.tool != ToolKind::Navigate {
         return;
     }
     if reader.sel_menu.is_some() {
         sel_menu_tap(reader, app, x, y);
-    } else if reader.ai_panel.is_some() {
+        return;
+    }
+    if reader.ai_panel.is_some() {
         ai_panel_tap(reader, x, y);
-    } else if reader.sheet_progress > 0.0 {
+        return;
+    }
+    if reader.sheet_progress > 0.0 {
         if y < sheet_h(reader.win_h) as f32 {
             sheet_tap(reader, app, x, y);
         } else {
             reader.hide_sheet();
         }
-    } else if viewer_chrome_tap(reader, app, x, y) {
+        return;
+    }
+    if viewer_chrome_tap(reader, app, x, y) {
         // Tap en botones o barras de chrome del visor consumido
-    } else if !reader.chrome_visible && page_badge_tap(reader, x, y) {
+        return;
+    }
+    if reader.tool != ToolKind::Navigate {
+        // Herramienta activa: el dedo sobre la página no cambia de página
+        // (el trazo con dedo/stylus lo gestiona el gesto de herramienta).
+        return;
+    }
+    if !reader.chrome_visible && page_badge_tap(reader, x, y) {
         // Indicador de página: siguiente (consumido).
     } else {
         tap_page(reader, x);
