@@ -529,6 +529,7 @@ fn handle_motion(
             // doble-tap): el long-press y el tap no compiten — el long-press
             // solo entra si el dedo NO se levanta antes de `LONG_PRESS_MS` y
             // NO se mueve más de `TAP_SLOP`.
+            reader.gesture.pointers = pts;
             // CONTROL TOTAL CON EL BOLI (sin menús): el Down del STYLUS sobre
             // la página (fuera del chrome de la UI) o dibuja (Ink/Highlight
             // según el modo persistido del boli, SIEMPRE activo) o BORRA si
