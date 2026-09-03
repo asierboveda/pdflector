@@ -16,10 +16,10 @@ pdf_core/pdf_app/pdf_bench ni zoom.rs/view.rs/persist.rs/cache.rs.
 
 ## 2. Sheet de ajustes (panel deslizante desde arriba)
 
-- **Gesto de revelado**: arrastre de UN dedo que empieza en la mitad superior
-  de la ventana y baja más de `TAP_SLOP` (`GestureKind::Pull`). No choca con
-  el tap de página (el tap es < `TAP_SLOP` de movimiento) ni con el pinch
-  (2 dedos → zoom; el sheet se queda como esté).
+- **Apertura**: TAP en la barra superior del chrome (`toggle_sheet`). El
+  pull-down se eliminó (2026-09-03): el menú es el del tap central. Con el
+  sheet visible, un arrastre vertical lo mueve (subir = cerrar); el tap de
+  página y el pinch no chocan (tap < `TAP_SLOP`, 2 dedos → zoom).
 - **Estado**: `Reader::sheet_open` (objetivo) + `sheet_progress` (0..1,
   dibujo del panel a `y = −alto·(1−progress)`) + `sheet_anim` (animación en
   vuelo). Alto del panel: mitad de la ventana (`sheet_h`).

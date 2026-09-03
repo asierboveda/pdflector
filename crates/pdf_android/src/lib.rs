@@ -27,9 +27,8 @@
 //!     (el visor es PÁGINA a PÁGINA: el arrastre para scrollear se eliminó
 //!     por decisión del autor, 2026-08-XX; el deslizamiento de un dedo
 //!     cancela el tap sin hacer nada);
-//!   - tirón hacia abajo desde la mitad superior → **sheet de ajustes**
-//!     (panel deslizante desde arriba con Back/Open/Dark/−10/N/+10; swipe up
-//!     o tap fuera lo cierra — 2026-08-XX);
+//!   - tap en la barra superior del chrome → **sheet de ajustes** (el
+//!     pull-down se eliminó, 2026-09-03; swipe up o tap fuera lo cierra);
 //!   - pinch con dos dedos → zoom SOLO por pinch: factor RELATIVO a la
 //!     distancia inicial y anclado al centro del pinch (el punto bajo los
 //!     dedos no se desplaza); durante el gesto solo se actualiza el factor y
@@ -43,10 +42,9 @@
 //!
 //! 1. **Visor a pantalla completa**: la barra superior fija (Open/✏️/●/↶/±10/
 //!    Dark) se ELIMINÓ; el documento ocupa TODA la pantalla. Los ajustes
-//!    viven ahora en un **sheet** deslizante desde arriba (mitad de la
-//!    ventana): se revela con un tirón hacia abajo desde la mitad superior
-//!    (sigue al dedo; al soltar, animación de ~150 ms hacia el objetivo más
-//!    cercano) y se cierra con swipe up o tap fuera. Controles: Back
+//!    viven en un **sheet** (mitad de la ventana) que se abre con tap en la
+//!    barra superior del chrome y se cierra con swipe up o tap fuera.
+//!    Controles: Back
 //!    (biblioteca MediaStore), Open (picker interno), Dark/Light, −10/+10 y
 //!    "N / total" (tap = página siguiente). La animación la avanza
 //!    `Reader::tick`, que el bucle llama con `poll_events(Some(16 ms))`

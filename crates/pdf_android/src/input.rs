@@ -89,9 +89,8 @@ enum GestureKind {
     None,
     /// Un dedo: posible tap (página anterior/siguiente, indicador de página,
     /// sheet abierto: botón o cerrar). El gesto se CANCELA si el dedo se
-    /// mueve más de `TAP_SLOP` sin convertirse en un pull del sheet (un
-    /// pequeño deslizamiento no cambia de página — sin scroll por arrastre en
-    /// el modo página a página); al soltar sin moverse se dispara el tap
+    /// mueve más de `TAP_SLOP` (un pequeño deslizamiento no cambia de
+    /// página — sin scroll por arrastre en el modo página a página); al
     /// INMEDIATO (en el propio Up, sin diferir). Mientras el dedo está
     /// quieto, `press_at` mide el long-press: al superar `LONG_PRESS_MS`
     /// `tick_gestures` entra en MODO SELECCIÓN y el tap NUNCA se dispara.
@@ -159,8 +158,7 @@ pub(crate) struct GestureState {
     /// siendo un tap potencial; `Reader::needs_tick` mantiene el poll con
     /// timeout para que `tick_gestures` dispare la selección al superar
     /// `LONG_PRESS_MS` aunque no llegue más input. Se desarma al moverse >
-    /// `TAP_SLOP` (pull del sheet o cancelación), al entrar en el pinch o al
-    /// levantar/cancelar el dedo.
+    /// `TAP_SLOP`, al entrar en el pinch o al levantar/cancelar el dedo.
     press_at: Option<Instant>,
 }
 
@@ -448,16 +446,17 @@ fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {
 /// Gestos del visor (página a página):
 /// - tap en la mitad derecha = página siguiente; izquierda = anterior
 ///   (con el sheet visible, el tap cierra el panel o pulsa un botón);
-/// - tirón hacia abajo desde la mitad superior = revelar el sheet de ajustes;
-///   arrastre vertical con el sheet visible = moverlo (arriba cierra);
+/// - tap en la barra superior del chrome = abrir/cerrar el sheet de
+///   ajustes (el pull-down se eliminó, 2026-09-03);
+/// - arrastre vertical con el sheet visible = moverlo (arriba cierra);
 /// - pinch con dos dedos = zoom (factor relativo + anclado al centro del
 ///   pinch);
 /// - mantener un dedo quieto durante `LONG_PRESS_MS` = entrar en MODO
 ///   SELECCIÓN (ancla en el punto del dedo; arrastrar extiende el rect,
 ///   soltar fija y abre el menú Copiar/Subrayar/IA; sin arrastre se
 ///   descarta);
-/// - un dedo que se desliza más de `TAP_SLOP` y no es un pull cancela el tap
-///   (sin scroll: el arrastre se eliminó por decisión del autor).
+/// - un dedo que se desliza más de `TAP_SLOP` cancela el tap (sin scroll:
+///   el arrastre se eliminó por decisión del autor).
 ///
 /// Botones del boli en un MotionEvent (state=botones pulsados, action=boton del evento).
 #[derive(Clone, Copy, Debug)]
@@ -515,8 +514,7 @@ fn handle_motion(
             // quieto `LONG_PRESS_MS`). El tap es INMEDIATO (sin ventana de
             // doble-tap): el long-press y el tap no compiten — el long-press
             // solo entra si el dedo NO se levanta antes de `LONG_PRESS_MS` y
-            // NO se mueve más de `TAP_SLOP` (pull del sheet o cancelación).
-            reader.gesture.pointers = pts;
+            // NO se mueve más de `TAP_SLOP`.
             // CONTROL TOTAL CON EL BOLI (sin menús): el Down del STYLUS sobre
             // la página (fuera del chrome de la UI) o dibuja (Ink/Highlight
             // según el modo persistido del boli, SIEMPRE activo) o BORRA si
@@ -641,9 +639,7 @@ fn handle_motion(
                     let moved = ((cx - start_x).powi(2) + (cy - start_y).powi(2)).sqrt();
                     if moved > TAP_SLOP {
                         // El dedo se movió: el long-press muere (se exige un
-                        // dedo quieto durante la espera) y el gesto pasa a
-                        // pull del sheet o se cancela.
-                        reader.gesture.press_at = None;
+                        // dedo quieto) y el gesto pasa a arrastre del sheet
                         let (dx, dy) = (cx - start_x, cy - start_y);
                         let sheet_visible = reader.sheet_progress > 0.0;
                         // ¿Arrastre del sheet? Solo con el sheet YA visible:

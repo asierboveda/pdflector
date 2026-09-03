@@ -93,8 +93,8 @@ No se ha probado en hardware: compilar/renderear en la tablet y verificar:
    selección de texto, que ahora se apunta a la sesión).
 4. **Ocultar barra**: ✎ oculta/muestra; al ocultar se vuelve a navegación y
    los taps cambian de página otra vez; el pinch sigue funcionando con
-   herramienta activa; el pull del sheet y el long-press de selección no se
-   rompen con la barra cerrada.
+   herramienta activa; el tap de la barra superior (sheet) y el long-press
+   de selección no se rompen con la barra cerrada.
 5. **Rendimiento**: dibujar con el lápiz no debe dar saltos (frame + overlay
    del trazo; sin re-blit de página por Move) — comprobar con el log de frame
    time del blit si se ve degradación.
