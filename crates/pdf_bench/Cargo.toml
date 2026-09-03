@@ -10,7 +10,7 @@ edition.workspace = true
 pdf_core = { path = "../pdf_core" }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 # serde_json for the annotations/serialize bench: measures the JSON persist
 # path of AnnotationSet (same crate pdf_core already uses; MIT/Apache-2.0).
 serde_json = "1"
