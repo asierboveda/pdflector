@@ -1442,6 +1442,12 @@ pub(crate) struct Reader {
     /// seq no es el actual (el usuario hizo otro zoom/página), se descarta.
     render_rx: Option<std::sync::mpsc::Receiver<WorkerMsg>>,
     render_seq: u64,
+    /// Actor persistente de render (F3.1): UN hilo con su propio documento
+    /// para toda la vida del documento abierto. `None` hasta `open_pdf_at`.
+    render_worker: Option<RenderWorker>,
+    /// Último Move del pinch en curso (F3.2): `tick` dispara el render
+    /// nítido tras 350 ms de quietud; `set_zoom_sharp` lo limpia al soltar.
+    last_pinch_move: Option<Instant>,
     /// Página ANTERIOR dibujable mientras llega el render de la nueva (si
     /// está en caché): evita el parpadeo en blanco al pasar página.
     pub(crate) fallback_page: Option<u32>,
@@ -1455,6 +1461,87 @@ struct WorkerMsg {
     page: u32,
     bitmap: Bitmap,
     target_zoom: f32,
+}
+/// Petición de render al worker actor: páginas a la escala pedida, ventana
+/// congelada del cover y canal de respuesta propio por lote. Port de F3.1
+/// (`mejora_zoom`): el hilo drena comandos entre páginas (preemption por
+/// `seq`) en `render_worker_req`.
+struct WorkerReq {
+    seq: u64,
+    pages: Vec<u32>,
+    target_zoom: f32,
+    clamp_level: bool,
+    win_w: i32,
+    win_h: i32,
+    reply: std::sync::mpsc::Sender<WorkerMsg>,
+}
+
+/// Comandos del worker actor: render de la última petición o parada limpia.
+enum WorkerCmd {
+    Render(WorkerReq),
+    Stop,
+}
+
+/// Controlador del worker actor de render (F3.1): canal de comandos + join
+/// handle. El hilo retiene su propio `MupdfDocument` (MuPDF no es Send) y
+/// muere solo con `Stop`. Sustituye al hilo-por-zoom anterior, que disparaba
+/// el contador de hilos y reabría el PDF en cada gesto.
+struct RenderWorker {
+    tx: std::sync::mpsc::Sender<WorkerCmd>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Ejecuta `req` en el worker: renderiza las páginas a la escala pedida y
+/// envía cada bitmap por `req.reply`. ENTRE páginas drena el canal: una
+/// petición con `seq` mayor sustituye a la actual y `Stop` sale del actor.
+/// Errores por página: best-effort (drop silencioso; el UI muestra fallback).
+fn render_worker_req(
+    doc: &MupdfDocument,
+    rx: &std::sync::mpsc::Receiver<WorkerCmd>,
+    req: WorkerReq,
+) {
+    let target = if req.clamp_level {
+        let level = pdf_core::scale_level_for_zoom(req.target_zoom).min(1);
+        2f32.powi(level as i32)
+    } else {
+        req.target_zoom
+    };
+    for page in req.pages {
+        // Preemption: un seq posterior ya lanzado anula las páginas restantes.
+        while let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                WorkerCmd::Stop => return,
+                WorkerCmd::Render(newer) => {
+                    if newer.seq > req.seq {
+                        render_worker_req(doc, rx, newer);
+                        return;
+                    }
+                    // seq <= req.seq: lote viejo encolado, ignorar.
+                }
+            }
+        }
+        if let Ok((pw, ph)) = doc.page_size(page) {
+            let cover = initial_scale(pw, ph, req.win_w, req.win_h);
+            // Presupuesto: el bitmap debe caber en la caché (misma regla que
+            // `Reader::budget_scale` — duplicada aquí porque el worker no
+            // tiene acceso a `self`).
+            let mut scale = cover * target;
+            let px_pdf = pw as f64 * ph as f64;
+            let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
+            while scale > 0.001 && px_pdf * scale as f64 * scale as f64 > max_px {
+                scale *= 0.5;
+            }
+            let target_eff = if cover > 0.0 { scale / cover } else { 1.0 };
+            if let Ok(bmp) = doc.render_page(page, scale) {
+                let _ = req.reply.send(WorkerMsg {
+                    seq: req.seq,
+                    page,
+                    bitmap: bmp,
+                    target_zoom: target_eff,
+                });
+            }
+        }
+    }
 }
 
 impl Reader {
@@ -1576,6 +1663,8 @@ impl Reader {
             last_stylus_time: None,
             render_rx: None,
             render_seq: 0,
+            render_worker: None,
+            last_pinch_move: None,
             fallback_page: None,
         };
         match launch_intent_pdf(app) {
@@ -1608,6 +1697,7 @@ impl Reader {
                         // Y añadirlo a los RECIENTES de la biblioteca (el
                         // "abrir con" no pasa por `open_pdf`).
                         reader.touch_recent(&lp.path);
+                        reader.start_render_worker(&lp.path);
                     }
                     Err(e) => {
                         error!("cannot open {}: {e}", lp.path);
@@ -2968,6 +3058,9 @@ impl Reader {
             // Render asíncrono en vuelo (zoom sharp / cambio de página):
             // sondear hasta que el worker termine.
             || self.render_rx.is_some()
+            // Debounce del pinch (F3.2): los dedos llevan quietos < 350 ms
+            // o el render nítido aún no llegó — `tick` decide el disparo.
+            || self.last_pinch_move.is_some()
     }
 
     // ---------------------------------------------------------------------
@@ -3088,6 +3181,18 @@ impl Reader {
         // Render ASÍNCRONO (zoom sharp / cambio de página): aplica los
         // bitmaps que ya llegaron — el UI nunca se congela esperándolos.
         self.poll_render();
+        // Debounce del pinch (F3.2): 350 ms de quietud con los dedos en
+        // pantalla y el bitmap a otro zoom (> 5%) → render nítido SIN
+        // esperar a soltar. Con el actor persistente el lote en vuelo no
+        // bloquea (preemption por seq); `render_in_flight_for` evita
+        // duplicar el render al mismo nivel.
+        if let Some(t) = self.last_pinch_move
+            && t.elapsed() >= Duration::from_millis(350)
+            && (self.rendered_zoom - self.zoom).abs() / self.zoom.max(1e-4) > 0.05
+            && !self.render_in_flight_for(self.zoom)
+        {
+            self.launch_render(vec![self.page], self.zoom, false);
+        }
         // Resultado del hilo de IA (si hay una consulta en vuelo): `try_recv`
         // sondea el canal SIN bloquear; al llegar el mensaje se actualiza el
         // panel (fase Answer/Error) y se libera el receptor. Mientras tanto el
@@ -3464,6 +3569,8 @@ impl Reader {
     /// recortada a sus bordes (nunca otra hoja: el blit solo dibuja la página
     /// actual).
     pub(crate) fn set_zoom_fast(&mut self, zoom: f32) {
+        // F3.2: todo Move del pinch actualiza el instante del debounce.
+        self.last_pinch_move = Some(Instant::now());
         let zoom = zoom.clamp(PINCH_MIN, PINCH_MAX);
         if (self.zoom - zoom).abs() < 1e-4 {
             return;
@@ -3529,7 +3636,7 @@ impl Reader {
         // bitmap NUEVO (nitidez progresiva sin esperar al soltar y SIN
         // renders gigantes por cada Move). Solo si no hay otro lote en vuelo.
         let blit_zoom = self.zoom / self.rendered_zoom.max(1e-4);
-        if blit_zoom > 1.6 && self.render_rx.is_none() {
+        if blit_zoom > 1.6 && !self.render_in_flight_for(self.zoom) {
             self.launch_render(vec![self.page], self.zoom, true);
         }
         if self.window.is_some() {
@@ -3547,6 +3654,9 @@ impl Reader {
     /// el zoom (solo aquí, al soltar el gesto: `set_zoom_fast` es transitorio
     /// y escribir en cada Move de 60-120 Hz llenaría el disco).
     pub(crate) fn set_zoom_sharp(&mut self, zoom: f32) {
+        // Fin del gesto (F3.2): el debounce deja de aplicar — aquí mismo se
+        // lanza el render final nítido.
+        self.last_pinch_move = None;
         let zoom = zoom.clamp(PINCH_MIN, PINCH_MAX);
         // Sin cambio REAL de zoom (p. ej. dos dedos tocando sin Moves, o un
         // pinch-in que se quedó en el mínimo): no re-renderizar — evita
@@ -3883,7 +3993,10 @@ impl Reader {
     /// por mitades hasta caber; el `target_zoom` enviado refleja el zoom
     /// EFECTIVO (escala/cover) para que el blit quede 1:1.
     fn launch_render(&mut self, pages: Vec<u32>, target_zoom: f32, clamp_level: bool) {
-        let Some(path) = self.doc_path.clone() else {
+        // Actor persistente (F3.1): sin worker (documento aún sin abrir del
+        // todo) no hay a quién pedir — los llamantes previos al open no
+        // lanzaban nada útil tampoco (el hilo efímero fallaba al abrir).
+        let Some(worker) = self.render_worker.as_ref() else {
             return;
         };
         self.render_seq += 1;
@@ -3891,47 +4004,66 @@ impl Reader {
         let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
         self.render_rx = Some(rx);
         let (win_w, win_h) = (self.win_w, self.win_h);
-        std::thread::spawn(move || {
-            // MuPDF no es Send: el worker abre su PROPIO documento (patrón
-            // `prefetch.rs`); MupdfEngine es estático y thread-safe.
-            let engine = match MupdfEngine::new() {
-                Ok(e) => e,
-                Err(_) => return,
-            };
-            let doc = match engine.open(std::path::Path::new(&path)) {
-                Ok(d) => d,
-                Err(_) => return,
-            };
-            let target = if clamp_level {
-                let level = pdf_core::scale_level_for_zoom(target_zoom).min(1);
-                2f32.powi(level as i32)
-            } else {
-                target_zoom
-            };
-            for page in pages {
-                if let Ok((pw, ph)) = doc.page_size(page) {
-                    let cover = initial_scale(pw, ph, win_w, win_h);
-                    // Presupuesto: el bitmap debe caber en la caché (misma
-                    // regla que `Reader::budget_scale` — duplicada aquí porque
-                    // el worker no tiene acceso a `self`).
-                    let mut scale = cover * target;
-                    let px_pdf = pw as f64 * ph as f64;
-                    let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
-                    while scale > 0.001 && px_pdf * scale as f64 * scale as f64 > max_px {
-                        scale *= 0.5;
+        let _ = worker.tx.send(WorkerCmd::Render(WorkerReq {
+            seq,
+            pages,
+            target_zoom,
+            clamp_level,
+            win_w,
+            win_h,
+            reply: tx,
+        }));
+    }
+
+    /// ¿Hay un lote en vuelo para este `zoom`? (ventana ±50%: el sharp final
+    /// y el early-sharp del pinch comparten objetivo aproximado).
+    fn render_in_flight_for(&self, zoom: f32) -> bool {
+        self.render_rx.is_some() && (self.rendered_zoom - zoom).abs() / zoom.max(1e-4) < 0.5
+    }
+
+    /// Arranca el worker actor de render con `path` como documento. Llamado
+    /// UNA vez por documento (`open_pdf_at` y el intent "abrir con"): el
+    /// hilo abre SU PROPIO `MupdfDocument` (MuPDF no es Send) y lo retiene
+    /// hasta `Stop`. Un worker anterior se detiene antes.
+    fn start_render_worker(&mut self, path: &str) {
+        self.stop_render_worker();
+        let (tx, rx) = std::sync::mpsc::channel::<WorkerCmd>();
+        let path = path.to_string();
+        let handle = std::thread::Builder::new()
+            .name("render-worker".into())
+            .spawn(move || {
+                let doc = match MupdfEngine::new().and_then(|e| e.open(std::path::Path::new(&path)))
+                {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!("render-worker: open {path}: {e}");
+                        return;
                     }
-                    let target_eff = if cover > 0.0 { scale / cover } else { 1.0 };
-                    if let Ok(bmp) = doc.render_page(page, scale) {
-                        let _ = tx.send(WorkerMsg {
-                            seq,
-                            page,
-                            bitmap: bmp,
-                            target_zoom: target_eff,
-                        });
+                };
+                while let Ok(cmd) = rx.recv() {
+                    match cmd {
+                        WorkerCmd::Stop => break,
+                        WorkerCmd::Render(req) => {
+                            render_worker_req(&doc, &rx, req);
+                        }
                     }
                 }
+            })
+            .ok();
+        self.render_worker = Some(RenderWorker { tx, handle });
+    }
+
+    /// Detiene el worker actor (si existe): envía `Stop` y hace `join()`.
+    /// Llamado al cambiar de documento y desde `Drop for Reader`.
+    fn stop_render_worker(&mut self) {
+        if let Some(w) = self.render_worker.take() {
+            let _ = w.tx.send(WorkerCmd::Stop);
+            if let Some(handle) = w.handle {
+                let _ = handle.join();
             }
-        });
+        }
+        // Los resultados en vuelo de lotes antiguos caducan solos:
+        // `poll_render` ya descarta por `seq != render_seq`.
     }
 
     /// Sondeo del worker de render (desde `tick`): aplica los bitmaps
@@ -4551,6 +4683,7 @@ impl Reader {
                 self.mode = UiMode::Viewer;
                 self.status = None;
                 self.doc_path = Some(path.to_string());
+                self.start_render_worker(path);
                 self.page_badge = None;
                 self.sheet_hide_now(); // sheet del visor anterior: fuera (libera también el frame)
                 self.clear_selection(); // selección del documento anterior: fuera
@@ -5643,5 +5776,13 @@ fn load_pen_mode(internal_dir: Option<&Path>) -> PenMode {
     match v.get("mode").and_then(|m| m.as_str()) {
         Some("Highlight") => PenMode::Highlight,
         _ => PenMode::Ink,
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        // Parada limpia del worker actor (Stop + join): el hilo muere con
+        // su documento, sin filtrar el PDF abierto.
+        self.stop_render_worker();
     }
 }

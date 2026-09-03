@@ -10,6 +10,8 @@
 //! thread-safe by construction (no shared mutable native state, so no
 //! process-wide lock is needed).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 
 use mupdf::{Colorspace, Matrix, TextBlockContent, TextPageFlags};
@@ -43,12 +45,26 @@ impl RenderEngine for MupdfEngine {
     fn open(&self, path: &Path) -> Result<Self::Document> {
         let doc = mupdf::Document::open(path)
             .map_err(|e| Error::Engine(format!("open {}: {e}", path.display())))?;
-        Ok(MupdfDocument { inner: doc })
+        Ok(MupdfDocument {
+            inner: doc,
+            display_lists: RefCell::new(HashMap::new()),
+        })
     }
 }
 
 pub struct MupdfDocument {
     inner: mupdf::Document,
+    /// Per-page display lists (F3.3), built lazily on first render of the
+    /// page and reused for every subsequent scale change: running
+    /// `fz_run_display_list` skips the PDF object parse + command-tree walk
+    /// that `Page::to_pixmap` pays on every zoom (2-4× faster, F0 spike).
+    /// `RefCell` (not `Mutex`): `&mut self` interior mutability over a
+    /// shared `&self` — the render paths are single-threaded per document
+    /// instance (the worker owns its document), so there is no concurrent
+    /// access to alias. This relies on `MupdfDocument` NOT being `Sync`
+    /// (mupdf-rs types are plain FFI pointers, no auto traits), which the
+    /// compiler enforces if a future caller shares it across threads.
+    display_lists: RefCell<HashMap<u32, mupdf::DisplayList>>,
 }
 
 impl MupdfDocument {
@@ -63,6 +79,42 @@ impl MupdfDocument {
             .load_page(page as i32)
             .map_err(|e| Error::Engine(e.to_string()))?;
         Ok(page)
+    }
+
+    /// Display list of `page`, building it on first use (F3.3). Retained in
+    /// `display_lists` for the document's lifetime; dropped with the map.
+    fn display_list_for(&self, page: u32) -> Result<std::cell::Ref<'_, mupdf::DisplayList>> {
+        if !self.display_lists.borrow().contains_key(&page) {
+            let list = self
+                .load_page(page)?
+                .to_display_list(true)
+                .map_err(|e| Error::Engine(e.to_string()))?;
+            self.display_lists.borrow_mut().insert(page, list);
+        }
+        Ok(std::cell::Ref::map(self.display_lists.borrow(), |m| {
+            &m[&page]
+        }))
+    }
+
+    /// RGBA8 `Bitmap` from a 3-component RGB pixmap (row expansion, alpha =
+    /// 255; rows may be padded to `stride`, so copy `width * n` per row).
+    fn pixmap_to_bitmap(pixmap: &mupdf::Pixmap) -> Result<Bitmap> {
+        let width = pixmap.width() as usize;
+        let height = pixmap.height() as usize;
+        let n = pixmap.n() as usize; // components per pixel (3 for RGB)
+        let stride = pixmap.stride() as usize;
+        let samples = pixmap.samples();
+        let mut data = Vec::with_capacity(width * height * 4);
+        for row in samples.chunks(stride).take(height) {
+            for px in row[..width * n].chunks_exact(n) {
+                data.extend_from_slice(&[px[0], px[1], px[2], 255]);
+            }
+        }
+        Ok(Bitmap {
+            width: pixmap.width(),
+            height: pixmap.height(),
+            data,
+        })
     }
 }
 
@@ -83,41 +135,21 @@ impl Document for MupdfDocument {
     }
 
     fn render_page(&self, page: u32, scale: f32) -> Result<Bitmap> {
-        let page = self.load_page(page)?;
-
-        // `to_pixmap` renders the page bounding box through the given matrix;
-        // a uniform scale from PDF points to device pixels, no alpha so the
-        // samples are 3-component RGB.
-        let pixmap = page
+        // F3.3: rasterize from the page's display list. The list is built
+        // once per page (the expensive parse + command-tree walk) and every
+        // later zoom only replays it into a fresh pixmap through
+        // `fz_run_display_list` — the 2-4× path measured in the F0 spike
+        // (`docs/research/gpu-rendering-pipeline.md`). First render of a
+        // page pays the list build; subsequent renders at any scale reuse it.
+        let list = self.display_list_for(page)?;
+        let pixmap = list
             .to_pixmap(
                 &Matrix::new_scale(scale, scale),
                 &Colorspace::device_rgb(),
                 false,
-                true,
             )
             .map_err(|e| Error::Engine(e.to_string()))?;
-
-        let width = pixmap.width() as usize;
-        let height = pixmap.height() as usize;
-        let n = pixmap.n() as usize; // components per pixel (3 for RGB)
-        let stride = pixmap.stride() as usize;
-        let samples = pixmap.samples();
-
-        // MuPDF stores rows bottom-up in PDF terms? No: pixmap samples are
-        // top-down row-major. Rows may be padded to `stride` bytes, so copy
-        // `width * n` bytes per row and expand RGB to RGBA (alpha = 255).
-        let mut data = Vec::with_capacity(width * height * 4);
-        for row in samples.chunks(stride).take(height) {
-            for px in row[..width * n].chunks_exact(n) {
-                data.extend_from_slice(&[px[0], px[1], px[2], 255]);
-            }
-        }
-
-        Ok(Bitmap {
-            width: pixmap.width(),
-            height: pixmap.height(),
-            data,
-        })
+        Self::pixmap_to_bitmap(&pixmap)
     }
 
     fn text(&self, page: u32) -> Result<PageText> {

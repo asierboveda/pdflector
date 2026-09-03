@@ -481,3 +481,21 @@ percepción de latencia comparada vs app nativa y terminación de trazo).
 | **Dinámica de presión USI 2.0** | La modulación de grosor en vivo es sutil (rango $0.6..1.4 	imes w_{	ext{base}}$). Al guardar el trazo, la especificación PDF ISO 32000 almacena un ancho escalar uniforme (`pdf_core::Stroke.width`). | ✓ Conforme a diseño |
 | **Latencia percibida vs App Nativa (TCL Notes)** | PDFLector presenta a 60 Hz vía `eglSwapBuffers` (frame time ~1.5–4.0 ms, latencia total ~16–30 ms). La app nativa de TCL utiliza hardware direct front-buffer rendering (<10 ms), por lo que el usuario percibe una ligera diferencia de retardo respecto a la app nativa. | ⚠ Caracterizado (límite SurfaceFlinger) |
 | **Prueba de cámara 240 fps** | Omitida por decisión de usuario; métricas caracterizadas mediante instrumental de software y frame times GPU en logcat. | Omitido |
+
+## Fase F3.3 — Display list vs re-parse (desktop AMD Ryzen 7 5800H, 2026-08-30, release)
+
+Display-list retenida por página (`MupdfDocument`, `fz_run_display_list`)
+frente a re-parse (`Page::to_pixmap`) en cada escala:
+
+| Documento | Escala | Baseline | Display list | Speedup |
+|---|---|---|---|---|
+| large_document.pdf | 2× | 2.04 ms | 1.13 ms | **1.81×** |
+| large_document.pdf | 4× | 5.76 ms | 4.51 ms | 1.28× |
+| dense_textbook.pdf | 2× | 2.33 ms | 1.42 ms | **1.64×** |
+| dense_textbook.pdf | 4× | 6.96 ms | 5.15 ms | 1.35× |
+| scientific_paper.pdf | 2× | 3.10 ms | 1.84 ms | **1.68×** |
+
+- El caso dominante del pinch (2×) supera el objetivo ≥1.5×.
+- A 4× el rasterizado domina: speedup 1.28-1.35×.
+- En TCL 9469X (2026-09-03, sweep `pdf_bench`): sin regresión vs base
+  (render2x large 70.35→68.73 ms, dense 69.54→66.89 ms; dentro de ruido).

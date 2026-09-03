@@ -99,8 +99,8 @@ impl DesignTokens {
         border: ThemeColor::from_hex(0x1A1A1A),
         ink: ThemeColor::from_hex(0xEDEDED),
         accent: ThemeColor::from_hex(0x0070F3),
-        // Las notas del plan actual no especifican colores de subrayado oscuros, 
-        // usamos los de papel por ahora, o bien en el renderizado oscuro se 
+        // Las notas del plan actual no especifican colores de subrayado oscuros,
+        // usamos los de papel por ahora, o bien en el renderizado oscuro se
         // invierten o filtran (ej. usando un blend mode distinto).
         highlight_yellow: ThemeColor::from_hex(0xFDECC8),
         highlight_green: ThemeColor::from_hex(0xDBEDDB),

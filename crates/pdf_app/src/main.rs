@@ -680,47 +680,52 @@ impl App {
     /// so the re-issue is not throttled by the `GET_PAGE_RETRY` gate.
     fn apply_theme(&mut self, ctx: &egui::Context) {
         use pdf_core::theme::{DesignTokens, ThemeColor, ThemeMode};
-        
-        let mode = if self.dark_mode { ThemeMode::Night } else { ThemeMode::Paper };
+
+        let mode = if self.dark_mode {
+            ThemeMode::Night
+        } else {
+            ThemeMode::Paper
+        };
         let tokens = match mode {
             ThemeMode::Paper => DesignTokens::PAPER,
             ThemeMode::Night => DesignTokens::NIGHT,
         };
-        
+
         let to_egui = |c: ThemeColor| egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
-        
+
         let mut visuals = if self.dark_mode {
             egui::Visuals::dark()
         } else {
             egui::Visuals::light()
         };
-        
+
         // Apply RICOUI tokens
         visuals.window_fill = to_egui(tokens.canvas);
         visuals.panel_fill = to_egui(tokens.canvas);
-        
+
         // Widget backgrounds
         visuals.widgets.noninteractive.bg_fill = to_egui(tokens.canvas);
         visuals.widgets.inactive.bg_fill = to_egui(tokens.surface);
         visuals.widgets.hovered.bg_fill = to_egui(tokens.surface);
         visuals.widgets.active.bg_fill = to_egui(tokens.surface);
-        
+
         // Widget borders
-        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.border));
+        visuals.widgets.noninteractive.bg_stroke =
+            egui::Stroke::new(1.0_f32, to_egui(tokens.border));
         visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.border));
         visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.accent));
         visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.accent));
-        
+
         // Text/Icons
         visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.ink));
         visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.ink));
         visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.accent));
         visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, to_egui(tokens.accent));
-        
+
         // Minimal/Flat hardware-first aesthetic
         visuals.window_shadow = egui::epaint::Shadow::NONE;
         visuals.popup_shadow = egui::epaint::Shadow::NONE;
-        
+
         ctx.set_visuals(visuals);
         self.textures.clear();
         self.last_get.clear();
@@ -2156,7 +2161,10 @@ impl eframe::App for App {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button(if self.sidebar_open { "◀" } else { "▶" }).clicked() {
+                    if ui
+                        .button(if self.sidebar_open { "◀" } else { "▶" })
+                        .clicked()
+                    {
                         self.sidebar_open = !self.sidebar_open;
                     }
                     ui.separator();
@@ -2176,9 +2184,9 @@ impl eframe::App for App {
                 .default_width(250.0)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.selectable_label(true, "Índice (TOC)");
-                        ui.selectable_label(false, "Miniaturas");
-                        ui.selectable_label(false, "Marcadores");
+                        let _ = ui.selectable_label(true, "Índice (TOC)");
+                        let _ = ui.selectable_label(false, "Miniaturas");
+                        let _ = ui.selectable_label(false, "Marcadores");
                     });
                     ui.separator();
 
@@ -2211,7 +2219,7 @@ impl eframe::App for App {
                         }
                     });
                     ui.separator();
-                    
+
                     let has_doc = self.prefetcher.is_some();
                     if ui.checkbox(&mut self.dark_mode, "Dark").changed() {
                         self.apply_theme(ctx);
@@ -2221,7 +2229,7 @@ impl eframe::App for App {
                         }
                     }
                     ui.checkbox(&mut self.show_debug, "Debug");
-                    
+
                     if has_doc {
                         ui.toggle_value(&mut self.chat_open, "💬 Chat");
                         ui.toggle_value(
@@ -2232,19 +2240,28 @@ impl eframe::App for App {
                         ui.add_enabled(false, egui::Button::selectable(false, "💬 Chat"));
                         ui.add_enabled(false, egui::Button::selectable(false, "Anotaciones"));
                     }
-                    
+
                     let export_busy = self.export_rx.is_some();
-                    if ui.add_enabled(has_doc && !export_busy, egui::Button::new("Export MD")).clicked() {
+                    if ui
+                        .add_enabled(has_doc && !export_busy, egui::Button::new("Export MD"))
+                        .clicked()
+                    {
                         self.start_export(ExportKind::Markdown);
                     }
-                    if ui.add_enabled(has_doc && !export_busy, egui::Button::new("Export PDF")).clicked() {
+                    if ui
+                        .add_enabled(has_doc && !export_busy, egui::Button::new("Export PDF"))
+                        .clicked()
+                    {
                         self.start_export(ExportKind::Pdf);
                     }
-                    if ui.add_enabled(has_doc, egui::Button::new("Clear")).clicked() {
+                    if ui
+                        .add_enabled(has_doc, egui::Button::new("Clear"))
+                        .clicked()
+                    {
                         self.annotations = AnnotationSet::new();
                         self.save_annotations();
                     }
-                    
+
                     ui.add_space(20.0);
                     ui.label(self.status_line());
                     if let Some(note) = &self.status_note {
@@ -2269,7 +2286,7 @@ impl eframe::App for App {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.tool, ToolMode::Scroll, "✋ Pan");
                     ui.add_enabled(false, egui::Button::new("T Select")); // Placeholder
-                    
+
                     if has_doc {
                         ui.selectable_value(&mut self.tool, ToolMode::Draw, "✏️ Bolígrafo");
                         ui.selectable_value(&mut self.tool, ToolMode::Highlight, "🖍 Subrayador");
@@ -2280,9 +2297,9 @@ impl eframe::App for App {
                         ui.add_enabled(false, egui::Button::selectable(false, "🖍 Subrayador"));
                         ui.add_enabled(false, egui::Button::selectable(false, "📝 Nota"));
                     }
-                    
+
                     ui.separator();
-                    
+
                     if ui.add_enabled(has_doc, egui::Button::new("-")).clicked() {
                         self.set_zoom(self.zoom / ZOOM_STEP);
                     }
@@ -2415,103 +2432,113 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-            // Zoom input (ctrl+wheel, trackpad pinch). egui routes ctrl+wheel
-            // to `zoom_delta` and away from `smooth_scroll_delta`, so the
-            // ScrollArea below does not also pan while zooming.
-            let zoom_delta = ui.input(|i| i.zoom_delta());
-            if zoom_delta != 1.0 {
-                self.set_zoom(self.zoom * zoom_delta);
-            }
+                // Zoom input (ctrl+wheel, trackpad pinch). egui routes ctrl+wheel
+                // to `zoom_delta` and away from `smooth_scroll_delta`, so the
+                // ScrollArea below does not also pan while zooming.
+                let zoom_delta = ui.input(|i| i.zoom_delta());
+                if zoom_delta != 1.0 {
+                    self.set_zoom(self.zoom * zoom_delta);
+                }
 
-            // Ladder level for the current zoom. `scale_level_for_zoom` maps a
-            // continuous zoom to the smallest 2^level ≥ zoom; multiplying by
-            // the device pixel ratio keeps the old single-page path's "render
-            // at screen resolution, never above" rule (AGENTS.md §4.4): on a
-            // 2× display, 100% zoom renders at level 1 (144 dpi) and the GPU
-            // downscales into the `page_size × zoom` logical rect.
-            let level = scale_level_for_zoom(self.zoom * ctx.pixels_per_point());
+                // Ladder level for the current zoom. `scale_level_for_zoom` maps a
+                // continuous zoom to the smallest 2^level ≥ zoom; multiplying by
+                // the device pixel ratio keeps the old single-page path's "render
+                // at screen resolution, never above" rule (AGENTS.md §4.4): on a
+                // 2× display, 100% zoom renders at level 1 (144 dpi) and the GPU
+                // downscales into the `page_size × zoom` logical rect.
+                let level = scale_level_for_zoom(self.zoom * ctx.pixels_per_point());
 
-            // Zoom crossed a ladder boundary (or first frame after open):
-            // old-level textures are dead weight — each level is a distinct
-            // render, so they can never be reused. Drop them (frees GPU
-            // memory), drop in-flight receivers (their replies would be
-            // stale-level bitmaps) and force a fresh request at `level`.
-            if self.request_level != Some(level) {
-                self.textures.clear();
-                self.pending.clear();
-                self.last_get.clear();
-                self.last_request = None;
-                self.last_request_at = None;
-                self.request_level = Some(level);
-            }
+                // Zoom crossed a ladder boundary (or first frame after open):
+                // old-level textures are dead weight — each level is a distinct
+                // render, so they can never be reused. Drop them (frees GPU
+                // memory), drop in-flight receivers (their replies would be
+                // stale-level bitmaps) and force a fresh request at `level`.
+                if self.request_level != Some(level) {
+                    self.textures.clear();
+                    self.pending.clear();
+                    self.last_get.clear();
+                    self.last_request = None;
+                    self.last_request_at = None;
+                    self.request_level = Some(level);
+                }
 
-            // Take the prefetcher out of `self` for the frame so the scroll
-            // closure can mutate the UI state while holding it (borrow
-            // checker); it is put back before the frame ends.
-            let prefetcher = self.prefetcher.take();
-            match prefetcher.as_ref() {
-                None => {
-                    // Placeholder visual que simula el PDF
-                    let (rect, _response) = ui.allocate_exact_size(
-                        ui.available_size(),
-                        egui::Sense::hover(),
-                    );
-                    ui.painter().rect_filled(
-                        rect.shrink(20.0),
-                        egui::CornerRadius::same(12),
-                        egui::Color32::from_gray(230),
-                    );
-                    
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                            ui.add_space(rect.height() / 2.0 - 60.0);
-                            ui.heading(egui::RichText::new("Canvas del PDF (Placeholder)").color(egui::Color32::from_gray(100)));
-                            ui.label(egui::RichText::new("Abre un PDF para comenzar.").color(egui::Color32::from_gray(120)));
-                            
-                            if !self.recent_pdfs.is_empty() {
-                                ui.add_space(16.0);
-                                ui.label(egui::RichText::new("Recientes:").strong().color(egui::Color32::from_gray(120)));
-                                for path in self.recent_pdfs.clone() {
-                                    if ui.button(path.display().to_string()).clicked() {
-                                        match self.open(path.clone()) {
-                                            Ok(()) => self.push_recent(path),
-                                            Err(e) => self.status = format!("error opening: {e}"),
+                // Take the prefetcher out of `self` for the frame so the scroll
+                // closure can mutate the UI state while holding it (borrow
+                // checker); it is put back before the frame ends.
+                let prefetcher = self.prefetcher.take();
+                match prefetcher.as_ref() {
+                    None => {
+                        // Placeholder visual que simula el PDF
+                        let (rect, _response) =
+                            ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+                        ui.painter().rect_filled(
+                            rect.shrink(20.0),
+                            egui::CornerRadius::same(12),
+                            egui::Color32::from_gray(230),
+                        );
+
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                ui.add_space(rect.height() / 2.0 - 60.0);
+                                ui.heading(
+                                    egui::RichText::new("Canvas del PDF (Placeholder)")
+                                        .color(egui::Color32::from_gray(100)),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Abre un PDF para comenzar.")
+                                        .color(egui::Color32::from_gray(120)),
+                                );
+
+                                if !self.recent_pdfs.is_empty() {
+                                    ui.add_space(16.0);
+                                    ui.label(
+                                        egui::RichText::new("Recientes:")
+                                            .strong()
+                                            .color(egui::Color32::from_gray(120)),
+                                    );
+                                    for path in self.recent_pdfs.clone() {
+                                        if ui.button(path.display().to_string()).clicked() {
+                                            match self.open(path.clone()) {
+                                                Ok(()) => self.push_recent(path),
+                                                Err(e) => {
+                                                    self.status = format!("error opening: {e}")
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        });
-                    });
-                }
-                Some(p) => {
-                    let total = self.page_count as usize;
-                    // Salt the ScrollArea id with the open counter: egui's
-                    // scroll state is keyed by id, so a fresh id forgets the
-                    // previous document's position (open starts at the top).
-                    let scroll_id = self.open_counter;
-                    let mut scroll = egui::ScrollArea::vertical()
-                        .id_salt(("pdf-scroll", scroll_id))
-                        .auto_shrink([false, false]);
-                    // Fase 3/3.5: while a tool is active a drag must draw /
-                    // highlight / a click must note — not scroll — so disable
-                    // the ScrollArea's content-drag; it never fights the
-                    // capture (wheel/trackpad/scrollbar still scroll;
-                    // `ScrollSource::drag` only gates the content-drag
-                    // sensing).
-                    if self.tool != ToolMode::Scroll {
-                        scroll =
-                            scroll.scroll_source(egui::containers::scroll_area::ScrollSource {
-                                drag: false,
-                                ..Default::default()
                             });
+                        });
                     }
-                    scroll.show_viewport(ui, |ui, viewport| {
-                        self.scroll_body(ui, p, level, total, viewport);
-                    });
+                    Some(p) => {
+                        let total = self.page_count as usize;
+                        // Salt the ScrollArea id with the open counter: egui's
+                        // scroll state is keyed by id, so a fresh id forgets the
+                        // previous document's position (open starts at the top).
+                        let scroll_id = self.open_counter;
+                        let mut scroll = egui::ScrollArea::vertical()
+                            .id_salt(("pdf-scroll", scroll_id))
+                            .auto_shrink([false, false]);
+                        // Fase 3/3.5: while a tool is active a drag must draw /
+                        // highlight / a click must note — not scroll — so disable
+                        // the ScrollArea's content-drag; it never fights the
+                        // capture (wheel/trackpad/scrollbar still scroll;
+                        // `ScrollSource::drag` only gates the content-drag
+                        // sensing).
+                        if self.tool != ToolMode::Scroll {
+                            scroll =
+                                scroll.scroll_source(egui::containers::scroll_area::ScrollSource {
+                                    drag: false,
+                                    ..Default::default()
+                                });
+                        }
+                        scroll.show_viewport(ui, |ui, viewport| {
+                            self.scroll_body(ui, p, level, total, viewport);
+                        });
+                    }
                 }
-            }
-            self.prefetcher = prefetcher;
-        });
+                self.prefetcher = prefetcher;
+            });
 
         // Fase 3.5 note input: a small floating area at the click position
         // (screen space; the *anchor* is fixed in page coordinates at click

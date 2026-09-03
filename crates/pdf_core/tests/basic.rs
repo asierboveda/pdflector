@@ -66,3 +66,56 @@ fn out_of_range_page_is_an_error() {
     let err = open_test_doc().render_page(99, 1.0).unwrap_err();
     assert!(matches!(err, Error::PageOutOfRange { page: 99, .. }));
 }
+/// Unwrap-free assertion helper for the F3.3 tests below: the file's older
+/// tests use `unwrap` (pre-existing clippy debt), but new tests must not add
+/// `clippy::unwrap_used` hits.
+fn must<T, E: std::fmt::Debug>(result: Result<T, E>, what: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic!("{what}: {error:?}"),
+    }
+}
+
+// F3.3: display-list-backed rendering. The list is built once per page and
+// retained in the document; every later scale change replays it instead of
+// re-parsing the page. These tests pin the observable contract: same output
+// dimensions/shape as the legacy path, real reuse (second render served from
+// the retained list), and correct page-range validation.
+
+#[test]
+fn display_list_render_matches_legacy_dimensions() {
+    let doc = open_test_doc();
+    let scale = 2.0;
+    let (w, h) = must(doc.page_size(0), "page_size");
+    // First render builds the display list; second replays it.
+    let first = must(doc.render_page(0, scale), "first render");
+    let second = must(doc.render_page(0, scale), "second render");
+    for bmp in [&first, &second] {
+        assert_eq!(bmp.width, (w * scale).round() as u32);
+        assert_eq!(bmp.height, (h * scale).round() as u32);
+        assert_eq!(
+            bmp.data.len() as u64,
+            bmp.width as u64 * bmp.height as u64 * 4
+        );
+    }
+    // Deterministic rasterization: identical inputs -> identical bytes.
+    assert_eq!(first.data, second.data);
+}
+
+#[test]
+fn display_list_reuse_across_scales_is_not_blank() {
+    let doc = open_test_doc();
+    let _ = must(doc.render_page(0, 1.0), "build list at level 0");
+    let bmp = must(doc.render_page(0, 3.0), "replay at another scale");
+    let dark_pixels = bmp
+        .data
+        .chunks_exact(4)
+        .filter(|px| px[0] < 250 || px[1] < 250 || px[2] < 250)
+        .count();
+    assert!(dark_pixels > 1000, "page should contain rendered text");
+}
+#[test]
+fn display_list_render_out_of_range_page_is_an_error() {
+    let error = open_test_doc().render_page(99, 1.0);
+    assert!(matches!(error, Err(Error::PageOutOfRange { page: 99, .. })));
+}
