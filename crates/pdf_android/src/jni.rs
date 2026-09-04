@@ -928,6 +928,7 @@ pub(crate) fn launch_all_files_settings(app: &AndroidApp) {
 /// fichero real (proveedores que materializan en un pipe/tmp), el open de
 /// MuPDF falla y la celda se queda con su placeholder (comportamiento
 /// degradado aceptado y documentado).
+#[allow(dead_code)]
 pub(crate) struct ContentFd {
     /// fd nativo (valido mientras viva `pfd`).
     pub(crate) fd: i32,
@@ -935,6 +936,7 @@ pub(crate) struct ContentFd {
     pfd: jni::objects::Global<jni::objects::JObject<'static>>,
 }
 
+#[allow(dead_code)]
 impl ContentFd {
     /// Ruta `/proc/self/fd/{fd}` con la que MuPDF abre el fichero sin copiarlo.
     pub(crate) fn proc_path(&self) -> String {
@@ -1036,6 +1038,7 @@ pub(crate) fn copy_to_clipboard(app: &AndroidApp, text: &str) {
 /// Abre una content:// URI con `ContentResolver.openFileDescriptor(uri, "r")`
 /// y devuelve el fd nativo + el PFD como `Global`. `None` si falla (URI
 /// inválida, permiso, proveedor sin fd). El caller debe llamar a `close`.
+#[allow(dead_code)]
 pub(crate) fn open_content_fd(app: &AndroidApp, uri_str: &str) -> Option<ContentFd> {
     let vm = JavaVM::singleton().ok()?;
     let raw_activity = app.activity_as_ptr() as jni::sys::jobject;

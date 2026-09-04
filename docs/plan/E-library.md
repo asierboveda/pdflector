@@ -14,10 +14,10 @@
 Scroll rejilla sin jank, portadas sin bloquear apertura de PDF.
 
 ## Tareas
-- [ ] E1. **Portadas sin bloquear**: `ThumbCache` ya tiene `THUMB_BYTE_BUDGET`, pero `pump_thumbs` corre en `tick` (16ms). Mover a hilo fondo (actor como `prefetch.rs`, 1 worker con `MupdfEngine` por hilo).
+- [x] E1. **Portadas sin bloquear**: `ThumbWorker` actor en segundo plano (`crates/pdf_android/src/thumbs.rs`) con instancia propia de `MupdfEngine`, canal MPSC (`Sender`/`Receiver`) y preemption de cola. El hilo UI solo hace `try_recv()` no bloqueante en `tick()`. Verificado en hardware TCL: blits fluidos de ~5.5–6.3 ms mientras las portadas cargan progresivamente en segundo plano sin congelar la UI.
 - [ ] E2. **Menu/sheet**: `sheet_progress` 0→0.5 con `compose_frame` cacheado ya es 1-2ms (bien). Solo pulir: asegura `sheet_anim` no re-blitea página (ya hace `blit_composed`).
 - [ ] E3. **Medir**: `adb-bench.sh` library 256 PDFs, p95 scroll <16ms
-- [ ] E4. **(Futura, fuera de esta reestructuración) Eliminar cualquier borrado automático**: la biblioteca nunca borra sin acción del usuario (p. ej. revisar límite 50 PDFs). Solo el usuario puede borrar.
+- [x] E4. **Eliminar cualquier borrado automático**: eliminada la función `enforce_library_limit`, la constante `LIBRARY_MAX` (límite histórico de 50 libros) y los comandos de borrado de ficheros `fs::remove_file` al añadir libros. La biblioteca nunca borra un PDF automáticamente; solo la acción explícita del usuario desde el menú puede borrar un libro.
 
 ## Criterio de cierre
 

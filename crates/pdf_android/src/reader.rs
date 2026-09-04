@@ -38,12 +38,12 @@ use crate::draw::{
 use crate::gpu::Gpu;
 use crate::input::GestureState;
 use crate::jni::{
-    android_sdk_int, launch_intent_pdf, open_content_fd, query_media_store, read_content_uri_bytes,
+    android_sdk_int, launch_intent_pdf, query_media_store, read_content_uri_bytes,
     sanitize_pdf_name,
 };
 use crate::persist::{self, BookProgress, RecentEntry};
 use crate::theme;
-use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, THUMB_W, ThumbCache};
+use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, ThumbCache};
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
 use crate::{LIB_FADE_MS, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS};
@@ -1437,8 +1437,10 @@ pub(crate) struct Reader {
     /// Página ANTERIOR dibujable mientras llega el render de la nueva (si
     /// está en caché): evita el parpadeo en blanco al pasar página.
     pub(crate) fallback_page: Option<u32>,
+    /// Worker actor para render de portadas en segundo plano (Fase E1).
+    thumb_worker: Option<crate::thumbs::ThumbWorker>,
+    thumb_rx: Option<std::sync::mpsc::Receiver<crate::thumbs::ThumbMsg>>,
 }
-
 /// Mensaje del worker de render asíncrono: un bitmap listo a la escala
 /// pedida (`target_zoom` = factor de zoom con el que se renderizó, la "escala
 /// efectiva" = cover × target_zoom).
@@ -1650,6 +1652,8 @@ impl Reader {
             render_worker: None,
             last_pinch_move: None,
             fallback_page: None,
+            thumb_worker: None,
+            thumb_rx: None,
         };
         match launch_intent_pdf(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
@@ -3371,171 +3375,97 @@ impl Reader {
         (row0, below + 1)
     }
 
-    /// Renderiza bajo demanda un lote de portadas de la biblioteca (máx. 3 por
-    /// tick, ~1-3 ms cada una): primero el carousel de "Continue Reading"
-    /// (clave = ruta local) y después las celdas VISIBLES de la rejilla/lista
-    /// (clave = content:// URI). Solo las que no están en caché ni fallaron.
-    /// Devuelve true si entró alguna portada nueva (→ re-render de la
-    /// biblioteca).
-    fn pump_thumbs(&mut self, app: &AndroidApp) -> bool {
+    fn ensure_thumb_worker(&mut self) {
+        if self.thumb_worker.is_none() {
+            let (worker, rx) = crate::thumbs::ThumbWorker::spawn();
+            self.thumb_worker = Some(worker);
+            self.thumb_rx = Some(rx);
+        }
+    }
+
+    /// Recibe las portadas terminadas por el worker de fondo (`try_recv`) y
+    /// encola peticiones para las celdas visibles que aún no están en caché.
+    /// Cero I/O síncrono en el hilo UI (Fase E1).
+    fn pump_thumbs(&mut self, _app: &AndroidApp) -> bool {
         if self.win_w <= 0 || self.win_h <= 0 {
             return false;
         }
-        let mut budget = 3usize;
+        self.ensure_thumb_worker();
+
         let mut changed = false;
-        // Carousel de Continue Reading primero (portadas de rutas LOCALES).
-        if self.lib_cont_visible() {
-            // Clonar rutas + nombres: `thumbs.insert` (mutable) no convive
-            // con el préstamo de `lib_continue_reading()` (inmutable).
-            let cont: Vec<(String, String)> = self
-                .lib_continue_reading()
-                .iter()
-                .map(|b| (b.path.clone(), b.name.clone()))
-                .collect();
-            for (path, name) in cont {
-                if budget == 0 {
-                    return changed;
-                }
-                if self.thumbs.get(&path).is_some() || self.thumb_failed.contains(&path) {
-                    continue;
-                }
-                match self.render_thumb_path(&path) {
+
+        // 1. Drenar portadas listas desde el canal MPSC en segundo plano
+        if let Some(rx) = self.thumb_rx.as_ref() {
+            while let Ok(msg) = rx.try_recv() {
+                match msg.bitmap {
                     Some(bmp) => {
-                        self.thumbs.insert(path.clone(), bmp);
-                        info!("continue thumb cached: {name}");
+                        info!("thumb cached in background: {}", msg.key);
+                        self.thumbs.insert(msg.key, bmp);
                         changed = true;
                     }
                     None => {
-                        self.thumb_failed.insert(path.clone());
-                        warn!("continue thumb failed: {path}");
+                        warn!("thumb failed in background: {}", msg.key);
+                        self.thumb_failed.insert(msg.key);
                     }
                 }
-                budget -= 1;
             }
         }
+
+        // 2. Recolectar celdas visibles que aún no están en caché ni fallaron
+        let mut needed = Vec::new();
+
+        if self.lib_cont_visible() {
+            let cont_paths: Vec<String> = self
+                .lib_continue_reading()
+                .iter()
+                .map(|b| b.path.clone())
+                .collect();
+            for path in cont_paths {
+                if self.thumbs.peek(&path).is_none()
+                    && !self.thumb_failed.contains(&path)
+                    && !needed.contains(&path)
+                {
+                    needed.push(path);
+                }
+            }
+        }
+
         if !self.hide_covers {
             if self.is_grid() {
                 let cols = self.effective_grid_cols();
                 let (row0, rows) = self.lib_visible_grid_rows();
                 for row in row0..row0 + rows {
                     for col in 0..cols {
-                        if budget == 0 {
-                            return changed;
+                        if let Some(uri) = self.grid_entry_at(row, col).map(|e| e.uri.clone())
+                            && self.thumbs.peek(&uri).is_none()
+                            && !self.thumb_failed.contains(&uri)
+                            && !needed.contains(&uri)
+                        {
+                            needed.push(uri);
                         }
-                        let Some((name, uri)) = self
-                            .grid_entry_at(row, col)
-                            .map(|e| (e.name.clone(), e.uri.clone()))
-                        else {
-                            continue;
-                        };
-                        if self.thumbs.get(&uri).is_some() || self.thumb_failed.contains(&uri) {
-                            continue;
-                        }
-                        let rendered = if uri.starts_with("content:") {
-                            self.render_thumb(app, &uri)
-                        } else {
-                            self.render_thumb_path(&uri)
-                        };
-                        match rendered {
-                            Some(bmp) => {
-                                self.thumbs.insert(uri.clone(), bmp);
-                                info!("thumb {name} cached");
-                                changed = true;
-                            }
-                            None => {
-                                self.thumb_failed.insert(uri.clone());
-                                warn!("thumb failed: {uri}");
-                            }
-                        }
-                        budget -= 1;
                     }
                 }
             } else {
                 let (idx0, count) = self.lib_visible_list_rows();
                 for idx in idx0..idx0 + count {
-                    if budget == 0 {
-                        return changed;
+                    if let Some(uri) = self.list_entry_at(idx).map(|e| e.uri.clone())
+                        && self.thumbs.peek(&uri).is_none()
+                        && !self.thumb_failed.contains(&uri)
+                        && !needed.contains(&uri)
+                    {
+                        needed.push(uri);
                     }
-                    let Some((name, uri)) = self
-                        .list_entry_at(idx)
-                        .map(|e| (e.name.clone(), e.uri.clone()))
-                    else {
-                        continue;
-                    };
-                    if self.thumbs.get(&uri).is_some() || self.thumb_failed.contains(&uri) {
-                        continue;
-                    }
-                    let rendered = if uri.starts_with("content:") {
-                        self.render_thumb(app, &uri)
-                    } else {
-                        self.render_thumb_path(&uri)
-                    };
-                    match rendered {
-                        Some(bmp) => {
-                            self.thumbs.insert(uri.clone(), bmp);
-                            info!(
-                                "list thumb {name} cached (total: {} / {:.1} MiB)",
-                                self.thumbs.len(),
-                                self.thumbs.resident_bytes() as f64 / (1024.0 * 1024.0)
-                            );
-                            changed = true;
-                        }
-                        None => {
-                            self.thumb_failed.insert(uri.clone());
-                            warn!("list thumb failed: {uri}");
-                        }
-                    }
-                    budget -= 1;
                 }
             }
         }
+
+        if !needed.is_empty()
+            && let Some(w) = self.thumb_worker.as_ref()
+        {
+            w.request(needed);
+        }
+
         changed
-    }
-
-    /// Renderiza la portada (página 1) de un PDF de la biblioteca: abre la
-    /// content:// URI por fd NATIVO (`/proc/self/fd/N`, sin copiar ni leer
-    /// el fichero entero — ver `jni::ContentFd`) con MuPDF a `THUMB_W` px de
-    /// ancho. `None` si falla (PDF corrupto, fd no abrible, página 1 vacía).
-    fn render_thumb(&self, app: &AndroidApp, uri: &str) -> Option<Bitmap> {
-        let fd = open_content_fd(app, uri)?;
-        let path = fd.proc_path();
-        let result: pdf_core::Result<Bitmap> = (|| {
-            let engine = MupdfEngine::new()?;
-            let doc = engine.open(Path::new(&path))?;
-            let (pw, _ph) = doc.page_size(0)?;
-            if !pw.is_finite() || pw <= 0.0 {
-                return Err(pdf_core::Error::InvalidArgument(
-                    "page 1 width invalid".into(),
-                ));
-            }
-            doc.render_page(0, THUMB_W as f32 / pw)
-        })();
-        fd.close();
-        match result {
-            Ok(bmp) if bmp.width > 0 && bmp.height > 0 => Some(bmp),
-            _ => None,
-        }
-    }
-
-    /// Renderiza la portada (página 1) de un PDF LOCAL por ruta (los
-    /// recientes de la biblioteca): abre con `MupdfEngine::open` directo, sin
-    /// pasar por un fd content:// (a diferencia de `render_thumb`).
-    fn render_thumb_path(&self, path: &str) -> Option<Bitmap> {
-        let result: pdf_core::Result<Bitmap> = (|| {
-            let engine = MupdfEngine::new()?;
-            let doc = engine.open(Path::new(path))?;
-            let (pw, _ph) = doc.page_size(0)?;
-            if !pw.is_finite() || pw <= 0.0 {
-                return Err(pdf_core::Error::InvalidArgument(
-                    "page 1 width invalid".into(),
-                ));
-            }
-            doc.render_page(0, THUMB_W as f32 / pw)
-        })();
-        match result {
-            Ok(bmp) if bmp.width > 0 && bmp.height > 0 => Some(bmp),
-            _ => None,
-        }
     }
 
     /// Fija el anclaje del pinch en curso: el centro del pinch en px de
@@ -5519,36 +5449,17 @@ impl Reader {
         let path = dest.display().to_string();
         let now = persist::unix_now();
         let books = persist::touch_progress(&self.lib_books, &path, 0, page_count, now);
-        let (books, evicted) = persist::enforce_library_limit(&books, persist::LIBRARY_MAX);
-        let mut victim: Option<String> = None;
-        for b in &evicted {
-            if b.path == path {
-                continue; // defensa: el recién añadido nunca es víctima
-            }
-            if let Err(e) = fs::remove_file(&b.path) {
-                warn!("evict: remove {}: {e}", b.path);
-            }
-            // La portada cacheada (clave = ruta local en la biblioteca
-            // curada) del libro borrado no debe quedar residente.
-            self.thumbs.remove(&b.path);
-            if victim.is_none() {
-                victim = Path::new(&b.path)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned());
-            }
-        }
+        // E4: Política estricta anti-borrado automático. La biblioteca NUNCA
+        // elimina un PDF automáticamente. Solo la acción explícita del
+        // usuario desde el menú puede borrar un libro.
         self.lib_books = books;
         persist::save_progress(self.internal_dir.as_deref(), &self.lib_books);
         info!(
-            "added {path} ({page_count} pages); library {} books, {} evicted",
-            self.lib_books.len(),
-            evicted.len()
+            "added {path} ({page_count} pages); library {} books (0 auto-evicted)",
+            self.lib_books.len()
         );
         self.select_list = Vec::new();
         self.reload_curated_library(app);
-        if let Some(name) = victim {
-            self.show_toast(&format!("Biblioteca llena — se eliminó {name}"));
-        }
     }
 
     /// "Buscar...": abre el TECLADO del sistema sobre el EditText invisible

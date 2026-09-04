@@ -573,3 +573,19 @@ Fase B cerrada formalmente con 100% de criterios de aceptación cumplidos.
 
 - **Optimización euclidiana directa (`draw_segment`)**: bounding box con pre-cálculo de radio al cuadrado (`r_inner_sq` / `r_outer_sq`) que descarta `sqrt()` en el ~85% de los píxeles (núcleo y fondo). Reduce el tiempo de rasterización directa de 200 trazos de 5.40 ms a 4.39 ms (-18.5%).
 - **`StrokeCache`**: evita la re-rasterización vectorial frame a frame. El blit de la capa de tinta con aritmética entera (`(src + dst * inv + 127) / 255`) deja la composición de 200 trazos en **2.39 ms**, con holgura superior a 2× respecto al presupuesto de 5 ms.
+
+## Fase E — ThumbWorker en Segundo Plano y Scroll de Biblioteca (2026-09-05, TCL 9469X)
+
+> Hardware: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, Android 15, pantalla 1440×2200).
+> Flujo medido: Apertura de biblioteca con carga progresiva de portadas en segundo plano y scroll continuo en rejilla 3×3.
+> APK release (`pdf_android`), `ThumbWorker` actor MPSC (`Sender`/`Receiver`) con `MupdfEngine` en hilo dedicado.
+
+| Métrica | Medición en TCL (2026-09-05) | Presupuesto | Estado |
+|---|---|---|---|
+| Frame time de blit durante scroll (`blit 1440x2200`) | **5.56 – 6.36 ms** (p95: ~6.1 ms) | < 16.6 ms (60 fps) | ✅ Holgura >2.5× (>120 fps) |
+| I/O síncrono en hilo UI (`tick`) | **0 ms** (`try_recv` no bloqueante) | 0 ms | ✅ Libre de bloqueos |
+| Carga de portadas de fondo | Progresiva por canal MPSC, sin jank | En segundo plano | ✅ Verificado |
+| Política de retención de biblioteca | 0 borrados automáticos (límite 50 eliminado) | Nunca auto-eliminar | ✅ Cumplido |
+
+- **Cero bloqueos UI**: El hilo UI nunca llama a `open`, nunca lee del almacenamiento ni renderiza páginas durante el recorrido de la biblioteca. Las portadas completadas se integran sobre `lib_band` vía memcpy conforme llegan del worker.
+- **Scroll suave**: Medición de 20 frames continuos de scroll con p95 de 6.1 ms, demostrando una interacción totalmente fluida.

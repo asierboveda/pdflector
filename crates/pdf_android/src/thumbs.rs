@@ -36,8 +36,12 @@
 //! la promoción es O(n) con n ≤ 36 y no merece la pena una crate LRU.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread::{JoinHandle, spawn};
 
-use pdf_core::Bitmap;
+use pdf_core::engine::mupdf::MupdfEngine;
+use pdf_core::{Bitmap, Document, RenderEngine};
 
 /// Ancho (px) al que se renderiza la portada (alto proporcional a la página).
 /// 200 px es un equilibrio entre nitidez de la portada y presupuesto: a la
@@ -119,6 +123,7 @@ impl ThumbCache {
     /// evicción LRU de la biblioteca curada (`Reader::add_selected`): la
     /// portada del libro borrado no debe quedar residente. NO altera la
     /// política de evicción existente (solo retira una entrada puntual).
+    #[allow(dead_code)]
     pub(crate) fn remove(&mut self, key: &str) -> bool {
         if let Some(bmp) = self.map.remove(key) {
             self.bytes -= bitmap_bytes(&bmp);
@@ -140,11 +145,13 @@ impl ThumbCache {
     }
 
     /// Nº de portadas residentes (para el log de debug).
+    #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
         self.map.len()
     }
 
     /// Bytes totales residentes (para el log de debug).
+    #[allow(dead_code)]
     pub(crate) fn resident_bytes(&self) -> usize {
         self.bytes
     }
@@ -163,4 +170,103 @@ impl ThumbCache {
             self.bytes -= bitmap_bytes(&bmp);
         }
     }
+}
+
+/// Mensaje devuelto por el worker de portadas al hilo UI.
+pub(crate) struct ThumbMsg {
+    pub(crate) key: String,
+    pub(crate) bitmap: Option<Bitmap>,
+}
+
+/// Comandos enviados al worker actor de portadas.
+pub(crate) enum ThumbCmd {
+    Request(Vec<String>),
+    Stop,
+}
+
+/// Worker actor para la generación de portadas en segundo plano (Fase E1).
+/// Retiene su propia instancia de `MupdfEngine` en un hilo dedicado.
+pub(crate) struct ThumbWorker {
+    tx: Sender<ThumbCmd>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl ThumbWorker {
+    pub(crate) fn spawn() -> (Self, Receiver<ThumbMsg>) {
+        let (cmd_tx, cmd_rx) = channel::<ThumbCmd>();
+        let (reply_tx, reply_rx) = channel::<ThumbMsg>();
+
+        let handle = spawn(move || {
+            let engine = match MupdfEngine::new() {
+                Ok(e) => e,
+                Err(e) => {
+                    log::error!("ThumbWorker: MupdfEngine::new failed: {e}");
+                    return;
+                }
+            };
+
+            while let Ok(cmd) = cmd_rx.recv() {
+                match cmd {
+                    ThumbCmd::Stop => break,
+                    ThumbCmd::Request(mut queue) => {
+                        queue.reverse();
+                        while let Some(path) = queue.pop() {
+                            // Preemption: si ha llegado una petición más reciente, priorizarla
+                            if let Ok(newer) = cmd_rx.try_recv() {
+                                match newer {
+                                    ThumbCmd::Stop => return,
+                                    ThumbCmd::Request(mut newer_queue) => {
+                                        newer_queue.reverse();
+                                        queue = newer_queue;
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            let bmp = render_thumb_path(&engine, &path);
+                            if reply_tx
+                                .send(ThumbMsg {
+                                    key: path,
+                                    bitmap: bmp,
+                                })
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        (
+            Self {
+                tx: cmd_tx,
+                handle: Some(handle),
+            },
+            reply_rx,
+        )
+    }
+
+    pub(crate) fn request(&self, paths: Vec<String>) {
+        let _ = self.tx.send(ThumbCmd::Request(paths));
+    }
+}
+
+impl Drop for ThumbWorker {
+    fn drop(&mut self) {
+        let _ = self.tx.send(ThumbCmd::Stop);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+fn render_thumb_path(engine: &MupdfEngine, path: &str) -> Option<Bitmap> {
+    let doc = engine.open(Path::new(path)).ok()?;
+    let (pw, _ph) = doc.page_size(0).ok()?;
+    if !pw.is_finite() || pw <= 0.0 {
+        return None;
+    }
+    doc.render_page(0, THUMB_W as f32 / pw).ok()
 }
