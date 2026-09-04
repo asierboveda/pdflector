@@ -66,71 +66,131 @@ pub fn highlight_under_gesture(
     color: Color,
 ) -> Option<Highlight> {
     let rects: Vec<Rect> = match gesture {
-        Gesture::Points(pts) => {
-            let mut out = Vec::new();
-            for span in spans {
-                let y0 = span.y - BAND_TOL;
-                let y1 = span.y + span.h + BAND_TOL;
-                let within = |p: &(f32, f32)| p.1 >= y0 && p.1 <= y1;
-                let mut x_min = f32::INFINITY;
-                let mut x_max = f32::NEG_INFINITY;
-                for p in pts {
-                    if within(p) {
-                        x_min = x_min.min(p.0);
-                        x_max = x_max.max(p.0);
-                    }
-                }
-                for w in pts.windows(2) {
-                    let (a, b) = (w[0], w[1]);
-                    let a_in = within(&a);
-                    let b_in = within(&b);
-                    let crosses = (a.1 < y0 && b.1 > y1) || (a.1 > y1 && b.1 < y0);
-                    if a_in || b_in || crosses {
-                        x_min = x_min.min(a.0.min(b.0));
-                        x_max = x_max.max(a.0.max(b.0));
-                    }
-                }
-                if !x_min.is_finite() {
-                    continue;
-                }
-                let x_max = if x_max - x_min < MIN_STROKE_SPAN {
-                    x_min + MIN_STROKE_SPAN
-                } else {
-                    x_max
-                };
-                let x0 = span.x.max(x_min);
-                let x1 = (span.x + span.w).min(x_max);
-                if x1 - x0 > 0.0 {
-                    out.push(Rect::new(x0, span.y, x1 - x0, span.h));
-                }
-            }
-            out
-        }
+        Gesture::Points(pts) => match_points(spans, pts),
         Gesture::Rect(r) => {
             let (x_min, x_max, (y0, y1)) = gesture_extent(&Gesture::Rect(*r))?;
-            let mut out = Vec::new();
-            for span in spans {
-                if span.x + span.w <= x_min
-                    || span.x >= x_max
-                    || span.y + span.h <= y0
-                    || span.y >= y1
-                {
-                    continue;
-                }
-                let x0 = span.x.max(x_min);
-                let x1 = (span.x + span.w).min(x_max);
-                if x1 - x0 > 0.0 {
-                    out.push(Rect::new(x0, span.y, x1 - x0, span.h));
-                }
-            }
-            out
+            match_rect(spans, x_min, x_max, y0, y1)
         }
     };
+    finish(rects, color)
+}
+
+/// Sorts spans by top edge (`y`), ascending. Precondition for
+/// [`highlight_under_gesture_sorted`]: the gesture path binary-searches this
+/// order, so sort ONCE per page-text extraction (amortized over the whole
+/// gesture), never per `Move` event.
+pub fn sort_spans_by_y(spans: &mut [crate::engine::TextSpan]) {
+    spans.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+/// [`highlight_under_gesture`] over Y-sorted spans (see [`sort_spans_by_y`]).
+/// Narrows the candidates to the gesture's vertical band in
+/// `O(log N + K)` (binary search + backward walk over tall spans that start
+/// above the band but reach into it), then runs the exact same per-span
+/// matcher — output is identical to the linear scan.
+pub fn highlight_under_gesture_sorted(
+    spans_sorted: &[crate::engine::TextSpan],
+    gesture: &Gesture,
+    color: Color,
+) -> Option<Highlight> {
+    let (x_min, x_max, (gy0, gy1)) = gesture_extent(gesture)?;
+    let (lo, hi) = y_band_range(spans_sorted, gy0, gy1);
+    let rects: Vec<Rect> = match gesture {
+        Gesture::Points(pts) => match_points(&spans_sorted[lo..hi], pts),
+        Gesture::Rect(_) => match_rect(&spans_sorted[lo..hi], x_min, x_max, gy0, gy1),
+    };
+    finish(rects, color)
+}
+
+/// Candidate index range whose spans may intersect the vertical band
+/// `[gy0, gy1]` (±[`BAND_TOL`]). Binary lower bound on the top edge
+/// (monotonic in `y`), then a backward walk over tall spans that start
+/// above the band but extend into it. Forward walk stops at the first span
+/// fully below the band. No allocation.
+fn y_band_range(spans_sorted: &[crate::engine::TextSpan], gy0: f32, gy1: f32) -> (usize, usize) {
+    let mut lo = spans_sorted.partition_point(|s| s.y < gy0 - BAND_TOL);
+    while lo > 0 && spans_sorted[lo - 1].y + spans_sorted[lo - 1].h >= gy0 - BAND_TOL {
+        lo -= 1;
+    }
+    let mut hi = lo;
+    while hi < spans_sorted.len() && spans_sorted[hi].y <= gy1 + BAND_TOL {
+        hi += 1;
+    }
+    (lo, hi)
+}
+
+fn finish(rects: Vec<Rect>, color: Color) -> Option<Highlight> {
     if rects.is_empty() {
         None
     } else {
         Some(Highlight { rects, color })
     }
+}
+
+/// Marker-by-stroke matcher over a candidate slice (shared by the linear
+/// and the Y-indexed paths; behaviour documented on
+/// [`highlight_under_gesture`]).
+fn match_points(spans: &[crate::engine::TextSpan], pts: &[(f32, f32)]) -> Vec<Rect> {
+    let mut out = Vec::new();
+    for span in spans {
+        let y0 = span.y - BAND_TOL;
+        let y1 = span.y + span.h + BAND_TOL;
+        let within = |p: &(f32, f32)| p.1 >= y0 && p.1 <= y1;
+        let mut x_min = f32::INFINITY;
+        let mut x_max = f32::NEG_INFINITY;
+        for p in pts {
+            if within(p) {
+                x_min = x_min.min(p.0);
+                x_max = x_max.max(p.0);
+            }
+        }
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let a_in = within(&a);
+            let b_in = within(&b);
+            let crosses = (a.1 < y0 && b.1 > y1) || (a.1 > y1 && b.1 < y0);
+            if a_in || b_in || crosses {
+                x_min = x_min.min(a.0.min(b.0));
+                x_max = x_max.max(a.0.max(b.0));
+            }
+        }
+        if !x_min.is_finite() {
+            continue;
+        }
+        let x_max = if x_max - x_min < MIN_STROKE_SPAN {
+            x_min + MIN_STROKE_SPAN
+        } else {
+            x_max
+        };
+        let x0 = span.x.max(x_min);
+        let x1 = (span.x + span.w).min(x_max);
+        if x1 - x0 > 0.0 {
+            out.push(Rect::new(x0, span.y, x1 - x0, span.h));
+        }
+    }
+    out
+}
+
+/// Block-marquee matcher over a candidate slice (shared by both paths).
+fn match_rect(
+    spans: &[crate::engine::TextSpan],
+    x_min: f32,
+    x_max: f32,
+    y0: f32,
+    y1: f32,
+) -> Vec<Rect> {
+    let mut out = Vec::new();
+    for span in spans {
+        if span.x + span.w <= x_min || span.x >= x_max || span.y + span.h <= y0 || span.y >= y1 {
+            continue;
+        }
+        let x0 = span.x.max(x_min);
+        let x1 = (span.x + span.w).min(x_max);
+        if x1 - x0 > 0.0 {
+            out.push(Rect::new(x0, span.y, x1 - x0, span.h));
+        }
+    }
+    out
 }
 
 /// Tolerancia vertical de la banda de una línea para el trazo del rotulador

@@ -35,7 +35,10 @@ impl MupdfEngine {
 
 impl Default for MupdfEngine {
     fn default() -> Self {
-        Self::new().expect("mupdf engine init")
+        // `new` never fails today (context init panics only on catastrophic
+        // allocator failure, handled inside mupdf); `unwrap_or` keeps this
+        // panic-free per the no-`expect` production rule.
+        Self::new().unwrap_or(Self)
     }
 }
 

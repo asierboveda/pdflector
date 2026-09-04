@@ -56,8 +56,8 @@ impl PageTextCache {
     pub fn new(capacity: usize) -> Self {
         Self {
             // lru 0.18 exige NonZeroUsize; 0 → mínimo (1) = prácticamente
-            // desactivada.
-            lru: LruCache::new(NonZeroUsize::new(capacity.max(1)).expect(">= 1")),
+            // desactivada. `unwrap_or` (no `expect`): producción sin pánicos.
+            lru: LruCache::new(NonZeroUsize::new(capacity.max(1)).unwrap_or(NonZeroUsize::MIN)),
         }
     }
 

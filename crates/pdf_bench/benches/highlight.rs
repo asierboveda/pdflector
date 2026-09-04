@@ -4,7 +4,9 @@
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use pdf_core::engine::TextSpan;
-use pdf_core::{Color, Gesture, Rect, highlight_under_gesture};
+use pdf_core::{
+    Color, Gesture, Rect, highlight_under_gesture, highlight_under_gesture_sorted, sort_spans_by_y,
+};
 
 const HIGHLIGHT_COLOR: Color = Color {
     r: 255,
@@ -90,7 +92,28 @@ fn bench_highlight(c: &mut Criterion) {
             black_box(highlight_under_gesture(&sp, &rect, HIGHLIGHT_COLOR).map(|h| h.rects.len()))
         });
     });
-    g.finish();
+    // Fase B2: camino indexado en Y (ordenado UNA vez fuera del loop, como
+    // el hilo UI tras `PageTextCache::prefetch`; el gesto solo busca).
+    let mut sorted200 = spans(200);
+    sort_spans_by_y(&mut sorted200);
+    let gesture100 = Gesture::Points(gesture_points(100));
+    g.throughput(Throughput::Elements(200 * 100));
+    g.bench_function("sorted_pts100_lines200", |b| {
+        b.iter(|| {
+            black_box(
+                highlight_under_gesture_sorted(&sorted200, &gesture100, HIGHLIGHT_COLOR)
+                    .map(|h| h.rects.len()),
+            )
+        });
+    });
+    g.bench_function("sorted_marquee_200_lines", |b| {
+        b.iter(|| {
+            black_box(
+                highlight_under_gesture_sorted(&sorted200, &rect, HIGHLIGHT_COLOR)
+                    .map(|h| h.rects.len()),
+            )
+        });
+    });
 }
 
 criterion_group!(all, bench_highlight);

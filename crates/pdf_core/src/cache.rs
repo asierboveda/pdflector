@@ -13,7 +13,7 @@ use std::path::Path;
 
 use lru::LruCache;
 
-use crate::engine::{Bitmap, Document, RenderEngine, Result};
+use crate::engine::{Bitmap, Document, Error, RenderEngine, Result};
 use crate::scroll::{Viewport, visible_and_prefetch_pages};
 
 /// Identifies one cached bitmap: a document page at a zoom level.
@@ -119,10 +119,11 @@ impl<E: RenderEngine> RenderCache<E> {
 
         self.stats.current_bytes = self.current_bytes;
         self.stats.entries = self.map.len();
-        Ok(self
-            .map
-            .get(&key)
-            .expect("entry present after get_or_render"))
+        self.map.get(&key).ok_or_else(|| {
+            Error::Engine(format!(
+                "cache entry missing after get_or_render (page {page_idx}, level {scale_level})"
+            ))
+        })
     }
 
     /// Renders (on miss) the visible window plus `prefetch_radius` neighbours

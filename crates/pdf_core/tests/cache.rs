@@ -251,3 +251,23 @@ fn resident_pages_deduplicates_scale_levels() {
     );
     assert_eq!(cache.stats().entries, 2, "both entries are still cached");
 }
+
+/// Hot-path contract (Fase A): `get_or_render` resolves without panicking
+/// under full eviction churn. A 1-byte budget evicts everything on every
+/// miss, so the post-render lookup runs on a just-filled map each time.
+/// Guards the `expect`-free error path: resolves `Ok`, never panics.
+#[test]
+fn get_or_render_resolves_without_panic_under_full_eviction_churn() {
+    let mut cache = open_cache("dense_textbook.pdf", 1);
+    let pages = cache.page_count().min(5);
+    assert!(pages > 0, "corpus PDF must have pages");
+    for page in 0..pages {
+        let rendered = cache
+            .get_or_render(page, 0)
+            .expect("page must resolve after render");
+        assert_eq!(
+            rendered.byte_size,
+            rendered.bitmap.width as usize * rendered.bitmap.height as usize * 4
+        );
+    }
+}
