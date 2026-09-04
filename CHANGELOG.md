@@ -3,6 +3,28 @@
 > Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
 > Formato: `AAAA-MM-DD — Título`.
 
+
+## 2026-09-05 — Eliminada la barra de herramientas del visor
+
+Fuera la píldora Resaltar/Boli/↶/●/━/→ y todo su cableado (`toolbar_tap`,
+`set_tool`, `toggle/close_toolbar`, `cycle_ink_*`, `undo_last_annotation`,
+`render_toolbar`, campos `toolbar_open/bitmap`, `DryKey.toolbar_open`,
+constantes `STROKE_WIDTHS/INK_PALETTE`, `save_tool_state`). El lápiz dibuja
+según `pen_mode` persistido (botón lateral alterna Ink↔Highlight); el dedo
+navega. Sin regresión compilada (clippy aarch64 limpio); verificación en TCL
+pendiente en esta misma sesión.
+
+## 2026-09-04 — Fix freeze visor→biblioteca; retorno documentado como bloqueado
+
+`enter_library`/`open_picker` sueltan la surface EGL (`drop_surface`) y la
+biblioteca vuelve a dibujar (0 `ANativeWindow_lock failed` en TCL 9469X).
+Corrección al registro del 2026-08-28: el `recreate` de vuelta falla con
+`EGL_BAD_ALLOC` (0x3003) tras uso CPU de la ventana — verificado con
+`eglGetError`, ni geometría ni reintentos lo resuelven. Retorno
+Library→Viewer queda como tarea de arquitectura (single-producer EGL);
+mientras tanto, el visor funciona íntegro desde arranque fresco (vía de
+validación B4 con stylus).
+
 ## 2026-09-03 — Integración zoom + UI/UX sobre main (ADR-008)
 
 Merge `ui_ux` (tokens RICOUI en `pdf_core::theme` + shell inmersivo egui) y port

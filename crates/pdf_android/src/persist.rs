@@ -276,18 +276,6 @@ pub(crate) fn load_tool_state(internal_dir: Option<&Path>) -> ToolState {
     };
     serde_json::from_str::<ToolState>(&text).unwrap_or_default()
 }
-pub(crate) fn save_tool_state(internal_dir: Option<&Path>, state: &ToolState) {
-    let Some(dir) = internal_dir else {
-        return;
-    };
-    let path = tool_state_path(dir);
-    let Ok(text) = serde_json::to_string_pretty(state) else {
-        return;
-    };
-    if let Err(e) = fs::write(&path, text) {
-        error!("save tool_state {}: {e}", path.display());
-    }
-}
 
 use crate::theme::AppTheme;
 

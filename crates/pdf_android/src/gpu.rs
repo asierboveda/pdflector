@@ -22,11 +22,12 @@
 //! no existe en Android (`libEGL.so`) — así que el spike ya validó este FFI
 //! directo en la TCL.
 
+use android_activity::ndk::hardware_buffer_format::HardwareBufferFormat;
 use android_activity::ndk::native_window::NativeWindow;
 use log::{info, warn};
 
 use crate::reader::Reader;
-use pdf_core::Bitmap;
+use pdf_core::{Bitmap, FrameTimer};
 
 // ------------------------------------------------------------------ FFI EGL
 
@@ -153,6 +154,7 @@ pub mod ffi {
         ) -> u32;
         pub fn eglSwapBuffers(dpy: EGLDisplay, surface: EGLSurface) -> u32;
         pub fn eglSwapInterval(dpy: EGLDisplay, interval: i32) -> u32;
+        pub fn eglGetError() -> u32;
         #[allow(dead_code)]
         pub fn eglSurfaceAttrib(
             dpy: EGLDisplay,
@@ -472,6 +474,10 @@ pub(crate) struct Gpu {
     ink_scratch: Vec<InkVert>,
     pts_scratch: Vec<(f32, f32)>,
     current_swap_interval: i32,
+    // --- Fase A1: instrumentación frame time (p95 a logcat, overhead ~ns) ---
+    frame_timer: FrameTimer,
+    presents: u64,
+    last_present: Option<std::time::Instant>,
 }
 
 /// Clave de invalidación de la capa base persistente (Dry FBO).
@@ -484,7 +490,6 @@ struct DryKey {
     ann_count: usize,
     dark: bool,
     chrome_visible: bool,
-    toolbar_open: bool,
     sheet_progress_bits: u32,
     has_toast: bool,
 }
@@ -675,6 +680,9 @@ impl Gpu {
                 ink_scratch: Vec::with_capacity(2048),
                 pts_scratch: Vec::with_capacity(1024),
                 current_swap_interval: 1,
+                frame_timer: FrameTimer::new(),
+                presents: 0,
+                last_present: None,
             })
         }
     }
@@ -682,6 +690,14 @@ impl Gpu {
     /// (Re)crea la surface para una ventana (resize / re-init del visor).
     pub(crate) fn recreate_surface(&mut self, win: &NativeWindow) {
         unsafe {
+            // La ventana puede venir de blits SW (Library/Picker): re-forzar
+            // la geometría RGBA8888 como en `set_window`, o el create falla
+            // con EGL_BAD_ALLOC (0x3003).
+            if let Err(e) =
+                win.set_buffers_geometry(0, 0, Some(HardwareBufferFormat::R8G8B8A8_UNORM))
+            {
+                warn!("set_buffers_geometry (recreate): {e}");
+            }
             self.drop_surface_only();
             let surf = gl::eglCreateWindowSurface(
                 self.dpy,
@@ -690,7 +706,10 @@ impl Gpu {
                 std::ptr::null(),
             );
             if surf.is_null() {
-                warn!("eglCreateWindowSurface (recreate) failed");
+                warn!(
+                    "eglCreateWindowSurface (recreate) failed: eglGetError=0x{:x}",
+                    gl::eglGetError()
+                );
                 return;
             }
             if gl::eglMakeCurrent(self.dpy, surf, surf, self.ctx) == 0 {
@@ -737,13 +756,21 @@ impl Gpu {
             self.dry_key = None;
 
             if let Some(s) = self.surf.take() {
-                gl::eglMakeCurrent(
+                let unbind = gl::eglMakeCurrent(
                     self.dpy,
                     gl::EGL_NO_SURFACE,
                     gl::EGL_NO_SURFACE,
                     gl::EGL_NO_CONTEXT,
                 );
-                gl::eglDestroySurface(self.dpy, s);
+                let gone = gl::eglDestroySurface(self.dpy, s);
+                if unbind == 0 || gone == 0 {
+                    warn!(
+                        "drop_surface: unbind={} destroy={} err=0x{:x}",
+                        unbind,
+                        gone,
+                        gl::eglGetError()
+                    );
+                }
             }
         }
     }
@@ -1517,7 +1544,7 @@ impl Gpu {
                 }
             }
 
-            // 3. Overlays de UI (badges, chrome, toolbar, toast)
+            // 3. Overlays de UI (badges, chrome, menús, toast)
             let mut ovl = OverlayList::new();
             OverlayList::collect_viewer(reader, &mut ovl);
             for (b, x, y) in ovl.items {
@@ -1640,17 +1667,40 @@ impl Gpu {
                         }
                     }
                     crate::annotations::ToolKind::Highlight => {
-                        let cur = g.points.last().copied().unwrap_or(g.anchor);
-                        let (x0, y0) = (g.anchor.0 * scale + dx, g.anchor.1 * scale + dy);
-                        let (x1, y1) = (cur.0 * scale + dx, cur.1 * scale + dy);
                         let c = pdf_core::HIGHLIGHT_COLOR;
-                        self.draw_solid_quad(
-                            x0.min(x1),
-                            y0.min(y1),
-                            x0.max(x1),
-                            y0.max(y1),
-                            [c.r, c.g, c.b, c.a],
-                        );
+                        if g.hl_spans.is_empty() {
+                            // Sin spans cacheados: bbox crudo ancla→cursor.
+                            let cur = g.points.last().copied().unwrap_or(g.anchor);
+                            let (x0, y0) = (g.anchor.0 * scale + dx, g.anchor.1 * scale + dy);
+                            let (x1, y1) = (cur.0 * scale + dx, cur.1 * scale + dy);
+                            self.draw_solid_quad(
+                                x0.min(x1),
+                                y0.min(y1),
+                                x0.max(x1),
+                                y0.max(y1),
+                                [c.r, c.g, c.b, c.a],
+                            );
+                        } else {
+                            // B3: rects tentativos alineados al texto (~10µs,
+                            // sin I/O: spans pre-ordenados en el Down). Sin
+                            // save hasta el Up.
+                            let gesture = pdf_core::Gesture::Points(g.points.clone());
+                            if let Some(hl) = pdf_core::highlight_under_gesture_sorted(
+                                &g.hl_spans,
+                                &gesture,
+                                pdf_core::HIGHLIGHT_COLOR,
+                            ) {
+                                for r in &hl.rects {
+                                    self.draw_solid_quad(
+                                        r.x * scale + dx,
+                                        r.y * scale + dy,
+                                        (r.x + r.w) * scale + dx,
+                                        (r.y + r.h) * scale + dy,
+                                        [c.r, c.g, c.b, c.a],
+                                    );
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -1703,7 +1753,6 @@ impl Gpu {
             ann_count: anns_count,
             dark: reader.dark,
             chrome_visible: reader.chrome_visible,
-            toolbar_open: reader.toolbar_open,
             sheet_progress_bits: (reader.sheet_progress * 100.0).round() as u32,
             has_toast: reader.toast.is_some(),
         };
@@ -1752,6 +1801,24 @@ impl Gpu {
             swap_ms,
             if ok { "ok" } else { "FAIL" }
         );
+        // Fase A1: p95 del intervalo entre presents (1 línea / 120 presents;
+        // overhead ~ns: 1 Instant + push en anillo prealocado de 600).
+        if ok {
+            let now = std::time::Instant::now();
+            if let Some(prev) = self.last_present.replace(now) {
+                self.frame_timer.push(now - prev);
+            }
+            self.presents += 1;
+            if self.presents.is_multiple_of(120)
+                && let Some(p95) = self.frame_timer.p95()
+            {
+                info!(
+                    "frame p95={:.1}ms ({} frames)",
+                    p95.as_secs_f64() * 1000.0,
+                    self.presents
+                );
+            }
+        }
     }
 
     fn draw_sel_border(&mut self, l: f32, t: f32, r: f32, b: f32) {
@@ -1812,10 +1879,6 @@ impl<'a> OverlayList<'a> {
         {
             let (bx, by, _, _) = crate::draw::mode_badge_rect(reader.win_w, reader.win_h);
             out.items.push((mb, bx, by));
-        }
-        if let Some(tb) = reader.toolbar_bitmap.as_ref() {
-            let (tx, ty, _, _) = crate::draw::toolbar_rect(reader.win_w, reader.win_h);
-            out.items.push((tb, tx as i32, ty as i32));
         }
         if let Some(menu) = reader.sel_menu.as_ref() {
             out.items.push((&menu.bitmap, menu.x, menu.y));

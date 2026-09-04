@@ -26,14 +26,14 @@ use pdf_core::{
 };
 
 use crate::annotations::{ERASE_HIT_RADIUS_PT, ERASE_HL_PAD_PT, PenMode};
-use crate::annotations::{INK_PALETTE, STROKE_WIDTHS, ToolGesture, ToolKind};
+use crate::annotations::{ToolGesture, ToolKind};
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
 use crate::draw::{
     ButtonRect, ai_panel_layout, blit_library, compose_library_snapshot, paste_lib_thumbs,
     render_ai_panel, render_eraser_cursor, render_library_header, render_library_zone,
     render_mode_badge, render_page_badge, render_picker_list, render_search_chip_row,
-    render_sel_menu, render_sheet, render_toast, render_toolbar, render_viewer_bottom_chrome,
-    render_viewer_top_chrome, sel_menu_layout, splice_row, toolbar_rect,
+    render_sel_menu, render_sheet, render_toast, render_viewer_bottom_chrome,
+    render_viewer_top_chrome, sel_menu_layout, splice_row,
 };
 use crate::gpu::Gpu;
 use crate::input::GestureState;
@@ -1382,23 +1382,11 @@ pub(crate) struct Reader {
     /// continuo del borrado: un punto entre dos pasadas consecutivas también
     /// se borra). None = sin barrido previo (primer Move del gesto).
     erase_last: Option<(f32, f32)>,
-    /// ¿La barra de herramientas del visor está visible? La muestra/oculta el
-    /// botón flotante "✎" (esquina superior derecha); el botón "→" de la
-    /// barra la cierra. Ocultar la barra **vuelve a modo navegación**
-    /// (decisión documentada: una herramienta activa sin barra visible
-    /// dejaría el visor en un modo invisible difícil de revertir).
-    pub(crate) toolbar_open: bool,
     pub(crate) status_bar_top: i32,
-    /// Bitmap cacheado de la barra de herramientas (píldora con los botones
-    /// Resaltar/Boli/↶/●/→, `draw::render_toolbar`). Se invalida al alternar
-    /// herramienta/color, al cambiar el modo oscuro o al redimensionar.
-    pub(crate) toolbar_bitmap: Option<Bitmap>,
-    /// Color actual de la tinta del boli (cicla con el botón "●" de la
-    /// barra; arranca en `DEFAULT_INK_COLOR`).
+    /// Color actual de la tinta del boli (arranca en `DEFAULT_INK_COLOR`).
     pub(crate) ink_color: Color,
-    /// Grosor actual del boli en pt (cicla con el botón "━"; arranca en
-    /// `STROKE_WIDTH_PT`). Cada trazo guarda su grosor, así el selector
-    /// no re-pinta trazos viejos.
+    /// Grosor actual del boli en pt (arranca en `STROKE_WIDTH_PT`). Cada
+    /// trazo guarda su grosor.
     pub(crate) ink_width: f32,
     /// Gesto de herramienta EN CURSO (dedo/lápiz bajado con una herramienta
     /// activa): puntos y ancla en coordenadas de PÁGINA (ver `ToolGesture`).
@@ -1408,9 +1396,7 @@ pub(crate) struct Reader {
     /// del trazo (sin re-blitear la página por Move — requisito 5).
     pub(crate) tool_gesture: Option<ToolGesture>,
     /// ids de las anotaciones CREADAS EN ESTA SESIÓN (dedo/lápiz, en orden
-    /// de creación): el botón "↶" de la barra deshace la última. Solo
-    /// anotaciones nuevas de la sesión (no las cargadas del sidecar): el
-    /// undo no toca trabajo de otras sesiones (decisión documentada).
+    /// de creación). Solo anotaciones nuevas (no las cargadas del sidecar).
     pub(crate) session_ids: Vec<u64>,
     /// Contexto GPU del visor (Fase 2, ADR-006): EGL/GLES2. Some entre
     /// InitWindow y TerminateWindow (y solo si la creación EGL tuvo éxito —
@@ -1641,8 +1627,6 @@ impl Reader {
             tool: ToolKind::Navigate,
             erase_dirty: false,
             erase_last: None,
-            toolbar_open: false,
-            toolbar_bitmap: None,
             ink_color: {
                 let ts = persist::load_tool_state(app.internal_data_path().as_deref());
                 ts.ink_color
@@ -1862,7 +1846,6 @@ impl Reader {
             self.chrome_top_bitmap = None;
             self.chrome_bottom_bitmap = None;
             self.sheet_bitmap = None;
-            self.toolbar_bitmap = None; // la barra reescala con la ventana
         }
         match self.mode {
             UiMode::Viewer => {
@@ -2299,6 +2282,16 @@ impl Reader {
         } else {
             p.rgba_bg()
         };
+        // EGL ↔ ANativeWindow: excluyentes. Al salir del visor la surface
+        // se suelta (ver `enter_library`) para que el lock SW funcione.
+        // NOTA (2026-09-04, TCL): recrear EGL tras uso CPU falla con
+        // EGL_BAD_ALLOC (la ventana no re-acepta EGL; ver `recreate_surface`
+        // y el retorno de `open_pdf_at`, una vez por transición).
+        if self.mode != UiMode::Viewer
+            && let Some(g) = self.gpu.as_mut()
+        {
+            g.drop_surface();
+        }
         match self.mode {
             UiMode::Viewer => {
                 // FASE 2 (ADR-006): presentación por GPU (EGL/GLES2). La
@@ -2320,9 +2313,6 @@ impl Reader {
                 if self.erase_pt.is_some() && self.eraser_cursor.is_none() && self.erase_r_px > 4.0
                 {
                     self.eraser_cursor = render_eraser_cursor(self, self.erase_r_px as i32);
-                }
-                if self.toolbar_open && self.toolbar_bitmap.is_none() {
-                    self.toolbar_bitmap = render_toolbar(self);
                 }
                 // Present GPU: se toma el Gpu del Option (take) para poder
                 // pasar `&self`Reader sin conflicto de préstamos — el
@@ -3741,7 +3731,6 @@ impl Reader {
         self.dark = self.theme.is_dark();
         self.page_badge = None;
         self.sheet_bitmap = None;
-        self.toolbar_bitmap = None;
         self.chrome_top_bitmap = None;
         self.chrome_bottom_bitmap = None;
         self.lib_header = None;
@@ -3760,7 +3749,6 @@ impl Reader {
         self.dark = self.theme.is_dark();
         self.page_badge = None;
         self.sheet_bitmap = None;
-        self.toolbar_bitmap = None;
         self.chrome_top_bitmap = None;
         self.chrome_bottom_bitmap = None;
         self.lib_header = None;
@@ -3844,43 +3832,6 @@ impl Reader {
         });
     }
 
-    // ---------------------------------------------------------------------
-    // Barra de herramientas de anotación (Fase 3.5: resaltador + boli)
-    // ---------------------------------------------------------------------
-    //
-    // La barra (píldora arriba, `draw::toolbar_rect`) la muestra/oculta el
-    // botón flotante "✎" y tiene 5 botones (Resaltar/Boli/↶/●/→, geometría
-    // `draw::toolbar_buttons`). El arrastre con una herramienta activa crea
-    // un `ToolGesture` (puntos en coords de página) que al levantar se
-    // convierte en `Highlight` (resaltador, vía `pdf_core::selection`) o en
-    // `Stroke` suavizado (boli, vía `pdf_core::smooth_polyline`).
-
-    /// Activa una herramienta (`ToolKind`). La barra permanece visible para
-    /// poder cambiar de herramienta o volver a navegación; el chip activo se
-    /// dibuja con el acento dorado (el `toolbar_bitmap` se invalida).
-    pub(crate) fn set_tool(&mut self, tool: ToolKind) {
-        self.tool = tool;
-        // La barra y el boli son DOS entradas al mismo estado: elegir Boli /
-        // Resaltador en la barra actualiza el modo persistido del boli (el
-        // boli dibujará ese modo al tocar el papel).
-        let sync = match tool {
-            ToolKind::Ink => self.pen_mode != PenMode::Ink,
-            ToolKind::Highlight => self.pen_mode != PenMode::Highlight,
-            ToolKind::Navigate => false,
-        };
-        if sync {
-            self.pen_mode = match tool {
-                ToolKind::Ink => PenMode::Ink,
-                _ => PenMode::Highlight,
-            };
-            self.persist_pen_mode();
-        }
-        self.toolbar_bitmap = None; // los estados activos de los botones cambian
-        if self.window.is_some() {
-            self.blit();
-        }
-    }
-
     /// [B] Botón UP del boli: alterna el modo (Ink ↔ Highlight), muestra el
     /// toast con el modo NUEVO y lo persiste en `tool_state.json`. Lo llama
     /// `input` desde `MotionAction::ButtonPress` (funciona con el boli en el
@@ -3917,71 +3868,6 @@ impl Reader {
             && let Err(e) = fs::write(&path, text)
         {
             error!("persist pen_mode {}: {e}", path.display());
-        }
-    }
-
-    /// Muestra/oculta la barra de herramientas (botón flotante "✎"/"✕").
-    /// Ocultarla vuelve a modo NAVEGACIÓN (decisión documentada en
-    /// `toolbar_open`): nunca queda una herramienta activa sin barra visible.
-    #[allow(dead_code)]
-    pub(crate) fn toggle_toolbar(&mut self) {
-        self.toolbar_open = !self.toolbar_open;
-        if !self.toolbar_open {
-            self.tool = ToolKind::Navigate;
-            self.cancel_tool_gesture();
-        }
-        self.toolbar_bitmap = None;
-        self.redraw();
-    }
-
-    /// Botón "→" de la barra: vuelve a modo navegación y cierra la barra.
-    pub(crate) fn close_toolbar(&mut self) {
-        self.tool = ToolKind::Navigate;
-        self.toolbar_open = false;
-        self.toolbar_bitmap = None;
-        self.cancel_tool_gesture();
-        self.redraw();
-    }
-
-    /// Botón "━" de la barra: cicla el grosor del boli por `STROKE_WIDTHS`.
-    pub(crate) fn cycle_ink_width(&mut self) {
-        let i = STROKE_WIDTHS
-            .iter()
-            .position(|w| (*w - self.ink_width).abs() < f32::EPSILON)
-            .unwrap_or(0);
-        self.ink_width = STROKE_WIDTHS[(i + 1) % STROKE_WIDTHS.len()];
-        persist::save_tool_state(
-            self.internal_dir.as_deref(),
-            &persist::ToolState {
-                ink_color: self.ink_color,
-                ink_width: self.ink_width,
-            },
-        );
-        self.toolbar_bitmap = None;
-        if self.window.is_some() {
-            self.blit();
-        }
-    }
-
-    /// Botón "●" de la barra: cicla el color del boli por `INK_PALETTE`.
-    /// El botón de la barra se dibuja con el color actual, así que se
-    /// invalida su bitmap para que el círculo cambie.
-    pub(crate) fn cycle_ink_color(&mut self) {
-        let i = INK_PALETTE
-            .iter()
-            .position(|c| *c == self.ink_color)
-            .unwrap_or(0);
-        self.ink_color = INK_PALETTE[(i + 1) % INK_PALETTE.len()];
-        persist::save_tool_state(
-            self.internal_dir.as_deref(),
-            &persist::ToolState {
-                ink_color: self.ink_color,
-                ink_width: self.ink_width,
-            },
-        );
-        self.toolbar_bitmap = None; // el "●" muestra el nuevo color
-        if self.window.is_some() {
-            self.blit();
         }
     }
 
@@ -4157,20 +4043,6 @@ impl Reader {
         self.window.is_some()
     }
 
-    /// Botón "↶" de la barra: deshace la ÚLTIMA anotación creada en esta
-    /// sesión (la pila `session_ids`; nunca toca anotaciones cargadas del
-    /// sidecar ni de sesiones anteriores). La borra del set y persiste.
-    pub(crate) fn undo_last_annotation(&mut self) {
-        let Some(id) = self.session_ids.pop() else {
-            return;
-        };
-        if !self.annotations.remove(id) {
-            return;
-        }
-        self.save_annotations();
-        self.show_toast("undo");
-    }
-
     /// Gesto de herramienta: el Down convierte el punto de pantalla a
     /// coordenadas de página y crea el `ToolGesture` en la página actual.
     /// El blit pasa a usar el frame compuesto + capa temporal (sin
@@ -4179,6 +4051,9 @@ impl Reader {
         if tool == ToolKind::Navigate {
             return false;
         }
+        // B3: el resaltador pre-ordena los spans en el Down (una vez por
+        // gesto) para el preview por present y el cálculo al soltar.
+        let want_hl = tool == ToolKind::Highlight;
         let Some(pt) = self.screen_to_page(sx, sy) else {
             return false;
         };
@@ -4200,6 +4075,16 @@ impl Reader {
         // El Down ES t=0: el campo se fija tras crear el gesto.
         if let Some(g) = self.tool_gesture.as_mut() {
             g.times_ms[0] = 0.0;
+        }
+        if want_hl {
+            let cached = self.text_cache.get(self.page);
+            if let Some(pt) = cached {
+                let mut v = pt.spans.clone();
+                pdf_core::sort_spans_by_y(&mut v);
+                if let Some(g) = self.tool_gesture.as_mut() {
+                    g.hl_spans = v;
+                }
+            }
         }
         self.gesture_t0_ns = t0;
         // FASE 2: la tinta es geometría GPU por frame — sin frame base que
@@ -4297,7 +4182,7 @@ impl Reader {
     ///   líneas de texto bajo el trazo (extracción perezosa, solo ahora) y
     ///   crea el `Highlight` alineado al texto; "no text" si no hay líneas.
     ///
-    /// El id nuevo se apunta en `session_ids` para el undo.
+    /// El id nuevo se apunta en `session_ids` (historial de sesión).
     /// `(sx, sy)` = posición del Up (remate M_last→P_up en el boli; las
     /// muestras de history ya se estamparon por el drain previo, así que el
     /// hueco que cierra es solo el último tramo hasta el punto de soltar).
@@ -4371,16 +4256,25 @@ impl Reader {
                 // El resaltador usa TODO el trazo (los puntos del gesto), no
                 // solo ancla→cursor: un trazo curvo selecciona las líneas
                 // bajo su bbox completo.
-                let spans = self
-                    .doc
-                    .as_ref()
-                    .and_then(|d| self.text_cache.get_or_extract(d, g.page).ok())
-                    .map(|t| t.spans.clone())
-                    .unwrap_or_default();
+                // B3: camino indexado sobre los spans del Down (sin I/O en
+                // el gesto); fallback a la vía clásica si no estaban cacheados.
                 let gesture = Gesture::Points(g.points.clone());
-                if let Some(hl) =
+                let hl = if g.hl_spans.is_empty() {
+                    let spans = self
+                        .doc
+                        .as_ref()
+                        .and_then(|d| self.text_cache.get_or_extract(d, g.page).ok())
+                        .map(|t| t.spans.clone())
+                        .unwrap_or_default();
                     pdf_core::highlight_under_gesture(&spans, &gesture, pdf_core::HIGHLIGHT_COLOR)
-                {
+                } else {
+                    pdf_core::highlight_under_gesture_sorted(
+                        &g.hl_spans,
+                        &gesture,
+                        pdf_core::HIGHLIGHT_COLOR,
+                    )
+                };
+                if let Some(hl) = hl {
                     if let Some(id) = self
                         .annotations
                         .add(g.page as usize, Annotation::Highlight(hl))
@@ -4591,19 +4485,6 @@ impl Reader {
         }
     }
 
-    /// ¿El punto de pantalla cae en el "chrome" de las herramientas (el
-    /// botón flotante o la barra abierta)? El Down en esa zona NO inicia un
-    /// gesto de herramienta (es un tap de UI): lo decide `input`.
-    pub(crate) fn chrome_hit(&self, x: f32, y: f32) -> bool {
-        if self.toolbar_open {
-            let (l, t, r, b) = toolbar_rect(self.win_w, self.win_h);
-            if x >= l && x < r && y >= t && y < b {
-                return true;
-            }
-        }
-        false
-    }
-
     /// Persiste la posición actual (ruta, página, zoom) + modo oscuro en
     /// `internal/state.json` (ver `persist`). Escritura *eager*: se llama en
     /// cada cambio de página, al soltar el pinch, al abrir un documento y al
@@ -4692,6 +4573,13 @@ impl Reader {
                 self.lib_row_dirty = None;
                 self.cache.clear(); // otro documento: nada reutilizable
                 self.mode = UiMode::Viewer;
+                // EGL: venimos de Library/Picker sin surface (ver
+                // `enter_library`); recrearla ya para el primer present.
+                if let (Some(g), Some(win)) = (self.gpu.as_mut(), self.window.as_ref())
+                    && !g.has_surface()
+                {
+                    g.recreate_surface(win);
+                }
                 self.status = None;
                 self.doc_path = Some(path.to_string());
                 self.start_render_worker(path);
@@ -4704,12 +4592,10 @@ impl Reader {
                 self.list_dirty = true;
                 self.list_drag = None;
                 // Herramientas de anotación: reseteo a la navegación limpia
-                // (barra cerrada, sin herraienta activa, sin gesto en curso
+                // (sin herramienta activa, sin gesto en curso
                 // y SIN histórico de sesión del documento anterior — el undo
                 // es por sesión, decisión documentada en `session_ids`).
                 self.tool = ToolKind::Navigate;
-                self.toolbar_open = false;
-                self.toolbar_bitmap = None;
                 self.tool_gesture = None;
                 self.session_ids.clear();
                 // Fase B1: texto del documento nuevo (el del anterior no
@@ -4749,6 +4635,12 @@ impl Reader {
     /// EMPTY STATE ("Tu biblioteca está vacía" + botón "Añadir PDF").
     pub(crate) fn enter_library(&mut self, app: &AndroidApp) {
         self.mode = UiMode::Library;
+        // EGL: la surface del visor hace fallar `ANativeWindow_lock` de la
+        // biblioteca; soltarla aquí (el contexto y los FBOs se recrean al
+        // volver al visor; ver defensa en `blit`).
+        if let Some(g) = self.gpu.as_mut() {
+            g.drop_surface();
+        }
         self.list_scroll = 0;
         self.lib_search_open = false;
         self.list_dirty = true;
@@ -4771,8 +4663,6 @@ impl Reader {
         self.list_drag = None;
         // Herramientas del visor: fuera (no pinta en biblioteca).
         self.tool = ToolKind::Navigate;
-        self.toolbar_open = false;
-        self.toolbar_bitmap = None;
         self.tool_gesture = None;
         self.session_ids.clear();
         self.lib_close_ime(app);
@@ -4786,6 +4676,11 @@ impl Reader {
     #[allow(dead_code)]
     pub(crate) fn open_picker(&mut self, app: &AndroidApp) {
         self.mode = UiMode::Picker;
+        // EGL: igual que en `enter_library` (el picker también blitea por
+        // `ANativeWindow_lock`).
+        if let Some(g) = self.gpu.as_mut() {
+            g.drop_surface();
+        }
         self.pdf_list = scan_pdfs(app);
         self.list_scroll = 0;
         self.status = None;

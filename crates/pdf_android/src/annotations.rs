@@ -17,10 +17,10 @@
 //!   puntos y ancla **en coordenadas de página** (puntos PDF, f32 — el mismo
 //!   espacio que `Document::page_size`), aún NO añadido al `AnnotationSet`.
 //!   Se añade al levantar (`Reader::end_tool_gesture`).
-//! - Paletas: color por defecto del boli (`DEFAULT_INK_COLOR`) y colores de
-//!   la paleta del boli (`INK_PALETTE`, que cicla el botón "●" de la barra);
-//!   el resaltador usa `pdf_core::HIGHLIGHT_COLOR` (amarillo rotulador,
-//!   translúcido).
+//! - Paletas: color por defecto del boli (`DEFAULT_INK_COLOR`); el
+//!   resaltador usa `pdf_core::HIGHLIGHT_COLOR` (amarillo rotulador,
+//!   translúcido). Grosor/color del boli: valores persistidos
+//!   (`tool_state.json`); sin controles táctiles (era la barra, eliminada).
 //!
 //! # ¿Por qué coordenadas de página?
 //!
@@ -32,7 +32,7 @@
 //! de la página; ver `Reader::screen_to_page`).
 
 use android_activity::input::ButtonState;
-use pdf_core::Color;
+use pdf_core::{Color, TextSpan};
 
 /// Botón "UP" del boli: alterna el modo del boli Ink ↔ Highlight
 /// (`Reader::toggle_pen_mode`), también con el boli en el AIRE (los eventos
@@ -93,12 +93,6 @@ impl PenMode {
 /// del papel en cualquier zoom, como la tinta real.
 pub(crate) const STROKE_WIDTH_PT: f32 = 2.0;
 
-/// Presets de grosor del boli (pt) para el selector `━` de la barra:
-/// fino (1.0), medio (2.0, el actual), grueso (4.0), muy grueso (7.0).
-/// Cada preset duplica aproximadamente el ancho en pantalla (a zoom 1, en la
-/// TCL 2.0pt≈4px, 4.0pt≈8px, 7.0pt≈14px) y se persiste como float.
-pub(crate) const STROKE_WIDTHS: [f32; 4] = [1.0, 2.5, 4.0, 7.0];
-
 /// Color por defecto del boli: negro azulado cálido (tinta de bolígrafo
 /// sobre papel), opaco (se dibuja tal cual sobre la página; en modo oscuro
 /// la página se invierte pero la tinta conserva su color — la capa de
@@ -109,32 +103,6 @@ pub(crate) const DEFAULT_INK_COLOR: Color = Color {
     b: 43,
     a: 255,
 };
-
-/// Paleta del botón "●" de la barra de herramientas (ciclar color del boli):
-/// tonos cálidos-medio (warm-neutral) que se leen bien sobre papel blanco y
-/// sobre la página invertida en modo oscuro. Cicla Boli: negro azulado →
-/// marrón sepia → azul apagado → vino.
-pub(crate) const INK_PALETTE: [Color; 4] = [
-    DEFAULT_INK_COLOR,
-    Color {
-        r: 122,
-        g: 74,
-        b: 39,
-        a: 255,
-    },
-    Color {
-        r: 33,
-        g: 77,
-        b: 132,
-        a: 255,
-    },
-    Color {
-        r: 122,
-        g: 36,
-        b: 61,
-        a: 255,
-    },
-];
 
 /// Herramienta de anotación activa en el visor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +147,11 @@ pub(crate) struct ToolGesture {
     /// Para el resaltador: puntos del gesto (bbox). Para el boli: puntos de
     /// control Pk de la máquina midpoint (bbox + degenerate check).
     pub(crate) points: Vec<(f32, f32)>,
+    /// Spans de la página PRE-ORDENADOS por Y (B3, solo resaltador):
+    /// snapshot del `PageTextCache` en el `Down` (peek sin I/O) para el
+    /// preview tentativo por present y el cálculo final al soltar.
+    /// Vacío si la página no estaba cacheada (fallback a la vía clásica).
+    pub(crate) hl_spans: Vec<TextSpan>,
     /// Último punto medio M(k-1) estampado (inicio de la próxima curva).
     /// `None` hasta el segundo punto (el primer tramo es recto P0→M1).
     pub(crate) prev_mid: Option<(f32, f32)>,
@@ -227,6 +200,7 @@ impl ToolGesture {
             times_ms: vec![t0_ms],
             modeler,
             predicted_pt: res.predicted_pt,
+            hl_spans: Vec::new(),
         }
     }
 

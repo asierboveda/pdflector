@@ -5,7 +5,7 @@
 use super::*;
 use std::time::Instant;
 
-/// 1. Test de trazo recto a alta velocidad (6 px/ms = 6000 px/s).
+/// Test 1: trazo recto a alta velocidad (6 px/ms = 6000 px/s).
 /// Simula un stream a 240 Hz ($\Delta t \approx 4.16\text{ ms}$) y verifica:
 /// - Seguimiento estable de la masa sin oscilaciones.
 /// - Estimación correcta de velocidad del filtro Kalman.
@@ -48,7 +48,7 @@ fn test_trazo_recto_alta_velocidad() {
     );
 }
 
-/// 2. Test de conservación de esquinas vivas a 90° y 180°.
+/// Test 2: conservación de esquinas vivas a 90° y 180°.
 /// Verifica que el resorte acelere hacia el vértice y no redondee excesivamente
 /// esquinas vivas como en letras 'V', 'M' o 'Z'.
 #[test]
@@ -82,7 +82,7 @@ fn test_conservacion_esquinas_vivas() {
     assert!((final_res.confirmed_pt.1 - 200.0).abs() < 1.0);
 }
 
-/// 3. Test de filtrado de ruido de alta frecuencia (jitter espacial).
+/// Test 3: filtrado de ruido de alta frecuencia (jitter espacial).
 /// Verifica que la puerta de ruido espacial descarte micro-vibraciones menores a 0.2 pt.
 #[test]
 fn test_filtrado_ruido_jitter() {
@@ -143,7 +143,7 @@ fn test_proyeccion_kalman_y_modulacion() {
     );
 }
 
-/// 5. Test de remate al soltar (StrokeEnd / Cero-Pop).
+/// Test 5: remate al soltar (StrokeEnd / Cero-Pop).
 /// Verifica que `end_stroke()` asiente la masa virtual en el último punto físico con presión 0.
 #[test]
 fn test_stroke_end_cero_pop() {

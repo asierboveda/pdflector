@@ -1,3 +1,7 @@
+> **SUPERSEDED 2026-09-05**: la barra de herramientas se eliminó de la app
+> (controles del lápiz en su lugar; ver CHANGELOG). Este documento se conserva
+> como contexto histórico de la Fase 3.5, no como spec activa.
+
 # Barra de herramientas de anotación en pdf_android (Fase 3.5) — resumen de UI y prueba manual pendiente
 
 Fecha: 2026-08-22 — Integración del resaltador con detección de texto y del

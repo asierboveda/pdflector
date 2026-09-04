@@ -58,8 +58,8 @@ use log::warn;
 
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
 use crate::draw::{
-    SettingsMenuItem, ViewMenuItem, settings_menu_geometry, sheet_buttons, toolbar_buttons,
-    toolbar_rect, view_menu_geometry, viewer_top_chrome_buttons,
+    SettingsMenuItem, ViewMenuItem, settings_menu_geometry, sheet_buttons, view_menu_geometry,
+    viewer_top_chrome_buttons,
 };
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
@@ -244,32 +244,6 @@ fn page_badge_tap(reader: &mut Reader, x: f32, y: f32) -> bool {
     }
 }
 
-/// Tap DENTRO de la barra de herramientas (misma geometría que
-/// `draw::toolbar_buttons`): "Resaltar"/"Boli" activan la herramienta,
-/// "↶" deshace el último trazo de la sesión, "●" cicla el color del boli y
-/// "→" vuelve a modo navegación y cierra la barra.
-pub(crate) fn toolbar_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) -> bool {
-    let (l, t, r, b) = toolbar_rect(reader.win_w, reader.win_h);
-    if !(x >= l && x < r && y >= t && y < b) {
-        return false;
-    }
-    for (label, (bl, bt, br, bb)) in toolbar_buttons(reader, reader.win_w, reader.win_h) {
-        if x >= bl && x < br && y >= bt && y < bb {
-            match label {
-                "Resaltar" => reader.set_tool(ToolKind::Highlight),
-                "Boli" => reader.set_tool(ToolKind::Ink),
-                "↶" => reader.undo_last_annotation(),
-                "●" => reader.cycle_ink_color(),
-                "━" => reader.cycle_ink_width(),
-                _ => reader.close_toolbar(), // "→": navegación + cerrar barra
-            }
-            return true;
-        }
-    }
-    let _ = app;
-    true
-}
-
 /// Tap DENTRO del sheet de ajustes: botones (misma geometría que
 /// `draw::sheet_buttons`): temas, navegación y acciones.
 fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
@@ -346,13 +320,10 @@ fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
 
 /// Ejecuta la acción de un tap simple en `(x, y)`.
 fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
-    // La UI (barra de herramientas, menús, sheet, chrome) responde SIEMPRE,
-    // también con herramienta de anotación activa: el dedo debe poder ir a
-    // Biblioteca o abrir ajustes sin cambiar antes a navegación. Solo el tap
-    // sobre la PÁGINA queda supeditado a la herramienta.
-    if reader.toolbar_open && toolbar_tap(reader, app, x, y) {
-        return;
-    }
+    // La UI (menús, sheet, chrome) responde SIEMPRE, también con herramienta
+    // de anotación activa: el dedo debe poder ir a Biblioteca o abrir ajustes
+    // sin cambiar antes a navegación. Solo el tap sobre la PÁGINA queda
+    // supeditado a la herramienta.
     if reader.sel_menu.is_some() {
         sel_menu_tap(reader, app, x, y);
         return;
@@ -537,7 +508,6 @@ fn handle_motion(
             // (tap/pinch/pan); los gestos existentes no se rompen.
             if reader.gesture.pointers.len() == 1
                 && let Some(&(_, x, y)) = reader.gesture.pointers.first()
-                && !reader.chrome_hit(x, y)
             {
                 // SEPARACIÓN DEDO/STYLUS: solo el lápiz dibuja/borra; los
                 // dedos (y la palma) navegan (pan/pinch).
