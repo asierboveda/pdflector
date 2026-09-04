@@ -499,3 +499,46 @@ frente a re-parse (`Page::to_pixmap`) en cada escala:
 - A 4× el rasterizado domina: speedup 1.28-1.35×.
 - En TCL 9469X (2026-09-03, sweep `pdf_bench`): sin regresión vs base
   (render2x large 70.35→68.73 ms, dense 69.54→66.89 ms; dentro de ruido).
+
+## Baseline Fase A — sweep TCL + PSS app (2026-09-04, TCL 9469X)
+
+> Flujo: `tools/adb-bench.sh --runs 5` (pdf_bench aarch64 release, pantalla ON
+> con `stayon true`, reset a `false` al final) + arranque manual de la app para
+> PSS. Hardware: TCL NXTPaper 11 Plus 9469X (mt8781, SDK 36), corpus 4 PDFs en
+> `/data/local/tmp/pdflector/corpus`. Métricas: render1x/render2x = mediana de
+> 3 (págs 0/mitad/última) por run; PSS vía `dumpsys meminfo`.
+
+| Run | dense 1x | scanned 1x | paper 1x | large 1x | PEAK_RSS_KB |
+|-----|----------|------------|----------|----------|-------------|
+| 1 | 12.61ms | 35.95ms | 11.52ms | 14.87ms | 27088 |
+| 2 | 14.05ms | 38.50ms | 11.36ms | 14.96ms | 26984 |
+| 3 | 13.22ms | 33.45ms | 12.29ms | 14.35ms | 27128 |
+| 4 | 13.14ms | 33.57ms | 12.10ms | 14.63ms | 27172 |
+| 5 | 15.18ms | 33.46ms | 11.75ms | 14.40ms | 27452 |
+
+Lectura vs objetivos (render <25ms): dense/paper/large 3/4 OK (11–15ms);
+scanned (raster, 33–38ms) documentado como worst case conocido. Zoom TCL:
+`scale2x` ~72ms vs `rerender1` ~16ms (re-render 4.5× más rápido; no usar
+upscale software como fast path). App real al arrancar (biblioteca, 500 págs
+abiertas según logcat): **PSS 110352 KB (~107.8 MB) < 150 MB** ✅
+(Native Heap 51905 · Graphics 47333 · Code 4280); RSS 235189 KB.
+`screencap` 2200×1440 media gris 228 (contenido visible, sin buffer negro).
+Sin logs `frame p95` en logcat (A1 pendiente). Incidencia de harness:
+`dumpsys` con app instalada pero sin proceso abortaba el script por
+`pipefail` (además dejaba `stayon true`); corregido con `trap` + `|| true`
+en `tools/adb-bench.sh`.
+
+> Nota A1 (2026-09-04, mismo hardware/flujo): `frame p95=` verificado en
+> logcat tras 130 page-turns por tap (195 presents; `p95=497.0ms (240 frames)`
+> = intervalo de tap, no frame rate). PSS tras la interacción: **208882 KB
+> (~204 MB) > 150 MB** (Native Heap 82 MB, EGL 16 MB; caché 48 MiB + texturas
+> Dry/Wet + arenas). En arranque era 107.8 MB. El crecimiento con uso va al
+> backlog de Fase E (presupuestos de caché/texturas), no bloquea A1.
+
+> Nota B3 (2026-09-04, TCL 9469X, APK release con `hl_spans`): build aarch64 +
+> `clippy -D warnings` + `fmt` verdes, 0 `unwrap` en el diff; sin regresión
+> en el visor (page-turns OK, 0 FATAL/panic/ANR en logcat). Hallazgo de
+> harness: `cargo apk` necesita ADEMÁS la var genérica
+> `BINDGEN_EXTRA_CLANG_ARGS` (la sufijada por target no le llega a bindgen).
+> E2E de resaltado pendiente de lápiz físico (solo el stylus crea
+> `ToolDrawing`; protocolo en `B-subrayado.md` B4).

@@ -2,6 +2,8 @@
 /vendor
 /corpus
 docs/.obsidian/workspace.json
+# TCL benchmark JSON runs (generados por tools/adb-bench.sh)
+/bench-results-TCL-*.json
 
 # Ecosystem agent skills (installed via `npx skills add`; reproducible from
 # skills-lock.json). Project-authored skills go in .opencode/skills/ (tracked).
