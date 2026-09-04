@@ -139,6 +139,77 @@ pub fn composite_annotations(
     composite_inner(buf, width, height, anns, xform, false)
 }
 
+/// Rasteriza únicamente los rectángulos de resaltado (`Highlight`) sobre `buf`.
+pub fn composite_highlights(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    anns: &[&Annotated],
+    xform: &ViewTransform,
+) {
+    if width == 0 || height == 0 || buf.is_empty() {
+        return;
+    }
+    for a in anns {
+        if let Annotation::Highlight(hl) = &a.kind {
+            for r in &hl.rects {
+                fill_rect(buf, width, height, xform, r, hl.color, false);
+            }
+        }
+    }
+}
+
+/// Rasteriza únicamente los trazos (`Stroke`) sobre un buffer RGBA transparente
+/// escribiendo el canal alpha (para almacenar en `StrokeCache`).
+pub fn composite_strokes_alpha(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    anns: &[&Annotated],
+    xform: &ViewTransform,
+) {
+    if width == 0 || height == 0 || buf.is_empty() {
+        return;
+    }
+    for a in anns {
+        if let Annotation::Stroke(s) = &a.kind {
+            draw_stroke(buf, width, height, xform, s, true);
+        }
+    }
+}
+
+/// Funde la capa de trazos premultiplicada `layer` sobre `dst` (source-over).
+/// Omite de forma ultra-rápida cualquier pixel con alpha == 0.
+pub fn blit_stroke_layer(dst: &mut [u8], width: u32, height: u32, layer: &crate::engine::Bitmap) {
+    debug_assert_eq!(
+        dst.len(),
+        (width as usize) * (height as usize) * 4,
+        "destination buffer size mismatch"
+    );
+    if width == 0 || height == 0 || dst.is_empty() {
+        return;
+    }
+    let src = &layer.data;
+    let n = (width as usize) * (height as usize);
+    for i in 0..n {
+        let px = i * 4;
+        let sa = src[px + 3] as u32;
+        if sa == 0 {
+            continue;
+        }
+        if sa == 255 {
+            dst[px] = src[px];
+            dst[px + 1] = src[px + 1];
+            dst[px + 2] = src[px + 2];
+            continue;
+        }
+        let inv = 255 - sa;
+        dst[px] = (src[px] as u32 + (dst[px] as u32 * inv + 127) / 255).min(255) as u8;
+        dst[px + 1] = (src[px + 1] as u32 + (dst[px + 1] as u32 * inv + 127) / 255).min(255) as u8;
+        dst[px + 2] = (src[px + 2] as u32 + (dst[px + 2] as u32 * inv + 127) / 255).min(255) as u8;
+    }
+}
+
 /// Screen-space bounds of a page rect under `xform`, clamped to the bitmap.
 /// Returns `None` when entirely outside.
 #[inline]
@@ -277,8 +348,10 @@ fn draw_segment(
     // Degenerate segment (two identical points) still draws a dot:
     // `point_segment_distance` clamps the projection to t=0 and measures
     // the distance to the single point.
-    // Segment bounding box padded by the radius + 1-px AA fringe.
     let pad = r + 1.0;
+    let r_outer_sq = pad * pad;
+    let r_inner = (r - 0.5).max(0.0);
+    let r_inner_sq = r_inner * r_inner;
     let x0 = seg.ax.min(seg.bx) - pad;
     let x1 = seg.ax.max(seg.bx) + pad;
     let y0 = seg.ay.min(seg.by) - pad;
@@ -299,18 +372,19 @@ fn draw_segment(
         let row = y * (width as usize);
         for x in x_start..x_end {
             let px = x as f32 + 0.5;
-            let d = point_segment_distance(px, fy, seg.ax, seg.ay, dx, dy, len2);
-            // 1-px fringe: full coverage inside the core, linear falloff on
-            // the outer pixel strip.
-            let cov = ((r + 0.5 - d).clamp(0.0, 1.0)).min(1.0);
-            if cov <= 0.0 {
+            let d2 = point_segment_distance_sq(px, fy, seg.ax, seg.ay, dx, dy, len2);
+            if d2 >= r_outer_sq {
                 continue;
             }
+            let cov = if d2 <= r_inner_sq {
+                1.0
+            } else {
+                ((r + 0.5 - d2.sqrt()).clamp(0.0, 1.0)).min(1.0)
+            };
             blend_pixel(buf, (row + x) * 4, color, cov, write_alpha);
         }
     }
 }
-
 /// Distance from pixel center `(px,py)` to the segment `a→b` (precomputed
 /// `dx/dy` and squared length): the projection is clamped to the segment
 /// extent, so points beyond the ends measure the distance to the nearer
@@ -318,7 +392,15 @@ fn draw_segment(
 /// (padded) bounding box already visited — cheap and exact enough for a
 /// 1-px antialiased edge.
 #[inline]
-fn point_segment_distance(px: f32, py: f32, ax: f32, ay: f32, dx: f32, dy: f32, len2: f32) -> f32 {
+fn point_segment_distance_sq(
+    px: f32,
+    py: f32,
+    ax: f32,
+    ay: f32,
+    dx: f32,
+    dy: f32,
+    len2: f32,
+) -> f32 {
     let t = if len2 > 0.0 {
         (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
     } else {
@@ -326,8 +408,7 @@ fn point_segment_distance(px: f32, py: f32, ax: f32, ay: f32, dx: f32, dy: f32, 
     };
     let cx = ax + t * dx;
     let cy = ay + t * dy;
-    let d2 = (px - cx) * (px - cx) + (py - cy) * (py - cy);
-    d2.sqrt()
+    (px - cx) * (px - cx) + (py - cy) * (py - cy)
 }
 
 /// Source-over blend of `color` (with coverage `cov` in [0,1]) at byte
@@ -346,10 +427,9 @@ fn blend_pixel(buf: &mut [u8], i: usize, color: Color, cov: f32, write_alpha: bo
     buf[i + 1] = (sg * a + dg * inv) as u8;
     buf[i + 2] = (sb * a + db * inv) as u8;
     if write_alpha {
-        // Capa sobre fondo transparente: el píxel pintado hereda la
-        // cobertura (`a` en [0,1] → 0..=255). Donde no hay tinta, el alpha
-        // sigue a 0 y un blend posterior source-over lo salta.
-        buf[i + 3] = (a * 255.0).round() as u8;
+        let da = buf[i + 3] as f32 / 255.0;
+        let out_a = (a + da * inv).min(1.0);
+        buf[i + 3] = (out_a * 255.0).round() as u8;
     }
 }
 

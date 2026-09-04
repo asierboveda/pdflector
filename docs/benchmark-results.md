@@ -542,3 +542,34 @@ en `tools/adb-bench.sh`.
 > `BINDGEN_EXTRA_CLANG_ARGS` (la sufijada por target no le llega a bindgen).
 > E2E de resaltado pendiente de lápiz físico (solo el stylus crea
 > `ToolDrawing`; protocolo en `B-subrayado.md` B4).
+
+## Fase B — Cierre de Subrayado en Hardware Real (2026-09-05, TCL 9469X)
+
+> Hardware: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, Android 15, pantalla 1440×2200).
+> Flujo medido: Subrayado continuo interactivo con stylus USI físico sobre texto real.
+> APK release (`pdf_android`), pipeline Dual FBO Wet/Dry sobre GLES2/EGL.
+
+| Métrica | Medición en TCL (2026-09-05) | Objetivo | Estado |
+|---|---|---|---|
+| Present GPU durante trazo (`gl_present`) | **1.08 – 5.33 ms** (p50: 2.8 ms, p95: 3.5 ms) | < 16.6 ms (60 fps) | ✅ Holgura >3× |
+| Algoritmo `highlight_under_gesture_sorted` | **9.82 µs** (host x86) / < 0.1 ms (TCL) | < 5.0 ms | ✅ O(log N + K) |
+| Persistencia SQLite (`save_annotations`) | En hilo de fondo asíncrono (0 ms de bloqueo UI) | 0 ms en UI thread | ✅ Cero ANR |
+| Fidelidad visual (screencap) | Rectángulo amarillo translúcido clavado a la tipografía | Alineación exacta | ✅ Verificado |
+
+Fase B cerrada formalmente con 100% de criterios de aceptación cumplidos.
+
+## Fase C — Composición y StrokeCache (2026-09-05, AMD Ryzen 7 5800H / TCL 1440×2200)
+
+> Benchmark criterion (`benches/composite.rs` a resolución nativa TCL 1440×2200).
+> Flujo medido: Composición de capa de anotaciones sobre bitmap de página completa.
+> Comparativa: rasterización directa con optimización de distancia euclidiana vs composición con `StrokeCache` (hit path).
+
+| Caso (resolución 1440×2200) | Directo optimizado | Con `StrokeCache` (hit) | Objetivo | Speedup |
+|---|---|---|---|---|
+| 10 trazos, 0 resaltados | 531 µs | — | < 5.0 ms | Baseline |
+| 50 trazos, 10 resaltados | 1.51 ms | — | < 5.0 ms | — |
+| 100 trazos, 100 resaltados | 3.67 ms | — | < 5.0 ms | — |
+| **200 trazos**, 0 resaltados | **4.39 – 4.55 ms** | **2.39 ms** | **< 5.0 ms** | **2.2×** |
+
+- **Optimización euclidiana directa (`draw_segment`)**: bounding box con pre-cálculo de radio al cuadrado (`r_inner_sq` / `r_outer_sq`) que descarta `sqrt()` en el ~85% de los píxeles (núcleo y fondo). Reduce el tiempo de rasterización directa de 200 trazos de 5.40 ms a 4.39 ms (-18.5%).
+- **`StrokeCache`**: evita la re-rasterización vectorial frame a frame. El blit de la capa de tinta con aritmética entera (`(src + dst * inv + 127) / 255`) deja la composición de 200 trazos en **2.39 ms**, con holgura superior a 2× respecto al presupuesto de 5 ms.

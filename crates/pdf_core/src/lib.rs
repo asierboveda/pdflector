@@ -17,6 +17,7 @@ pub mod prefetch;
 pub mod scroll;
 pub mod selection;
 pub mod store;
+pub mod strokecache;
 pub mod sync;
 pub mod textcache;
 pub mod theme;
@@ -39,6 +40,7 @@ pub use selection::{
     sort_spans_by_y,
 };
 pub use store::{AnnotationStore, StoreError, resolve_sidecar, sidecar_path};
+pub use strokecache::{StrokeCache, StrokeKey};
 pub use sync::{
     AnnotationWatcher, SyncError, annotations_dir, library_index_path, watch_annotations,
 };

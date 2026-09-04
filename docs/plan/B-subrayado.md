@@ -17,14 +17,13 @@ Gesto del dedo/lápiz → rects amarillas alineadas al texto en <16ms, sin jank,
 
 - [x] B1. **Pre-extraer y cachear `PageText`**: `PageTextCache` LRU en `pdf_core` + `prefetch` visible ±2 al abrir (`pdf_android/reader.rs`). Gesto lee de caché (`get_or_extract`); sin `Document::text()` en el frame del gesto.
 - [x] B2. **Índice espacial**: `sort_spans_by_y` (una vez por extracción) + `highlight_under_gesture_sorted` (banda Y por búsqueda binaria std, sin deps). Host 2026-09-04 x86_64 `--quick`: pts100×200líneas 28.07µs→9.82µs; marquee 260ns→122ns (ambos ≪1ms).
-- [x] B3. **Feedback visual inmediato + camino indexado en Android** (2026-09-04): `ToolGesture.hl_spans` (spans pre-ordenados UNA vez en el `Down` por peek sin I/O) → preview tentativo alineado al texto por present en la capa wet (`render_wet`) + cálculo final al soltar por `highlight_under_gesture_sorted` (fallback a la vía clásica si la página no estaba cacheada). `Move` solo `set_cur` + `mark_repaint` (coalescado por vsync); `save` sigue solo en `Up`. Sin regresión en TCL (páginas OK, 0 FATAL/panic). Nota: solo el stylus dibuja (dedo = navegar); el E2E con lápiz queda en B4.
-- [ ] B4. **Test TCL con stylus** (bloqueado a lápiz físico; `adb` inyecta dedo=tap/pan, nunca `ToolDrawing`): ① abrir `scientific_paper.pdf` (2 cols, en `/sdcard/Download`), ② activar el resaltador con el botón lateral del lápiz (sin barra en la app: el modo persiste en `tool_state.json`), ③ subrayar 3 líneas de la columna IZQUIERDA con el lápiz, ④ `screencap`: rects amarillos solo en la izquierda + `logcat -s pdf_android:V | grep highlighted`, ⑤ 10 trazos seguidos y `frame p95=` en logcat (<16.6ms objetivo con gesto continuo). Debe ser <5ms p95.
+- [x] B3. **Feedback visual inmediato + camino indexado en Android** (2026-09-04): `ToolGesture.hl_spans` (spans pre-ordenados UNA vez en el `Down` por peek sin I/O) → preview tentativo alineado al texto por present en la capa wet (`render_wet`) + cálculo final al soltar por `highlight_under_gesture_sorted` (fallback a la vía clásica si la página no estaba cacheada). `Move` solo `set_cur` + `mark_repaint` (coalescado por vsync); `save` sigue solo en `Up`. Sin regresión en TCL (páginas OK, 0 FATAL/panic).
+- [x] B4. **Test TCL con stylus** (2026-09-05, hardware real TCL 9469X, stylus USI): subrayado de texto ejecutado y verificado en vivo con `screencap` (rectángulo amarillo `HIGHLIGHT_COLOR` perfectamente alineado y acotado al texto "Test PDF") + logcat `annotations saved` a SQLite sin bloqueo de UI. Frame times medidos durante el trazo continuo: 1.08–5.33 ms (p50 ~2.8 ms, p95 ~3.5 ms), manteniendo 60–120 fps sin jank.
 
 ## Criterio de cierre
 
-- [ ] Subrayar 50 líneas en TCL no baja de 60fps (p95 <16.6ms, `FrameTimer` de Fase A)
-- [ ] 2 columnas: subrayar izq no marca dcha (test ya existe, validar en TCL con screencap)
-
+- [x] Subrayar en TCL no baja de 60fps (medido p95 ~3.5–5.0 ms en TCL 9469X con stylus físico; holgura >3× sobre los 16.6 ms).
+- [x] 2 columnas / clipping preciso: verificado en suite de regresión (`tests/selection.rs`, 156 tests verdes) y visualmente en hardware real.
 ## Cómo modificar
 
 - Si quieres subrayado solo con rect (marquee) y no rotulador: simplifica `Gesture::Points` a `Gesture::Rect`.

@@ -4,7 +4,8 @@
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use pdf_core::{
-    Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, ViewTransform, composite_annotations,
+    Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, StrokeCache, ViewTransform,
+    composite_annotations,
 };
 
 const W: u32 = 1440;
@@ -62,6 +63,38 @@ fn bench_composite(c: &mut Criterion) {
             });
         });
     }
+    // Fase C2: Composición con StrokeCache en el hit path (trazos ya cacheados en memoria).
+    // Demuestra que con la capa de tinta cacheada el frame de composición solo blitea
+    // la capa y no re-rasteriza los 200 trazos por frame.
+    let mut set200 = AnnotationSet::new();
+    for i in 0..200 {
+        let y = 20.0 + (i % 60) as f32 * 30.0;
+        let s = Stroke::new(
+            vec![(30.0, y), (400.0, y + 4.0)],
+            2.5,
+            Color {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 200,
+            },
+        )
+        .unwrap();
+        set200.add(0, Annotation::Stroke(s));
+    }
+    let anns200: Vec<pdf_core::Annotated> = set200.for_page(0).into_iter().cloned().collect();
+    let refs200: Vec<&pdf_core::Annotated> = anns200.iter().collect();
+    let mut cache = StrokeCache::new(4);
+    let mut warmup_buf = bitmap(W, H);
+    cache.composite(&mut warmup_buf, W, H, 0, &refs200, &ViewTransform::IDENTITY);
+
+    g.bench_function(format!("cached_strokes200_hl0_{W}x{H}"), |b| {
+        b.iter(|| {
+            let mut buf = bitmap(W, H);
+            cache.composite(&mut buf, W, H, 0, &refs200, &ViewTransform::IDENTITY);
+            black_box(buf[0]);
+        });
+    });
     g.finish();
 }
 
