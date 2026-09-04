@@ -13,7 +13,7 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings -A clippy::chunks-exact-to-as-chunks
+        run: cargo clippy --all-targets -- -D warnings
       - name: test pdf_core
         run: |
           python3 -m venv /tmp/corpus-venv

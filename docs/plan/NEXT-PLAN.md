@@ -1,26 +1,35 @@
 # NEXT PLAN — Visor ultra-óptimo TCL (no UI/UX)
 
 > **Objetivo nuevo (2026-08-24, auditar código real):** visor personal que pinte sin latencia, subraye sin latencia detectando texto, e IA con contexto completo del PDF + selección. Library fluida pero secundaria. Solo TCL. Sync congelado.
+> **Primera versión útil (v1, decidida):** APK para la TCL con biblioteca local, lectura fluida, zoom, lápiz y subrayador persistentes. IA y sincronización quedan explícitamente después de v1.
 > **Principio:** medir en hardware real (TCL NXTPaper 11 Plus, 1440×2200, A55×8) con `adb` en cada paso. Sin medición no hay cierre.
 > **Competencia:** ver `docs/plan/COMPETENCIA.md` (Xodo ~12ms render, Adobe ~18ms, MuPDF viewer ~10ms, prime-pdf-viewer Rust+Slint ~11ms). Tu baseline TCL actual: `render1x 11-15ms, PSS 26-66MB` — ya competitivo, la latencia está en overlay/selección, no en MuPDF.
 
-## Fases (orden técnico, no waterfall)
+## Primera versión útil (v1): A → B → C → E
 
 | Fase | Fichero | Qué se entrega | Criterio de cierre (TCL) |
 |------|---------|----------------|--------------------------|
-| A | `A-lactencia.md` | Instrumentación + harness `adb` + baseline reproducible | `cargo bench` + `dumpsys` + `screencap` automatizados, p95 medido, sin `unwrap` en hot path |
-| B | `B-subrayado.md` | Subrayado 0-latencia con detección de texto | Gesto → `Highlight` <16ms, sin extraer texto en el frame del gesto |
-| C | `C-pintado.md` | Pintado/stroke 0-latencia (fast path GPU) | `composite_annotations` <5ms para 200 trazos, 60fps con 200 trazos |
-| D | `D-ia-contexto.md` | IA con contexto completo + selección (RAG local) | Pregunta sobre selección responde citando `págs N-M` reales, latencia <30s, sin alucinar |
-| E | `E-library.md` | Library/biblioteca fluida (secundaria) | Scroll rejilla 3×3 <16ms p95, portadas lazy sin bloquear render |
+| A | `A-latencia.md` | Instrumentación + harness `adb` + baseline reproducible | `cargo bench` + `dumpsys` + `screencap` automatizados, p95 medido, sin `unwrap` en hot path |
+| B | `B-subrayado.md` | Subrayador 0-latencia con detección de texto, persistente | Gesto → `Highlight` <16ms, sin extraer texto en el frame del gesto |
+| C | `C-pintado.md` | Lápiz/stroke 0-latencia (fast path GPU), persistente | `composite_annotations` <5ms para 200 trazos, 60fps con 200 trazos |
+| E | `E-library.md` | Library/biblioteca local fluida (añadir PDFs; nunca borrado automático) | Scroll rejilla 3×3 <16ms p95, portadas lazy sin bloquear render |
 
-**Orden:** A → B → C → D → E. B y C pueden paralelizarse tras A. D necesita B (texto pre-extraído).
+**Orden v1:** A → B → C → E. B y C pueden paralelizarse tras A.
+
+## Después de v1 (explícitamente fuera)
+
+| Tema | Fichero | Qué se entrega | Nota |
+|------|---------|----------------|------|
+| D | `D-ia-contexto.md` | IA con contexto completo + selección (RAG local) | Post-v1. Pregunta sobre selección responde citando `págs N-M` reales, latencia <30s, sin alucinar. Config de claves posterior; ninguna clave en Git ni en APK distribuible |
+| Sync | `04-sync.md` (histórico) | Sincronización entre dispositivos | Post-v1, congelada |
 
 ## Reglas para ti (editar el plan)
 
 - Edita el fichero de la fase (cambia criterio). El Issue de GitHub se sincroniza después.
 - Si cambias prioridad (ej: quieres lápiz antes que IA), reordena la tabla y mueve el fichero.
-- UI/UX (temas, animaciones, Slint) queda fuera hasta que A-D estén verdes.
+- UI/UX (temas, animaciones, Slint) queda fuera hasta que A-C+E estén verdes.
+- Biblioteca: nunca borrado automático (solo el usuario borra). Ver tarea futura en `E-library.md`.
+- Ninguna afirmación de rendimiento sin fecha + flujo medido + hardware + métrica.
 
 ## Estado actual auditado (2026-08-24)
 

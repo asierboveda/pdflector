@@ -5,7 +5,7 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 ## Prioridades (lo que más valora el autor)
 
 1. **Rapidez y fluidez total** — que no se trabe, que el scrolling sea de 120fps.
-2. **Consumo mínimo de RAM** — optimizado, sin desperdicio.
+2. **Consumo mínimo de RAM** — optimizado, sin desperdicio. Métrica de producto: PSS vía `dumpsys meminfo`.
 3. Gratis y sin anuncios.
 4. Aprendizaje: primer proyecto real en Rust.
 
@@ -14,27 +14,36 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 - **Tablet objetivo**: TCL NXTPaper 11 Plus (modelo 9469X, Android 15, MediaTek
   MT8781 8× Cortex-A55, pantalla 1440×2200 @ 320 dpi, con lápiz). Hardware real
   desde la Fase 1 (spike 2026-08-12, ver `docs/benchmark-results.md`).
-- Plataforma final: **Android**. Desarrollo inicial en escritorio Linux (Omarchy).
+- Plataforma final: **Android nativo (`pdf_android`)** — decisión vigente ADR-005 (sustituye a ADR-004/Slint).
+  Desarrollo inicial en escritorio Linux (Omarchy).
 - Stack ya instalado: Rust 1.97.1 (rustup), cargo, Python 3.14.6, uv; toolchain
   Android: adb, JDK 17, Android SDK en `~/Android/Sdk` (NDK r28, platform 35).
 
 ## Funciones
 
-**Imprescindibles:**
-- Lectura fluida (paginado, zoom, scroll con caché)
-- Anotaciones (subrayar, dibujar, notas) con el lápiz
-- Exportar notas
-- Modo oscuro
-- Sincronización entre dispositivos
+**Primera versión útil (v1, decidida):** APK para la TCL con:
 
-**Futuras:**
-- Personalización (temas, ajustes)
-- Consulta a IA sobre el PDF (Ollama, local y gratis)
-- Gestos táctiles específicos de tablet
+- Biblioteca local (añadir PDFs; nunca borrado automático: solo el usuario borra)
+- Lectura fluida (paginado, scroll con caché)
+- Zoom
+- Lápiz y subrayador persistentes (anotaciones vectoriales guardadas)
+
+**Después de v1 (explícitamente fuera):**
+
+- Consulta a IA sobre el PDF (Ollama/Groq; requiere configuración de claves, sin claves en Git ni en APK distribuible)
+- Sincronización entre dispositivos (congelada)
+
+**Ya existentes / en curso (no bloquean v1):**
+
+- Anotaciones (subrayar, dibujar, notas) con el lápiz
+- Exportar notas (Markdown + PDF con anotaciones)
+- Modo oscuro
+- Personalización (temas, ajustes) y gestos táctiles específicos de tablet
 
 ## Stack — decisiones con pros y contras
 
 ### Lenguaje: Rust (decidido)
+
 - **Pros**: rendimiento nativo, bajo consumo de RAM, sin GC (control total de memoria), gestión de proyectos con cargo (muy fácil), ya instalado.
 - **Contras**: curva inicial; UI de escritorio menos "wysiwyg" que web.
 
@@ -53,29 +62,32 @@ La tabla siguiente es la comparativa que motivó la decisión (contexto históri
 | PDFium | Apache-2.0 | Media-alta | El de Chrome, muy probado, crate `pdfium-render` fácil | Más pesado que MuPDF; descartado en ADR-001 |
 | poppler | LGPL | Media | Muy usado en Linux | Más pesado, enlazado C/C++ más incómodo en Rust |
 
-### UI (por decidir)
+### UI (decidida: **`pdf_android` nativa** — ADR-005)
+
+> **Decisión vigente (2026-08-23, ADR-005)**: la plataforma final es `pdf_android`
+> (NativeActivity + JNI + render propio a `ANativeWindow`). ADR-004 (Slint) queda
+> **Superseded**. Slint/Tauri/Qt **no** son alternativas abiertas.
+
+Contexto histórico (opciones evaluadas en su día, ya cerradas):
 
 | Opción | Velocidad/RAM | Pros | Contras |
 |--------|---------------|------|---------|
 | **egui/eframe** (prototipo) | Muy buena, pocos MB | Iteración rapidísima, 100% Rust, ideal para aprender | Android experimental, lápiz sin resolver → solo para fase escritorio |
-| **Slint** | Muy buena, Skia | Un solo stack desktop+Android, declarativo | Lápiz: presión no expuesta; ecosistema pequeño |
-| **Qt Quick (C++)** | Buena | Más maduro para táctil/lápiz | Curva dura, Qt pesado, setup Android laborioso |
-| **Tauri v2** (Rust+web) | Variable | Lápiz nativo del navegador (presión/inclinación), 1 código | WebView consume más RAM y es menos predecible |
-
-> **Estado**: la decisión se resuelve en el spike de la **Fase 6** (Slint vs
-> Tauri v2; Qt queda fuera del spike, ver PLAN.md). Como el lápiz **no requiere
-> presión** (PLAN.md §1, decisión 2), el contra de Slint ("presión no expuesta")
-> deja de pesar y vuelve a ser candidato fuerte.
+| **Slint** (descartado, ADR-005) | Muy buena, Skia | Un solo stack desktop+Android, declarativo | Lápiz real sin validar; riesgo no-repaint en Android; reescribir ~12k líneas sin beneficio PSS |
+| **Qt Quick (C++)** (descartado) | Buena | Más maduro para táctil/lápiz | Curva dura, Qt pesado, setup Android laborioso |
+| **Tauri v2** (descartado) | Variable | Lápiz nativo del navegador (presión/inclinación), 1 código | WebView consume más RAM y es menos predecible |
 
 ### Almacenamiento
+
 - **SQLite** (`rusqlite`): anotaciones, progreso, biblioteca. Ligero, un solo archivo.
 
 ## Arquitectura
 
 ```
-pdf_core/   # Biblioteca Rust: abrir PDF, renderizar páginas, anotaciones, caché. Sin UI.
-pdf_app/    # UI (egui ahora; Tauri/Slint en el futuro). Reutiliza pdf_core.
-pdf_bench/  # Benchmarks (criterion) y barridos de rendimiento; escritorio y Android.
+pdf_core/     # Biblioteca Rust: abrir PDF, renderizar páginas, anotaciones, caché. Sin UI.
+pdf_android/  # Plataforma final Android nativa (ADR-005). Reutiliza pdf_core.
+pdf_app/      # UI egui: prototipo desktop, no plataforma final.
+pdf_bench/    # Benchmarks (criterion) y barridos de rendimiento; escritorio y Android.
 ```
 
 Separar núcleo y UI = poder cambiar de framework sin reescribir la lógica.
@@ -86,18 +98,17 @@ Separar núcleo y UI = poder cambiar de framework sin reescribir la lógica.
 - **Caché LRU** de páginas: solo las visibles + colindantes; expulsar al hacer scroll.
 - No conservar todas las páginas como texturas en memoria.
 - Extracción de texto perezosa (solo cuando se necesita).
-- Medir con `top`/`/proc` el RSS y con herramientas de profiling; umbral objetivo: < 150 MB en tablet.
+- Métrica de producto Android: **PSS** vía `dumpsys meminfo` (objetivo <150 MB en tablet).
+  RSS/VmHWM (`top`/`/proc`, `PEAK_RSS_KB` del sweep) queda como diagnóstico de host.
+- Procedimiento repetible: `.opencode/skills/pdflector-rendimiento/SKILL.md`.
+  Ninguna afirmación de rendimiento sin fecha + flujo medido + hardware + métrica.
 
 ## Hoja de ruta
 
-- **Fase 0** — ✅ completada (2026-08-05): andamiaje cargo (`pdf_core` + `pdf_app`), abrir PDF y mostrar página 1.
-- **Fase 0.5** — ✅ completada (2026-08-05): benchmark de motores y decisión **MuPDF / AGPL-3.0** (ADR-001); backend PDFium eliminado.
-- **Fase 1** — en curso: scroll virtualizado + caché LRU (B1) ✅, prefetch en hilos de fondo (B2) ✅, spike en la tablet TCL NXTPaper 11 Plus ✅ (2026-08-12). Pendientes: zoom (B3), modo paginado, harness android-activity, overlay debug.
-- **Fase 2**: modo oscuro.
-- **Fase 3**: anotaciones + exportar (lápiz).
-- **Fase 4**: sincronización (Syncthing, gratis).
-- **Fase 5**: consulta a IA (Ollama, local).
-- **Fase 6**: personalización y aterrizaje en Android (elegir UI final; spike de 1-2 días con Slint/Tauri).
+- Roadmap activo: **`docs/plan/NEXT-PLAN.md` (fases A–E)**. Primera versión: A → B → C → E
+  (instrumentación → subrayador → lápiz → biblioteca). IA (D) y sincronización quedan después de v1.
+- Histórico: Fases 0–6 (andamiaje, motor MuPDF, lectura, oscuro, anotaciones, sync, IA, Android).
+  Detalle en `docs/PLAN.md` (índice histórico, no editar).
 
 ## Licencias
 
@@ -109,9 +120,10 @@ publicación pública del código en GitHub. Dependencias: egui/Slint
 
 ## Decisiones pendientes
 
-1. UI final para Android: Slint vs Tauri v2 (spike en Fase 6; Qt descartado).
-2. Ubicación de Ollama: PC por red local vs otra opción (al inicio de Fase 5).
+1. Ubicación de Ollama / claves IA: PC por red local vs otra opción (después de v1; ninguna clave en Git ni en APK distribuible; la APK compila e instala sin claves).
+2. Migración de claves embebidas (`include_str!` en `pdf_android`): tarea separada pendiente, sin cambio de código en esta reestructuración.
+3. Eliminar cualquier borrado automático de biblioteca (p. ej. límite 50 PDFs): tarea futura específica en Fase E; la biblioteca nunca borra sin acción del usuario.
 
-**Resueltas** (PLAN.md §1 / ADR-001): motor PDF = MuPDF (AGPL-3.0); presión del
+**Resueltas** (ADR-001 / ADR-005): motor PDF = MuPDF (AGPL-3.0); presión del
 lápiz = no necesaria; exportación = Markdown + PDF con anotaciones incrustadas;
-sincronización = Syncthing.
+plataforma final = `pdf_android` nativa (ADR-005 sustituye ADR-004).

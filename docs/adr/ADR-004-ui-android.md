@@ -1,12 +1,12 @@
 # ADR-004 — UI Android final: Slint (recomendación del spike)
 
-> **Origen**: spike de decisión de Fase 6 (Slint vs Tauri v2), time-boxed.
+> **Estado: SUPERSEDED by ADR-005 (2026-08-23). No vigente.**
+> Ver `ADR-005-ui-android-nativa.md` (plataforma final: `pdf_android` nativa).
+> Se conserva como contexto histórico; no usar como instrucción activa.
+
+> **Origen**: spike de decisión histórico (Slint vs Tauri v2), time-boxed.
 > **Fecha**: 2026-08-13
-> **Estado**: **Aceptado** — el bloqueo de input documentado en la primera
-> versión de este ADR quedó **resuelto y verificado en la tablet real** el
-> 2026-08-13 (ver §7.1). La decisión Slint vs Tauri se considera tomada; las
-> validaciones restantes (lápiz real, semana de uso, frame time p95) son
-> criterios de aceptación de la Fase 6, no de esta decisión.
+> **Estado original**: **Aceptado** el 2026-08-13 — **sustituido** por ADR-005 el 2026-08-23.
 > **Hardware de medición**: TCL 9469X (NXTPaper 11 Plus), Android 15 (API 35),
 > SoC MediaTek, 1440×2200, densidad 320 dpi, conectada por adb USB.
 > **Entorno de build**: Omarchy/Arch Linux, Rust 1.97.1 (target

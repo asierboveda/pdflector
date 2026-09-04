@@ -1,3 +1,7 @@
+> **HISTÓRICO — no activo.** Plan UX/UI competidor conservado como referencia.
+> Roadmap vigente: `docs/plan/NEXT-PLAN.md` (fases A–E). No usar como instrucción activa.
+> No borrar ni mover todavía (decisión de reestructuración 2026-09-04).
+
 # Plan de Implementación UI/UX - PDFLector
 
 ## 1. Filosofía de Diseño

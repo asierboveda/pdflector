@@ -1,3 +1,7 @@
+> **HISTÓRICO — no activo.** Plan UX/UI Pro competidor conservado como referencia.
+> Roadmap vigente: `NEXT-PLAN.md` (fases A–E). No usar como instrucción activa.
+> No borrar ni mover todavía (decisión de reestructuración 2026-09-04).
+
 # MASTER PLAN UX/UI & PRODUCT DESIGN — PDFLector PRO
 > **Estándar:** Nivel Apple Books / GoodNotes 6 / Notability / Material Design 3 Expressive
 > **Hardware objetivo:** Tablet Android con stylus (TCL NXTPaper 11 Plus, 1440×2200, 320 DPI)

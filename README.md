@@ -3,22 +3,25 @@
 Fast, lightweight PDF reader for Android tablets with a stylus. Free, no ads,
 no telemetry. Personal learning project (first real Rust project).
 
-Desktop-first development on Linux; Android is the final target.
+Final platform: native Android (`crates/pdf_android`, ADR-005).
+Desktop `egui` app is only a prototype. Active roadmap: phases A–E.
 
 ## Docs
 
-- [`docs/PROYECTO.md`](docs/PROYECTO.md) — vision and priorities (Spanish)
-- [`docs/PLAN.md`](docs/PLAN.md) — phased implementation plan (Spanish)
+- [`docs/PROYECTO.md`](docs/PROYECTO.md) — vision and product scope (Spanish)
+- [`docs/plan/NEXT-PLAN.md`](docs/plan/NEXT-PLAN.md) — active roadmap, phases A–E (Spanish)
+- [`docs/PLAN.md`](docs/PLAN.md) — historic index of phases 1–6, reference only
 - [`AGENTS.md`](AGENTS.md) — rules for AI agents working on this repo
 
 ## Layout
 
 ```
 crates/pdf_core/   core library (no UI): engine, render, cache, annotations
-crates/pdf_app/    egui desktop prototype
-crates/pdf_bench/  benchmark harness (Phase 0.5+)
+crates/pdf_android/   final native Android app (ADR-005)
+crates/pdf_app/    egui desktop prototype (not final)
+crates/pdf_bench/  benchmark harness
 corpus/            test PDFs (gitignored; tools/generate_corpus.py)
-docs/              Obsidian vault (project docs + ADRs)
+docs/              project docs + ADRs (active: NEXT-PLAN A–E; rest historic)
 ```
 
 ## Setup

@@ -1,3 +1,7 @@
+> **HISTÓRICO — no activo.** Plan técnico Pro competidor conservado como referencia.
+> Roadmap vigente: `NEXT-PLAN.md` (fases A–E). No usar como instrucción activa.
+> No borrar ni mover todavía (decisión de reestructuración 2026-09-04).
+
 # ESPECIFICACIÓN TÉCNICA DE IMPLEMENTACIÓN — PDFLector PRO
 
 > **Objetivo:** Guía de implementación técnica de máxima precisión para el rediseño UX/UI y funcionalidades Pro de PDFLector.

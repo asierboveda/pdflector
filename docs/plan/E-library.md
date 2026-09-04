@@ -14,10 +14,10 @@
 Scroll rejilla sin jank, portadas sin bloquear apertura de PDF.
 
 ## Tareas
-
 - [ ] E1. **Portadas sin bloquear**: `ThumbCache` ya tiene `THUMB_BYTE_BUDGET`, pero `pump_thumbs` corre en `tick` (16ms). Mover a hilo fondo (actor como `prefetch.rs`, 1 worker con `MupdfEngine` por hilo).
 - [ ] E2. **Menu/sheet**: `sheet_progress` 0→0.5 con `compose_frame` cacheado ya es 1-2ms (bien). Solo pulir: asegura `sheet_anim` no re-blitea página (ya hace `blit_composed`).
 - [ ] E3. **Medir**: `adb-bench.sh` library 256 PDFs, p95 scroll <16ms
+- [ ] E4. **(Futura, fuera de esta reestructuración) Eliminar cualquier borrado automático**: la biblioteca nunca borra sin acción del usuario (p. ej. revisar límite 50 PDFs). Solo el usuario puede borrar.
 
 ## Criterio de cierre
 
