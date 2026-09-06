@@ -96,13 +96,18 @@ fn copy_row_rgba_to(dst: &mut [u8], src: &[u8], bpp: usize) {
     match bpp {
         4 => dst.copy_from_slice(&src[..dst.len()]),
         2 => {
-            for (out, px) in dst.chunks_exact_mut(2).zip(src.chunks_exact(4)) {
+            for (out, px) in dst
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(src.as_chunks::<4>().0)
+            {
                 out.copy_from_slice(&rgb565(px[0], px[1], px[2]).to_ne_bytes());
             }
         }
         _ => {
             let n = bpp.min(3);
-            for (out, px) in dst.chunks_exact_mut(bpp).zip(src.chunks_exact(4)) {
+            for (out, px) in dst.chunks_exact_mut(bpp).zip(src.as_chunks::<4>().0) {
                 out[..n].copy_from_slice(&px[..n]);
             }
         }
@@ -349,7 +354,7 @@ fn fill_rect_lut(
                 w * 4,
             )
         };
-        for px in row.chunks_exact_mut(4) {
+        for px in row.as_chunks_mut::<4>().0 {
             px[0] = s0 + t_dst[px[0] as usize];
             px[1] = s1 + t_dst[px[1] as usize];
             px[2] = s2 + t_dst[px[2] as usize];
