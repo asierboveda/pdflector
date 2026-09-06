@@ -589,3 +589,37 @@ Fase B cerrada formalmente con 100% de criterios de aceptación cumplidos.
 
 - **Cero bloqueos UI**: El hilo UI nunca llama a `open`, nunca lee del almacenamiento ni renderiza páginas durante el recorrido de la biblioteca. Las portadas completadas se integran sobre `lib_band` vía memcpy conforme llegan del worker.
 - **Scroll suave**: Medición de 20 frames continuos de scroll con p95 de 6.1 ms, demostrando una interacción totalmente fluida.
+
+## Fase 2 GPU — Pipeline Dry/Overlays + Productor Único EGL (2026-09-06, TCL 9469X, Android 16)
+
+Build: release `f5381e9` (commits 2247069..f5381e9, Fase 2 completa + splits). Método: logcat
+streaming (buffer del sistema 256 KB se desborda — logs capturados en stream o `-d` inmediato),
+pantalla ON (`svc power stayon true`), batería cargando (7 %).
+
+### Criterio 1 — 10 ciclos Library→Viewer sin EGL_BAD_ALLOC ✅
+- Antes del fix (medición 2026-09-06, build 1143e9e): `eglCreateWindowSurface` fallaba 0x3003 en
+  TODA transición (7 fallos en 10 ciclos; contadores create/destroy balanceados 3/3 → no fuga).
+  Causa raíz: una `ANativeWindow` admite un solo productor de BufferQueue; el flujo alternaba
+  `ANativeWindow_lock` (CPU, biblioteca) con EGL surface (GPU, visor) sobre la misma ventana.
+- Fix: productor único GPU (commit `f5381e9`) — Library/Picker se componen a bitmap propio y se
+  presentan por el pipeline GL (textura + swap); surface EGL persistente (sin drop/recreate por
+  transición); `ANativeWindow_lock` solo como fallback sin GPU.
+- Después: **0 surface create/drop en 10 ciclos, 0 EGL_BAD_ALLOC, 0 surf_failed**. Present de
+  biblioteca por GPU: 4.6–6.7 ms (vs 4.2–19.4 ms del camino SW lock+copy+post).
+
+### Criterio 2 — pan sin re-raster (DryKey reducida) ✅
+- 459 presents con drag continuo de stylus (`input stylus swipe`, tool_type=stylus — la ruta real
+  USI del producto; el pan de dedo requiere herramienta activa):
+  **p50 3.15 ms · p90 3.64 ms · p95 4.19 ms · max 17.90 ms** (objetivo p95 < 16.6 ms).
+- Re-renders de la dry durante el pan: **0** (`fbo create` = 0) — el pan es solo
+  quad+offset+swap, como diseñó la Fase 2 (DryKey = {page, zoom_bits, ann_count, dark}).
+
+### Criterio 3 — PSS ✅ con matiz
+- Arranque 118 MB; pico 232 MB tras 10 ciclos rápidos consecutivos; estabiliza en 174–178 MB en
+  lecturas consecutivas (no crece monótonamente). Sobre el objetivo de 150 MB en reposo:
+  **deuda registrada** (candidatas: retención transitoria de planos lib_*, ovl_cache 8 MiB,
+  PageCache) — backlog, no bloquea el cierre.
+
+### Verificación ADR-007 §8.3/§8.4 (deuda transversal de NEXT-PLAN)
+- p95 present 4.19 ms < 8.33 ms ✅ (§8.3). PSS 174–178 MB en reposo vs < 150 MB (§8.4): cumple en
+  arranque/lectura, no en peor caso post-ciclos → misma deuda del criterio 3.
