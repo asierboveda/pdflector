@@ -1327,8 +1327,11 @@ impl Gpu {
         }
     }
 
-    /// Dibuja una textura a pantalla completa en el framebuffer actualmente vinculado.
-    fn draw_fullscreen_texture(&mut self, tex: u32, alpha: f32) {
+    /// Dibuja una textura a pantalla completa en el framebuffer actualmente
+    /// vinculado. `offset` (px de ventana, f32) traslada el quad de vértices:
+    /// la capa Dry (página) lo recibe del pan del visor; la Wet (trazo en
+    /// vuelo) y los overlays van sin offset (UI fija en coords de pantalla).
+    fn draw_fullscreen_texture(&mut self, tex: u32, alpha: f32, offset: (f32, f32)) {
         if tex == 0 {
             return;
         }
@@ -1364,7 +1367,10 @@ impl Gpu {
             gl::glUniform1f(self.prog_ovl.u_alpha, alpha);
 
             let (w, h) = (self.win_w as f32, self.win_h as f32);
-            let pos = [0.0f32, 0.0, w, 0.0, 0.0, h, w, h];
+            // El offset traslada el quad de página: misma proyección (mvp
+            // identidad de pantalla), solo desplazamos las coordenadas.
+            let (dx, dy) = offset;
+            let pos = [dx, dy, w + dx, dy, dx, h + dy, w + dx, h + dy];
             // Invertimos Y en el UV porque el FBO de OpenGL guarda el frame invertido verticalmente respecto a ventana
             let uv = [0.0f32, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0];
             let mut verts: [f32; 24] = [0.0; 24];
@@ -1740,12 +1746,16 @@ impl Gpu {
             gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
             gl::glViewport(0, 0, self.win_w, self.win_h);
 
-            // Dibujar capa Dry base
-            self.draw_fullscreen_texture(self.dry_tex, 1.0);
+            // Dibujar capa Dry base, trasladada por el pan del visor: la
+            // página entera se desplaza con el dedo (offset en el quad de
+            // vértices, misma proyección).
+            self.draw_fullscreen_texture(self.dry_tex, 1.0, (reader.pan_x, reader.pan_y));
 
-            // Componer encima la capa Wet transparente con premultiplied alpha
+            // Componer encima la capa Wet transparente con premultiplied alpha.
+            // La Wet NO lleva offset en esta tarea: el trazo en vuelo sigue la
+            // posición del lápiz en pantalla (su traslación con pan, 2.5).
             if has_wet {
-                self.draw_fullscreen_texture(self.wet_tex, 1.0);
+                self.draw_fullscreen_texture(self.wet_tex, 1.0, (0.0, 0.0));
             }
         }
 
