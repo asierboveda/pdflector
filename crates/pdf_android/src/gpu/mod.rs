@@ -1522,8 +1522,9 @@ impl Gpu {
     /// Renderiza la capa base persistente (Dry FBO): página + anotaciones SOLO.
     /// Se invoca ÚNICAMENTE cuando cambia la página, el zoom, las anotaciones o
     /// el dark (campos reales de la `DryKey` reducida). Los overlays de UI
-    /// (chrome, sheet, toast, sel_menu, ai_panel, lib_fade, badges) NO viven
-    /// aquí: se dibujan por frame en `present_viewer` directos a fb0 (Fase 2).
+    /// (chrome, sheet, toast, sel_menu, ai_panel, lib_fade, badges, cursor de
+    /// goma) NO viven aquí: se dibujan por frame en `present_viewer` directos
+    /// a fb0 (Fase 2).
     fn render_dry(&mut self, reader: &Reader) {
         if self.dry_fbo == 0 || self.dry_tex == 0 {
             return;
@@ -1654,7 +1655,12 @@ impl Gpu {
         }
     }
 
-    /// Renderiza la capa de tinta en vuelo (Wet FBO transparente) con glScissor acotado.
+    /// Renderiza la capa transitoria (Wet FBO transparente): avance del
+    /// trazo activo (tinta con remate + predicción Kalman, resaltador
+    /// alineado), cursor de la goma y rect de selección (fill + borde). El
+    /// FBO se limpia por COMPLETO en cada llamada (sin glScissor) y la
+    /// textura se compone sobre la dry con offset (0,0): el trazo ya hornea
+    /// su pan (página→pantalla) y el cursor/rect usan px de ventana.
     fn render_wet(&mut self, reader: &Reader) {
         if self.wet_fbo == 0 || self.wet_tex == 0 {
             return;
@@ -1815,10 +1821,16 @@ impl Gpu {
 
     /// Present completo del visor por GPU con arquitectura Dual FBO (Wet/Dry).
     ///
-    /// - Capa Dry: se re-renderiza SOLO al cambiar página, zoom, tema o al soltar el lápiz.
-    ///   Durante la escritura activa, la base NUNCA se limpia ni se re-renderiza (CERO parpadeo).
-    /// - Capa Wet: dibuja únicamente el avance del trazo activo + predicción Kalman en FBO transparente.
-    /// - Composición: compone `dry_fbo ⊕ wet_fbo` en el framebuffer 0 (la ventana visible).
+    /// - Capa Dry: se re-renderiza SOLO al cambiar página, zoom, anotaciones o
+    ///   dark (los 4 campos de la `DryKey`). Durante la escritura activa, la
+    ///   base NUNCA se limpia ni se re-renderiza (CERO parpadeo).
+    /// - Capa Wet: capa transitoria en FBO transparente — avance del trazo
+    ///   activo + predicción Kalman, cursor de la goma y rect de selección —
+    ///   re-renderizada por frame SOLO mientras `has_wet` (trazo, goma o
+    ///   selección activos).
+    /// - Composición: compone `dry_fbo ⊕ wet_fbo` en el framebuffer 0 (la
+    ///   ventana visible) y encima los overlays de UI por frame (no invalidan
+    ///   la dry).
     pub(crate) fn present_viewer(&mut self, reader: &Reader) {
         let t0 = std::time::Instant::now();
         if !self.has_surface() {
@@ -1840,8 +1852,15 @@ impl Gpu {
             self.dry_key = Some(key);
         }
 
-        // 2. Renderizar capa Wet si hay trazo o goma activa
-        let has_wet = reader.tool_gesture.is_some() || reader.erase_pt.is_some();
+        // 2. Renderizar capa Wet si hay capa transitoria que pintar: trazo de
+        // herramienta, goma activa o selección (rect vivo/fijado). La
+        // selección NO invalida la dry (fuera de la DryKey desde 2.0): vive
+        // en la wet como el trazo — sin esto, el gesto Selecting (long-press
+        // de dedo, sin tool_gesture ni erase_pt) nunca llegaría a render_wet
+        // y el rect sería invisible en GPU (Tarea 2.5).
+        let has_wet = reader.tool_gesture.is_some()
+            || reader.erase_pt.is_some()
+            || reader.sel.is_some();
         if has_wet {
             self.render_wet(reader);
         }
@@ -1862,16 +1881,18 @@ impl Gpu {
             self.draw_fullscreen_texture(self.dry_tex, 1.0, (reader.pan_x, reader.pan_y));
 
             // Componer encima la capa Wet transparente con premultiplied alpha.
-            // La Wet NO lleva offset en esta tarea: el trazo en vuelo sigue la
-            // posición del lápiz en pantalla (su traslación con pan, 2.5).
+            // La Wet se compone SIEMPRE con offset (0,0): el trazo en vuelo ya
+            // hornea su pan al transformar página→pantalla y el cursor de goma
+            // / rect de selección están en px de ventana.
             if has_wet {
                 self.draw_fullscreen_texture(self.wet_tex, 1.0, (0.0, 0.0));
             }
         }
 
         // 3b. Overlays de UI directamente a fb0 (por frame): chrome, sheet,
-        // toast, sel_menu, ai_panel, lib_fade, badges. Nunca invalidan la dry
-        // (Fase 2): la dry cachea página + anotaciones, esto es UI viva.
+        // toast, sel_menu, ai_panel, lib_fade, badges, cursor de goma. Nunca
+        // invalidan la dry (Fase 2): la dry cachea página + anotaciones, esto
+        // es UI viva.
         // Cada (bitmap, id) lleva el id de generación que el Reader asignó en
         // su último re-render (`Reader::ovl_seq`): el hit de la caché de
         // texturas es por id, nunca por puntero (ABA, Tarea 2.4).
