@@ -478,8 +478,26 @@ pub(crate) struct Gpu {
     /// de ventana COMPLETA que puede exceder `OVL_BYTE_BUDGET`, así que se
     /// sube una vez por transición y vive FUERA del presupuesto (misma
     /// categoría que `page_tex`). Some((id_del_snapshot, tex)); se libera al
-    /// terminar el fade o al empezar otro.
+    /// terminar el fade, al empezar otro o al soltar la surface
+    /// (`drop_surface_only` — salir del visor a mitad de fade, Tarea 2.6).
     fade_tex: Option<(u64, u32)>,
+
+    // --- Contadores del ciclo de vida EGL/GLES (Tarea 2.6) ---
+    // Acumuladores create/destroy por tipo de recurso, logueados en cada
+    // `drop_surface_only` (resumen `gpu: lifecycle ...`). Tras N ciclos
+    // Library→Viewer, surf y fbo deben leerse a delta 0 (create==destroy);
+    // tex a delta == ovl_live (texturas vivas del LRU; la fade se libera en
+    // el propio drop). No son AtomicU64 porque solo se tocan con `&mut self`
+    // (un único hilo, el del bucle principal). page_tex, programas y VBOs se
+    // crean UNA vez por contexto (make_resources) y NO cuentan: se liberan
+    // con `eglDestroyContext` en el Drop.
+    surf_created: u64,
+    surf_destroyed: u64,
+    surf_failed: u64,
+    fbo_created: u64,
+    fbo_destroyed: u64,
+    tex_created: u64,
+    tex_destroyed: u64,
 
     // --- Fase W1/W2/W3: Pipeline Dual FBO (Wet / Dry Ink) ---
     dry_fbo: u32,
@@ -585,10 +603,21 @@ impl Gpu {
                 return None;
             }
             gl::eglSwapInterval(dpy, 1);
-            let mut gpu = Self::make_resources(dpy, cfg, ctx, surf)?;
+            let mut gpu = match Self::make_resources(dpy, cfg, ctx, surf) {
+                Some(g) => g,
+                None => {
+                    // Sin `Gpu` no hay `Drop` que libere la surface ya creada
+                    // (el `?` anterior la dejaba huérfana): destruirla aquí
+                    // (Tarea 2.6, defensivo e idempotente).
+                    warn!("make_resources failed: releasing EGL surface");
+                    gl::eglDestroySurface(dpy, surf);
+                    return None;
+                }
+            };
             gpu.win_w = win.width();
             gpu.win_h = win.height();
             gl::glViewport(0, 0, gpu.win_w, gpu.win_h);
+            gpu.note_surface_created(gpu.win_w, gpu.win_h);
 
             let (dry_fbo, dry_tex) = Self::create_fbo_with_tex(gpu.win_w, gpu.win_h);
             let (wet_fbo, wet_tex) = Self::create_fbo_with_tex(gpu.win_w, gpu.win_h);
@@ -597,6 +626,7 @@ impl Gpu {
             gpu.dry_dirty = true;
             gpu.wet_fbo = wet_fbo;
             gpu.wet_tex = wet_tex;
+            gpu.note_fbos_created();
 
             info!(
                 "gpu: EGL/GLES2 ready {}x{} renderer {} (Dual FBO Wet/Dry active)",
@@ -696,6 +726,13 @@ impl Gpu {
                 frame_timer: FrameTimer::new(),
                 presents: 0,
                 last_present: None,
+                surf_created: 0,
+                surf_destroyed: 0,
+                surf_failed: 0,
+                fbo_created: 0,
+                fbo_destroyed: 0,
+                tex_created: 0,
+                tex_destroyed: 0,
             })
         }
     }
@@ -711,6 +748,10 @@ impl Gpu {
             {
                 warn!("set_buffers_geometry (recreate): {e}");
             }
+            // Destrucción PREVIA idempotente (Tarea 2.6): suelta la surface y
+            // los FBOs dry/wet si existe versión previa — y la textura del
+            // fade si quedó viva — ANTES de crear nada nuevo. Ninguna
+            // creación llega aquí con un recurso del mismo tipo sin liberar.
             self.drop_surface_only();
             let surf = gl::eglCreateWindowSurface(
                 self.dpy,
@@ -719,14 +760,23 @@ impl Gpu {
                 std::ptr::null(),
             );
             if surf.is_null() {
+                self.surf_failed += 1;
                 warn!(
-                    "eglCreateWindowSurface (recreate) failed: eglGetError=0x{:x}",
-                    gl::eglGetError()
+                    "eglCreateWindowSurface (recreate) failed: eglGetError=0x{:x} (failure #{})",
+                    gl::eglGetError(),
+                    self.surf_failed
                 );
                 return;
             }
             if gl::eglMakeCurrent(self.dpy, surf, surf, self.ctx) == 0 {
-                warn!("eglMakeCurrent (recreate) failed");
+                // La surface recién creada no puede quedar huérfana: sin este
+                // destroy, cada intento fallido filtraba una EGLSurface
+                // (nadie la guardaba ni la destruía) — 0x3003 acumulado.
+                warn!(
+                    "eglMakeCurrent (recreate) failed: eglGetError=0x{:x}",
+                    gl::eglGetError()
+                );
+                gl::eglDestroySurface(self.dpy, surf);
                 return;
             }
             gl::eglSwapInterval(self.dpy, 1);
@@ -735,8 +785,12 @@ impl Gpu {
             self.win_h = win.height();
             gl::glViewport(0, 0, self.win_w, self.win_h);
             self.page_loaded = None;
+            self.note_surface_created(self.win_w, self.win_h);
 
-            // Recrear FBOs con la nueva resolución
+            // Recrear FBOs con la nueva resolución. `drop_surface_only` (al
+            // inicio) ya destruyó los previos; los destroy siguientes quedan
+            // como defensa idempotente (0,0 → no-op) por si una ruta futura
+            // creara FBOs sin pasar por él.
             Self::destroy_fbo_with_tex(self.dry_fbo, self.dry_tex);
             Self::destroy_fbo_with_tex(self.wet_fbo, self.wet_tex);
             let (dry_fbo, dry_tex) = Self::create_fbo_with_tex(self.win_w, self.win_h);
@@ -747,6 +801,7 @@ impl Gpu {
             self.dry_key = None;
             self.wet_fbo = wet_fbo;
             self.wet_tex = wet_tex;
+            self.note_fbos_created();
         }
     }
 
@@ -759,14 +814,42 @@ impl Gpu {
 
     unsafe fn drop_surface_only(&mut self) {
         unsafe {
+            // Destrucción de los FBOs dry/wet con contador y log (un evento
+            // por par FBO+textura vivo; (0,0) → no-op, sin log).
+            let had_dry = self.dry_fbo != 0 || self.dry_tex != 0;
+            let had_wet = self.wet_fbo != 0 || self.wet_tex != 0;
             Self::destroy_fbo_with_tex(self.dry_fbo, self.dry_tex);
             Self::destroy_fbo_with_tex(self.wet_fbo, self.wet_tex);
+            if had_dry {
+                self.fbo_destroyed += 1;
+            }
+            if had_wet {
+                self.fbo_destroyed += 1;
+            }
+            if had_dry || had_wet {
+                info!(
+                    "gpu: fbo destroy dry={}/{} wet={}/{} (destroyed={})",
+                    self.dry_fbo,
+                    self.dry_tex,
+                    self.wet_fbo,
+                    self.wet_tex,
+                    self.fbo_destroyed
+                );
+            }
             self.dry_fbo = 0;
             self.dry_tex = 0;
             self.wet_fbo = 0;
             self.wet_tex = 0;
             self.dry_dirty = true;
             self.dry_key = None;
+
+            // Fade abandonado a mitad de transición (se sale del visor antes
+            // de que expire): liberar YA la textura grande (ventana completa,
+            // hasta ~13 MB) en vez de retenerla hasta el próximo frame de
+            // visor o el Drop del Gpu — fix Tarea 2.6 (minor diferido de la
+            // revisión 2.4). Al volver a abrir un libro el fade se re-subirá
+            // con id de snapshot nuevo.
+            self.free_fade_tex();
 
             if let Some(s) = self.surf.take() {
                 let unbind = gl::eglMakeCurrent(
@@ -776,6 +859,9 @@ impl Gpu {
                     gl::EGL_NO_CONTEXT,
                 );
                 let gone = gl::eglDestroySurface(self.dpy, s);
+                if gone != 0 {
+                    self.note_surface_destroyed();
+                }
                 if unbind == 0 || gone == 0 {
                     warn!(
                         "drop_surface: unbind={} destroy={} err=0x{:x}",
@@ -785,11 +871,78 @@ impl Gpu {
                     );
                 }
             }
+            // Resumen de contadores: punto de control por ciclo. surf y fbo
+            // deben quedar a delta 0; tex a delta == ovl_live (ver
+            // `log_lifecycle`).
+            self.log_lifecycle();
         }
     }
 
     pub(crate) fn has_surface(&self) -> bool {
         self.surf.is_some()
+    }
+
+    // ------------------------------------------------- ciclo de vida (Tarea 2.6)
+    // Logs de transición + contadores acumulados (campos `surf_*/fbo_*/tex_*`).
+    // Cada `drop_surface_only` cierra con `log_lifecycle`. Lectura tras N
+    // ciclos Library→Viewer: surf y fbo a delta 0 (create==destroy), tex a
+    // delta == ovl_live (el LRU de overlays es vivo por diseño y acotado por
+    // `OVL_BYTE_BUDGET`). Un delta que crezca con los ciclos = leak.
+
+    fn note_surface_created(&mut self, w: i32, h: i32) {
+        self.surf_created += 1;
+        info!(
+            "gpu: surface create {}x{} (created={})",
+            w, h, self.surf_created
+        );
+    }
+
+    fn note_surface_destroyed(&mut self) {
+        self.surf_destroyed += 1;
+        info!("gpu: surface drop (destroyed={})", self.surf_destroyed);
+    }
+
+    fn note_fbos_created(&mut self) {
+        self.fbo_created += 2; // dry + wet: un par FBO+textura por cada una
+        info!(
+            "gpu: fbo create dry={}/{} wet={}/{} (created={})",
+            self.dry_fbo,
+            self.dry_tex,
+            self.wet_fbo,
+            self.wet_tex,
+            self.fbo_created
+        );
+    }
+
+    /// Borra una textura standalone (overlay LRU o fade) con contador y log.
+    fn delete_texture(&mut self, tex: u32, kind: &str) {
+        unsafe {
+            gl::glDeleteTextures(1, &tex);
+        }
+        self.tex_destroyed += 1;
+        info!(
+            "gpu: tex destroy {tex} kind={kind} (destroyed={})",
+            self.tex_destroyed
+        );
+    }
+
+    /// Resumen de contadores (deltas create−destroy por tipo) en cada drop.
+    fn log_lifecycle(&self) {
+        let surf = self.surf_created as i64 - self.surf_destroyed as i64;
+        let fbo = self.fbo_created as i64 - self.fbo_destroyed as i64;
+        let tex = self.tex_created as i64 - self.tex_destroyed as i64;
+        info!(
+            "gpu: lifecycle surf={surf} fbo={fbo} tex={tex} ovl_live={} surf_failed={} \
+             (create/destroy surf={}/{} fbo={}/{} tex={}/{})",
+            self.ovl_cache.len(),
+            self.surf_failed,
+            self.surf_created,
+            self.surf_destroyed,
+            self.fbo_created,
+            self.fbo_destroyed,
+            self.tex_created,
+            self.tex_destroyed,
+        );
     }
 
     fn clear(&mut self, rgba: [u8; 4]) {
@@ -889,8 +1042,9 @@ impl Gpu {
 
     /// Sube `b` como textura RGBA8 y devuelve el nombre GL (sin cachear).
     /// Lo comparten `overlay_tex` (caché LRU con presupuesto) y `fade_tex`
-    /// (textura dedicada del fade, que puede exceder el presupuesto).
-    fn upload_texture(&mut self, b: &Bitmap) -> u32 {
+    /// (textura dedicada del fade, que puede exceder el presupuesto). `kind`
+    /// etiqueta el contador de ciclo de vida en logcat ("ovl" | "fade").
+    fn upload_texture(&mut self, b: &Bitmap, kind: &str) -> u32 {
         let mut tex = 0u32;
         unsafe {
             gl::glGenTextures(1, &mut tex);
@@ -927,6 +1081,13 @@ impl Gpu {
                 b.data.as_ptr(),
             );
         }
+        self.tex_created += 1;
+        info!(
+            "gpu: tex create {tex} {}x{} kind={kind} (created={})",
+            b.width,
+            b.height,
+            self.tex_created
+        );
         tex
     }
 
@@ -1051,7 +1212,7 @@ impl Gpu {
         for vid in evicted {
             self.delete_ovl_tex(vid);
         }
-        let tex = self.upload_texture(b);
+        let tex = self.upload_texture(b, "ovl");
         self.ovl_cache.push(OverlayTex { id, tex });
         tex
     }
@@ -1060,9 +1221,7 @@ impl Gpu {
     fn delete_ovl_tex(&mut self, vid: u64) {
         if let Some(pos) = self.ovl_cache.iter().position(|o| o.id == vid) {
             let old = self.ovl_cache.swap_remove(pos);
-            unsafe {
-                gl::glDeleteTextures(1, &old.tex);
-            }
+            self.delete_texture(old.tex, "ovl");
         }
     }
 
@@ -1077,21 +1236,18 @@ impl Gpu {
         {
             return tex;
         }
-        let new = self.upload_texture(b);
+        let new = self.upload_texture(b, "fade");
         if let Some((_, tex)) = self.fade_tex.replace((id, new)) {
-            unsafe {
-                gl::glDeleteTextures(1, &tex);
-            }
+            self.delete_texture(tex, "fade");
         }
         new
     }
 
-    /// Libera la textura del fade (transición terminada o sin fade activo).
+    /// Libera la textura del fade (transición terminada, sin fade activo o
+    /// surface soltada — el fade se re-subirá con id nuevo si hace falta).
     fn free_fade_tex(&mut self) {
         if let Some((_, tex)) = self.fade_tex.take() {
-            unsafe {
-                gl::glDeleteTextures(1, &tex);
-            }
+            self.delete_texture(tex, "fade");
         }
     }
 
