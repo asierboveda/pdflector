@@ -28,13 +28,26 @@
 - Edita el fichero de la fase (cambia criterio). El Issue de GitHub se sincroniza después.
 - Si cambias prioridad (ej: quieres lápiz antes que IA), reordena la tabla y mueve el fichero.
 - UI/UX (temas, animaciones, Slint) queda fuera hasta que A-C+E estén verdes.
-- Biblioteca: nunca borrado automático (solo el usuario borra). Ver tarea futura en `E-library.md`.
+- Biblioteca: nunca borrado automático (solo el usuario borra). E4 ejecutado (2026-09-05): sin tope de nº de libros.
 - Ninguna afirmación de rendimiento sin fecha + flujo medido + hardware + métrica.
 
-## Estado actual auditado (2026-08-24)
+## Estado actual auditado (2026-09-06)
 
-- `pdf_core`: `selection.rs` (rotulador real, BAND_TOL 1pt, 2 columnas OK) + `overlay.rs` (fill_rect O(h+w), draw_stroke por segmento) + `ai.rs` (chunk_pages + 3 clients). OK pero `chunk_pages` no tiene índice ni RAG.
-- `pdf_android`: `Reader` monolito (134 pág. en `reader.rs`), `draw.rs` 3.7k líneas, caché LRU 48MiB, `page_frame` cache para sheet. Latencia viene de: `Document::text()` en el hilo UI + `composite_annotations` por frame + `sel` en coords pantalla sin índice espacial.
-- Tests: 419 `unwrap/expect` en hot path, sin `cargo bench` gate en CI, sin harness `adb` automatizado.
+- Presupuesto de memoria: PSS producto <150MB. Medido: 52.9MB arranque (2026-08-28), 105MB en lectura (2026-09-03), 208MB tras 130 page-turns (2026-09-04, `docs/benchmark-results.md`) — deuda de fuga en investigación (Fase A5).
+- A1-A3 [x] (2026-09-04) · A4/A5 [ ].
+- B cerrada (2026-09-05).
+- C1-C4 [x] · cierre [ ] (4.39/2.39ms medidos).
+- D pendiente.
+- E1/E4 [x] (E4 ejecutado: sin tope de libros) · E2/E3 [ ].
+- Cifras de líneas actuales: `reader.rs` 5605 · `draw.rs` 4899 · `gpu.rs` 1899 · `input.rs` 1701.
 
 Ver cada fase para detalle auditado y tareas.
+
+## Deuda transversal
+
+| Deuda | Estado | Dónde se cierra |
+|---|---|---|
+| EGL_BAD_ALLOC 0x3003 Library→Viewer | Abierta (CHANGELOG 2026-09-04) | Fase 2 del plan de reestructuración (2026-09-06) |
+| Verificación ADR-007 §8.4 (PSS<150MB, p95<8.33ms) | Sin entrada en benchmark-results | Fase 2 del plan de reestructuración |
+| Bug pantalla apagada | Abierta, hipótesis H1-H3 | Medición TCL pendiente (BUG-pantalla-apagada.md) |
+| 419 unwrap/expect en tests/benches | Deuda registrada (ADR-008:37) | Limpieza continua |
