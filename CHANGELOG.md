@@ -5,6 +5,21 @@
 > Formato: `AAAA-MM-DD — Título`.
 
 
+
+## 2026-09-06 — Reestructuración Fase 2 completa: pipeline Dry/Overlays + productor único EGL
+
+- GPU: `DryKey` reducida a `{page, zoom_bits, ann_count, dark}` (pan/chrome/sheet/toast ya no
+  invalidan la capa base); overlays de UI a fb0 tras componer dry⊕wet; pan aplicado al quad
+  (con fix de doble-pan y clear de fb0); `ovl_cache` por id estable con LRU de bytes (fix ABA);
+  wet guard con selección visible; logging de ciclo de vida EGL con contadores.
+- Fix raíz `EGL_BAD_ALLOC` 0x3003 Library→Viewer: una `ANativeWindow` admite un solo productor
+  de BufferQueue; productor único GPU (Library/Picker se presentan por el pipeline GL; surface
+  EGL persistente, `ANativeWindow_lock` solo como fallback sin GPU).
+- Verificación TCL 9469X (2026-09-06, build `f5381e9`, pantalla ON; `docs/benchmark-results.md`):
+  10 ciclos Library→Viewer con 0×0x3003 (antes: 7/10 fallos); pan con stylus p95 4.19 ms sobre
+  459 presents con 0 re-renders de la dry (objetivo p95 <16.6 ms); PSS 118 MB arranque,
+  174-178 MB reposo — pico 232 MB tras ciclos: deuda registrada.
+
 ## 2026-09-06 — Reestructuración Fase 4: splits por responsabilidad + LibraryState + limpieza
 
 - 4.3 `input.rs` → `input/{gestos,motion,dispatch,stylus}` (pure move).
