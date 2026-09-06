@@ -5,6 +5,20 @@
 > Formato: `AAAA-MM-DD — Título`.
 
 
+## 2026-09-06 — Reestructuración Fase 1 completa: docs & gobernanza
+
+- Lote 1 (1.0–1.4, correcciones puntuales): CHANGELOG completo (G1, era
+  "últimas 5" con 19 reales); AGENTS.md sin límite-50 (E4); PROYECTO.md sin
+  borrado-auto; 00-objetivo/COMPETENCIA/D-ia corregidos.
+- Lote 2 (1.5–1.9, reescrituras mayores): NEXT-PLAN con presupuesto PSS real
+  (52.9/105/208MB) + deuda transversal; docs/README.md índice maestro (G3);
+  24 históricos congelados con banner; README/CONTRIBUTING/PR-template con
+  verificación Android local; ADR-007 con estado normalizado (supersede
+  parcial de ADR-006 present).
+- Verificación: greps V1.1-V1.4 en 0 hits; índice docs/README.md completo (find
+  vs listado, diferencia vacía); ADRs con estado normalizado.
+
+
 ## 2026-09-05 — Eliminada la barra de herramientas del visor
 
 Fuera la píldora Resaltar/Boli/↶/●/━/→ y todo su cableado (`toolbar_tap`,
