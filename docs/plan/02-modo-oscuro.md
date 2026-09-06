@@ -1,5 +1,8 @@
 # Fase 2 — Modo oscuro
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Milestone: `Fase 2 — Modo oscuro` · Issue: #26 · Estado: 🟡 Lado app OK, falta test de regresión
 
 ## Objetivo

@@ -1,5 +1,8 @@
 # Fase 1 — Lectura fluida
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Milestone: `Fase 1 — Lectura fluida` · Issue: #25 · Estado: 🟡 Lado app OK, falta verificación HW
 > Edita este fichero para cambiar el objetivo. Sincroniza con `gh issue edit 25`.
 

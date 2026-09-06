@@ -1,5 +1,8 @@
 # Lectores de PDF nativos en Android — investigación de patrones
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Investigación de referencia para PDFLector (Fase 1 → 6). Objetivo: cómo
 > construye la gente **lectores de PDF nativos en Android** (Rust/NDK y
 > referencias Java/MuPDF), y qué patrones de rendimiento/gestos usan en

@@ -1,5 +1,8 @@
 # Auditoría del contexto que leen los agentes — 2026-08-23
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Alcance: todos los ficheros del repo que un agente de IA lee como contexto o
 > instrucciones: `AGENTS.md`, `docs/PROYECTO.md`, `docs/PLAN.md`, `docs/adr/*`,
 > `memory.md`, `README.md`, `CONTRIBUTING.md`, `.opencode/skills/*`, CI y

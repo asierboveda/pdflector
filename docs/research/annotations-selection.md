@@ -1,5 +1,8 @@
 # Investigación — Selección de texto y anotaciones en lectores PDF
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Investigación de referencia para PDFLector (Fase 3: anotaciones). Estudia cómo
 > los lectores reales implementan (a) la **selección de texto** —de dos puntos
 > del puntero a texto + rects de subrayado— y (b) las **anotaciones**

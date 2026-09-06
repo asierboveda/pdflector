@@ -1,5 +1,8 @@
 # Investigación — Bibliotecas / estanterías de documentos en lectores
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Investigación de referencia para PDFLector. Objetivo: estudiar cómo construyen
 > los lectores la **biblioteca/estantería** (rejilla de portadas, thumbnails,
 > recientes, escaneo de archivos, búsqueda) en móvil/Android y escritorio, para
