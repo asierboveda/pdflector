@@ -5,6 +5,28 @@
 > Formato: `AAAA-MM-DD — Título`.
 
 
+## 2026-09-06 — Reestructuración Fase 4: splits por responsabilidad + LibraryState + limpieza
+
+- 4.3 `input.rs` → `input/{gestos,motion,dispatch,stylus}` (pure move).
+- 4.1 `gpu/mod.rs` → `gpu/{ffi,shaders,surface,textures,pipeline}` (pure move).
+- 4.4 `reader.rs` → 12 submódulos por responsabilidad en `reader/` (pure move).
+- 4.2 `draw.rs` → 7 submódulos por responsabilidad en `draw/` (pure move).
+- 4.5 `LibraryState` extraído de `Reader`: 19 campos `lib_*` (scrolls px, filtros,
+  sort, progreso, planos cacheados, fade) viven ahora en
+  `reader/library_state.rs`; los accesos usan `self.library.lib_x`.
+- 4.6 limpieza integral: 40 imports muertos retirados (39 en `reader/*` vía
+  `cargo fix` + 1 manual), 4 `#[allow(dead_code)]` huérfanos quitados (ítems
+  usados), doc comments de `lib_scroll` → `library.lib_scroll` (Tarea 4.5),
+  AGENTS.md: fila CI con "job Android en CI (sin TCL)", `cargo fmt` en los 6
+  ficheros con deriva local. Los `#[allow(dead_code)]` restantes (43) protegen
+  API de fases futuras, UI oculta por diseño o ítems superados-documentados —
+  inventario por caso en `.superpowers/.../task-4.6-report.md`.
+- Verificación: `cargo check -p pdf_android --target aarch64-linux-android`
+  0 errores / 0 warnings; `cargo test -p pdf_core` 161/0; `cargo clippy
+  --all-targets -- -D warnings` verde; `cargo fmt --all -- --check` verde;
+  `wc -l` de `pdf_android/src` < 2000 en todos los ficheros; 43 allows
+  `dead_code` (todos justificados).
+
 ## 2026-09-06 — CI Android: job `android` (aarch64-linux-android, NDK r28/API 35)
 
 - Nuevo job paralelo `android` en `.github/workflows/ci.yml`: toolchain rustup
