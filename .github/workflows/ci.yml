@@ -27,10 +27,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
-      - uses: android-actions/setup-android-ndk@v3
+      - uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          api-level: 35
           ndk-version: r28
       - uses: Swatinem/rust-cache@v2
         with:
