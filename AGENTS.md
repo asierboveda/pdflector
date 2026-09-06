@@ -31,7 +31,7 @@
 - No render a resolución máxima, no guardar todas las páginas en memoria.
 - No cerrar fase/issue sin medición con fecha+hardware+flujo+métrica.
 - Ninguna clave personal en Git ni embebida en una APK distribuible. La APK debe poder compilarse e instalarse sin claves. Configuración de IA con claves queda para después de v1 (ver `docs/plan/NEXT-PLAN.md`).
-- La biblioteca nunca elimina un PDF automáticamente: solo el usuario puede borrarlo. No corregir aquí el límite de 50 PDFs; hay tarea futura específica en Fase E.
+- La biblioteca nunca elimina un PDF automáticamente: solo el usuario puede borrarlo (E4, sin tope de nº de libros).
 
 ## Arquitectura
 
