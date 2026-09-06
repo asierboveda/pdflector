@@ -832,6 +832,12 @@ impl Reader {
                         self.rendered_zoom = msg.target_zoom;
                         self.fallback_page = None;
                         self.mark_repaint();
+                        // La dry puede estar horneada con el FALLBACK bajo la
+                        // clave de la página nueva (la `DryKey` no cambia al
+                        // llegar el render real: misma página/zoom/anns/dark).
+                        // Sin esta invalidación la página real no se mostraría
+                        // nunca (quedaría el fallback hasta otra invalidación).
+                        self.gpu.as_mut().map(|g| g.invalidate_dry());
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,

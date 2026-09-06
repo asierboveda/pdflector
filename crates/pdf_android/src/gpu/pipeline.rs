@@ -376,7 +376,10 @@ impl Gpu {
         }
     }
     /// Invalida explícitamente la capa base (Dry FBO) para forzar su re-render.
-    #[allow(dead_code)]
+    /// Llamado por `poll_render` cuando llega el render de la página actual:
+    /// la dry puede estar horneada con el fallback bajo la clave de la página
+    /// nueva (misma DryKey) y sin esta invalidación el fallback quedaría
+    /// visible para siempre.
     pub(crate) fn invalidate_dry(&mut self) {
         self.dry_dirty = true;
     }
