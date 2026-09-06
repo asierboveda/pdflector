@@ -8,14 +8,9 @@ use crate::annotations::ERASE_HIT_RADIUS_PT;
 use crate::annotations::ERASE_HL_PAD_PT;
 use crate::annotations::ToolGesture;
 use crate::annotations::ToolKind;
-use crate::persist::{self};
 use crate::view::initial_scale;
 use log::info;
-use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
-    RenderEngine, Stroke, TextSpan,
-};
-use std::time::Instant;
+use pdf_core::{Annotation, Document, Gesture, Stroke};
 
 impl Reader {
     /// Pan con DEDO (herramienta activa, modo mano): devuelve el pan de

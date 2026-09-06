@@ -34,11 +34,8 @@ use android_activity::ndk::native_window::NativeWindow;
 use log::error;
 use log::info;
 use log::warn;
-use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
-use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
-    RenderEngine, Stroke, TextSpan,
-};
+use pdf_core::engine::mupdf::MupdfEngine;
+use pdf_core::{AnnotationSet, Document, PageTextCache, RenderEngine};
 use std::collections::HashSet;
 use std::path::Path;
 

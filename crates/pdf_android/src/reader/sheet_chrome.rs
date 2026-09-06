@@ -6,7 +6,6 @@
 use super::Reader;
 use super::geometry::sheet_h;
 use crate::draw::render_sheet;
-use crate::theme;
 use log::info;
 use std::time::Duration;
 use std::time::Instant;

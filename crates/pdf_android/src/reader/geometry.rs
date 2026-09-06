@@ -286,13 +286,13 @@ pub(crate) fn lib_section_title_h(win_h: i32) -> f32 {
 }
 
 /// Ancho (px) de la portada de una tarjeta de "Continue Reading" (2:3).
-#[allow(dead_code)] // sección "Continue Reading" oculta por diseño (2026-08-25)
+// sección "Continue Reading" oculta por diseño (2026-08-25)
 pub(crate) fn lib_cont_cover_w(win_h: i32) -> f32 {
     lib_cont_cover_h(win_h) / 1.5
 }
 
 /// Alto (px) de la portada de una tarjeta (proporción 2:3).
-#[allow(dead_code)] // sección "Continue Reading" oculta por diseño (2026-08-25)
+// sección "Continue Reading" oculta por diseño (2026-08-25)
 pub(crate) fn lib_cont_cover_h(win_h: i32) -> f32 {
     lib_cont_card_h(win_h) - 32.0
 }

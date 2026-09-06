@@ -15,7 +15,6 @@ use super::geometry::list_row_h;
 use crate::LIB_FADE_MS;
 use crate::TOAST_MS;
 use crate::draw::paste_lib_thumbs;
-use crate::persist::{self};
 use android_activity::AndroidApp;
 use log::info;
 use log::warn;

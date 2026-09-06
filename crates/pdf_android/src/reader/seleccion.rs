@@ -9,14 +9,10 @@ use super::SelState;
 use crate::SEL_MIN_PX;
 use crate::draw::render_sel_menu;
 use crate::draw::sel_menu_layout;
-use crate::persist::{self};
 use crate::view::initial_scale;
 use android_activity::AndroidApp;
 use base64::Engine;
-use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
-    RenderEngine, Stroke, TextSpan,
-};
+use pdf_core::{Annotation, Color, Document, Highlight, Rect, TextSpan};
 
 // ---------------------------------------------------------------------
 // Selección de texto: long-press + arrastre, copiar y subrayar (Parte 1)

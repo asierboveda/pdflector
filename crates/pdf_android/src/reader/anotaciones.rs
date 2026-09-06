@@ -7,12 +7,9 @@ use super::Reader;
 use crate::annotations::PenMode;
 use log::error;
 use log::info;
+use pdf_core::AnnotationSet;
 use pdf_core::store::AnnotationStore;
 use pdf_core::store::sidecar_path;
-use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
-    RenderEngine, Stroke, TextSpan,
-};
 use std::fs;
 use std::path::Path;
 

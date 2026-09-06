@@ -7,15 +7,10 @@ use super::Reader;
 use super::UiMode;
 use crate::annotations::ToolKind;
 use crate::draw::compose_library_snapshot;
-use crate::persist::{self};
-use crate::theme;
 use log::error;
 use log::info;
-use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
-use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
-    RenderEngine, Stroke, TextSpan,
-};
+use pdf_core::engine::mupdf::MupdfEngine;
+use pdf_core::{Document, RenderEngine};
 use std::path::Path;
 use std::time::Instant;
 

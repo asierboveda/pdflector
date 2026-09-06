@@ -10,7 +10,6 @@ use super::geometry::lib_content_y0;
 use super::geometry::lib_search_chips_y0;
 use super::geometry::lib_search_chips_y1;
 use super::geometry::list_row_h;
-use crate::cache::CACHE_BYTE_BUDGET;
 use crate::draw::blit_library;
 use crate::draw::paste_lib_thumbs;
 use crate::draw::render_eraser_cursor;
@@ -25,7 +24,6 @@ use crate::draw::render_toast;
 use crate::draw::render_viewer_bottom_chrome;
 use crate::draw::render_viewer_top_chrome;
 use crate::draw::splice_row;
-use crate::persist::{self};
 use crate::theme;
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
@@ -33,11 +31,7 @@ use log::error;
 use log::info;
 use log::warn;
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
-use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
-    RenderEngine, Stroke, TextSpan,
-};
-use std::path::Path;
+use pdf_core::{Bitmap, Document, RenderEngine};
 use std::time::Instant;
 
 /// Mensaje del worker de render asíncrono: un bitmap listo a la escala

@@ -38,12 +38,8 @@ use crate::persist::{self};
 use android_activity::AndroidApp;
 use log::error;
 use log::info;
-use log::warn;
-use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
-use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
-    RenderEngine, Stroke, TextSpan,
-};
+use pdf_core::engine::mupdf::MupdfEngine;
+use pdf_core::{Document, RenderEngine};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;

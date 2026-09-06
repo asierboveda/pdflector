@@ -20,42 +20,22 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use android_activity::AndroidApp;
-use android_activity::ndk::hardware_buffer_format::HardwareBufferFormat;
 use android_activity::ndk::native_window::NativeWindow;
-use base64::Engine;
-use log::{error, info, warn};
-use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
-use pdf_core::store::{AnnotationStore, sidecar_path};
-use pdf_core::{
-    Annotation, AnnotationSet, Bitmap, Color, Document, Gesture, Highlight, PageTextCache, Rect,
-    RenderEngine, Stroke, TextSpan,
-};
+use pdf_core::engine::mupdf::MupdfDocument;
+use pdf_core::{AnnotationSet, Bitmap, Color, PageTextCache};
 
-use crate::annotations::{ERASE_HIT_RADIUS_PT, ERASE_HL_PAD_PT, PenMode};
+use crate::annotations::PenMode;
 use crate::annotations::{ToolGesture, ToolKind};
-use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES, PageCache};
-use crate::draw::{
-    ButtonRect, ai_panel_layout, blit_library, compose_library_snapshot, paste_lib_thumbs,
-    render_ai_panel, render_eraser_cursor, render_library_header, render_library_zone,
-    render_mode_badge, render_page_badge, render_picker_list, render_search_chip_row,
-    render_sel_menu, render_sheet, render_toast, render_viewer_bottom_chrome,
-    render_viewer_top_chrome, sel_menu_layout, splice_row,
-};
+use crate::cache::PageCache;
+use crate::draw::ButtonRect;
 use crate::gpu::Gpu;
 use crate::input::GestureState;
-use crate::jni::{
-    android_sdk_int, launch_intent_pdf, query_media_store, read_content_uri_bytes,
-    sanitize_pdf_name,
-};
-use crate::persist::{self, BookProgress, RecentEntry};
+use crate::persist::{BookProgress, RecentEntry};
 use crate::theme;
-use crate::thumbs::{THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES, ThumbCache};
-use crate::view::initial_scale;
-use crate::zoom::blit_fast;
-use crate::{LIB_FADE_MS, PINCH_MAX, PINCH_MIN, SEL_MIN_PX, TOAST_MS};
+use crate::thumbs::ThumbCache;
 
 // Partición de `reader.rs` (2026-09-06, Tarea 4.4): submódulos por
 // responsabilidad — ver el doc de cada uno para su contenido.
@@ -168,7 +148,6 @@ pub(crate) struct LibraryEntry {
     /// `dead_code` intencional (2026-08-XX): la rejilla 3×3 no muestra el
     /// tamaño (la lista sí lo hacía); la proyección de MediaStore lo sigue
     /// trayendo gratis y una futura vista de detalle puede usarlo.
-    #[allow(dead_code)]
     pub(crate) size: i64,
 }
 
@@ -251,7 +230,7 @@ pub(crate) enum LibraryGroupBy {
 /// (2026-08-25, rejilla + buscador sin sección Continue Reading), solo el
 /// pump lee `path`/`name`; el resto de campos y el draw se conservan por si
 /// se reintroduce la sección.
-#[allow(dead_code)] // sección "Continue Reading" oculta por diseño
+// sección "Continue Reading" oculta por diseño
 pub(crate) struct ContinueBook {
     /// Ruta local absoluta (clave del documento; abre con `open_pdf_at`).
     pub(crate) path: String,
@@ -456,7 +435,7 @@ pub(crate) struct ListDrag {
     /// Y del Down (px de ventana).
     pub(crate) sy: f32,
     /// Scroll vertical de partida: fila (`list_scroll` como f32) en el
-    /// picker, píxeles (`lib_scroll`) en la biblioteca.
+    /// picker, píxeles (`library.lib_scroll`) en la biblioteca.
     pub(crate) v0: f32,
     /// Scroll horizontal de partida (px): carousel o fila de chips en la
     /// biblioteca; 0 en el picker.
@@ -548,7 +527,7 @@ pub(crate) struct Reader {
     /// ¿Pendiente de volver de Ajustes tras pulsar Grant? (re-consultar en Resume).
     pub(crate) grant_pending: bool,
     /// Desplazamiento del picker en filas (scroll; la BIBLIOTECA usa ahora
-    /// `lib_scroll` en píxeles — ver abajo).
+    /// `library.lib_scroll` en píxeles — ver abajo).
     pub(crate) list_scroll: usize,
     /// Estado de la BIBLIOTECA (Tarea 4.5 de la reestructuración): los campos
     /// `lib_*` (scrolls px, filtros, sort, registro de progreso, planos
