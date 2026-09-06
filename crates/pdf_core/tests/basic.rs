@@ -55,8 +55,10 @@ fn rendered_page_is_not_blank() {
     let bmp = open_test_doc().render_page(0, 1.0).unwrap();
     let dark_pixels = bmp
         .data
-        .chunks_exact(4)
-        .filter(|px| px[0] < 250 || px[1] < 250 || px[2] < 250)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|[r, g, b, _]| *r < 250 || *g < 250 || *b < 250)
         .count();
     assert!(dark_pixels > 1000, "page should contain rendered text");
 }
@@ -109,11 +111,14 @@ fn display_list_reuse_across_scales_is_not_blank() {
     let bmp = must(doc.render_page(0, 3.0), "replay at another scale");
     let dark_pixels = bmp
         .data
-        .chunks_exact(4)
-        .filter(|px| px[0] < 250 || px[1] < 250 || px[2] < 250)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|[r, g, b, _]| *r < 250 || *g < 250 || *b < 250)
         .count();
     assert!(dark_pixels > 1000, "page should contain rendered text");
 }
+
 #[test]
 fn display_list_render_out_of_range_page_is_an_error() {
     let error = open_test_doc().render_page(99, 1.0);
