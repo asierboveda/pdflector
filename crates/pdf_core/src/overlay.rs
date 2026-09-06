@@ -449,7 +449,7 @@ mod tests {
         // Opaque black background: alpha channel 255 (the page bitmap is
         // opaque RGB; the overlay must never touch the alpha byte).
         let mut v = vec![0u8; (w * h * 4) as usize];
-        for px in v.chunks_exact_mut(4) {
+        for px in v.as_chunks_mut::<4>().0 {
             px[3] = 255;
         }
         v
@@ -621,7 +621,7 @@ mod tests {
         // La variante opaca (composite_annotations) NO toca alpha: sobre un
         // buffer con alpha 255 se conserva.
         let mut page = vec![0u8; 8 * 8 * 4];
-        for px in page.chunks_exact_mut(4) {
+        for px in page.as_chunks_mut::<4>().0 {
             px[3] = 255;
         }
         composite_annotations(&mut page, 8, 8, &anns, &ViewTransform::IDENTITY);

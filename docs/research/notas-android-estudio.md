@@ -1,5 +1,8 @@
 # Estudio de Apps de Notas en Android — Patrones para Escritura de Baja Latencia
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08-24. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > **Objetivo:** mejorar la sensación al escribir en PDFLector (latencia, grosores)
 > Fecha: 2026-08-24 — Estudio comparativo de 6 apps líderes en Android para extraer patrones de baja latencia y UI de grosores.
 

@@ -18,7 +18,7 @@ Selección (rect o lápiz) → explicación que cita `págs N-M` reales del docu
 - [ ] D1. **Índice BM25 local** (puro Rust, sin deps): al abrir PDF, `build_index(doc, pages)` → `Vec<(page_idx, Vec<String>)>` + posting list. Query = texto de la selección (extraído de `PageText` spans intersectados). Top-k=5 páginas más relevantes (BM25) + 2 páginas vecinas de la selección (localidad).
 - [ ] D2. **Prompt con contexto**: `system: "Eres tutor del PDF, cita [págs N] siempre"` + `user: "Contexto global (k páginas BM25, truncado a 12k chars):\n[ págs 3-5 ]...\n\nSelección que no entiendo (pág X, crop PNG base64):\n[ págs X ] texto...\n\nExplica la selección usando el contexto global, cita páginas."` → `GeminiClient::explain_image` (visión) o `GroqClient::chat` (texto puro). Si selección vacía, manda solo contexto global.
 - [ ] D3. **Estudio de contexto**: medir ventana óptima: ¿12k chars bastan para scientific_paper 12p? Probar 8k/12k/20k + k=3/5/8 en TCL con 5 PDFs del corpus, medir alucinación (cita inventada) y latencia Groq/Gemini (reqwest rustls).
-- [ ] D4. **Harness `adb`**: `tools/ai-bench.sh` que abre `corpus/scientific_paper.pdf`, selecciona pág 5, pide explicación, valida que la respuesta contiene `[págs` y no `404`.
+- [ ] D4. **Harness `adb`**: `tools/ai-bench.sh` (por crear en D4) que abre `corpus/scientific_paper.pdf`, selecciona pág 5, pide explicación, valida que la respuesta contiene `[págs` y no `404`.
 
 ## Criterio de cierre
 

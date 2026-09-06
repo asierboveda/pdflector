@@ -1,5 +1,8 @@
 # Fase 4 — Sincronización
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Milestone: `Fase 4 — Sincronización` · Issue: #28 · Estado: 🟡 Código OK, falta E2E Syncthing
 
 ## Objetivo

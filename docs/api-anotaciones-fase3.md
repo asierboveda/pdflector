@@ -1,5 +1,8 @@
 # API de anotaciones — resaltador con detección de texto + boli (Fase 3.5)
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 Fecha: 2026-08-22 — Módulos nuevos: `pdf_core::selection`, `pdf_core::overlay`;
 suavizado añadido a `pdf_core::annotations`.
 

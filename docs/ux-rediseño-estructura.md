@@ -1,5 +1,8 @@
 # Rediseño de UX — Estructura (2026-08-XX)
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 Cambios ESTRUCTURALES en `crates/pdf_android/` (el estilo visual lo hará otro
 agente después; aquí solo la estructura funcional, "fea pero funcional").
 Solo se tocó `pdf_android` (draw.rs, input.rs, reader.rs, lib.rs, jni.rs,

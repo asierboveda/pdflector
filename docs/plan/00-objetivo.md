@@ -17,8 +17,8 @@ Si una propuesta mejora algo a costa de 1 o 2, se rechaza o se consulta antes de
 
 ## Lo que NO es objetivo
 
-- Presión del lápiz (no necesaria, ver PROYECTO.md decisión 2)
-- Modo paginado (descartado 2026-08-13, autor prefiere scroll continuo)
+- Presión del lápiz (no necesaria, ver docs/PROYECTO.md "Decisión sobre presión del lápiz" (la decisión real vive allí, no numerada aquí))
+- Scroll continuo (descartado 2026-08-13, el visor es paginado de una hoja con tap)
 - Servidor propio / telemetría / pagos
 
 ## Cómo modificar el objetivo
@@ -27,6 +27,5 @@ Edita las prioridades arriba. Si cambias 1 o 2, actualiza también `AGENTS.md` (
 
 ## Métricas de éxito
 
-- Semana de uso real en TCL sin cuelgues (Fase 6)
-- Export MD abre en Obsidian, export PDF en lector externo
-- Sync tablet→PC <1min vía Syncthing
+- Fases waterfall descartadas: el roadmap vigente es `docs/plan/NEXT-PLAN.md` (A–E), editable.
+- Obsidian y Syncthing quedan fuera de v1 (post-v1, ver `docs/plan/NEXT-PLAN.md`).

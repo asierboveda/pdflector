@@ -1,5 +1,8 @@
 # Ingeniería inversa de Evince — Arquitectura de rendimiento
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Investigación de referencia para PDFLector. Evince (GNOME Document Viewer) es
 > el visor de PDF de referencia en escritorio Linux; su código fuente C/GTK es
 > una mina de patrones probados para scroll fluido de PDFs grandes con bajo

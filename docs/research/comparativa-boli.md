@@ -1,5 +1,8 @@
 # Comparativa: Apps de Escritura con Boli en Android vs PDFLector
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08-24. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Fecha: 2026-08-24. Misión: encontrar la mejor app OSS de apuntes con boli según
 > foros/comunidad, leer su código real, y compararla con nuestra implementación.
 > Fuente primaria: repos clonados (shallow) — `saber-notes/saber` ★4.7k,

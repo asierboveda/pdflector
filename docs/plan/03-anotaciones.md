@@ -1,5 +1,8 @@
 # Fase 3 — Anotaciones y exportación
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Milestone: `Fase 3 — Anotaciones y exportación` · Issue: #27 · Estado: 🟡 Modelo OK, falta estrés HW
 
 ## Objetivo

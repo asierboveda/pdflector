@@ -1,66 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Input multitáctil: máquina de gestos del visor (tap/pinch/sheet) y
-//! taps/arrastre de las listas (picker interno y biblioteca MediaStore).
-//!
-//! Módulo resultante de la partición de `lib.rs` (2026-08-13): `lib` solo
-//! llama a `handle_input`; los gestos tocan `Reader` a través de sus campos y
-//! métodos `pub(crate)`.
-//!
-//! ## Visor página a página + sheet de ajustes (2026-08-XX)
-//!
-//! El arrastre para scrollear se ELIMINÓ por decisión del autor: el visor
-//! vuelve a ser página a página. TAP en la mitad izquierda = página anterior,
-//! TAP en la mitad derecha = página siguiente (tap simple, sin drag; un dedo
-//! que se desliza más de `TAP_SLOP` cancela el tap). El tap es INMEDIATO (se
-//! dispara en el propio Up, sin ventana de doble-tap): un doble-tap rápido
-//! son DOS cambios de página. El pinch con dos dedos
-//! sigue haciendo zoom (factor RELATIVO + anclado, `Reader::begin_pinch`).
-//!
-//! El **sheet de ajustes** (panel desde el borde superior, la mitad de la
-//! ventana; ver `Reader::sheet_*` y `draw::render_sheet`) se abre con TAP en
-//! la barra superior del chrome (el pull-down se eliminó). Con el sheet
-//! visible, un arrastre vertical lo mueve (subir = cerrar) y un TAP fuera
-//! del panel lo cierra; un tap dentro pulsa
-//! sus botones (Back/Open/Dark/−10/N/+10, misma geometría que
-//! `draw::sheet_buttons`). El gesto del sheet NO choca con el tap de página
-//! (el tap es < `TAP_SLOP` de movimiento) ni con el pinch (2 dedos → zoom,
-//! el sheet se queda como esté). El indicador "N / total" abajo a la
-//! izquierda también es táctil: tap = página siguiente (`page_badge_tap`).
-//!
-//! El modo dibujo (trazo con un dedo) se ELIMINÓ con la barra superior
-//! (2026-08-XX): no queda ningún gesto de dibujo en el visor.
-//!
-//! ## Selección de texto: long-press + arrastre (2026-08-XX, Parte 1)
-//!
-//! Mantener un dedo QUIETO (sin levantarlo y sin moverse más de `TAP_SLOP`)
-//! sobre el documento durante `LONG_PRESS_MS` (400 ms) entra en MODO
-//! SELECCIÓN — `tick_gestures` (desde `Reader::tick`, poll con timeout de
-//! `Reader::needs_tick` mientras el dedo esté abajo) fija el ancla en el
-//! punto del dedo y materializa el rect como PUNTO en `Reader::sel`
-//! (`begin_sel`); al arrastrar (manteniendo pulsado, > `SELECT_SLOP` desde
-//! el ancla) el rect sigue al dedo (`update_sel`); al levantar, `end_sel`
-//! fija la selección y abre el menú Copiar/Subrayar/IA — y un long-press
-//! SIN arrastre se descarta (el punto no tiene texto que extraer). El
-//! long-press NO dispara el tap de página: el tap simple es INMEDIATO (sin
-//! ventana de doble-tap, `fire_tap_action` en el propio Up), así que un
-//! doble-tap rápido son DOS cambios de página. El tap izq/der de página NO
-//! se dispara nunca mientras hay selección/menú abierto (`sel_menu_tap`
-//! consume esos taps); tocar fuera del menú lo cierra y descarta la
-//! selección. El long-press solo aplica con el sheet cerrado.
+//! Procesamiento de `MotionEvent`s (extraído de `input.rs`, 2026-09-06):
+//! `tick_gestures` (long-press quieto → modo selección), `handle_motion`
+//! (máquina de gestos del visor: tap/pull/pinch/pan, trazo de herramienta y
+//! borrado con stylus) y el input de las LISTAS — `list_tap`, `library_tap`,
+//! `picker_tap`, `library_down_zone` y `handle_picker_motion` (scroll y taps
+//! del picker interno y de la biblioteca MediaStore). El estado que consume
+//! (`GestureState`/`GestureKind`) vive en `gestos`; el re-escalado de
+//! timestamps del stylus (`gesture_ms`), en `stylus`.
 
-use std::time::Instant;
-
-use android_activity::input::{Button, ButtonState, InputEvent, MotionAction, MotionEvent};
-use android_activity::{AndroidApp, InputStatus};
-use log::warn;
-
+use super::gestos::{GestureKind, LONG_PRESS_MS, fire_tap_action};
+use super::stylus::gesture_ms;
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
-use crate::draw::{
-    SettingsMenuItem, ViewMenuItem, settings_menu_geometry, sheet_buttons, view_menu_geometry,
-    viewer_top_chrome_buttons,
-};
+use crate::draw::{SettingsMenuItem, ViewMenuItem, settings_menu_geometry, view_menu_geometry};
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
     BookStatus, LibSort, LibraryCoverFit, LibraryGroupBy, LibraryViewMode, ListDrag, PickRow,
@@ -68,293 +21,13 @@ use crate::reader::{
     lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w, lib_cont_gap, lib_content_y0,
     lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h, lib_org_chip_h,
     lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h, lib_section_title_h,
-    list_row_gap, list_row_h, page_badge_rect, picker_btn_w, picker_header_h, picker_row_h,
-    settings_menu_button_rect, sheet_h, view_menu_button_rect, viewer_bottom_chrome_h,
-    viewer_top_chrome_h,
+    list_row_gap, list_row_h, picker_btn_w, picker_header_h, picker_row_h,
+    settings_menu_button_rect, view_menu_button_rect,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
-
-/// Umbral de LONG-PRESS para entrar en MODO SELECCIÓN (selección de texto):
-/// mantener un dedo QUIETO (sin levantarlo y sin moverse más de `TAP_SLOP`)
-/// sobre el documento durante `LONG_PRESS_MS` fija el ancla en ese punto y
-/// muestra el rect de selección (un punto, aún sin arrastrar). Valor estándar
-/// de long-press en Android (~400 ms); `tick_gestures` lo mide desde el Down
-/// con `press_at` (el poll con timeout de `needs_tick` mantiene el bucle vivo
-/// mientras el dedo esté abajo).
-pub(crate) const LONG_PRESS_MS: std::time::Duration = std::time::Duration::from_millis(400);
-
-/// Gesto multitáctil en curso (máquina de gestos).
-#[derive(Clone, Copy, Debug)]
-enum GestureKind {
-    None,
-    /// Un dedo: posible tap (página anterior/siguiente, indicador de página,
-    /// sheet abierto: botón o cerrar). El gesto se CANCELA si el dedo se
-    /// mueve más de `TAP_SLOP` (un pequeño deslizamiento no cambia de
-    /// página — sin scroll por arrastre en el modo página a página); al
-    /// INMEDIATO (en el propio Up, sin diferir). Mientras el dedo está
-    /// quieto, `press_at` mide el long-press: al superar `LONG_PRESS_MS`
-    /// `tick_gestures` entra en MODO SELECCIÓN y el tap NUNCA se dispara.
-    Tap {
-        start_x: f32,
-        start_y: f32,
-    },
-    /// Un dedo: arrastre VERTICAL que mueve el sheet de ajustes YA visible
-    /// (subir/bajar). `start_y` = Y del Down; el progreso del sheet sigue
-    /// a `dy = y − start_y` (`Reader::drag_sheet`).
-    Pull {
-        start_y: f32,
-    },
-    /// Dos dedos: pinch zoom. `start_dist` es la distancia entre dedos al
-    /// iniciar el gesto y `start_zoom` el zoom de partida; el zoom resultante
-    /// es `start_zoom * dist / start_dist` (factor RELATIVO, no incremental
-    /// por evento). El anclaje (punto de pantalla fijo bajo los dedos) se
-    /// registra en `Reader::begin_pinch` con el centro del pinch.
-    Pinch {
-        start_dist: f32,
-        start_zoom: f32,
-    },
-    /// Long-press + arrastre (selección de texto): el ancla es el punto del
-    /// dedo al superar `LONG_PRESS_MS` (`tick_gestures` materializa el rect
-    /// como punto con `Reader::begin_sel`); al moverse > `SELECT_SLOP` el
-    /// rect sigue al dedo (`Reader::update_sel`); al soltar se fija
-    /// (`Reader::end_sel`) y se abre el menú Copiar/Subrayar/IA (un
-    /// long-press sin arrastre se descarta). Un segundo dedo cancela la
-    /// selección en curso y pasa al pinch.
-    Selecting {
-        anchor: (f32, f32),
-    },
-    /// Un dedo: gesto de herramienta de anotación (resaltador o boli, Fase
-    /// 3.5). El Down con una herramienta activa (y fuera del "chrome" de la
-    /// UI) entra aquí: cada Move añade puntos (boli) o extiende el rect
-    /// (resaltador) a través de `Reader::{begin,update,end}_tool_gesture`; al
-    /// soltar, `end_tool_gesture` crea la anotación guardada. Un segundo dedo
-    /// cancela el gesto en curso y pasa al pinch (la herramienta sigue
-    /// activa: el siguiente Down vuelve a dibujar). SOLO entra con STYLUS:
-    /// los dedos NUNCA dibujan (separación dedo/stylus — ver `Pan`).
-    ToolDrawing,
-    /// Un dedo (STYLUS con el botón DOWN del boli pulsado): BORRADO. Cada
-    /// Move hace hit-test contra las anotaciones de la página y las elimina
-    /// en vivo (ver `Reader::{begin,update,end}_erase_gesture`); al levantar
-    /// se persiste UNA vez. No crea anotaciones ni entra en el undo.
-    Erase,
-    /// Un dedo (DEDO, con herramienta activa): mover la página (pan) — "los
-    /// gestos con la mano son para mover/zoom". `start` es la posición del
-    /// Down y `pan0` el pan de partida; cada Move fija
-    /// `pan = pan0 + (cur − start)` del documento. Dos dedos lo convierten
-    /// en `Pinch`.
-    Pan {
-        start: (f32, f32),
-        pan0: (f32, f32),
-    },
-}
-
-/// Estado de los gestos: pointers activos (pointer_id, x, y) + gesto en curso
-/// + temporizador del long-press (selección).
-pub(crate) struct GestureState {
-    pointers: Vec<(i32, f32, f32)>,
-    kind: GestureKind,
-    /// Long-press: `Instant` del Down del dedo que está en `Tap` sin moverse
-    /// más de `TAP_SLOP`. Some mientras el dedo esté abajo y el gesto siga
-    /// siendo un tap potencial; `Reader::needs_tick` mantiene el poll con
-    /// timeout para que `tick_gestures` dispare la selección al superar
-    /// `LONG_PRESS_MS` aunque no llegue más input. Se desarma al moverse >
-    /// `TAP_SLOP`, al entrar en el pinch o al levantar/cancelar el dedo.
-    press_at: Option<Instant>,
-}
-
-impl GestureState {
-    pub(crate) fn new() -> Self {
-        Self {
-            pointers: Vec::new(),
-            kind: GestureKind::None,
-            press_at: None,
-        }
-    }
-
-    /// ¿Temporizador de long-press activo (dedo quieto en `Tap`)? El bucle de
-    /// eventos mantiene el poll con timeout mientras tanto para que el modo
-    /// selección entre aunque el dedo no se mueva.
-    #[allow(dead_code)] // long-press aún activo vía tick_gestures
-    pub(crate) fn press_pending(&self) -> bool {
-        self.press_at.is_some()
-    }
-}
-
-/// Tap simple: tercio izquierdo → página anterior; tercio derecho → página siguiente;
-/// tercio central → alternar visibilidad del chrome del visor.
-fn tap_page(reader: &mut Reader, x: f32) {
-    let third = reader.win_w as f32 / 3.0;
-    if x < third {
-        reader.prev_page();
-    } else if x > 2.0 * third {
-        reader.next_page();
-    } else {
-        reader.toggle_chrome();
-    }
-}
-
-/// Tap en el chrome del visor (barra superior e inferior).
-/// Devuelve true si el tap fue consumido por el chrome.
-fn viewer_chrome_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) -> bool {
-    if !reader.chrome_visible {
-        return false;
-    }
-    let top_h = viewer_top_chrome_h(reader.win_h);
-    let bot_h = viewer_bottom_chrome_h(reader.win_h);
-    let win_w = reader.win_w as f32;
-    let win_h = reader.win_h as f32;
-
-    if y < top_h {
-        let btns = viewer_top_chrome_buttons(win_w, win_h);
-        for (tag, (l, t, r, b)) in btns {
-            if x >= l && x < r && y >= t && y < b {
-                match tag {
-                    "Back" => reader.enter_library(app),
-                    "Theme" => reader.cycle_theme(),
-                    _ => {}
-                }
-                reader.touch_chrome();
-                return true;
-            }
-        }
-        // Sin gesto pull-down: el sheet se abre/cierra con tap en la barra
-        // superior (el tap central gobierna el chrome + ajustes).
-        reader.toggle_sheet();
-        reader.touch_chrome();
-        return true;
-    }
-
-    if y > win_h - bot_h {
-        reader.touch_chrome();
-        return true;
-    }
-
-    false
-}
-
-/// Tap en el indicador de página "N / total" (overlay abajo a la izquierda):
-/// página siguiente. Devuelve true si el punto cae en el indicador.
-fn page_badge_tap(reader: &mut Reader, x: f32, y: f32) -> bool {
-    let (l, t, r, b) = page_badge_rect(reader.win_w, reader.win_h);
-    if x >= l as f32 && x < r as f32 && y >= t as f32 && y < b as f32 {
-        reader.next_page();
-        true
-    } else {
-        false
-    }
-}
-
-/// Tap DENTRO del sheet de ajustes: botones (misma geometría que
-/// `draw::sheet_buttons`): temas, navegación y acciones.
-fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
-    for (label, (l, t, r, b)) in sheet_buttons(reader, reader.win_w as f32, reader.win_h as f32) {
-        if x >= l && x < r && y >= t && y < b {
-            match label {
-                "Theme:Light" => reader.set_theme(crate::theme::AppTheme::DefaultLight),
-                "Theme:Sepia" => reader.set_theme(crate::theme::AppTheme::SepiaLight),
-                "Theme:Dark" => reader.set_theme(crate::theme::AppTheme::DefaultDark),
-                "Theme:Nord" => reader.set_theme(crate::theme::AppTheme::SepiaDark),
-                "← Library" => reader.enter_library(app),
-                "Search" => reader.enter_library_search(app),
-                "Close" => reader.hide_sheet(),
-                "-10" => reader.jump_page(-10),
-                "+10" => reader.jump_page(10),
-                _ => reader.next_page(), // "N / total"
-            }
-            return;
-        }
-    }
-}
-
-/// Tap con el menú de selección abierto.
-fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
-    let Some(menu) = &reader.sel_menu else {
-        return;
-    };
-    let inside = x >= menu.x as f32
-        && x < (menu.x + menu.w) as f32
-        && y >= menu.y as f32
-        && y < (menu.y + menu.h) as f32;
-    if !inside {
-        reader.clear_selection();
-        return;
-    }
-    let hit: Option<&'static str> = menu
-        .buttons
-        .iter()
-        .find(|(_, (l, t, r, b))| x >= *l && x < *r && y >= *t && y < *b)
-        .map(|(label, _)| *label);
-    match hit {
-        Some("Copiar") => reader.copy_sel(app),
-        Some("Subrayar") => reader.highlight_sel(),
-        Some("IA") => reader.ask_ai(),
-        Some(_) | None => reader.clear_selection(),
-    }
-}
-
-/// Tap con el panel de "Preguntar a la IA" abierto.
-fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
-    let Some(panel) = &reader.ai_panel else {
-        return;
-    };
-    let inside = x >= panel.x as f32
-        && x < (panel.x + panel.w) as f32
-        && y >= panel.y as f32
-        && y < (panel.y + panel.h) as f32;
-    if !inside {
-        reader.close_ai_panel();
-        return;
-    }
-    let hit: Option<&'static str> = panel
-        .buttons
-        .iter()
-        .find(|(_, (l, t, r, b))| x >= *l && x < *r && y >= *t && y < *b)
-        .map(|(label, _)| *label);
-    match hit {
-        Some("×") => reader.close_ai_panel(),
-        Some("▲") => reader.ai_scroll(-1),
-        Some("▼") => reader.ai_scroll(1),
-        _ => {}
-    }
-}
-
-/// Ejecuta la acción de un tap simple en `(x, y)`.
-fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
-    // La UI (menús, sheet, chrome) responde SIEMPRE, también con herramienta
-    // de anotación activa: el dedo debe poder ir a Biblioteca o abrir ajustes
-    // sin cambiar antes a navegación. Solo el tap sobre la PÁGINA queda
-    // supeditado a la herramienta.
-    if reader.sel_menu.is_some() {
-        sel_menu_tap(reader, app, x, y);
-        return;
-    }
-    if reader.ai_panel.is_some() {
-        ai_panel_tap(reader, x, y);
-        return;
-    }
-    if reader.sheet_progress > 0.0 {
-        if y < sheet_h(reader.win_h) as f32 {
-            sheet_tap(reader, app, x, y);
-        } else {
-            reader.hide_sheet();
-        }
-        return;
-    }
-    if viewer_chrome_tap(reader, app, x, y) {
-        // Tap en botones o barras de chrome del visor consumido
-        return;
-    }
-    if reader.tool != ToolKind::Navigate {
-        // Herramienta activa: el dedo sobre la página no cambia de página
-        // (el trazo con dedo/stylus lo gestiona el gesto de herramienta).
-        return;
-    }
-    if !reader.chrome_visible && page_badge_tap(reader, x, y) {
-        // Indicador de página: siguiente (consumido).
-    } else {
-        tap_page(reader, x);
-    }
-}
+use android_activity::AndroidApp;
+use android_activity::input::{Button, ButtonState, MotionAction};
+use std::time::Instant;
 
 /// Avanza la máquina de gestos desde el bucle de eventos (timeout ~16 ms,
 /// `Reader::tick`): detecta el LONG-PRESS — si el dedo lleva quieto en `Tap`
@@ -445,13 +118,13 @@ fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {
 ///
 /// Botones del boli en un MotionEvent (state=botones pulsados, action=boton del evento).
 #[derive(Clone, Copy, Debug)]
-struct PenButtons {
-    state: ButtonState,
-    action: Button,
+pub(crate) struct PenButtons {
+    pub(crate) state: ButtonState,
+    pub(crate) action: Button,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_motion(
+pub(crate) fn handle_motion(
     reader: &mut Reader,
     app: &AndroidApp,
     action: MotionAction,
@@ -935,31 +608,31 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortTitle => {
-                        reader.lib_sort = LibSort::Title;
+                        reader.library.lib_sort = LibSort::Title;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortAuthor => {
-                        reader.lib_sort = LibSort::Author;
+                        reader.library.lib_sort = LibSort::Author;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortAdded => {
-                        reader.lib_sort = LibSort::RecentlyAdded;
+                        reader.library.lib_sort = LibSort::RecentlyAdded;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortRead => {
-                        reader.lib_sort = LibSort::RecentlyRead;
+                        reader.library.lib_sort = LibSort::RecentlyRead;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortProgress => {
-                        reader.lib_sort = LibSort::Progress;
+                        reader.library.lib_sort = LibSort::Progress;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
@@ -1086,9 +759,9 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // teclado; tocar el campo abre el TECLADO del sistema (`jni::ime_*`).
     if y < search_y + search_hh {
         let field_right = reader.win_w as f32 - grid_pad(reader.win_w);
-        let has_filter = !reader.lib_query.is_empty()
-            || reader.lib_letter.is_some()
-            || reader.lib_folder.is_some();
+        let has_filter = !reader.library.lib_query.is_empty()
+            || reader.library.lib_letter.is_some()
+            || reader.library.lib_folder.is_some();
         if has_filter {
             let xw = search_hh - 8.0;
             let xx = field_right - 14.0 - xw;
@@ -1107,8 +780,8 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // `panel_top = header_h + search_h` (6 px por encima de la fila real), de
     // modo que un tap en el borde superior del panel caía fuera de los chips.
     let panel_top = lib_search_chips_y0(reader);
-    let panel_h = lib_search_panel_h(reader.win_h, reader.lib_search_open);
-    if reader.lib_search_open && y >= panel_top && y < panel_top + panel_h {
+    let panel_h = lib_search_panel_h(reader.win_h, reader.library.lib_search_open);
+    if reader.library.lib_search_open && y >= panel_top && y < panel_top + panel_h {
         let row = if y < lib_search_chips_y0(reader) + lib_chip_h(reader.win_h) {
             0
         } else {
@@ -1136,7 +809,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // Franja de estado: no es seleccionable.
     let content_y0 = lib_content_y0(
         reader.win_h,
-        reader.lib_search_open,
+        reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
     if y < content_y0 {
@@ -1145,7 +818,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 
     // Contenido scrolleable: pasar a coordenadas de CONTENIDO (y del Down +
     // scroll vertical).
-    let yc = y - content_y0 + reader.lib_scroll;
+    let yc = y - content_y0 + reader.library.lib_scroll;
     let win_w = reader.win_w;
     // Biblioteca minimalista: la sección Continue Reading está oculta (siempre
     // `false`); el bloque de organización tampoco existe (rejilla directa).
@@ -1174,14 +847,16 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     if yc < cont_block_h {
         if has_cont && yc >= lib_section_title_h(reader.win_h) {
             let cw = lib_cont_card_w(win_w, reader.win_h);
-            let i = ((x - grid_pad(win_w) + reader.lib_carousel_x) / (cw + lib_cont_gap())).floor();
+            let i = ((x - grid_pad(win_w) + reader.library.lib_carousel_x) / (cw + lib_cont_gap()))
+                .floor();
             if i >= 0.0
                 && let Some(book) = reader.lib_continue_reading().get(i as usize)
             {
                 // Clonar ruta+nombre: `open_pdf_at` necesita &mut self.
                 let path = book.path.clone();
                 let name = book.name.clone();
-                let start = crate::persist::progress_for(&reader.lib_books, &path).map(|p| p.page);
+                let start =
+                    crate::persist::progress_for(&reader.library.lib_books, &path).map(|p| p.page);
                 if !reader.open_pdf_at(&path, start) {
                     reader.status = Some(format!("Cannot open {name}"));
                     reader.list_dirty = true;
@@ -1357,7 +1032,7 @@ fn library_down_zone(reader: &Reader, y: f32) -> u8 {
         return 0; // cabecera + campo de búsqueda: sin arrastre horizontal
     }
     // Panel de búsqueda desplegado: fila 0 = letras (2), fila 1 = carpetas (3).
-    if reader.lib_search_open {
+    if reader.library.lib_search_open {
         let panel_top = search_y + search_hh + 6.0;
         let panel_h = lib_search_panel_h(reader.win_h, true);
         if y >= panel_top && y < panel_top + panel_h {
@@ -1371,10 +1046,10 @@ fn library_down_zone(reader: &Reader, y: f32) -> u8 {
     // Contenido: ¿la fila del carousel de Continue Reading (bajo su título)?
     let content_y0 = lib_content_y0(
         reader.win_h,
-        reader.lib_search_open,
+        reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
-    let yc = y - content_y0 + reader.lib_scroll;
+    let yc = y - content_y0 + reader.library.lib_scroll;
     let has_cont = reader.lib_has_cont();
     let cont_h = lib_cont_block_h(reader.win_w, reader.win_h, has_cont);
     if yc >= lib_section_title_h(reader.win_h) && yc < cont_h {
@@ -1413,11 +1088,11 @@ fn handle_picker_motion(
                 } else {
                     let z = library_down_zone(reader, y);
                     let h = match z {
-                        1 => reader.lib_carousel_x,
-                        2 => reader.lib_letters_x,
-                        3 => reader.lib_folders_x,
-                        4 => reader.lib_sort_x,
-                        5 => reader.lib_filter_x,
+                        1 => reader.library.lib_carousel_x,
+                        2 => reader.library.lib_letters_x,
+                        3 => reader.library.lib_folders_x,
+                        4 => reader.library.lib_sort_x,
+                        5 => reader.library.lib_filter_x,
                         _ => 0.0,
                     };
                     (z, h)
@@ -1425,7 +1100,7 @@ fn handle_picker_motion(
                 let v0 = if reader.mode == UiMode::Picker {
                     reader.list_scroll as f32
                 } else {
-                    reader.lib_scroll
+                    reader.library.lib_scroll
                 };
                 reader.list_drag = Some(ListDrag {
                     sx: x,
@@ -1457,20 +1132,20 @@ fn handle_picker_motion(
                         };
                         let s = (drag.h0 - dx).clamp(0.0, max);
                         let changed = match drag.zone {
-                            1 => reader.lib_carousel_x != s,
-                            2 => reader.lib_letters_x != s,
-                            3 => reader.lib_folders_x != s,
-                            4 => reader.lib_sort_x != s,
-                            5 => reader.lib_filter_x != s,
+                            1 => reader.library.lib_carousel_x != s,
+                            2 => reader.library.lib_letters_x != s,
+                            3 => reader.library.lib_folders_x != s,
+                            4 => reader.library.lib_sort_x != s,
+                            5 => reader.library.lib_filter_x != s,
                             _ => false,
                         };
                         if changed {
                             match drag.zone {
-                                1 => reader.lib_carousel_x = s,
-                                2 => reader.lib_letters_x = s,
-                                3 => reader.lib_folders_x = s,
-                                4 => reader.lib_sort_x = s,
-                                5 => reader.lib_filter_x = s,
+                                1 => reader.library.lib_carousel_x = s,
+                                2 => reader.library.lib_letters_x = s,
+                                3 => reader.library.lib_folders_x = s,
+                                4 => reader.library.lib_sort_x = s,
+                                5 => reader.library.lib_filter_x = s,
                                 _ => {}
                             }
                             // Scroll horizontal de una fila: se re-renderiza
@@ -1478,7 +1153,7 @@ fn handle_picker_motion(
                             // sobre su contenedor; la pantalla no se
                             // re-renderiza (antes `list_dirty` reconstruía
                             // TODO por frame de arrastre).
-                            reader.lib_row_dirty = Some(drag.zone);
+                            reader.library.lib_row_dirty = Some(drag.zone);
                             reader.redraw();
                         }
                     }
@@ -1498,8 +1173,8 @@ fn handle_picker_motion(
                     } else {
                         let max_v = reader.lib_max_scroll();
                         let s = (drag.v0 - dy).clamp(0.0, max_v);
-                        if s != reader.lib_scroll {
-                            reader.lib_scroll = s;
+                        if s != reader.library.lib_scroll {
+                            reader.library.lib_scroll = s;
                             // Scroll vertical = solo cambiar de donde se copia
                             // la banda de contenido al buffer (memcpy); el
                             // render (Canvas+JNI) solo se relanza si el scroll
@@ -1530,172 +1205,4 @@ fn handle_picker_motion(
         // PointerUp: se ignora un segundo dedo (el picker no tiene pinch).
         _ => {}
     }
-}
-
-/// Input multitáctil: tap (1 dedo, página anterior/siguiente o sheet), pull
-/// (1 dedo, sheet de ajustes) y pinch (2 dedos, zoom).
-pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
-    let Ok(mut iter) = app.input_events_iter() else {
-        warn!("input_events_iter failed");
-        return;
-    };
-    loop {
-        let read = iter.next(|event| match event {
-            InputEvent::MotionEvent(motion) => {
-                let action = motion.action();
-                // HISTORY 240 Hz del boli (Ink y Erase): drenar las muestras
-                // batcheadas ANTES del evento real (orden temporal). También
-                // en el Up: su history cierra el trazo sin cuerda recta final.
-                if matches!(action, MotionAction::Move | MotionAction::Up) {
-                    feed_stylus_history(reader, motion);
-                }
-                let pts: Vec<(i32, f32, f32)> = motion
-                    .pointers()
-                    .map(|p| (p.pointer_id(), p.x(), p.y()))
-                    .collect();
-                // Fase 1 USI: timestamp (ns, System.nanoTime) y presión del
-                // PRIMER pointer stylus — el ancla del Down (gesture_t0_ns)
-                // y la presión del evento real salen de aquí. En multitouch
-                // solo el stylus importa (guard pointers.len()==1 aguas
-                // abajo); si no hay stylus, (0, 0.5) neutros.
-                // Nota: `Pointer` (wrapper) no expone event_time (solo
-                // HistoricalPointer y el MotionEvent); el timestamp del
-                // evento real viene de `motion.event_time()` y es común a
-                // todos los pointers del batch. La presión sí es por pointer.
-                let stylus_t_ns = motion.event_time() as u64;
-                let stylus_pressure = motion
-                    .pointers()
-                    .find(|p| is_stylus_tool(p.tool_type()))
-                    .map(|p| normalize_pressure(p.pressure()))
-                    .unwrap_or(0.5);
-                reader.pending_t0_ns = Some(stylus_t_ns);
-                reader.pending_pressure = Some(stylus_pressure);
-                // Separación dedo/stylus (S-Pen, Saber): solo el STYLUS (o
-                // borrador/estilo invertido) dibuja con la herramienta
-                // activa; los dedos (y la palma) navegan (pan/pinch).
-                let stylus = motion.pointers().any(|p| {
-                    matches!(
-                        p.tool_type(),
-                        android_activity::input::ToolType::Stylus
-                            | android_activity::input::ToolType::Eraser
-                    )
-                });
-                let up_idx = if action == MotionAction::PointerUp {
-                    Some(motion.pointer_index())
-                } else {
-                    None
-                };
-                handle_motion(
-                    reader,
-                    app,
-                    action,
-                    pts,
-                    up_idx,
-                    stylus,
-                    PenButtons {
-                        state: motion.button_state(),
-                        action: motion.action_button(),
-                    },
-                    motion.event_time(),
-                    stylus_pressure,
-                );
-                InputStatus::Handled
-            }
-            InputEvent::KeyEvent(_) | InputEvent::TextEvent(_) | InputEvent::TextAction(_) | _ => {
-                InputStatus::Unhandled
-            }
-        });
-        if !read {
-            if reader.take_repaint() {
-                reader.blit();
-            }
-            break;
-        }
-    }
-}
-
-/// Tope de muestras históricas consumidas por evento del boli: Android
-/// batchea a 240 Hz; si el looper se retrasa, el history acumularía un
-/// retraso enorme. Cap duro conservando las más RECIENTES (`skip(len - cap)`:
-/// las viejas ya son latencia perdida, no se redibujan).
-const STYLUS_HISTORY_CAP: usize = 16;
-
-/// ¿La herramienta del puntero es lápiz/borrador físico?
-fn is_stylus_tool(t: android_activity::input::ToolType) -> bool {
-    matches!(
-        t,
-        android_activity::input::ToolType::Stylus | android_activity::input::ToolType::Eraser
-    )
-}
-
-/// Alimenta UNA muestra del boli al gesto en curso (la máquina de estados la
-/// lleva el evento real en `handle_motion`; aquí solo el trazo/goma). Replica
-/// los brazos Move de ToolDrawing/Erase (mismos guards: un puntero, kind
-/// activo): los puntos históricos encadenan `update_tool_gesture` (curva
-/// midpoint) o `update_erase_gesture` (`erase_last` barre sin huecos).
-///
-/// Fase 1 (USI 2.0): cada muestra lleva `t_ms` (timestamp NDK re-escalado al
-/// ancla del gesto) y `pressure` normalizada [0,1] — el predictor y el
-/// grosor dependiente de presión los consumen.
-fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32, t_ms: f32, pressure: f32) {
-    match reader.gesture.kind {
-        GestureKind::ToolDrawing if reader.gesture.pointers.len() == 1 => {
-            reader.update_tool_gesture(x, y, t_ms, pressure);
-        }
-        GestureKind::Erase if reader.gesture.pointers.len() == 1 => {
-            reader.update_erase_gesture(x, y);
-        }
-        _ => {}
-    }
-}
-
-/// Drena el history de los punteros stylus del evento (Move/Up) con cap
-/// `STYLUS_HISTORY_CAP`. Sin Vec intermedio: iteración directa sobre
-/// `p.history()` (ExactSizeIterator; `skip` conserva las recientes).
-///
-/// NOTA de alcance: el drain solo alimenta el gesto EN CURSO
-/// (ToolDrawing/Erase con un puntero). El FILTRO stylus vs palma del
-/// Down/PointerDown lo hace `handle_motion` (flag `stylus` +
-/// `pointers.len() == 1`): si el panel multiplexa palma+stylus en un solo
-/// MotionEvents, ese evento nunca arranca un trazo — el drain no cambia ese
-/// comportamiento.
-fn feed_stylus_history(reader: &mut Reader, motion: &MotionEvent) {
-    let t0 = reader.gesture_t0_ns;
-    for p in motion.pointers().filter(|p| is_stylus_tool(p.tool_type())) {
-        let hist = p.history();
-        let skip = hist.len().saturating_sub(STYLUS_HISTORY_CAP);
-        for hp in hist.skip(skip) {
-            // Timestamp NDK (System.nanoTime) → ms monótonos del gesto,
-            // re-escalados con el ancla tomada en el Down (gesture_t0_ns).
-            // La presión va por eje AXIS_PRESSURE (USI 2.0 la reporta;
-            // drivers sin presión dan 0.0 → neutral 0.5 en el gestor).
-            let t_ms = gesture_ms(hp.event_time(), t0);
-            let pressure = normalize_pressure(hp.pressure());
-            feed_stylus_sample(reader, hp.x(), hp.y(), t_ms, pressure);
-        }
-    }
-}
-
-/// Re-escala un timestamp NDK (ns, base System.nanoTime) a ms del gesto:
-/// `gesture_t0_ns` es el event_time del Down (ancla t=0). Sin ancla (0.0,
-/// p. ej. muestra de dedo tras un gesto borrado) devuelve 0.
-#[inline]
-fn gesture_ms(event_ns: i64, t0_ns: u64) -> f32 {
-    if t0_ns == 0 {
-        return 0.0;
-    }
-    let d = event_ns as i128 - t0_ns as i128;
-    // ns → ms con saturación i128→f32 (un gesto no dura horas; wrap no ocurre
-    // en relojes monótonos de Android de 64 bits, pero el cast no debe colar
-    // basura en el predictor si el driver reporta tiempos fuera de orden).
-    (d as f64 / 1_000_000.0).clamp(-1_000.0, 1_000.0) as f32
-}
-
-/// Normaliza la presión del driver a [0.5, 1] usable: USI 2.0 reporta
-/// [0,1] con 0.0 en hover/sin contacto; un 0.0 EXACTO en una muestra de
-/// Move suele ser "axis no reportado" (algunos firmwares) → 0.5 neutro
-/// (w_base) en vez de aplastar el trazo a 0.6·w.
-#[inline]
-fn normalize_pressure(raw: f32) -> f32 {
-    if raw <= 0.0 || raw > 1.0 { 0.5 } else { raw }
 }

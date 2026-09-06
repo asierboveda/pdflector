@@ -1,5 +1,8 @@
 # Fase 6 — Aterrizaje Android
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Milestone: `Fase 6 — Aterrizaje Android` · Issue: #30 · Estado: 🟡 Spike OK, falta port completo
 > Decisión: **Slint Aceptado** (ADR-004). minSdk 26, linker `aarch64-linux-android26-clang`.
 

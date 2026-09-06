@@ -1,7 +1,75 @@
 # CHANGELOG — PDFLector
 
-> Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
+> Registro completo de cambios, más reciente arriba. Cada entrada cierra con
+> verificación: fecha + hardware + flujo + métrica (regla AGENTS.md).
 > Formato: `AAAA-MM-DD — Título`.
+
+
+
+## 2026-09-06 — Reestructuración Fase 2 completa: pipeline Dry/Overlays + productor único EGL
+
+- GPU: `DryKey` reducida a `{page, zoom_bits, ann_count, dark}` (pan/chrome/sheet/toast ya no
+  invalidan la capa base); overlays de UI a fb0 tras componer dry⊕wet; pan aplicado al quad
+  (con fix de doble-pan y clear de fb0); `ovl_cache` por id estable con LRU de bytes (fix ABA);
+  wet guard con selección visible; logging de ciclo de vida EGL con contadores.
+- Fix raíz `EGL_BAD_ALLOC` 0x3003 Library→Viewer: una `ANativeWindow` admite un solo productor
+  de BufferQueue; productor único GPU (Library/Picker se presentan por el pipeline GL; surface
+  EGL persistente, `ANativeWindow_lock` solo como fallback sin GPU).
+- Verificación TCL 9469X (2026-09-06, build `f5381e9`, pantalla ON; `docs/benchmark-results.md`):
+  10 ciclos Library→Viewer con 0×0x3003 (antes: 7/10 fallos); pan con stylus p95 4.19 ms sobre
+  459 presents con 0 re-renders de la dry (objetivo p95 <16.6 ms); PSS 118 MB arranque,
+  174-178 MB reposo — pico 232 MB tras ciclos: deuda registrada.
+
+## 2026-09-06 — Reestructuración Fase 4: splits por responsabilidad + LibraryState + limpieza
+
+- 4.3 `input.rs` → `input/{gestos,motion,dispatch,stylus}` (pure move).
+- 4.1 `gpu/mod.rs` → `gpu/{ffi,shaders,surface,textures,pipeline}` (pure move).
+- 4.4 `reader.rs` → 12 submódulos por responsabilidad en `reader/` (pure move).
+- 4.2 `draw.rs` → 7 submódulos por responsabilidad en `draw/` (pure move).
+- 4.5 `LibraryState` extraído de `Reader`: 19 campos `lib_*` (scrolls px, filtros,
+  sort, progreso, planos cacheados, fade) viven ahora en
+  `reader/library_state.rs`; los accesos usan `self.library.lib_x`.
+- 4.6 limpieza integral: 40 imports muertos retirados (39 en `reader/*` vía
+  `cargo fix` + 1 manual), 4 `#[allow(dead_code)]` huérfanos quitados (ítems
+  usados), doc comments de `lib_scroll` → `library.lib_scroll` (Tarea 4.5),
+  AGENTS.md: fila CI con "job Android en CI (sin TCL)", `cargo fmt` en los 6
+  ficheros con deriva local. Los `#[allow(dead_code)]` restantes (43) protegen
+  API de fases futuras, UI oculta por diseño o ítems superados-documentados —
+  inventario por caso en el historial git de la reestructuración (commit `c236c27`).
+- Verificación: `cargo check -p pdf_android --target aarch64-linux-android`
+  0 errores / 0 warnings; `cargo test -p pdf_core` 161/0; `cargo clippy
+  --all-targets -- -D warnings` verde; `cargo fmt --all -- --check` verde;
+  `wc -l` de `pdf_android/src` < 2000 en todos los ficheros; 43 allows
+  `dead_code` (todos justificados).
+
+## 2026-09-06 — CI Android: job `android` (aarch64-linux-android, NDK r28/API 35)
+
+- Nuevo job paralelo `android` en `.github/workflows/ci.yml`: toolchain rustup
+  stable con target `aarch64-linux-android` + NDK r28 (API 35,
+  `android-actions/setup-android-ndk`), `cargo check -p pdf_android --target
+  aarch64-linux-android` con cache `Swatinem/rust-cache` (workspaces
+  ". -> target"). Crea in-situ los placeholders gitignored
+  `groq_key.txt`/`google_key.txt` (include_str!) y exporta sysroot/PATH del NDK
+  (`ANDROID_NDK_HOME` + `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`).
+- AGENTS.md: el carril "Compilación cruzada Android" de la tabla de validación
+  pasa de "Dev local con NDK, no en CI actual" a "Dev local con NDK + CI
+  (job `android`)".
+- Verificación: YAML validado localmente (python yaml.safe_load, exit 0);
+  el job aún no ha corrido — V3.1 (workflow run real) y V3.2 (prueba de valor
+  con rama que rompe) requieren push a remoto, diferidas a decisión del usuario.
+
+## 2026-09-06 — Reestructuración Fase 1 completa: docs & gobernanza
+
+- Lote 1 (1.0–1.4, correcciones puntuales): CHANGELOG completo (G1, era
+  "últimas 5" con 19 reales); AGENTS.md sin límite-50 (E4); PROYECTO.md sin
+  borrado-auto; 00-objetivo/COMPETENCIA/D-ia corregidos.
+- Lote 2 (1.5–1.9, reescrituras mayores): NEXT-PLAN con presupuesto PSS real
+  (52.9/105/208MB) + deuda transversal; docs/README.md índice maestro (G3);
+  24 históricos congelados con banner; README/CONTRIBUTING/PR-template con
+  verificación Android local; ADR-007 con estado normalizado (supersede
+  parcial de ADR-006 present).
+- Verificación: greps V1.1-V1.4 en 0 hits; índice docs/README.md completo (find
+  vs listado, diferencia vacía); ADRs con estado normalizado.
 
 
 ## 2026-09-05 — Eliminada la barra de herramientas del visor

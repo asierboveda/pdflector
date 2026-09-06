@@ -8,5 +8,6 @@
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --all-targets -- -D warnings`
 - [ ] `cargo test -p pdf_core`
+- [ ] Check Android local ejecutado (`cargo check -p pdf_android --target aarch64-linux-android`)
 - [ ] Si toca render/caché: benchmarks ejecutados, sin regresión
 - [ ] Documentación actualizada según AGENTS.md; entrada en `memory.md` si procede

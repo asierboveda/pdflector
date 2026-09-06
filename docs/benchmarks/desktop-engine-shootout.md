@@ -1,5 +1,8 @@
 # PDFium vs MuPDF — Bench de escritorio (host de desarrollo)
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08-12. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Bench de la Fase 0.5 ejecutado en **escritorio Linux**, NO en la tablet
 > objetivo. ⚠️ **Corrección (2026-08-12)**: ADR-001 **no** se cerró en la
 > tablet — se cerró con datos de escritorio del mismo Ryzen (memory.md Ola 2,

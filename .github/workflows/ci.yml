@@ -20,3 +20,26 @@ jobs:
           /tmp/corpus-venv/bin/pip install --quiet pillow reportlab
           /tmp/corpus-venv/bin/python tools/generate_corpus.py
           cargo test -p pdf_core
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r28
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: check pdf_android (aarch64)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android: --sysroot=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+        run: |
+          echo "placeholder" > crates/pdf_android/groq_key.txt
+          echo "placeholder" > crates/pdf_android/google_key.txt
+          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          cargo check -p pdf_android --target aarch64-linux-android

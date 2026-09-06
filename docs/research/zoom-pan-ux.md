@@ -1,5 +1,8 @@
 # Zoom y pan (pinch) en lectores PDF/móviles — investigación
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08-13. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Investigación de referencia para PDFLector (2026-08-13). Objetivo: cómo
 > implementan los lectores maduros el **zoom/pan suave y sin bugs** — factor de
 > zoom, punto de anclaje, clamp a los bordes, "escalar y renderizar" (fast path

@@ -1,5 +1,8 @@
 # Investigación: pipeline de renderizado y caché de páginas en lectores PDF open-source
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > Investigación de referencia para PDFLector. Complementa
 > `docs/research/evince-architecture.md` (deep-dive de Evince ya aplicado a
 > `pdf_core`). Este documento amplía el abanico con 6 proyectos de perfiles

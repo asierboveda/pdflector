@@ -1,5 +1,8 @@
 # Baseline de rendimiento — Evince (poppler) en escritorio
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08-10. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > **Fecha**: 2026-08-10 · **Hardware**: AMD Ryzen 7 5800H (8C/16T, hasta 4,47 GHz),
 > 13 GiB RAM, Linux 7.1.4-arch1-1 (Wayland/Hyprland) · **Software**: Evince 48.4,
 > Poppler 26.07.0 · **Corpus**: `corpus/large_document.pdf` (500 páginas A4,

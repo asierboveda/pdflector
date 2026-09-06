@@ -1,5 +1,8 @@
 # Separación Dedo ↔ Stylus: Cómo lo Hacen las Apps y Cómo Mejorarlo
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08-24. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > 2026-08-24. Objetivo: cuando la herramienta está activa, SOLO el lápiz
 > dibuja; los gestos de la mano navegan (pan 1 dedo, pinch zoom 2 dedos).
 > Investigación de patrones en Saber, Samsung Notes/S-Pen SDK, KOReader y

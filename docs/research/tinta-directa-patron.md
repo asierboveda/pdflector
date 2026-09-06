@@ -1,5 +1,8 @@
 # Análisis Profundo: Cómo Pintan el Trazo las Apps de Escritura (En Vivo)
 
+> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
+> el estado de 2026-08-24. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+
 > 2026-08-24. Objetivo: entender el modelo mental del usuario ("no quiero que se
 > guarde en un buffer, que se implemente nada más hacerlo") y comparar el flujo
 > de dibujo EN VIVO de las mejores apps, no solo su arquitectura general.

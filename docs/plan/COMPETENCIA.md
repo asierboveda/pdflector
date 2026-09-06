@@ -6,7 +6,7 @@
 
 - `render1x`: dense 14.5ms, paper 11.6ms, large 15.4ms, scanned 31ms (worst)
 - `PSS`: 26.7MB (harness) / 66MB (pdf_android release, visor) — objetivo <150MB con margen
-- `composite_annotations` 200 trazos: no medido aún (Fase A lo medirá)
+- `composite_annotations` 200 trazos: 4.39ms directo / 2.39ms con StrokeCache (Fase C, 2026-09-05, host a resolución TCL — `docs/benchmark-results.md`)
 - Conclusión: MuPDF en TCL es competitivo, la latencia está en overlay/selección, no en render.
 
 ## Lectores de referencia

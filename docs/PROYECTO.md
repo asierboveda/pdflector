@@ -23,7 +23,7 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 
 **Primera versión útil (v1, decidida):** APK para la TCL con:
 
-- Biblioteca local (añadir PDFs; nunca borrado automático: solo el usuario borra)
+- Biblioteca local (añadir PDFs; nunca borra automáticamente: solo el usuario borra)
 - Lectura fluida (paginado, scroll con caché)
 - Zoom
 - Lápiz y subrayador persistentes (anotaciones vectoriales guardadas)
@@ -122,7 +122,6 @@ publicación pública del código en GitHub. Dependencias: egui/Slint
 
 1. Ubicación de Ollama / claves IA: PC por red local vs otra opción (después de v1; ninguna clave en Git ni en APK distribuible; la APK compila e instala sin claves).
 2. Migración de claves embebidas (`include_str!` en `pdf_android`): tarea separada pendiente, sin cambio de código en esta reestructuración.
-3. Eliminar cualquier borrado automático de biblioteca (p. ej. límite 50 PDFs): tarea futura específica en Fase E; la biblioteca nunca borra sin acción del usuario.
 
 **Resueltas** (ADR-001 / ADR-005): motor PDF = MuPDF (AGPL-3.0); presión del
 lápiz = no necesaria; exportación = Markdown + PDF con anotaciones incrustadas;

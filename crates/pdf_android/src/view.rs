@@ -92,7 +92,7 @@ pub fn crop_margins(bitmap: &Bitmap) -> Option<(u32, u32, u32, u32)> {
 
     for y in 0..h {
         let row = &bitmap.data[y * w * 4..(y + 1) * w * 4];
-        for (x, px) in row.chunks_exact(4).enumerate() {
+        for (x, px) in row.as_chunks::<4>().0.iter().enumerate() {
             // RGBA: los tres primeros canales son R, G, B (alfa se ignora).
             let is_white =
                 px[0] >= WHITE_THRESHOLD && px[1] >= WHITE_THRESHOLD && px[2] >= WHITE_THRESHOLD;

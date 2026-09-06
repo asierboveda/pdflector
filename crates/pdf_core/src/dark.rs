@@ -59,8 +59,10 @@ mod tests {
         assert_eq!((out.width, out.height), (3, 2));
         assert!(
             out.data
-                .chunks_exact(4)
-                .all(|px| px == [255, 255, 255, 255])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|px| *px == [255, 255, 255, 255])
         );
     }
 
@@ -69,8 +71,14 @@ mod tests {
     fn white_becomes_black() {
         let src = rgba(2, 2, vec![255u8; 2 * 2 * 4]);
         let out = invert_bitmap(&src);
-        assert!(out.data.chunks_exact(4).all(|px| px[..3] == [0, 0, 0]));
-        assert!(out.data.chunks_exact(4).all(|px| px[3] == 255));
+        assert!(
+            out.data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|px| px[..3] == [0, 0, 0])
+        );
+        assert!(out.data.as_chunks::<4>().0.iter().all(|px| px[3] == 255));
     }
 
     /// Alpha must pass through untouched, whatever its value.
