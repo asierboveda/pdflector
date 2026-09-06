@@ -59,6 +59,9 @@ impl Reader {
     /// los eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
     /// despertar el loop en reposo).
     pub(crate) fn tick(&mut self, app: &AndroidApp) {
+        // Persistencia diferida (A1): si el estado lleva >2 s sucio (cambio
+        // de página reciente) se escribe aquí — el tap de página no hace I/O.
+        self.flush_state_if_due();
         // Buscador con teclado: recoger lo tecleado y re-filtrar la rejilla
         // (el IME escribe en un EditText invisible; ver `jni::ime_text`).
         self.poll_ime_query(app);

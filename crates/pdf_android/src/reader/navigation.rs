@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Navegación y apertura de documentos (extraído de `reader.rs`, 2026-09-06): cambio de página (`goto_page`, `next_page`, `prev_page`, `jump_page`), persistencia de posición (`save_state`) y apertura de PDFs (`open_pdf`, `open_pdf_at`).
+//! Navegación y apertura de documentos (extraído de `reader.rs`, 2026-09-06): cambio de página (`goto_page`, `next_page`, `prev_page`, `jump_page`), persistencia de posición (`save_state` con flush diferido A1: `mark_state_dirty`, `flush_state`, `flush_state_if_due`) y apertura de PDFs (`open_pdf`, `open_pdf_at`).
 
 use super::Reader;
 use super::UiMode;
@@ -12,6 +12,7 @@ use log::info;
 use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::{Document, RenderEngine};
 use std::path::Path;
+use std::time::Duration;
 use std::time::Instant;
 
 impl Reader {
@@ -45,7 +46,10 @@ impl Reader {
             };
             self.launch_render(pages, self.rendered_zoom, false);
         }
-        self.save_state();
+        // A1: la persistencia pasa a DIFERIDA (flush a los 2 s desde `tick`
+        // o explícito en enter_library/open_pdf_at/Pause) — quita el I/O
+        // síncrono de state.json+library.json del tap de pasar página.
+        self.mark_state_dirty();
         if self.window.is_some() {
             self.blit();
         }
@@ -80,9 +84,12 @@ impl Reader {
     }
 
     /// Persiste la posición actual (ruta, página, zoom) + modo oscuro en
-    /// `internal/state.json` (ver `persist`). Escritura *eager*: se llama en
-    /// cada cambio de página, al soltar el pinch, al abrir un documento y al
-    /// alternar el modo oscuro — un cierre inesperado no pierde la posición.
+    /// `internal/state.json` (ver `persist`). Desde la fase A1 la escritura
+    /// es DIFERIDA para el cambio de página: `goto_page` solo marca
+    /// (`mark_state_dirty`) y `flush_state_if_due`/`flush_state` escriben
+    /// aquí (ver `state_dirty`). Siguen *eager* (llamada directa) las
+    /// acciones infrecuentes: soltar el pinch, toggles de ajustes y la
+    /// apertura de un documento — un cierre inesperado no pierde la posición.
     ///
     /// Además actualiza el REGISTRO DE PROGRESO por libro
     /// (`internal/library.json`, ver `persist::BookProgress`): página actual,
@@ -121,6 +128,42 @@ impl Reader {
         }
     }
 
+    /// Marca el estado como pendiente de persistir (A1, diferido): registra
+    /// `state_dirty_since` para que `flush_state_if_due` (2 s desde `tick`)
+    /// escriba sin I/O en el tap. `goto_page` es su único llamador.
+    fn mark_state_dirty(&mut self) {
+        self.state_dirty = true;
+        self.state_dirty_since = Some(Instant::now());
+    }
+
+    /// Guarda YA si hay cambios pendientes (flush explícito). Puntos de
+    /// salida del visor: `enter_library`, `open_pdf_at` (antes de sustituir
+    /// el documento) y el `Pause` de la activity en `android_main`. Sin
+    /// estos flushes, un kill dentro de la ventana de 2 s del diferido
+    /// perdería la navegación reciente (trade-off documentado en
+    /// `state_dirty`).
+    pub(crate) fn flush_state(&mut self) {
+        if self.state_dirty {
+            self.save_state();
+            self.state_dirty = false;
+            self.state_dirty_since = None;
+        }
+    }
+
+    /// Flush periódico del estado diferido (A1): si `goto_page` marcó dirty
+    /// hace más de 2 s → `save_state` + limpiar. Llamado desde `tick` (~8 ms
+    /// con ventana): el coste en reposo es una comparación de `bool` +
+    /// `Instant`, sin I/O hasta que toca.
+    pub(crate) fn flush_state_if_due(&mut self) {
+        if self.state_dirty
+            && self
+                .state_dirty_since
+                .is_some_and(|t| t.elapsed() >= Duration::from_millis(2000))
+        {
+            self.flush_state();
+        }
+    }
+
     /// Abre un PDF por ruta (picker) y pasa al visor con la página 1.
     /// Devuelve false (y deja el estado intacto) si no se pudo abrir.
     pub(crate) fn open_pdf(&mut self, path: &str) -> bool {
@@ -141,6 +184,11 @@ impl Reader {
         };
         match engine.open(Path::new(path)) {
             Ok(doc) => {
+                // A1: flush explícito del estado diferido antes de sustituir
+                // el documento — conserva en library.json la última posición
+                // del PDF anterior (el `save_state` del final registra el
+                // nuevo; state.json solo guarda un estado actual).
+                self.flush_state();
                 let pages = doc.page_count();
                 info!("opened: {pages} pages");
                 // Página de apertura: la guardada (reanudar lectura) o la 1.

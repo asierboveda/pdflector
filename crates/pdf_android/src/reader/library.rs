@@ -50,6 +50,11 @@ impl Reader {
     /// de mostrar la página. El campo de búsqueda arranca CERRADO. Vacía →
     /// EMPTY STATE ("Tu biblioteca está vacía" + botón "Añadir PDF").
     pub(crate) fn enter_library(&mut self, app: &AndroidApp) {
+        // A1: flush explícito del estado diferido ANTES de cambiar de modo —
+        // `save_state` registra el progreso del libro solo en modo Viewer y
+        // la biblioteca recarga `library.json` justo debajo: sin este flush
+        // el progreso de una lectura reciente (<2 s) no se reflejaría.
+        self.flush_state();
         self.mode = UiMode::Library;
         // EGL (Tarea 2.7, productor único): la surface del visor NO se
         // suelta al entrar en la biblioteca — la biblioteca presenta por el

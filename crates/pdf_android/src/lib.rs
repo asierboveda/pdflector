@@ -711,6 +711,13 @@ pub fn android_main(app: AndroidApp) {
                 // añadir re-comprueba el permiso por sí mismo al invocarse.
                 reader.grant_pending = false;
             }
+            PollEvent::Main(MainEvent::Pause) => {
+                info!("Pause");
+                // A1: flush explícito del estado diferido al pausar (Home /
+                // cambio de app): el proceso puede morir en segundo plano
+                // antes de que `tick` cumpla los 2 s del flush periódico.
+                reader.flush_state();
+            }
             PollEvent::Main(MainEvent::Destroy) => {
                 info!("Destroy: saliendo del bucle");
                 running = false;

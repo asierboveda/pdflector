@@ -153,6 +153,8 @@ impl Reader {
             render_worker: None,
             last_pinch_move: None,
             fallback_page: None,
+            state_dirty: false,
+            state_dirty_since: None,
             thumb_worker: None,
             thumb_rx: None,
         };

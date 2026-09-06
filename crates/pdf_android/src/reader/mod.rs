@@ -794,6 +794,16 @@ pub(crate) struct Reader {
     /// Página ANTERIOR dibujable mientras llega el render de la nueva (si
     /// está en caché): evita el parpadeo en blanco al pasar página.
     pub(crate) fallback_page: Option<u32>,
+    /// Persistencia de posición DIFERIDA (A1): `goto_page` ya no escribe en
+    /// el tap — marca `state_dirty` (con `state_dirty_since`) y `tick`
+    /// flushea a los 2 s (`flush_state_if_due`); `enter_library`,
+    /// `open_pdf_at` y el `Pause` de la activity flushean explícito
+    /// (`flush_state`). Trade-off asumido: un kill dentro de la ventana de
+    /// 2 s pierde como mucho 2 s de navegación (se conserva la última
+    /// posición flusheada). El resto de llamadores de `save_state` (fin de
+    /// pinch, toggles, apertura) siguen eager: son infrecuentes.
+    state_dirty: bool,
+    state_dirty_since: Option<Instant>,
     /// Worker actor para render de portadas en segundo plano (Fase E1).
     thumb_worker: Option<crate::thumbs::ThumbWorker>,
     thumb_rx: Option<std::sync::mpsc::Receiver<crate::thumbs::ThumbMsg>>,
