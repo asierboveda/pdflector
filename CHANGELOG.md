@@ -1,6 +1,7 @@
 # CHANGELOG — PDFLector
 
-> Últimas 5 entradas. Historial completo en `docs/log/memory-2026-08.md`.
+> Registro completo de cambios, más reciente arriba. Cada entrada cierra con
+> verificación: fecha + hardware + flujo + métrica (regla AGENTS.md).
 > Formato: `AAAA-MM-DD — Título`.
 
 

@@ -67,7 +67,7 @@ cargo apk build -p pdf_android --release --target aarch64-linux-android
 
 ## Flujo pro
 
-- Roadmap activo: **`docs/plan/NEXT-PLAN.md` (fases A–E)**. `docs/PLAN.md` es índice histórico, no kanban. `CHANGELOG.md` = últimas 5 entradas.
+- Roadmap activo: **`docs/plan/NEXT-PLAN.md` (fases A–E)**. `docs/PLAN.md` es índice histórico, no kanban. `CHANGELOG.md` = registro completo, más reciente arriba.
 - Una sola carpeta: todo en `~/Projects/pdflector/`. Excepciones: `~/Android/Sdk`, `/tmp`.
 - Issues: un Issue = una tarea con criterio de aceptación medible. Se cierra con log/screenshot + fecha/hardware/flujo/métrica.
 - Skills propios → `.opencode/skills/<nombre>/SKILL.md` (versionado). Ecosistema → `.agents/skills/` (gitignored, de `skills-lock.json`).
