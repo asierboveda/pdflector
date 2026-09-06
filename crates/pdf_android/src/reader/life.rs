@@ -46,6 +46,7 @@ impl Reader {
             page: 0,
             window: None,
             bitmap: None,
+            picker_bmp_ver: 0,
             cache: PageCache::new(CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES),
             rendered_zoom: 1.0,
             zoom: 1.0,
@@ -277,23 +278,25 @@ impl Reader {
         {
             warn!("set_buffers_geometry(R8G8B8A8_UNORM): {e}");
         }
-        // El pipeline del visor es GPU (EGL): el contexto se crea UNA vez con
-        // la primera ventana de Viewer y sobrevive a surfaces nuevas
-        // (recreate_surface). En modos SW (Library/Picker) no se toca.
-        if self.mode == UiMode::Viewer {
-            match self.gpu.as_mut() {
-                Some(g) => {
-                    g.recreate_surface(&window);
+        // Productor único EGL (Tarea 2.7): la surface del visor ya NO se
+        // suelta en Library/Picker (esos modos presentan por el mismo EGL),
+        // así que el contexto se crea con la PRIMERA ventana en CUALQUIER
+        // modo y cada ventana NUEVA (InitWindow tras recreación) recrea su
+        // surface — la anterior quedó ligada a la ventana vieja. Sin EGL
+        // (init o create fallidos, `gpu` None / sin surface) los modos
+        // Library/Picker degradan al camino SW con `ANativeWindow_lock`.
+        match self.gpu.as_mut() {
+            Some(g) => {
+                g.recreate_surface(&window);
+            }
+            None => {
+                // SAFETY: EGL/GLES sobre una NativeWindow válida de
+                // android_activity; fallo → camino SW (sin EGL).
+                let gpu = unsafe { Gpu::new(&window) };
+                if gpu.is_none() {
+                    warn!("gpu: EGL init failed — Library/Picker en SW");
                 }
-                None => {
-                    // SAFETY: EGL/GLES sobre una NativeWindow válida de
-                    // android_activity; fallo → Viewer cae al camino SW.
-                    let gpu = unsafe { Gpu::new(&window) };
-                    if gpu.is_none() {
-                        warn!("gpu: EGL init failed — Viewer en SW");
-                    }
-                    self.gpu = gpu;
-                }
+                self.gpu = gpu;
             }
         }
         self.window = Some(window);

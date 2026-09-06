@@ -776,6 +776,10 @@ impl Gpu {
     ///   la dry).
     pub(crate) fn present_viewer(&mut self, reader: &Reader) {
         let t0 = std::time::Instant::now();
+        // Volver al visor desde Library/Picker: liberar las texturas grandes
+        // de sus planos (cabecera/banda/lista) — ya no se pintan y retienen
+        // ~decenas de MB fuera del LRU (Tarea 2.7; no-op si no hay planos).
+        self.free_ui_planes();
         if !self.has_surface() {
             return;
         }
@@ -903,6 +907,112 @@ impl Gpu {
                 );
             }
         }
+    }
+    /// Present de la BIBLIOTECA por GPU (productor único EGL, fix Tarea 2.7):
+    /// los planos cacheados (`lib_header` cabecera + `lib_band` contenido)
+    /// se suben como texturas dedicadas SOLO cuando su versión cambia y cada
+    /// frame es clear + quads posicionados por el scroll + swap. Es el
+    /// análogo GPU del memcpy por frame del camino SW (`blit_library`):
+    /// NUNCA hace un `ANativeWindow_lock` sobre la ventana — una ventana
+    /// admite UN solo productor de BufferQueue, y alternar CPU/GPU agotaba el
+    /// slot (EGL_BAD_ALLOC 0x3003 en cada vuelta Library→Viewer; la surface
+    /// ya no se suelta al entrar aquí, vive toda la vida de la ventana).
+    /// `content_y0` = borde superior del contenido (`lib_content_y0`, el
+    /// mismo que usa el blit SW). El orden de dibujo replica a
+    /// `blit_library`: fondo → banda → cabecera → toast.
+    pub(crate) fn present_library(&mut self, reader: &Reader, content_y0: i32) {
+        let t0 = std::time::Instant::now();
+        if !self.has_surface() {
+            return;
+        }
+        unsafe {
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+            gl::glViewport(0, 0, self.win_w, self.win_h);
+        }
+        // Fondo del tema (el mismo `p.rgba_lib_bg()` del blit SW).
+        self.clear(reader.theme.palette().rgba_lib_bg());
+        // Sin tinta en vuelo en la biblioteca: swap vsync estable.
+        self.set_swap_interval(1);
+
+        // Banda de contenido scrolleable. El scroll vertical NO re-sube la
+        // textura: solo mueve el quad (sy = content_y0 − (scroll − origin)),
+        // igual que el camino SW copiaba la banda desde otra fila.
+        if let Some((band, origin)) = &reader.library.lib_band {
+            let tex = self.lib_band_tex(reader.library.lib_band_ver, band);
+            if tex != 0 {
+                let sy = content_y0 - (reader.library.lib_scroll as i32 - *origin);
+                self.draw_tex_quad(tex, band, 0, sy, 1.0);
+            }
+        }
+        // Zona fija (cabecera editorial + estado) SOBRE la banda (mismo orden
+        // que `blit_library`: la cabecera tapa el sangrado de la banda).
+        if let Some(h) = &reader.library.lib_header {
+            let tex = self.lib_header_tex(reader.library.lib_header_ver, h);
+            if tex != 0 {
+                self.draw_tex_quad(tex, h, 0, 0, 1.0);
+            }
+        }
+        // Toast (avisos breves) integrado en el mismo present, abajo-centro
+        // (misma posición que el camino SW).
+        if let Some(tb) = &reader.toast_bitmap {
+            let tx = (reader.win_w - tb.width as i32) / 2;
+            let ty = reader.win_h - tb.height as i32 - 16;
+            self.draw_bitmap(tb, reader.toast_id, tx, ty, 1.0);
+        }
+
+        let swap_t0 = std::time::Instant::now();
+        let Some(surf) = self.surf else { return };
+        let ok = unsafe { gl::eglSwapBuffers(self.dpy, surf) != 0 };
+        let swap_ms = swap_t0.elapsed().as_secs_f64() * 1000.0;
+        // Log equivalente al `blit WxH: X ms (lock+copy+unlock_and_post)`
+        // del camino SW para comparar en la re-medición.
+        info!(
+            "blit {}x{}: {:.2} ms (swap {:.2} ms, {})",
+            self.win_w,
+            self.win_h,
+            t0.elapsed().as_secs_f64() * 1000.0,
+            swap_ms,
+            if ok { "ok" } else { "FAIL" }
+        );
+    }
+    /// Present del PICKER por GPU (productor único EGL, Tarea 2.7): la lista
+    /// (`Reader::bitmap`, render de pantalla completa) se sube como textura
+    /// dedicada solo cuando su versión cambia y cada frame es clear + quad +
+    /// swap — sin `ANativeWindow_lock`. Sin lista aún: solo el fondo (mismo
+    /// resultado que el guard del camino SW). `view_bg` replica el fondo del
+    /// blit SW (rojo de error sin documento, fondo del tema con documento).
+    pub(crate) fn present_picker(&mut self, reader: &Reader) {
+        let t0 = std::time::Instant::now();
+        if !self.has_surface() {
+            return;
+        }
+        unsafe {
+            gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+            gl::glViewport(0, 0, self.win_w, self.win_h);
+        }
+        self.clear(self.view_bg(reader));
+        self.set_swap_interval(1);
+        if let Some(bmp) = &reader.bitmap {
+            let tex = self.picker_tex(reader.picker_bmp_ver, bmp);
+            if tex != 0 {
+                // offset_x/y = esquina superior izquierda del bitmap en la
+                // ventana (0 por ahora; el SW los usaba igual en blit_fast).
+                self.draw_tex_quad(tex, bmp, reader.offset_x, reader.offset_y, 1.0);
+            }
+        }
+
+        let swap_t0 = std::time::Instant::now();
+        let Some(surf) = self.surf else { return };
+        let ok = unsafe { gl::eglSwapBuffers(self.dpy, surf) != 0 };
+        let swap_ms = swap_t0.elapsed().as_secs_f64() * 1000.0;
+        info!(
+            "blit {}x{}: {:.2} ms (swap {:.2} ms, {})",
+            self.win_w,
+            self.win_h,
+            t0.elapsed().as_secs_f64() * 1000.0,
+            swap_ms,
+            if ok { "ok" } else { "FAIL" }
+        );
     }
     fn draw_sel_border(&mut self, l: f32, t: f32, r: f32, b: f32) {
         let w = 2.0f32;

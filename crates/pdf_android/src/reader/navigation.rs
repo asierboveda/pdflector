@@ -173,8 +173,12 @@ impl Reader {
                 self.library.lib_row_dirty = None;
                 self.cache.clear(); // otro documento: nada reutilizable
                 self.mode = UiMode::Viewer;
-                // EGL: venimos de Library/Picker sin surface (ver
-                // `enter_library`); recrearla ya para el primer present.
+                // EGL (Tarea 2.7, productor único): la surface ya NO se suelta
+                // al entrar en Library/Picker, así que al volver al visor
+                // sigue viva — este recreate es un no-op defensivo SOLO para
+                // el caso degradado de surface sin crear en esta ventana
+                // (fallo de eglCreateWindowSurface previo); con surface
+                // presente no se toca nada (has_surface → skip).
                 if let (Some(g), Some(win)) = (self.gpu.as_mut(), self.window.as_ref())
                     && !g.has_surface()
                 {

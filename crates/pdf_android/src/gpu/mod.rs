@@ -2,19 +2,25 @@
 // Copyright (C) 2026 Asier Bóveda
 
 //! Pipeline de presentación GPU (Fase 2 de PLAN-PARIDAD-STYLUS-NATIVO,
-//! ADR-006): contexto EGL/GLES2 sobre el ANativeWindow del visor. La página
-//! renderizada por MuPDF se sube como textura SOLO cuando cambia (cambio de
-//! página o re-render nítido); la tinta (trazos guardados + gesto en curso +
-//! tramo predicho) se dibuja como geometría vectorial (quads con AA analítico
-//! en el fragment shader); los overlays (chrome, toolbar, sheet, menús,
-//! badge, toast, cursor de goma) son quads texturizados de los bitmaps
-//! Canvas+JNI que `draw::render_*` ya genera. Present con `eglSwapBuffers`
-//! (spike 1: p50 0.17 ms vs 3.75 ms del lock+post).
+//! ADR-006; Tarea 2.7): contexto EGL/GLES2 sobre el ANativeWindow del visor.
+//! La página renderizada por MuPDF se sube como textura SOLO cuando cambia
+//! (cambio de página o re-render nítido); la tinta (trazos guardados +
+//! gesto en curso + tramo predicho) se dibuja como geometría vectorial
+//! (quads con AA analítico en el fragment shader); los overlays (chrome,
+//! toolbar, sheet, menús, badge, toast, cursor de goma) son quads
+//! texturizados de los bitmaps Canvas+JNI que `draw::render_*` ya genera.
+//! Present con `eglSwapBuffers` (spike 1: p50 0.17 ms vs 3.75 ms del
+//! lock+post).
 //!
-//! Solo el modo VISOR presenta por GPU. La biblioteca y el picker siguen por
-//! SW (`ANativeWindow_lock`): el ciclo de vida destruye la surface EGL antes
-//! de ese lock y la recrea al volver al visor (lock y swap NUNCA coexisten en
-//! el mismo frame).
+//! PRODUCTOR ÚNICO (Tarea 2.7): el visor, la biblioteca y el picker
+//! presentan TODOS por este EGL — la surface vive toda la vida de la
+//! ventana y nunca se suelta al cambiar de modo (una ANativeWindow admite un
+//! solo productor de BufferQueue; alternar el lock CPU de los blits SW con
+//! la surface EGL agotaba el slot y `eglCreateWindowSurface` fallaba con
+//! EGL_BAD_ALLOC 0x3003 en cada vuelta Library→Viewer). Los planos
+//! cacheados de Library/Picker se suben como texturas dedicadas solo cuando
+//! su versión cambia; el lock CPU (`ANativeWindow_lock`) queda únicamente
+//! como fallback cuando no hay EGL (`gpu.is_none()` o surface sin crear).
 //!
 //! FFI EGL/GLES2 propio (declaraciones de las APIs públicas de Khronos;
 //! licencia de este fichero, no de los headers): los crates de bindings

@@ -457,10 +457,14 @@ pub(crate) struct Reader {
     pub(crate) page: u32,
     /// Referencia owned al ANativeWindow (Some entre InitWindow y TerminateWindow).
     window: Option<NativeWindow>,
-    /// Bitmap de la LISTA del picker/biblioteca (render de pantalla completa
-    /// con Canvas+JNI). Las páginas del visor viven en `cache` (PageCache);
-    /// este campo solo lo usan los modos Picker/Library.
+    /// Bitmap de la LISTA del picker (render de pantalla completa con
+    /// Canvas+JNI). Las páginas del visor viven en `cache` (PageCache);
+    /// este campo solo lo usa el modo Picker.
     pub(crate) bitmap: Option<Bitmap>,
+    /// Generación del bitmap del PICKER (`bitmap`; bump en cada re-render de
+    /// la lista): clave de la textura GPU dedicada del picker. El present
+    /// GPU solo la re-sube cuando esta versión cambia (Tarea 2.7).
+    pub(crate) picker_bmp_ver: u64,
     /// Caché LRU de páginas renderizadas (página → Bitmap) para el paso de
     /// página INSTANTÁNEO (prev/next): evita re-renderizar al volver atrás y
     /// precarga la vecina (`ensure_pages_rendered`). Guarda SIEMPRE bitmaps
@@ -491,10 +495,10 @@ pub(crate) struct Reader {
     /// consume en cada `set_zoom_fast` y queda sin usar al soltar el gesto
     /// (`set_zoom_sharp` conserva el pan ya calculado). None = sin pinch.
     pinch: Option<PinchAnchor>,
-    /// Desplazamiento del bitmap de la LISTA dentro del buffer (picker/
-    /// biblioteca; 0 por ahora).
-    offset_x: i32,
-    offset_y: i32,
+    /// Desplazamiento del bitmap de la LISTA dentro del buffer (picker;
+    /// 0 por ahora — `pub(crate)` por el present GPU del picker).
+    pub(crate) offset_x: i32,
+    pub(crate) offset_y: i32,
     /// Dimensiones actuales de la ventana (px).
     pub(crate) win_w: i32,
     pub(crate) win_h: i32,

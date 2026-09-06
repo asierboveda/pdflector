@@ -199,7 +199,74 @@ impl Gpu {
             self.delete_texture(tex, "fade");
         }
     }
-    /// Borra una textura standalone (overlay LRU o fade) con contador y log.
+    // --- Planos de biblioteca/picker (Tarea 2.7: productor único EGL) ---
+    // Cabecera, banda de contenido y lista del picker: texturas dedicadas
+    // grandes (fuera del LRU de overlays, misma categoría que `page_tex` /
+    // `fade_tex`). El `ver` es la generación del bitmap (el Reader la bumpea
+    // en cada rebuild/splice/mutación): si coincide con la textura ya subida
+    // se reusa (cero subidas por frame estático); si no, se libera la vieja y
+    // se sube la nueva. Así el present por frame es solo clear + quads +
+    // swap, y el coste de la subida (~12 MB de ventana) se paga UNA vez por
+    // contenido nuevo (misma cadencia que el re-render Canvas del camino SW).
+    /// Textura dedicada del plano de cabecera de la biblioteca
+    /// (`LibraryState::lib_header`, versión `lib_header_ver`).
+    pub(crate) fn lib_header_tex(&mut self, ver: u64, b: &Bitmap) -> u32 {
+        if let Some((v, tex)) = self.lib_header_plane
+            && v == ver
+        {
+            return tex;
+        }
+        let new = self.upload_texture(b, "lib_header");
+        if let Some((_, tex)) = self.lib_header_plane.replace((ver, new)) {
+            self.delete_texture(tex, "lib_header");
+        }
+        new
+    }
+    /// Textura dedicada de la banda de contenido de la biblioteca
+    /// (`LibraryState::lib_band`, versión `lib_band_ver`).
+    pub(crate) fn lib_band_tex(&mut self, ver: u64, b: &Bitmap) -> u32 {
+        if let Some((v, tex)) = self.lib_band_plane
+            && v == ver
+        {
+            return tex;
+        }
+        let new = self.upload_texture(b, "lib_band");
+        if let Some((_, tex)) = self.lib_band_plane.replace((ver, new)) {
+            self.delete_texture(tex, "lib_band");
+        }
+        new
+    }
+    /// Textura dedicada de la lista del picker (`Reader::bitmap`, versión
+    /// `picker_bmp_ver`).
+    pub(crate) fn picker_tex(&mut self, ver: u64, b: &Bitmap) -> u32 {
+        if let Some((v, tex)) = self.picker_plane
+            && v == ver
+        {
+            return tex;
+        }
+        let new = self.upload_texture(b, "picker");
+        if let Some((_, tex)) = self.picker_plane.replace((ver, new)) {
+            self.delete_texture(tex, "picker");
+        }
+        new
+    }
+    /// Libera las texturas de los planos de biblioteca y del picker (al
+    /// volver al visor — `present_viewer` — o al soltar la surface: su
+    /// contenido ya no se va a pintar y juntas pueden retener ~decenas de MB
+    /// fuera del LRU). Se re-suben con versión nueva al volver a entrar.
+    pub(crate) fn free_ui_planes(&mut self) {
+        if let Some((_, tex)) = self.lib_header_plane.take() {
+            self.delete_texture(tex, "lib_header");
+        }
+        if let Some((_, tex)) = self.lib_band_plane.take() {
+            self.delete_texture(tex, "lib_band");
+        }
+        if let Some((_, tex)) = self.picker_plane.take() {
+            self.delete_texture(tex, "picker");
+        }
+    }
+    /// Borra una textura standalone (overlay LRU, fade o plano) con contador
+    /// y log.
     fn delete_texture(&mut self, tex: u32, kind: &str) {
         unsafe {
             gl::glDeleteTextures(1, &tex);

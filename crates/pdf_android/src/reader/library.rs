@@ -51,12 +51,11 @@ impl Reader {
     /// EMPTY STATE ("Tu biblioteca está vacía" + botón "Añadir PDF").
     pub(crate) fn enter_library(&mut self, app: &AndroidApp) {
         self.mode = UiMode::Library;
-        // EGL: la surface del visor hace fallar `ANativeWindow_lock` de la
-        // biblioteca; soltarla aquí (el contexto y los FBOs se recrean al
-        // volver al visor; ver defensa en `blit`).
-        if let Some(g) = self.gpu.as_mut() {
-            g.drop_surface();
-        }
+        // EGL (Tarea 2.7, productor único): la surface del visor NO se
+        // suelta al entrar en la biblioteca — la biblioteca presenta por el
+        // MISMO EGL (planos cacheados como texturas + swap). Soltar aquí la
+        // surface era la causa raíz del EGL_BAD_ALLOC 0x3003 en cada vuelta
+        // Library→Viewer (la ventana no admite alternar productor CPU/GPU).
         self.list_scroll = 0;
         self.library.lib_search_open = false;
         self.list_dirty = true;
@@ -92,11 +91,8 @@ impl Reader {
     #[allow(dead_code)]
     pub(crate) fn open_picker(&mut self, app: &AndroidApp) {
         self.mode = UiMode::Picker;
-        // EGL: igual que en `enter_library` (el picker también blitea por
-        // `ANativeWindow_lock`).
-        if let Some(g) = self.gpu.as_mut() {
-            g.drop_surface();
-        }
+        // EGL (Tarea 2.7): igual que en `enter_library` — el picker también
+        // presenta por EGL (sin soltar la surface).
         self.pdf_list = scan_pdfs(app);
         self.list_scroll = 0;
         self.status = None;

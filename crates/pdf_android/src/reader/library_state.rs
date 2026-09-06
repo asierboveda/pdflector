@@ -84,6 +84,11 @@ pub(crate) struct LibraryState {
     /// (el blit copia la zona fija + la banda de contenido, ver `lib_band`).
     /// Es el análogo del frame compuesto del visor para la biblioteca.
     pub(crate) lib_header: Option<Bitmap>,
+    /// Generación del bitmap `lib_header` (bump en cada re-render o mutación
+    /// in-place): clave de la textura GPU dedicada del plano de cabecera.
+    /// El present GPU solo re-sube la textura cuando esta versión cambia
+    /// (Tarea 2.7: la subida por frame de ~12 MB sería lenta).
+    pub(crate) lib_header_ver: u64,
     /// Bitmap CACHEADO del contenido scrolleable de la biblioteca (Continue
     /// Reading + My Library + rejilla o empty state): una BANDA de alto =
     /// viewport de contenido + margen de prefetch (1 celda arriba/abajo),
@@ -95,6 +100,10 @@ pub(crate) struct LibraryState {
     /// re-renderiza cuando el scroll sale de su rango o cambia el contenido
     /// (datos, filtros, sort, search, thumbs nuevos, ventana).
     pub(crate) lib_band: Option<(Bitmap, i32)>,
+    /// Generación del bitmap `lib_band` (bump en cada re-render o mutación
+    /// in-place — portadas nuevas pegadas sobre la banda): clave de la
+    /// textura GPU dedicada de la banda (Tarea 2.7).
+    pub(crate) lib_band_ver: u64,
     /// Zona cuya fila HORIZONTAL necesita re-render (1 = carousel de Continue
     /// Reading, 2 = chips de letras, 3 = chips de carpetas, 4 = chips de
     /// SORT, 5 = chips de FILTER): el input la fija al arrastrar una fila en
@@ -138,7 +147,9 @@ impl LibraryState {
             lib_books: persist::load_progress(internal_dir),
             lib_filtered: Vec::new(),
             lib_header: None,
+            lib_header_ver: 0,
             lib_band: None,
+            lib_band_ver: 0,
             lib_row_dirty: None,
             lib_fade: None,
             lib_fade_id: 0,

@@ -23,10 +23,13 @@ use super::shaders::{
 use super::textures::OverlayTex;
 use super::{DryKey, OVL_BYTE_BUDGET, OvlBudget};
 
-/// Contexto EGL + recursos GLES2 del visor. La surface se destruye y recrea
-/// con la ventana (resize/TerminateWindow, o al pasar a modos SW); el display
-/// y el contexto sobreviven entre surfaces. `Drop` desconecta en orden
-/// inverso (patrón del spike, validado en TCL).
+/// Contexto EGL + recursos GLES2 del visor, la biblioteca y el picker. La
+/// surface se destruye y recrea SOLO con la ventana (resize/InitWindow/
+/// TerminateWindow); desde la Tarea 2.7 vive TODA la vida de la ventana y ya
+/// NO se suelta al entrar en Library/Picker (productor único: esos modos
+/// presentan por el mismo EGL — el lock CPU quedó solo como fallback sin
+/// EGL). El display y el contexto sobreviven entre surfaces. `Drop`
+/// desconecta en orden inverso (patrón del spike, validado en TCL).
 pub(crate) struct Gpu {
     pub(crate) dpy: gl::EGLDisplay,
     pub(crate) ctx: gl::EGLContext,
@@ -58,6 +61,19 @@ pub(crate) struct Gpu {
     /// terminar el fade, al empezar otro o al soltar la surface
     /// (`drop_surface_only` — salir del visor a mitad de fade, Tarea 2.6).
     pub(crate) fade_tex: Option<(u64, u32)>,
+    // --- Texturas dedicadas de los planos de la BIBLIOTECA y del PICKER
+    // (Tarea 2.7: productor único EGL). Igual que `fade_tex`, son grandes
+    // (cabecera o banda de contenido ~ hasta ventana completa; la banda con
+    // margen de prefetch) y viven FUERA del presupuesto LRU de overlays
+    // (`OVL_BYTE_BUDGET`). Cada una guarda la versión del bitmap que se subió
+    // (bumps del Reader: rebuild estructural, re-band, splice, portadas
+    // nuevas, re-render del picker): el present las re-sube SOLO cuando esa
+    // versión cambia (una subida por frame de ~12 MB sería lenta). Se
+    // liberan al volver al visor (`present_viewer` → `free_ui_planes`) y al
+    // soltar la surface (`drop_surface_only`).
+    pub(crate) lib_header_plane: Option<(u64, u32)>,
+    pub(crate) lib_band_plane: Option<(u64, u32)>,
+    pub(crate) picker_plane: Option<(u64, u32)>,
 
     // --- Contadores del ciclo de vida EGL/GLES (Tarea 2.6) ---
     // Acumuladores create/destroy por tipo de recurso, logueados en cada
@@ -96,9 +112,12 @@ pub(crate) struct Gpu {
 }
 
 // Logs de transición + contadores acumulados (campos `surf_*/fbo_*/tex_*`).
-// Cada `drop_surface_only` cierra con `log_lifecycle`. Lectura tras N
-// ciclos Library→Viewer: surf y fbo a delta 0 (create==destroy), tex a
-// delta == ovl_live (el LRU de overlays es vivo por diseño y acotado por
+// Cada `drop_surface_only` cierra con `log_lifecycle`. Desde la Tarea 2.7 la
+// surface ya NO se suelta en las transiciones Library→Viewer (productor
+// único EGL), así que los drop/create solo ocurren con ventanas NUEVAS:
+// tras N ciclos Library→Viewer los contadores deben quedar INALTERADOS
+// (delta 0 por ciclo, sin recrear nada). tex a delta == ovl_live en cada
+// drop (el LRU de overlays es vivo por diseño y acotado por
 // `OVL_BYTE_BUDGET`). Un delta que crezca con los ciclos = leak.
 
 impl Gpu {
@@ -283,6 +302,9 @@ impl Gpu {
                 ovl_cache: Vec::new(),
                 ovl_budget: OvlBudget::new(OVL_BYTE_BUDGET),
                 fade_tex: None,
+                lib_header_plane: None,
+                lib_band_plane: None,
+                picker_plane: None,
                 dry_fbo: 0,
                 dry_tex: 0,
                 dry_dirty: true,
@@ -305,21 +327,27 @@ impl Gpu {
             })
         }
     }
-    /// (Re)crea la surface para una ventana (resize / re-init del visor).
+    /// (Re)crea la surface para una ventana NUEVA (resize / re-init; cada
+    /// `ANativeWindow` nuevo invalida la surface EGL previa, ligada a la
+    /// ventana anterior). Desde la Tarea 2.7 ya NO se llama en las
+    /// transiciones Library→Viewer: la surface vive toda la vida de la
+    /// ventana (productor único EGL).
     pub(crate) fn recreate_surface(&mut self, win: &NativeWindow) {
         unsafe {
-            // La ventana puede venir de blits SW (Library/Picker): re-forzar
-            // la geometría RGBA8888 como en `set_window`, o el create falla
-            // con EGL_BAD_ALLOC (0x3003).
+            // Re-forzar la geometría RGBA8888 como en `set_window` (si la
+            // ventana se usó con un lock CPU del fallback sin EGL, el create
+            // puede fallar con EGL_BAD_ALLOC (0x3003) si el formato quedó
+            // distinto; forzarlo es la defensa documentada).
             if let Err(e) =
                 win.set_buffers_geometry(0, 0, Some(HardwareBufferFormat::R8G8B8A8_UNORM))
             {
                 warn!("set_buffers_geometry (recreate): {e}");
             }
             // Destrucción PREVIA idempotente (Tarea 2.6): suelta la surface y
-            // los FBOs dry/wet si existe versión previa — y la textura del
-            // fade si quedó viva — ANTES de crear nada nuevo. Ninguna
-            // creación llega aquí con un recurso del mismo tipo sin liberar.
+            // los FBOs dry/wet si existe versión previa — y las texturas
+            // grandes (fade + planos de biblioteca/picker) si quedaron vivas
+            // — ANTES de crear nada nuevo. Ninguna creación llega aquí con un
+            // recurso del mismo tipo sin liberar.
             self.drop_surface_only();
             let surf = gl::eglCreateWindowSurface(
                 self.dpy,
@@ -412,6 +440,11 @@ impl Gpu {
             // revisión 2.4). Al volver a abrir un libro el fade se re-subirá
             // con id de snapshot nuevo.
             self.free_fade_tex();
+
+            // Planos de la biblioteca/picker (texturas grandes, fuera del
+            // LRU): la ventana desaparece, su contenido no volverá a
+            // pintarse — liberarlas aquí (Tarea 2.7).
+            self.free_ui_planes();
 
             if let Some(s) = self.surf.take() {
                 let unbind = gl::eglMakeCurrent(

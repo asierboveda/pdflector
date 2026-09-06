@@ -147,6 +147,9 @@ impl Reader {
                 // por celda): sin re-render del canvas (antes un rebuild
                 // completo de la pantalla por cada lote de portadas).
                 paste_lib_thumbs(self, &mut band, origin);
+                // Banda mutada in-place: nueva generación de su plano (la
+                // textura GPU dedicada se re-subirá — Tarea 2.7).
+                self.library.lib_band_ver += 1;
                 self.library.lib_band = Some((band, origin));
                 self.splice_band_rows();
                 self.redraw();

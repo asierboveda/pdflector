@@ -201,6 +201,9 @@ impl Reader {
                     && let Some(bmp) = render_picker_list(self)
                 {
                     self.bitmap = Some(bmp);
+                    // Generación nueva del bitmap de la lista: la textura GPU
+                    // dedicada se re-subirá en el present (Tarea 2.7).
+                    self.picker_bmp_ver += 1;
                     self.offset_x = 0;
                     self.offset_y = 0;
                     self.list_dirty = false;
@@ -268,6 +271,9 @@ impl Reader {
         // 1) Zona fija (cabecera editorial + campo de búsqueda + panel +
         //    franja de estado).
         self.library.lib_header = render_library_header(self);
+        // Generación nueva del plano de cabecera: la textura GPU dedicada se
+        // re-subirá en el próximo present (Tarea 2.7; ver `lib_header_ver`).
+        self.library.lib_header_ver += 1;
         // 2) Banda de contenido en la posición actual del scroll.
         self.rebuild_library_band();
         // 3) Filas horizontales dentro de sus contenedores (carousel,
@@ -301,6 +307,10 @@ impl Reader {
             let mut band = bmp;
             paste_lib_thumbs(self, &mut band, band_origin);
             self.library.lib_band = Some((band, band_origin));
+            // Generación nueva de la banda: la textura GPU dedicada se
+            // re-subirá en el próximo present (Tarea 2.7; ver
+            // `lib_band_ver`).
+            self.library.lib_band_ver += 1;
             self.splice_band_rows();
         } else {
             self.library.lib_band = None;
@@ -346,6 +356,9 @@ impl Reader {
                 };
                 if let (Some(row), Some(h)) = (row, self.library.lib_header.as_mut()) {
                     splice_row(h, &row, -x, y as i32);
+                    // Cabecera mutada in-place: nueva generación de su plano
+                    // (Tarea 2.7 — la textura GPU se re-subirá).
+                    self.library.lib_header_ver += 1;
                 }
             }
             // Zonas 1 (carousel), 4 y 5 (sort/filter) ya no existen en la
@@ -374,11 +387,19 @@ impl Reader {
         let cy0 = lib_search_chips_y0(self) as i32;
         let cy1 = lib_search_chips_y1(self) as i32;
         if let Some(header) = self.library.lib_header.as_mut() {
+            let mut spliced = false;
             if let Some(row) = letters_row {
                 splice_row(header, &row, -lx, cy0);
+                spliced = true;
             }
             if let Some(row) = folders_row {
                 splice_row(header, &row, -fx, cy1);
+                spliced = true;
+            }
+            if spliced {
+                // Cabecera mutada in-place: nueva generación de su plano
+                // (Tarea 2.7 — la textura GPU se re-subirá).
+                self.library.lib_header_ver += 1;
             }
         }
         self.splice_band_rows();
@@ -506,27 +527,24 @@ impl Reader {
         }
     }
 
-    /// Blitea el frame actual al buffer del ANativeWindow con UN solo
-    /// lock+present.
+    /// Presenta el frame actual según el modo y el motor disponible.
     ///
-    /// - Visor (modo UNA HOJA): `draw::blit_page` dibuja el fondo y SOLO la
-    ///   página actual (centrado cover + pan de anclaje del pinch; nunca otra
-    ///   hoja), recortando a la ventana; los overlays (indicador de página +
-    ///   sheet de ajustes) van después en el mismo buffer. Zoom RELATIVO
-    ///   `zoom / rendered_zoom`: 1:1 nítido para bitmaps recién renderizados
-    ///   y escala vecino-más-cercana durante el pinch (sin re-render). Con el
-    ///   sheet visible solo se copia el overlay del sheet sobre el frame GPU:
-    ///   el frame se compone una vez y cada frame de la animación copia ese
-    ///   bitmap (`draw::blit_composed`) + el overlay del sheet — la PÁGINA
-    ///   NO se re-blitea en cada paso de la animación (el fix del lag del
-    ///   sheet; ver `draw::compose_frame`).
-    /// - Picker/Biblioteca: `zoom::blit_fast` con el bitmap de la lista.
+    /// - Visor (modo UNA HOJA): present GPU por EGL (`present_viewer`):
+    ///   página como textura (subida SOLO al cambiar página/re-render),
+    ///   tinta como geometría y overlays como quads por frame; swap por
+    ///   `eglSwapBuffers`.
+    /// - Picker/Biblioteca: por GPU (productor único, Tarea 2.7) los planos
+    ///   cacheados (`lib_header`/`lib_band`; bitmap de la lista) se dibujan
+    ///   como texturas dedicadas (re-subidas solo cuando cambian) + swap.
+    ///   SIN EGL (`gpu` None o surface sin crear) degradan al camino SW
+    ///   histórico con `ANativeWindow_lock` (`blit_library`/`blit_fast`) —
+    ///   el lock CPU NUNCA convive con una surface EGL activa.
     ///
     /// Aquí se decide SOLO el estado que depende del `Reader`: fondo rojo sin
-    /// documento, modo oscuro (inversión al blitear) y overlays del visor.
-    /// Blit del frame actual al ANativeWindow (lock+copy+unlock_and_post).
-    /// Con el boli activo usa dirty rect + coalescing por vsync (el bucle
-    /// principal lo llama una vez por iteración tras `take_repaint`).
+    /// documento y materialización de los bitmaps de overlay (toast, badge,
+    /// cursor de goma) que faltan. Con el boli activo usa dirty rect +
+    /// coalescing por vsync (el bucle principal lo llama una vez por
+    /// iteración tras `take_repaint`).
     pub(crate) fn blit(&mut self) {
         let Some(window) = self.window.as_ref() else {
             return;
@@ -538,16 +556,16 @@ impl Reader {
         } else {
             p.rgba_bg()
         };
-        // EGL ↔ ANativeWindow: excluyentes. Al salir del visor la surface
-        // se suelta (ver `enter_library`) para que el lock SW funcione.
-        // NOTA (2026-09-04, TCL): recrear EGL tras uso CPU falla con
-        // EGL_BAD_ALLOC (la ventana no re-acepta EGL; ver `recreate_surface`
-        // y el retorno de `open_pdf_at`, una vez por transición).
-        if self.mode != UiMode::Viewer
-            && let Some(g) = self.gpu.as_mut()
-        {
-            g.drop_surface();
-        }
+        // ¿Hay surface EGL usable? Con EGL, TODOS los modos presentan por GL
+        // (productor único, Tarea 2.7): la surface ya NO se suelta al entrar
+        // en Library/Picker — una ANativeWindow admite UN solo productor de
+        // BufferQueue, y alternar el lock CPU de los blits SW con la surface
+        // EGL agotaba el slot (eglCreateWindowSurface → EGL_BAD_ALLOC 0x3003
+        // en cada vuelta Library→Viewer, TCL 2026-09-04). El camino SW con
+        // `ANativeWindow_lock` queda SOLO como fallback sin EGL (gpu None o
+        // surface sin crear en esta ventana).
+        let egl_ok = self.gpu.as_ref().is_some_and(|g| g.has_surface());
+        let mut sw_blit = false;
         match self.mode {
             UiMode::Viewer => {
                 // FASE 2 (ADR-006): presentación por GPU (EGL/GLES2). La
@@ -557,11 +575,11 @@ impl Reader {
                 // generados y el present es `eglSwapBuffers` (spike 1: p50
                 // 0.17 ms). Sin dirty rect CPU: frame completo por vsync.
                 //
-                // Materialización de overlays (misma que el blit SW): los
-                // bitmaps se generan aquí si faltan y `present_viewer` los
-                // sube como texturas cacheadas por id de generación (Tarea
-                // 2.4: nunca por puntero — ABA cuando el allocator reusa la
-                // dirección de un bitmap ya liberado).
+                // Materialización de overlays: los bitmaps se generan aquí si
+                // faltan y `present_viewer` los sube como texturas cacheadas
+                // por id de generación (Tarea 2.4: nunca por puntero — ABA
+                // cuando el allocator reusa la dirección de un bitmap ya
+                // liberado).
                 if self.toast.is_some() && self.toast_bitmap.is_none() {
                     self.toast_bitmap = render_toast(self);
                     // Id nuevo inline: `window` (borrow de `self.window`) vive
@@ -591,73 +609,105 @@ impl Reader {
             }
             UiMode::Library => {
                 // Zona fija (`lib_header`) + banda de contenido (`lib_band`)
-                // CACHEADAS: el frame por scroll es memcpy de los dos
-                // rectángulos (misma idea que compose_frame/blit_composed
-                // del visor), NO un re-render Canvas+JNI por frame. El
-                // scroll solo cambia de dónde se copia la banda (`.1` =
-                // contenido-y de su borde superior).
+                // CACHEADAS: el present por frame usa los planos ya
+                // renderizados (Canvas+JNI UNA vez por cambio estructural o
+                // re-band; el scroll solo reposiciona la banda), NO un
+                // re-render por frame.
                 let content_y0 = lib_content_y0(
                     self.win_h,
                     self.library.lib_search_open,
                     self.status.is_some(),
                 );
-                let header = self.library.lib_header.as_ref();
-                let band = self.library.lib_band.as_ref().map(|(b, o)| (b, *o));
-                // Aviso breve (toast) integrado en el MISMO lock+present
-                // que la biblioteca (antes: un segundo present por frame
-                // durante ~1,5 s — innecesario).
+                // Aviso breve (toast) integrado en el MISMO present que la
+                // biblioteca (antes: un segundo present por frame durante
+                // ~1,5 s — innecesario). Materialización común a los dos
+                // caminos (GPU y SW).
                 if self.toast.is_some() && self.toast_bitmap.is_none() {
                     self.toast_bitmap = render_toast(self);
-                    // Id nuevo inline (mismo motivo que el blit del visor:
-                    // `window` prestado hasta `blit_library`).
+                    // Id nuevo inline: `window` (borrow de `self.window`)
+                    // vive hasta el blit de abajo.
                     self.ovl_seq += 1;
                     self.toast_id = self.ovl_seq;
                 }
-                let toast_ov: Option<(&Bitmap, i32, i32)> = self.toast_bitmap.as_ref().map(|tb| {
-                    let tx = (self.win_w - tb.width as i32) / 2;
-                    let ty = self.win_h - tb.height as i32 - 16;
-                    (tb, tx, ty)
-                });
-                blit_library(
-                    window,
-                    p.rgba_lib_bg(),
-                    header,
-                    band,
-                    self.library.lib_scroll as i32,
-                    content_y0,
-                    toast_ov,
-                );
-            }
-            UiMode::Picker => match self.bitmap.as_ref() {
-                Some(bmp) => blit_fast(window, bmp, 1.0, bg, (self.offset_x, self.offset_y), None),
-                None => {
-                    // Sin lista: solo el fondo (guard hace unlock_and_post al caer).
-                    let Ok(mut guard) = window.lock(None) else {
-                        warn!("ANativeWindow_lock failed");
-                        return;
-                    };
-                    let bpp = match guard.format().bytes_per_pixel() {
-                        Some(b) => b,
-                        None => {
-                            warn!(
-                                "buffer format without bytes_per_pixel: {:?}",
-                                guard.format()
-                            );
-                            return;
-                        }
-                    };
-                    let dst_w = guard.width();
-                    let dst_h = guard.height();
-                    let dst_stride = guard.stride(); // en píxeles
-                    let dst = guard.bits() as *mut u8;
-                    crate::draw::fill_buffer(dst, dst_w, dst_h, dst_stride, bpp, bg);
+                if egl_ok {
+                    if let Some(mut g) = self.gpu.take() {
+                        g.present_library(self, content_y0);
+                        self.gpu = Some(g);
+                    }
+                } else {
+                    // Fallback SW (sin EGL): composición al buffer de la
+                    // ventana con un solo lock+present.
+                    sw_blit = true;
+                    let header = self.library.lib_header.as_ref();
+                    let band = self.library.lib_band.as_ref().map(|(b, o)| (b, *o));
+                    let toast_ov: Option<(&Bitmap, i32, i32)> =
+                        self.toast_bitmap.as_ref().map(|tb| {
+                            let tx = (self.win_w - tb.width as i32) / 2;
+                            let ty = self.win_h - tb.height as i32 - 16;
+                            (tb, tx, ty)
+                        });
+                    blit_library(
+                        window,
+                        p.rgba_lib_bg(),
+                        header,
+                        band,
+                        self.library.lib_scroll as i32,
+                        content_y0,
+                        toast_ov,
+                    );
                 }
-            },
+            }
+            UiMode::Picker => {
+                if egl_ok {
+                    // Ídem: la lista del picker como textura dedicada + swap.
+                    if let Some(mut g) = self.gpu.take() {
+                        g.present_picker(self);
+                        self.gpu = Some(g);
+                    }
+                } else {
+                    // Fallback SW (sin EGL).
+                    sw_blit = true;
+                    match self.bitmap.as_ref() {
+                        Some(bmp) => blit_fast(
+                            window,
+                            bmp,
+                            1.0,
+                            bg,
+                            (self.offset_x, self.offset_y),
+                            None,
+                        ),
+                        None => {
+                            // Sin lista: solo el fondo (guard hace
+                            // unlock_and_post al caer).
+                            let Ok(mut guard) = window.lock(None) else {
+                                warn!("ANativeWindow_lock failed");
+                                return;
+                            };
+                            let bpp = match guard.format().bytes_per_pixel() {
+                                Some(b) => b,
+                                None => {
+                                    warn!(
+                                        "buffer format without bytes_per_pixel: {:?}",
+                                        guard.format()
+                                    );
+                                    return;
+                                }
+                            };
+                            let dst_w = guard.width();
+                            let dst_h = guard.height();
+                            let dst_stride = guard.stride(); // en píxeles
+                            let dst = guard.bits() as *mut u8;
+                            crate::draw::fill_buffer(dst, dst_w, dst_h, dst_stride, bpp, bg);
+                        }
+                    }
+                }
+            }
         }
-        // Log solo en las rutas SW (Library/Picker): el visor GPU tiene su
-        // propio `gl_present` (comparable con el spike). El probe de tinta
-        // mantiene el nombre de evento para comparar con la Fase 1.
-        if self.mode != UiMode::Viewer {
+        // Log SOLO del camino SW (Library/Picker): los presents GPU loguean
+        // su propio tiempo (gl_present / blit ... swap) — comparable con la
+        // Fase 1 y con el camino SW. El probe de tinta mantiene el nombre de
+        // evento para comparar con la Fase 1.
+        if sw_blit {
             info!(
                 "blit {}x{}: {:.2} ms (lock+copy+unlock_and_post)",
                 self.win_w,
