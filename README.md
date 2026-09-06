@@ -37,6 +37,19 @@ No external library is needed: the binary builds with **MuPDF** (static C
 shipped by `mupdf-sys`, AGPL-3.0 — decided in ADR-001). The old PDFium
 fetch script is no longer used.
 
+## Android (tablet TCL 9469X)
+
+```bash
+export ANDROID_NDK_HOME=$HOME/Android/Sdk/ndk/android-ndk-r28
+export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+cargo check -p pdf_android --target aarch64-linux-android   # verificación rápida
+cargo apk build -p pdf_android --release --target aarch64-linux-android  # APK
+```
+
+Ver también: `docs/README.md` (índice de docs), `docs/adr/` (decisiones),
+`docs/benchmark-results.md` (mediciones), `.opencode/skills/` (procedimientos).
+
 ## License
 
 **AGPL-3.0-or-later** — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
