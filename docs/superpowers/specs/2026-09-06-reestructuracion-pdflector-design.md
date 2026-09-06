@@ -130,10 +130,10 @@ Actualización de gobernanza: AGENTS.md tabla de validación refleja el nuevo ca
 ### 4.1 Diseño (2 capas)
 
 **Capa 1 — extracción mecánica de seams** (movimiento puro, sin tocar el struct `Reader`), usando los rangos por responsabilidad del scout EstructuraAndroid-2 (líneas contra `main`):
-- `draw/` → `primitives.rs` (blits 35-107, copy_region 153), `tinta.rs` (272-437), `chrome.rs` (980-1272), `sheet.rs` (1273-1554), `menus.rs` (1555-2763), `library.rs` (2764-3545), `overlays.rs` (4487-4899).
-- `gpu/` → `ffi.rs` (34-237), `shaders.rs` (267-378), `surface.rs` (444-946), `textures.rs` (947-1240), `pipeline.rs` (dry 1421-1575, wet 1576-1739, present 1740-1823).
-- `input/` → `gestos.rs` (87-183), `motion.rs` (454-1350), `stylus.rs` (1624-1701), `dispatch.rs` (1537-1623).
-- `reader/` → bloques `impl Reader`: `geometry.rs` (308-480), `life.rs` (1536-1830), `redraw.rs` (1833-2640), `seleccion.rs` (2495-2640), `sheet.rs` (3172-3474), `tick.rs` (3475-3600), `anotaciones.rs` (3980-4428), `tools.rs` (4457-4565), `navigation.rs` (4980-5235), `library.rs` (5315-5568).
+- `draw/` → `primitives.rs` (blits 35-107, copy_region 153), `tinta.rs` (272-437), `chrome.rs` (980-1272), `sheet.rs` (1273-1554), `menus.rs` (picker+vista 1555-2348 + ajustes 2375-2763), `library.rs` (2764-3545), `overlays.rs` (sel+toast+IA 4487-4899).
+- `gpu/` → `ffi.rs` (34-237), `shaders.rs` (267-378), `surface.rs` (struct+superficies+EGL 444-946), `textures.rs` (texturas+ovl_cache 947-1240), `pipeline.rs` (dry 1421-1575, wet 1576-1739, present 1740-1823). Rangos guía del scout, reagrupados por módulo objetivo.
+- `input/` → `gestos.rs` (gestos+taps 87-321), `motion.rs` (tick+motion+listas 367-1350), `dispatch.rs` (handle_input 1537-1623), `stylus.rs` (1624-1701).
+- `reader/` → bloques `impl Reader` con el mapeo verificado del scout: `geometry.rs` (308-480), `life.rs` (1536-1830), `redraw.rs` (1833-2480), `seleccion.rs` (2495-2640), `toast_ia.rs` (2805-3011), `sheet_chrome.rs` (3035-3171), `tick.rs` (3172-3474), `pinch.rs` (3475-3600), `anotaciones.rs` (3712-3900), `tools.rs` (tool+erase 3980-4428), `navigation.rs` (open 4457-4565), `library.rs` (picker+filtros 4784-5235 + añadir/IME 5315-5568). El plan de implementación re-verifica cada rango contra el código antes de mover (los límites son guía, no frontera exacta).
 
 **Capa 2 — extracción estructural `LibraryState`**: los ~30 campos `lib_*` del struct `Reader` (:1051-1443) salen a un struct `LibraryState` propio, poseído por `Reader` (`reader.library: LibraryState`), con sus métodos. `Reader` queda enfocado en el visor.
 
