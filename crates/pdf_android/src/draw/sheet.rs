@@ -4,28 +4,15 @@
 //! Sheet de ajustes del visor: geometría de botones (compartida con
 //! `input::sheet_tap`) y render del panel deslizante (Canvas+JNI).
 
-use pdf_core::{Bitmap, Document};
 use crate::reader::{
-    Reader,
-    sheet_act_y,
-    sheet_btn_h,
-    sheet_btn_w,
-    sheet_h,
-    sheet_nav_y,
-    sheet_pad,
-    sheet_theme_btn_w,
-    sheet_theme_y,
+    Reader, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad,
+    sheet_theme_btn_w, sheet_theme_y,
 };
 use crate::theme;
+use pdf_core::{Bitmap, Document};
 
 use super::{
-    ButtonRect,
-    CanvasRect,
-    CanvasText,
-    TextAlign,
-    draw_button,
-    draw_card_shadow,
-    jni_text_bitmap,
+    ButtonRect, CanvasRect, CanvasText, TextAlign, draw_button, draw_card_shadow, jni_text_bitmap,
 };
 
 /// Botones del sheet de ajustes del visor (S2, S3):

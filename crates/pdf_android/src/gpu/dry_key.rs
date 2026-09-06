@@ -29,7 +29,12 @@ mod tests {
     use super::*;
 
     fn base() -> DryKey {
-        DryKey { page: 3, zoom_bits: 0x3F800000, ann_count: 12, dark: false }
+        DryKey {
+            page: 3,
+            zoom_bits: 0x3F800000,
+            ann_count: 12,
+            dark: false,
+        }
     }
 
     #[test]
@@ -37,7 +42,10 @@ mod tests {
         let k = base();
         for other in [
             DryKey { page: 4, ..k },
-            DryKey { zoom_bits: 0x40000000, ..k },
+            DryKey {
+                zoom_bits: 0x40000000,
+                ..k
+            },
             DryKey { ann_count: 13, ..k },
             DryKey { dark: true, ..k },
         ] {

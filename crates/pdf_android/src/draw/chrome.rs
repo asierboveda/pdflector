@@ -5,23 +5,14 @@
 //! página, badge del modo del boli y cursor de la goma — bitmaps
 //! Canvas+JNI cacheados en `Reader` (geometría compartida con `input`).
 
-use pdf_core::{Bitmap, Document};
 use crate::reader::{
-    Reader,
-    page_badge_size,
-    truncate_name,
-    viewer_bottom_chrome_h,
-    viewer_top_chrome_h,
+    Reader, page_badge_size, truncate_name, viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 use crate::theme;
+use pdf_core::{Bitmap, Document};
 
 use super::{
-    CanvasRect,
-    CanvasText,
-    TextAlign,
-    draw_button,
-    draw_card_shadow,
-    draw_ink_segment_on_frame,
+    CanvasRect, CanvasText, TextAlign, draw_button, draw_card_shadow, draw_ink_segment_on_frame,
     jni_text_bitmap,
 };
 

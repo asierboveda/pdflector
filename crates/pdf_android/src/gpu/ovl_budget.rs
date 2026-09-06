@@ -25,7 +25,11 @@ pub(crate) struct OvlBudget {
 
 impl OvlBudget {
     pub(crate) fn new(budget: usize) -> Self {
-        Self { entries: Vec::new(), bytes: 0, budget }
+        Self {
+            entries: Vec::new(),
+            bytes: 0,
+            budget,
+        }
     }
 
     /// Registra una inserción de `bytes` para `id`; evicta del frente hasta caber.

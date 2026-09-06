@@ -8,9 +8,7 @@
 
 use pdf_core::Bitmap;
 
-use super::{
-    primitives::rgb565,
-};
+use super::primitives::rgb565;
 
 /// Pinta UN segmento de tinta (tramo incremental en vivo, patrón
 /// Xournal++/GoodNotes) directamente sobre un bitmap RGBA del tamaño de la

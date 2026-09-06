@@ -17,50 +17,50 @@
 //! Los paths `crate::draw::X` del código previo se conservan con los
 //! re-exports de abajo (consumidores: `reader`, `input`, `zoom`, `gpu`).
 
-use jni::{JavaVM, jni_sig, jni_str};
 use jni::objects::JValue;
-use log::{error};
+use jni::{JavaVM, jni_sig, jni_str};
+use log::error;
 use pdf_core::Bitmap;
 
-mod primitives;
-mod tinta;
 mod chrome;
-mod sheet;
-mod menus;
 mod library;
+mod menus;
 mod overlays;
-pub(crate) use primitives::fill_buffer;
-pub(crate) use primitives::copy_region;
-pub(crate) use tinta::draw_ink_segment_on_frame;
+mod primitives;
+mod sheet;
+mod tinta;
 pub(crate) use chrome::ButtonRect;
+pub(crate) use chrome::mode_badge_rect;
+pub(crate) use chrome::render_eraser_cursor;
+pub(crate) use chrome::render_mode_badge;
 pub(crate) use chrome::render_page_badge;
 pub(crate) use chrome::render_viewer_bottom_chrome;
 pub(crate) use chrome::render_viewer_top_chrome;
 pub(crate) use chrome::viewer_top_chrome_buttons;
-pub(crate) use chrome::mode_badge_rect;
-pub(crate) use chrome::render_mode_badge;
-pub(crate) use chrome::render_eraser_cursor;
-pub(crate) use sheet::sheet_buttons;
-pub(crate) use sheet::render_sheet;
+pub(crate) use library::blit_library;
+pub(crate) use library::paste_lib_thumbs;
+pub(crate) use library::render_library_header;
+pub(crate) use library::render_library_zone;
+pub(crate) use library::render_search_chip_row;
+pub(crate) use library::splice_row;
 pub(crate) use menus::SettingsMenuItem;
 pub(crate) use menus::ViewMenuItem;
+pub(crate) use menus::draw_settings_menu;
+pub(crate) use menus::draw_view_menu;
 pub(crate) use menus::render_picker_list;
 pub(crate) use menus::settings_menu_geometry;
 pub(crate) use menus::view_menu_geometry;
-pub(crate) use menus::draw_view_menu;
-pub(crate) use menus::draw_settings_menu;
-pub(crate) use library::render_library_header;
-pub(crate) use library::render_library_zone;
-pub(crate) use library::blit_library;
-pub(crate) use library::paste_lib_thumbs;
-pub(crate) use library::render_search_chip_row;
-pub(crate) use library::splice_row;
 pub(crate) use overlays::ai_panel_layout;
 pub(crate) use overlays::compose_library_snapshot;
 pub(crate) use overlays::render_ai_panel;
 pub(crate) use overlays::render_sel_menu;
 pub(crate) use overlays::render_toast;
 pub(crate) use overlays::sel_menu_layout;
+pub(crate) use primitives::copy_region;
+pub(crate) use primitives::fill_buffer;
+pub(crate) use sheet::render_sheet;
+pub(crate) use sheet::sheet_buttons;
+pub(crate) use tinta::draw_ink_segment_on_frame;
 /// Dibuja rectángulos y textos (fuente del sistema, antialiasing) con
 /// `android.graphics.Canvas` vía JNI y devuelve el resultado como `Bitmap`
 /// RGBA8. Orden de dibujo: fondo → rects → textos.
