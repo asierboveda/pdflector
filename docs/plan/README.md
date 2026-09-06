@@ -1,9 +1,13 @@
 # Plan — PDFLector
 
+> Índice maestro de docs: ver `docs/README.md`.
 > **Plan vigente:** `NEXT-PLAN.md` (A-E, visor ultra-óptimo, aprobado 2026-08-24). Los ficheros `01-06` son histórico del plan waterfall obsoleto.
 > **Fuente de verdad:** `NEXT-PLAN.md` + `A/B/C/D/E-*.md`. Edita esos ficheros para cambiar el objetivo.
 
 ## Vigente (editable ahora)
+
+Un Issue de GitHub = una tarea con criterio de aceptación medible: al editar un
+fichero de fase cambias su criterio y el Issue se sincroniza después (NEXT-PLAN:28).
 
 | Fase | Fichero | Issue | Objetivo |
 |------|---------|-------|----------|
