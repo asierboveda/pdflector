@@ -1406,8 +1406,11 @@ impl Gpu {
         }
     }
 
-    /// Renderiza la capa base persistente (Dry FBO).
-    /// Se invoca ÚNICAMENTE cuando cambia la página, zoom, pan, anotaciones o UI.
+    /// Renderiza la capa base persistente (Dry FBO): página + anotaciones SOLO.
+    /// Se invoca ÚNICAMENTE cuando cambia la página, el zoom, las anotaciones o
+    /// el dark (campos reales de la `DryKey` reducida). Los overlays de UI
+    /// (chrome, sheet, toast, sel_menu, ai_panel, lib_fade, badges) NO viven
+    /// aquí: se dibujan por frame en `present_viewer` directos a fb0 (Fase 2).
     fn render_dry(&mut self, reader: &Reader) {
         if self.dry_fbo == 0 || self.dry_tex == 0 {
             return;
@@ -1534,29 +1537,7 @@ impl Gpu {
                 }
             }
 
-            // 3. Overlays de UI (badges, chrome, menús, toast)
-            let mut ovl = OverlayList::new();
-            OverlayList::collect_viewer(reader, &mut ovl);
-            for (b, x, y) in ovl.items {
-                self.draw_bitmap(b, x, y, 1.0);
-            }
-
-            if reader.sheet_progress > 0.0
-                && let Some(s) = reader.sheet_bitmap.as_ref()
-            {
-                let slide = (crate::reader::sheet_h(reader.win_h) as f32
-                    * (1.0 - reader.sheet_progress))
-                    .round() as i32;
-                self.draw_bitmap(s, 0, -slide, 1.0);
-            }
-
-            if let Some((started, snap)) = &reader.lib_fade {
-                let t = started.elapsed().as_secs_f32();
-                let alpha = (1.0 - t / crate::LIB_FADE_MS).clamp(0.0, 1.0);
-                if alpha > 0.0 {
-                    self.draw_bitmap(snap, 0, 0, alpha);
-                }
-            }
+            // 3. (Sin overlays: la UI se dibuja por frame en present_viewer.)
 
             gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
         }
@@ -1765,6 +1746,33 @@ impl Gpu {
             // Componer encima la capa Wet transparente con premultiplied alpha
             if has_wet {
                 self.draw_fullscreen_texture(self.wet_tex, 1.0);
+            }
+        }
+
+        // 3b. Overlays de UI directamente a fb0 (por frame): chrome, sheet,
+        // toast, sel_menu, ai_panel, lib_fade, badges. Nunca invalidan la dry
+        // (Fase 2): la dry cachea página + anotaciones, esto es UI viva.
+        let mut ovl = OverlayList::new();
+        OverlayList::collect_viewer(reader, &mut ovl);
+        for (b, x, y) in ovl.items {
+            // El pan NO se aplica a los overlays: son UI fija en coords de pantalla.
+            self.draw_bitmap(b, x, y, 1.0);
+        }
+
+        if reader.sheet_progress > 0.0
+            && let Some(s) = reader.sheet_bitmap.as_ref()
+        {
+            let slide = (crate::reader::sheet_h(reader.win_h) as f32
+                * (1.0 - reader.sheet_progress))
+                .round() as i32;
+            self.draw_bitmap(s, 0, -slide, 1.0);
+        }
+
+        if let Some((started, snap)) = &reader.lib_fade {
+            let t = started.elapsed().as_secs_f32();
+            let alpha = (1.0 - t / crate::LIB_FADE_MS).clamp(0.0, 1.0);
+            if alpha > 0.0 {
+                self.draw_bitmap(snap, 0, 0, alpha);
             }
         }
 
