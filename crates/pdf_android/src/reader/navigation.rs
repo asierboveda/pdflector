@@ -22,12 +22,21 @@ impl Reader {
     /// tap derecho/izquierdo. No hay salto con re-render: las páginas vecinas
     /// salen de la caché (paso instantáneo). Invalida los overlays cacheados
     /// (indicador, sheet, frame de la animación).
+    ///
+    /// Fase B (prefetch direccional): registra la dirección del turno
+    /// (`last_direction`, signo del delta) y, cuando la página nueva NO está
+    /// en caché, lanza la ventana asimétrica 2-delante/1-detrás de
+    /// `prefetch_pages` (solo misses) en lugar del ±1 simétrico histórico.
     fn goto_page(&mut self, page: u32) {
         let prev = self.page;
         if prev == page {
             return;
         }
         self.page = page;
+        // Dirección de viaje (fase B): signo del delta. next/prev/jump y los
+        // taps delegan todos aquí, así que el signo se calcula UNA vez en el
+        // punto común (el delta i64 evita el overflow de u32 sin signo).
+        self.last_direction = (page as i64 - prev as i64).signum() as i8;
         self.page_badge = None; // el indicador "N / total" cambia
         self.sheet_bitmap = None; // el indicador del sheet cambia
         info!("page {}", self.page + 1);
@@ -40,14 +49,11 @@ impl Reader {
         // (fallback) mientras el worker renderiza la nueva asíncronamente.
         if self.cache.peek(page).is_none() {
             self.fallback_page = Some(prev);
-            let pages = {
-                let n = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
-                let lo = page.saturating_sub(1);
-                let hi = (page + 1).min(n.saturating_sub(1));
-                (lo..=hi)
-                    .filter(|&p| self.cache.peek(p).is_none())
-                    .collect()
-            };
+            let pages = self
+                .prefetch_pages(page) // ventana direccional ordenada (fase B)
+                .into_iter()
+                .filter(|&p| self.cache.peek(p).is_none())
+                .collect::<Vec<u32>>();
             self.launch_render(pages, self.rendered_zoom, false);
         }
         // A1: la persistencia pasa a DIFERIDA (flush a los 2 s desde `tick`
@@ -57,6 +63,80 @@ impl Reader {
         if self.window.is_some() {
             self.blit();
         }
+    }
+
+    /// Páginas candidatas del prefetch alrededor de `page` (fase B), en ORDEN
+    /// de lanzamiento:
+    /// 1. la página por DETRÁS de la dirección de viaje (radio 1),
+    /// 2. la página ACTUAL (`page`),
+    /// 3. hacia DELANTE en la dirección de viaje, de la más cercana a la más
+    ///    lejana (radio 2).
+    ///
+    /// El orden no es el del ejemplo del brief (vecina delantera primero):
+    /// con la página de atrás como PRIMERA llegada, el LRU de la caché la
+    /// sacrifica antes que la actual cuando el lote completo (2+1+actual = 4
+    /// páginas ≈ 51 MiB a 12,7 MiB/página) excede los 48 MiB del presupuesto
+    /// — la inserción del 4º bitmap expulsa al más antiguo (frente LRU), que
+    /// es la de atrás, y la actual sobrevive al lote (nunca pantalla en
+    /// blanco tras un salto con lote completo). En el caso común (la de
+    /// atrás ya cacheada — el usuario viene de ella) la actual queda PRIMERA
+    /// del lote y minimiza la latencia del turno; las delanteras (siguientes
+    /// taps probables) entran justo después.
+    ///
+    /// Sin dirección (`last_direction == 0`: apertura, restore, salto
+    /// inicial) → ventana simétrica ±1 (comportamiento previo a la fase B).
+    /// Devuelve páginas clampadas al documento, sin duplicados y SIN filtrar
+    /// por caché (el llamador lanza solo los misses).
+    fn prefetch_pages(&self, page: u32) -> Vec<u32> {
+        let Some(doc) = self.doc.as_ref() else {
+            return Vec::new();
+        };
+        let n = doc.page_count();
+        if n == 0 {
+            return Vec::new();
+        }
+        let last = n - 1;
+        let mut pages = Vec::with_capacity(4);
+        // Añade `p` (los guards evitan el overflow de u32 y los duplicados
+        // al clampear: docs de 1 página o page == last).
+        let mut push = |p: u32| pages.push(p);
+        match self.last_direction {
+            1 => {
+                if page > 0 {
+                    push(page - 1); // detrás (radio 1) — víctima LRU natural
+                }
+                push(page); // actual: sustituye al fallback en un turno miss
+                if page < last {
+                    push(page + 1); // delante, cercana → lejana (radio 2)
+                }
+                if page + 1 < last {
+                    push(page + 2);
+                }
+            }
+            -1 => {
+                if page < last {
+                    push(page + 1); // detrás (radio 1) — víctima LRU natural
+                }
+                push(page); // actual
+                if page > 0 {
+                    push(page - 1); // delante, cercana → lejana (radio 2)
+                }
+                if page > 1 {
+                    push(page - 2);
+                }
+            }
+            _ => {
+                // Sin dirección: ventana simétrica ±1 (comportamiento previo).
+                if page > 0 {
+                    push(page - 1);
+                }
+                push(page);
+                if page < last {
+                    push(page + 1);
+                }
+            }
+        }
+        pages
     }
 
     pub(crate) fn next_page(&mut self) {
@@ -202,6 +282,9 @@ impl Reader {
                 };
                 self.doc = Some(doc);
                 self.page = page;
+                // Apertura/restore: NO es un turno de navegación — sin
+                // dirección de viaje previa → ventana ±1 simétrica (fase B).
+                self.last_direction = 0;
                 self.zoom = 1.0;
                 self.rendered_zoom = 1.0;
                 self.pan_x = 0.0;

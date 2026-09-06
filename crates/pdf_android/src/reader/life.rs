@@ -44,6 +44,7 @@ impl Reader {
         let mut reader = Self {
             doc: None,
             page: 0,
+            last_direction: 0, // sin viaje previo: ventana ±1 simétrica
             window: None,
             bitmap: None,
             picker_bmp_ver: 0,

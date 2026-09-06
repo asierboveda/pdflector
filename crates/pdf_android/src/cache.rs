@@ -20,15 +20,23 @@
 //!   queda en ~⅓ del presupuesto total (el resto es el .so, MuPDF y los
 //!   buffers de ventana).
 //! - **Tope de entradas**: 5 (`CACHE_MAX_ENTRIES`). Suficiente para "volver
-//!   atrás instantáneo" (2-3 páginas hacia atrás) y para el prefetch ±1
-//!   vecina del viewport, sin dejar crecer la cola LRU.
+//!   atrás instantáneo" (2-3 páginas hacia atrás) y para la ventana de
+//!   prefetch del paso de página (fase B: 2 por delante en la dirección de
+//!   viaje + 1 por detrás + la actual, direccional — ver `navigation.rs`),
+//!   sin dejar crecer la cola LRU.
 //! - **Evicción**: least-recently-used. `get` promueve la entrada (recencia
 //!   real, evita re-render en el render de cada frame); `insert` expulsa del
-//!   frente de la cola LRU hasta cumplir `byte_budget` y `max_entries`. Si una
-//!   única página supera todo el presupuesto (zoom alto: una página a 8× puede
-//!   pesar cientos de MiB) se expulsa TODO y entra sola — best-effort,
-//!   idéntico a `pdf_core::cache`, y el footprint coincide con el del
-//!   `bitmap` único que ya alojaba la app antes de la caché.
+//!   frente de la cola LRU hasta cumplir `byte_budget` y `max_entries`. Con
+//!   la página de la TCL a escala cover (1440×2200 RGBA8 ≈ 12,7 MiB) el lote
+//!   completo de la fase B (2+1+actual = 4 páginas ≈ 51 MiB) NO cabe en los
+//!   48 MiB: la inserción del 4º bitmap expulsa al más antiguo del lote — la
+//!   página de atrás, que `prefetch_pages` lanza la primera a propósito.
+//!   Comportamiento correcto por diseño: la decisión de subir el presupuesto
+//!   se toma con el PSS medido en la TCL, no a ciegas (ver informe fase B).
+//!   Si una única página supera todo el presupuesto (zoom alto: una página
+//!   a 8× puede pesar cientos de MiB) se expulsa TODO y entra sola —
+//!   best-effort, idéntico a `pdf_core::cache`, y el footprint coincide con
+//!   el del `bitmap` único que ya alojaba la app antes de la caché.
 //! - **Modo oscuro**: la caché guarda SIEMPRE bitmaps normales (de colores).
 //!   La inversión (255 − v) se aplica al blitear, por página, solo si el modo
 //!   oscuro está activo (ver `draw::blit_page`); nunca se almacena una

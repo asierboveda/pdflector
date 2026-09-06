@@ -455,6 +455,13 @@ pub(crate) struct Reader {
     /// sin columna de páginas). Alimenta el indicador "N / total", los saltos
     /// ±10 y la persistencia.
     pub(crate) page: u32,
+    /// Dirección de viaje del último cambio de página (fase B, prefetch
+    /// direccional): +1 avanzando, -1 retrocediendo, 0 sin dirección previa
+    /// (apertura del documento o restauración de posición — no hay viaje).
+    /// La fija `goto_page` — punto común de `next_page`/`prev_page`/
+    /// `jump_page` y de los taps — con el signo del delta; decide la ventana
+    /// asimétrica 2-delante/1-detrás de `prefetch_pages` (navigation.rs).
+    last_direction: i8,
     /// Referencia owned al ANativeWindow (Some entre InitWindow y TerminateWindow).
     window: Option<NativeWindow>,
     /// Bitmap de la LISTA del picker (render de pantalla completa con
