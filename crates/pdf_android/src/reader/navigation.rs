@@ -115,9 +115,14 @@ impl Reader {
         if self.mode == UiMode::Viewer && !path.is_empty() {
             let pages = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
             let now = crate::persist::unix_now();
-            self.lib_books =
-                crate::persist::touch_progress(&self.lib_books, &path, self.page, pages, now);
-            crate::persist::save_progress(self.internal_dir.as_deref(), &self.lib_books);
+            self.library.lib_books = crate::persist::touch_progress(
+                &self.library.lib_books,
+                &path,
+                self.page,
+                pages,
+                now,
+            );
+            crate::persist::save_progress(self.internal_dir.as_deref(), &self.library.lib_books);
         }
     }
 
@@ -165,12 +170,12 @@ impl Reader {
                     UiMode::Viewer => None,
                 };
                 if let Some(s) = snapshot {
-                    self.lib_fade = Some((Instant::now(), s));
-                    self.lib_fade_id = self.next_ovl_id(); // snapshot nuevo
+                    self.library.lib_fade = Some((Instant::now(), s));
+                    self.library.lib_fade_id = self.next_ovl_id(); // snapshot nuevo
                 }
-                self.lib_header = None; // biblioteca fuera: liberar planos
-                self.lib_band = None;
-                self.lib_row_dirty = None;
+                self.library.lib_header = None; // biblioteca fuera: liberar planos
+                self.library.lib_band = None;
+                self.library.lib_row_dirty = None;
                 self.cache.clear(); // otro documento: nada reutilizable
                 self.mode = UiMode::Viewer;
                 // EGL: venimos de Library/Picker sin surface (ver

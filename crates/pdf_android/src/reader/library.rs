@@ -62,12 +62,12 @@ impl Reader {
             g.drop_surface();
         }
         self.list_scroll = 0;
-        self.lib_search_open = false;
+        self.library.lib_search_open = false;
         self.list_dirty = true;
         self.bitmap = None; // lista del picker (no se usa en la biblioteca)
-        self.lib_header = None; // zona fija: se re-renderiza en el rebuild
-        self.lib_band = None; // banda de contenido: idem
-        self.lib_row_dirty = None;
+        self.library.lib_header = None; // zona fija: se re-renderiza en el rebuild
+        self.library.lib_band = None; // banda de contenido: idem
+        self.library.lib_row_dirty = None;
         // La caché de páginas del visor (48 MiB) no sirve en la biblioteca:
         // liberarla aquí evita RSS doble (páginas + zona fija + banda +
         // portadas) y se re-renderiza al volver a un PDF.
@@ -76,7 +76,7 @@ impl Reader {
         // biblioteca debe reflejar cualquier lectura hecha en otra sesión o
         // proceso (Continue Reading / barras de progreso / sort-filtros).
         self.recents = persist::load_recents(self.internal_dir.as_deref());
-        self.lib_books = persist::load_progress(self.internal_dir.as_deref());
+        self.library.lib_books = persist::load_progress(self.internal_dir.as_deref());
         self.sheet_hide_now(); // fuera del visor: el sheet no pinta en biblioteca
         self.clear_selection(); // selección del visor: fuera (no pinta en biblioteca)
         self.close_ai_panel(); // panel de IA del visor: fuera
@@ -118,9 +118,9 @@ impl Reader {
         self.mode = UiMode::Viewer;
         self.list_dirty = true;
         self.bitmap = None; // lista del picker (las páginas siguen en la caché)
-        self.lib_header = None; // biblioteca fuera: liberar planos cedeados
-        self.lib_band = None;
-        self.lib_row_dirty = None;
+        self.library.lib_header = None; // biblioteca fuera: liberar planos cedeados
+        self.library.lib_band = None;
+        self.library.lib_row_dirty = None;
         self.list_drag = None;
         self.redraw();
     }
@@ -136,12 +136,12 @@ impl Reader {
         self.picker_kind = PickerKind::Files; // el selector temporal queda fuera
         // Re-leer los registros persistidos: la biblioteca debe reflejar
         // cualquier alta/lectura hecha en otro punto del flujo.
-        self.lib_books = persist::load_progress(self.internal_dir.as_deref());
+        self.library.lib_books = persist::load_progress(self.internal_dir.as_deref());
         self.migrate_internal_pdfs();
         // Solo los registros cuyo fichero SIGUE existiendo: un registro
         // huérfano (borrado a mano o evictado) no pinta ninguna celda.
         let mut entries = Vec::new();
-        for b in &self.lib_books {
+        for b in &self.library.lib_books {
             let p = Path::new(&b.path);
             if !p.is_file() {
                 continue;
@@ -159,7 +159,7 @@ impl Reader {
         info!(
             "curated library: {} of {} records with file on disk",
             entries.len(),
-            self.lib_books.len()
+            self.library.lib_books.len()
         );
         self.library_list = entries;
         // La rejilla curada NO requiere permiso de almacenamiento (lee solo
@@ -170,25 +170,19 @@ impl Reader {
         // Datos nuevos: scroll al origen (vertical y horizontales) y lista
         // filtrada recalculada; el sort activo ordena por added/read.
         self.list_scroll = 0;
-        self.lib_scroll = 0.0;
-        self.lib_carousel_x = 0.0;
-        self.lib_folders_x = 0.0;
-        self.lib_letters_x = 0.0;
-        self.lib_sort_x = 0.0;
-        self.lib_filter_x = 0.0;
+        self.library.lib_scroll = 0.0;
+        self.library.lib_carousel_x = 0.0;
+        self.library.lib_folders_x = 0.0;
+        self.library.lib_letters_x = 0.0;
+        self.library.lib_sort_x = 0.0;
+        self.library.lib_filter_x = 0.0;
         self.refresh_lib_filtered();
         self.list_dirty = true;
         self.bitmap = None;
-        self.lib_header = None; // zona fija: se re-renderiza en el rebuild
-        self.lib_band = None;
-        self.lib_row_dirty = None;
+        self.library.lib_header = None; // zona fija: se re-renderiza en el rebuild
+        self.library.lib_band = None;
+        self.library.lib_row_dirty = None;
         self.redraw();
-    }
-
-    /// Porcentaje leído de un libro (0.0-1.0) según la ruta de su fichero.
-    #[allow(dead_code)]
-    pub(crate) fn book_progress_pct(&self, path: &str) -> Option<f32> {
-        crate::persist::progress_for(&self.lib_books, path).map(|b| b.pct())
     }
 
     /// Vacía la biblioteca curada (elimina library.json y los PDFs internos).
@@ -210,9 +204,9 @@ impl Reader {
                 }
             }
         }
-        self.lib_books.clear();
+        self.library.lib_books.clear();
         self.library_list.clear();
-        self.lib_filtered.clear();
+        self.library.lib_filtered.clear();
         self.reload_curated_library(app);
         self.settings_menu_open = false;
         self.show_toast("Library cleared");
@@ -226,7 +220,7 @@ impl Reader {
     /// cada PDF como libro (added = ahora). Idempotente: tras guardar, el
     /// registro deja de estar vacío y no vuelve a ejecutarse.
     fn migrate_internal_pdfs(&mut self) {
-        if !self.lib_books.is_empty() {
+        if !self.library.lib_books.is_empty() {
             return;
         }
         let Some(dir) = self.internal_dir.as_deref() else {
@@ -264,8 +258,8 @@ impl Reader {
             books.len(),
             pdfs_dir.display()
         );
-        self.lib_books = books;
-        persist::save_progress(self.internal_dir.as_deref(), &self.lib_books);
+        self.library.lib_books = books;
+        persist::save_progress(self.internal_dir.as_deref(), &self.library.lib_books);
     }
 
     /// Nº de filas de la lista del picker según su variante (el fallback lee
@@ -369,7 +363,7 @@ impl Reader {
     #[allow(dead_code)]
     pub(crate) fn grid_total_rows(&self) -> usize {
         let cols = self.effective_grid_cols();
-        self.lib_filtered.len().div_ceil(cols)
+        self.library.lib_filtered.len().div_ceil(cols)
     }
 
     /// Entrada de la rejilla en la fila `row` (0-based) y columna `col`
@@ -378,65 +372,18 @@ impl Reader {
     pub(crate) fn grid_entry_at(&self, row: usize, col: usize) -> Option<&LibraryEntry> {
         let cols = self.effective_grid_cols();
         let idx = row.checked_mul(cols)?.checked_add(col)?;
-        self.lib_filtered
+        self.library
+            .lib_filtered
             .get(idx)
             .and_then(|&i| self.library_list.get(i))
     }
 
     /// Entrada de la lista en el índice `idx` de la lista FILTRADA.
     pub(crate) fn list_entry_at(&self, idx: usize) -> Option<&LibraryEntry> {
-        self.lib_filtered
+        self.library
+            .lib_filtered
             .get(idx)
             .and_then(|&i| self.library_list.get(i))
-    }
-
-    // ---------------------------------------------------------------------
-    // Biblioteca rediseñada: filtros SIN teclado + recientes (2026-08-XX)
-    // ---------------------------------------------------------------------
-    //
-    // Búsqueda: el enunciado pedía un campo de texto con el teclado del
-    // sistema vía JNI (InputMethodManager + InputConnection). VERIFICADO en el
-    // código de android-activity 0.6.1 (el backend `native-activity` de este
-    // proyecto): `NativeActivity::set_text_input_state` es un NOP
-    // ("Unsupported") y `InputEvent::TextEvent` SOLO lo produce el backend
-    // game-activity (GameTextInput, que exige una Activity Java compilada —
-    // y cargo-apk/ndk-build no compilan fuentes Java, ver cabecera de lib.rs).
-    // Sin un `onCreateInputConnection` que entregue `commitText`, el teclado
-    // blando NO puede mandar texto a una NativeActivity. Por eso el filtro es
-    // SIN teclado: letra inicial (A-Z / #) + carpeta, vía los chips de
-    // `lib_chips` (ver el worker_done de la sesión).
-    /// ¿La entrada pasa el filtro de BÚSQUEDA activo (carpeta + letra inicial)?
-    fn entry_passes(&self, e: &LibraryEntry) -> bool {
-        // Buscador CON TECLADO: subcadena case-insensitive sobre el título.
-        if !self.lib_query.is_empty() {
-            let q = self.lib_query.to_lowercase();
-            if !e.name.to_lowercase().contains(&q) {
-                return false;
-            }
-        }
-        // Filtros legacy por letra/carpeta (sin UI desde 2026-08-25).
-        if let Some(f) = &self.lib_folder
-            && !e.folder.eq_ignore_ascii_case(f)
-        {
-            return false;
-        }
-        if let Some(l) = self.lib_letter {
-            let first = e
-                .name
-                .chars()
-                .next()
-                .map(|c| c.to_ascii_uppercase())
-                .unwrap_or('#');
-            let ok = if l == '#' {
-                !first.is_ascii_alphabetic()
-            } else {
-                first == l
-            };
-            if !ok {
-                return false;
-            }
-        }
-        true
     }
 
     /// Ruta local del PDF de la biblioteca (la copia en `internal/pdfs/`): la
@@ -454,7 +401,7 @@ impl Reader {
     /// `library_list` (added_unix; sin registro → i64::MIN, al final).
     fn sort_added_key(&self, i: usize) -> i64 {
         let e = &self.library_list[i];
-        persist::progress_for(&self.lib_books, &self.entry_path(e))
+        persist::progress_for(&self.library.lib_books, &self.entry_path(e))
             .map(|p| p.added_unix)
             .unwrap_or(i64::MIN)
     }
@@ -463,11 +410,26 @@ impl Reader {
     /// i64::MIN, al final).
     fn sort_read_key(&self, i: usize) -> i64 {
         let e = &self.library_list[i];
-        persist::progress_for(&self.lib_books, &self.entry_path(e))
+        persist::progress_for(&self.library.lib_books, &self.entry_path(e))
             .map(|p| p.last_read_unix)
             .unwrap_or(i64::MIN)
     }
 
+    // ---------------------------------------------------------------------
+    // Biblioteca rediseñada: filtros SIN teclado + recientes (2026-08-XX)
+    // ---------------------------------------------------------------------
+    //
+    // Búsqueda: el enunciado pedía un campo de texto con el teclado del
+    // sistema vía JNI (InputMethodManager + InputConnection). VERIFICADO en el
+    // código de android-activity 0.6.1 (el backend `native-activity` de este
+    // proyecto): `NativeActivity::set_text_input_state` es un NOP
+    // ("Unsupported") y `InputEvent::TextEvent` SOLO lo produce el backend
+    // game-activity (GameTextInput, que exige una Activity Java compilada —
+    // y cargo-apk/ndk-build no compilan fuentes Java, ver cabecera de lib.rs).
+    // Sin un `onCreateInputConnection` que entregue `commitText`, el teclado
+    // blando NO puede mandar texto a una NativeActivity. Por eso el filtro es
+    // SIN teclado: letra inicial (A-Z / #) + carpeta, vía los chips de
+    // `lib_chips` (ver el worker_done de la sesión).
     /// Reconstruye la caché `lib_filtered` (índices de `library_list`):
     /// filtra por BÚSQUEDA (carpeta + letra) y por ESTADO
     /// (Reading/Finished/Unread), y ORDENA por el sort activo (`lib_sort`).
@@ -479,17 +441,20 @@ impl Reader {
             .library_list
             .iter()
             .enumerate()
-            .filter(|(_, e)| self.entry_passes(e))
+            .filter(|(_, e)| self.library.entry_passes(e))
             .map(|(i, _)| i)
             .collect();
         // Filtro de ESTADO (derivado del registro de progreso).
-        if let Some(s) = self.lib_status {
+        if let Some(s) = self.library.lib_status {
             idxs.retain(|&i| {
                 let e = &self.library_list[i];
-                book_status(persist::progress_for(&self.lib_books, &self.entry_path(e))) == s
+                book_status(persist::progress_for(
+                    &self.library.lib_books,
+                    &self.entry_path(e),
+                )) == s
             });
         }
-        match self.lib_sort {
+        match self.library.lib_sort {
             LibSort::Title => idxs.sort_by(|&a, &b| {
                 self.library_list[a]
                     .name
@@ -512,9 +477,10 @@ impl Reader {
                     .iter()
                     .map(|&i| {
                         let e = &self.library_list[i];
-                        let pct = persist::progress_for(&self.lib_books, &self.entry_path(e))
-                            .map(|p| p.pct())
-                            .unwrap_or(0.0);
+                        let pct =
+                            persist::progress_for(&self.library.lib_books, &self.entry_path(e))
+                                .map(|p| p.pct())
+                                .unwrap_or(0.0);
                         (i, pct)
                     })
                     .collect();
@@ -536,7 +502,7 @@ impl Reader {
                 let mut keyed: Vec<(usize, i64)> = idxs
                     .iter()
                     .map(|&i| {
-                        let k = if self.lib_sort == LibSort::RecentlyAdded {
+                        let k = if self.library.lib_sort == LibSort::RecentlyAdded {
                             self.sort_added_key(i)
                         } else {
                             self.sort_read_key(i)
@@ -555,14 +521,14 @@ impl Reader {
                 idxs = keyed.into_iter().map(|(i, _)| i).collect();
             }
         }
-        if self.group_by == LibraryGroupBy::Author && self.lib_sort != LibSort::Author {
+        if self.group_by == LibraryGroupBy::Author && self.library.lib_sort != LibSort::Author {
             idxs.sort_by(|&a, &b| {
                 entry_author(&self.library_list[a])
                     .to_lowercase()
                     .cmp(&entry_author(&self.library_list[b]).to_lowercase())
             });
         }
-        self.lib_filtered = idxs;
+        self.library.lib_filtered = idxs;
     }
 
     /// Aplica un cambio de filtro/sort: recalcula la lista, clampa el scroll
@@ -570,8 +536,8 @@ impl Reader {
     pub(crate) fn apply_filter(&mut self) {
         self.refresh_lib_filtered();
         let max_v = self.lib_max_scroll();
-        if self.lib_scroll > max_v {
-            self.lib_scroll = max_v;
+        if self.library.lib_scroll > max_v {
+            self.library.lib_scroll = max_v;
         }
         self.list_dirty = true;
         self.redraw();
@@ -581,9 +547,9 @@ impl Reader {
     /// chip "All"). Al elegir, el panel se cierra: el campo de búsqueda
     /// muestra el resumen del filtro activo (ver `draw::search_summary`).
     pub(crate) fn lib_set_letter(&mut self, letter: Option<char>) {
-        if self.lib_letter != letter {
-            self.lib_letter = letter;
-            self.lib_search_open = false;
+        if self.library.lib_letter != letter {
+            self.library.lib_letter = letter;
+            self.library.lib_search_open = false;
             self.apply_filter();
         }
     }
@@ -591,9 +557,9 @@ impl Reader {
     /// Fija el filtro de carpeta del panel de búsqueda (None = todas; chip
     /// "All"). Al elegir, el panel se cierra (el campo muestra el resumen).
     pub(crate) fn lib_set_folder(&mut self, folder: Option<String>) {
-        if self.lib_folder != folder {
-            self.lib_folder = folder;
-            self.lib_search_open = false;
+        if self.library.lib_folder != folder {
+            self.library.lib_folder = folder;
+            self.library.lib_search_open = false;
             self.apply_filter();
         }
     }
@@ -601,8 +567,8 @@ impl Reader {
     /// Fija el ORDEN de "My Library" (chips de sort: Recently Added /
     /// Recently Read / Title / Author).
     pub(crate) fn lib_set_sort(&mut self, sort: LibSort) {
-        if self.lib_sort != sort {
-            self.lib_sort = sort;
+        if self.library.lib_sort != sort {
+            self.library.lib_sort = sort;
             self.apply_filter();
         }
     }
@@ -611,8 +577,8 @@ impl Reader {
     /// filter: Reading / Finished / Unread). También decide si "Continue
     /// Reading" se muestra (solo All/Reading, ver `lib_continue_reading`).
     pub(crate) fn lib_set_status(&mut self, status: Option<BookStatus>) {
-        if self.lib_status != status {
-            self.lib_status = status;
+        if self.library.lib_status != status {
+            self.library.lib_status = status;
             self.apply_filter();
         }
     }
@@ -620,7 +586,7 @@ impl Reader {
     /// Recientes que pasan el filtro de LETRA (la carpeta no aplica a los
     /// recientes: son rutas locales, sin RELATIVE_PATH).
     pub(crate) fn lib_recents(&self) -> Vec<&RecentEntry> {
-        let Some(l) = self.lib_letter else {
+        let Some(l) = self.library.lib_letter else {
             return self.recents.iter().collect();
         };
         self.recents
@@ -665,14 +631,14 @@ impl Reader {
     /// filtro de estado solo tiene sentido para la rejilla). Orden:
     /// recencia (recents.json, más reciente primero).
     pub(crate) fn lib_continue_reading(&self) -> Vec<ContinueBook> {
-        if let Some(s) = self.lib_status
+        if let Some(s) = self.library.lib_status
             && s != BookStatus::Reading
         {
             return Vec::new();
         }
         let mut out = Vec::new();
         for r in self.lib_recents() {
-            let Some(p) = persist::progress_for(&self.lib_books, &r.path) else {
+            let Some(p) = persist::progress_for(&self.library.lib_books, &r.path) else {
                 continue; // abierto antes de existir el registro: sin datos
             };
             if p.is_finished() {
@@ -705,13 +671,13 @@ impl Reader {
         if !self.recent_shelf_enabled {
             return false;
         }
-        if let Some(s) = self.lib_status
+        if let Some(s) = self.library.lib_status
             && s != BookStatus::Reading
         {
             return false;
         }
         self.recents.iter().any(|r| {
-            persist::progress_for(&self.lib_books, &r.path)
+            persist::progress_for(&self.library.lib_books, &r.path)
                 .map(|p| !p.is_finished())
                 .unwrap_or(true)
         })
@@ -740,7 +706,7 @@ impl Reader {
         let win_h = self.win_h;
         let has_cont = self.lib_has_cont();
         let grid_y0 = lib_grid_y0(win_w, win_h, has_cont);
-        let count = self.lib_filtered.len();
+        let count = self.library.lib_filtered.len();
         if self.is_grid() {
             let cols = self.effective_grid_cols();
             let rows = count.div_ceil(cols);
@@ -755,8 +721,11 @@ impl Reader {
     /// Scroll vertical máximo (px) del contenido de la biblioteca.
     pub(crate) fn lib_max_scroll(&self) -> f32 {
         let viewport = (self.win_h
-            - lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some()))
-            as f32;
+            - lib_content_y0(
+                self.win_h,
+                self.library.lib_search_open,
+                self.status.is_some(),
+            )) as f32;
         (self.lib_content_h() - viewport).max(0.0)
     }
 
@@ -802,10 +771,10 @@ impl Reader {
     /// así que "buscar" equivale a saltar a la biblioteca con el panel
     /// desplegado.
     pub(crate) fn enter_library_search(&mut self, app: &AndroidApp) {
-        self.lib_letter = None;
-        self.lib_folder = None;
+        self.library.lib_letter = None;
+        self.library.lib_folder = None;
         self.enter_library(app);
-        self.lib_search_open = true;
+        self.library.lib_search_open = true;
         self.list_dirty = true;
         self.redraw();
     }
@@ -840,9 +809,9 @@ impl Reader {
         self.close_ai_panel(); // panel de IA del visor: fuera
         self.list_drag = None;
         self.bitmap = None;
-        self.lib_header = None; // biblioteca fuera: liberar planos cedeados
-        self.lib_band = None;
-        self.lib_row_dirty = None;
+        self.library.lib_header = None; // biblioteca fuera: liberar planos cedeados
+        self.library.lib_band = None;
+        self.library.lib_row_dirty = None;
         self.list_dirty = true;
         self.redraw();
     }
@@ -937,15 +906,15 @@ impl Reader {
         };
         let path = dest.display().to_string();
         let now = persist::unix_now();
-        let books = persist::touch_progress(&self.lib_books, &path, 0, page_count, now);
+        let books = persist::touch_progress(&self.library.lib_books, &path, 0, page_count, now);
         // E4: Política estricta anti-borrado automático. La biblioteca NUNCA
         // elimina un PDF automáticamente. Solo la acción explícita del
         // usuario desde el menú puede borrar un libro.
-        self.lib_books = books;
-        persist::save_progress(self.internal_dir.as_deref(), &self.lib_books);
+        self.library.lib_books = books;
+        persist::save_progress(self.internal_dir.as_deref(), &self.library.lib_books);
         info!(
             "added {path} ({page_count} pages); library {} books (0 auto-evicted)",
-            self.lib_books.len()
+            self.library.lib_books.len()
         );
         self.select_list = Vec::new();
         self.reload_curated_library(app);
@@ -955,7 +924,7 @@ impl Reader {
     /// (`jni::ime_attach`; ver `tools/ime/ImeHelper.java`) y activa el polling
     /// de `tick`. El texto tecleado filtra la rejilla por subcadena.
     pub(crate) fn lib_open_keyboard(&mut self, app: &AndroidApp) {
-        crate::jni::ime_attach(app, &self.lib_query);
+        crate::jni::ime_attach(app, &self.library.lib_query);
         self.ime_active = true;
     }
 
@@ -963,7 +932,7 @@ impl Reader {
     /// teclado y re-aplica (recalcula `lib_filtered`; vuelve a verse toda la
     /// biblioteca).
     pub(crate) fn lib_clear_search(&mut self, app: &AndroidApp) {
-        self.lib_query.clear();
+        self.library.lib_query.clear();
         crate::jni::ime_set_text(app, "");
         self.ime_active = false;
         crate::jni::ime_hide(app);
@@ -988,12 +957,12 @@ impl Reader {
         let Some(t) = crate::jni::ime_text(app) else {
             return;
         };
-        if t != self.lib_query {
-            self.lib_query = t;
+        if t != self.library.lib_query {
+            self.library.lib_query = t;
             self.refresh_lib_filtered();
             let max_v = self.lib_max_scroll();
-            if self.lib_scroll > max_v {
-                self.lib_scroll = max_v;
+            if self.library.lib_scroll > max_v {
+                self.library.lib_scroll = max_v;
             }
             self.list_dirty = true;
             self.redraw();
@@ -1009,7 +978,8 @@ impl Reader {
         // Biblioteca CURADA: el fichero ya está en `internal/pdfs/`.
         if Path::new(&entry.uri).is_file() {
             self.lib_close_ime(app);
-            let start = crate::persist::progress_for(&self.lib_books, &entry.uri).map(|p| p.page);
+            let start =
+                crate::persist::progress_for(&self.library.lib_books, &entry.uri).map(|p| p.page);
             return self.open_pdf_at(&entry.uri, start);
         }
         let Some(dir) = app.internal_data_path() else {
@@ -1046,7 +1016,7 @@ impl Reader {
         // Reanudar en la página guardada si el libro ya se empezó
         // (registro de progreso de `library.json`); si no, página 1.
         self.lib_close_ime(app);
-        let start = crate::persist::progress_for(&self.lib_books, &path).map(|p| p.page);
+        let start = crate::persist::progress_for(&self.library.lib_books, &path).map(|p| p.page);
         self.open_pdf_at(&path, start)
     }
 

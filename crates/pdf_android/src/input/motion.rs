@@ -608,31 +608,31 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortTitle => {
-                        reader.lib_sort = LibSort::Title;
+                        reader.library.lib_sort = LibSort::Title;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortAuthor => {
-                        reader.lib_sort = LibSort::Author;
+                        reader.library.lib_sort = LibSort::Author;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortAdded => {
-                        reader.lib_sort = LibSort::RecentlyAdded;
+                        reader.library.lib_sort = LibSort::RecentlyAdded;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortRead => {
-                        reader.lib_sort = LibSort::RecentlyRead;
+                        reader.library.lib_sort = LibSort::RecentlyRead;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
                     ViewMenuItem::SortProgress => {
-                        reader.lib_sort = LibSort::Progress;
+                        reader.library.lib_sort = LibSort::Progress;
                         reader.apply_filter();
                         reader.save_state();
                         reader.view_menu_open = false;
@@ -759,9 +759,9 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // teclado; tocar el campo abre el TECLADO del sistema (`jni::ime_*`).
     if y < search_y + search_hh {
         let field_right = reader.win_w as f32 - grid_pad(reader.win_w);
-        let has_filter = !reader.lib_query.is_empty()
-            || reader.lib_letter.is_some()
-            || reader.lib_folder.is_some();
+        let has_filter = !reader.library.lib_query.is_empty()
+            || reader.library.lib_letter.is_some()
+            || reader.library.lib_folder.is_some();
         if has_filter {
             let xw = search_hh - 8.0;
             let xx = field_right - 14.0 - xw;
@@ -780,8 +780,8 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // `panel_top = header_h + search_h` (6 px por encima de la fila real), de
     // modo que un tap en el borde superior del panel caía fuera de los chips.
     let panel_top = lib_search_chips_y0(reader);
-    let panel_h = lib_search_panel_h(reader.win_h, reader.lib_search_open);
-    if reader.lib_search_open && y >= panel_top && y < panel_top + panel_h {
+    let panel_h = lib_search_panel_h(reader.win_h, reader.library.lib_search_open);
+    if reader.library.lib_search_open && y >= panel_top && y < panel_top + panel_h {
         let row = if y < lib_search_chips_y0(reader) + lib_chip_h(reader.win_h) {
             0
         } else {
@@ -809,7 +809,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // Franja de estado: no es seleccionable.
     let content_y0 = lib_content_y0(
         reader.win_h,
-        reader.lib_search_open,
+        reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
     if y < content_y0 {
@@ -818,7 +818,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 
     // Contenido scrolleable: pasar a coordenadas de CONTENIDO (y del Down +
     // scroll vertical).
-    let yc = y - content_y0 + reader.lib_scroll;
+    let yc = y - content_y0 + reader.library.lib_scroll;
     let win_w = reader.win_w;
     // Biblioteca minimalista: la sección Continue Reading está oculta (siempre
     // `false`); el bloque de organización tampoco existe (rejilla directa).
@@ -847,14 +847,16 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     if yc < cont_block_h {
         if has_cont && yc >= lib_section_title_h(reader.win_h) {
             let cw = lib_cont_card_w(win_w, reader.win_h);
-            let i = ((x - grid_pad(win_w) + reader.lib_carousel_x) / (cw + lib_cont_gap())).floor();
+            let i = ((x - grid_pad(win_w) + reader.library.lib_carousel_x) / (cw + lib_cont_gap()))
+                .floor();
             if i >= 0.0
                 && let Some(book) = reader.lib_continue_reading().get(i as usize)
             {
                 // Clonar ruta+nombre: `open_pdf_at` necesita &mut self.
                 let path = book.path.clone();
                 let name = book.name.clone();
-                let start = crate::persist::progress_for(&reader.lib_books, &path).map(|p| p.page);
+                let start =
+                    crate::persist::progress_for(&reader.library.lib_books, &path).map(|p| p.page);
                 if !reader.open_pdf_at(&path, start) {
                     reader.status = Some(format!("Cannot open {name}"));
                     reader.list_dirty = true;
@@ -1030,7 +1032,7 @@ fn library_down_zone(reader: &Reader, y: f32) -> u8 {
         return 0; // cabecera + campo de búsqueda: sin arrastre horizontal
     }
     // Panel de búsqueda desplegado: fila 0 = letras (2), fila 1 = carpetas (3).
-    if reader.lib_search_open {
+    if reader.library.lib_search_open {
         let panel_top = search_y + search_hh + 6.0;
         let panel_h = lib_search_panel_h(reader.win_h, true);
         if y >= panel_top && y < panel_top + panel_h {
@@ -1044,10 +1046,10 @@ fn library_down_zone(reader: &Reader, y: f32) -> u8 {
     // Contenido: ¿la fila del carousel de Continue Reading (bajo su título)?
     let content_y0 = lib_content_y0(
         reader.win_h,
-        reader.lib_search_open,
+        reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
-    let yc = y - content_y0 + reader.lib_scroll;
+    let yc = y - content_y0 + reader.library.lib_scroll;
     let has_cont = reader.lib_has_cont();
     let cont_h = lib_cont_block_h(reader.win_w, reader.win_h, has_cont);
     if yc >= lib_section_title_h(reader.win_h) && yc < cont_h {
@@ -1086,11 +1088,11 @@ fn handle_picker_motion(
                 } else {
                     let z = library_down_zone(reader, y);
                     let h = match z {
-                        1 => reader.lib_carousel_x,
-                        2 => reader.lib_letters_x,
-                        3 => reader.lib_folders_x,
-                        4 => reader.lib_sort_x,
-                        5 => reader.lib_filter_x,
+                        1 => reader.library.lib_carousel_x,
+                        2 => reader.library.lib_letters_x,
+                        3 => reader.library.lib_folders_x,
+                        4 => reader.library.lib_sort_x,
+                        5 => reader.library.lib_filter_x,
                         _ => 0.0,
                     };
                     (z, h)
@@ -1098,7 +1100,7 @@ fn handle_picker_motion(
                 let v0 = if reader.mode == UiMode::Picker {
                     reader.list_scroll as f32
                 } else {
-                    reader.lib_scroll
+                    reader.library.lib_scroll
                 };
                 reader.list_drag = Some(ListDrag {
                     sx: x,
@@ -1130,20 +1132,20 @@ fn handle_picker_motion(
                         };
                         let s = (drag.h0 - dx).clamp(0.0, max);
                         let changed = match drag.zone {
-                            1 => reader.lib_carousel_x != s,
-                            2 => reader.lib_letters_x != s,
-                            3 => reader.lib_folders_x != s,
-                            4 => reader.lib_sort_x != s,
-                            5 => reader.lib_filter_x != s,
+                            1 => reader.library.lib_carousel_x != s,
+                            2 => reader.library.lib_letters_x != s,
+                            3 => reader.library.lib_folders_x != s,
+                            4 => reader.library.lib_sort_x != s,
+                            5 => reader.library.lib_filter_x != s,
                             _ => false,
                         };
                         if changed {
                             match drag.zone {
-                                1 => reader.lib_carousel_x = s,
-                                2 => reader.lib_letters_x = s,
-                                3 => reader.lib_folders_x = s,
-                                4 => reader.lib_sort_x = s,
-                                5 => reader.lib_filter_x = s,
+                                1 => reader.library.lib_carousel_x = s,
+                                2 => reader.library.lib_letters_x = s,
+                                3 => reader.library.lib_folders_x = s,
+                                4 => reader.library.lib_sort_x = s,
+                                5 => reader.library.lib_filter_x = s,
                                 _ => {}
                             }
                             // Scroll horizontal de una fila: se re-renderiza
@@ -1151,7 +1153,7 @@ fn handle_picker_motion(
                             // sobre su contenedor; la pantalla no se
                             // re-renderiza (antes `list_dirty` reconstruía
                             // TODO por frame de arrastre).
-                            reader.lib_row_dirty = Some(drag.zone);
+                            reader.library.lib_row_dirty = Some(drag.zone);
                             reader.redraw();
                         }
                     }
@@ -1171,8 +1173,8 @@ fn handle_picker_motion(
                     } else {
                         let max_v = reader.lib_max_scroll();
                         let s = (drag.v0 - dy).clamp(0.0, max_v);
-                        if s != reader.lib_scroll {
-                            reader.lib_scroll = s;
+                        if s != reader.library.lib_scroll {
+                            reader.library.lib_scroll = s;
                             // Scroll vertical = solo cambiar de donde se copia
                             // la banda de contenido al buffer (memcpy); el
                             // render (Canvas+JNI) solo se relanza si el scroll

@@ -4,64 +4,25 @@
 //! Pantalla de biblioteca: cabecera fija + zona scrolleable, filas de
 //! chips/carousel, blit de la biblioteca y pegado de portadas cacheadas.
 
-use android_activity::ndk::native_window::NativeWindow;
-use log::{warn};
-use pdf_core::Bitmap;
 use crate::persist;
 use crate::reader::{
-    GRID_CELL_PAD,
-    LibraryCoverFit,
-    Reader,
-    cover_size_multiplier,
-    entry_author,
-    entry_title,
-    grid_cell_h,
-    grid_cell_rect,
-    grid_cell_w,
-    grid_cover_h,
-    grid_cover_w,
-    grid_pad,
-    header_menu_btn_d,
-    lib_add_btn_w,
-    lib_chip_h,
-    lib_chips,
-    lib_cont_card_h,
-    lib_cont_card_w,
-    lib_cont_card_x,
-    lib_cont_cover_h,
-    lib_cont_cover_w,
-    lib_content_y0,
-    lib_empty_state_geom,
-    lib_grid_y0,
-    lib_header_h,
-    lib_org_chip_h,
-    lib_org_chips,
-    lib_search_h,
-    list_row_gap,
-    list_row_h,
-    list_row_rect,
-    picker_row_h,
-    settings_menu_button_rect,
-    title_from_name,
-    truncate_name,
-    view_menu_button_rect,
+    GRID_CELL_PAD, LibraryCoverFit, Reader, cover_size_multiplier, entry_author, entry_title,
+    grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad,
+    header_menu_btn_d, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_card_h, lib_cont_card_w,
+    lib_cont_card_x, lib_cont_cover_h, lib_cont_cover_w, lib_content_y0, lib_empty_state_geom,
+    lib_grid_y0, lib_header_h, lib_org_chip_h, lib_org_chips, lib_search_h, list_row_gap,
+    list_row_h, list_row_rect, picker_row_h, settings_menu_button_rect, title_from_name,
+    truncate_name, view_menu_button_rect,
 };
 use crate::theme;
+use android_activity::ndk::native_window::NativeWindow;
+use log::warn;
+use pdf_core::Bitmap;
 
 use super::{
-    CanvasRect,
-    CanvasText,
-    TextAlign,
-    copy_region,
-    draw_button,
-    draw_card_shadow,
-    draw_settings_menu,
-    draw_view_menu,
-    fill_buffer,
-    jni_text_bitmap,
-    primitives::copy_region_blend,
-    settings_menu_geometry,
-    view_menu_geometry,
+    CanvasRect, CanvasText, TextAlign, copy_region, draw_button, draw_card_shadow,
+    draw_settings_menu, draw_view_menu, fill_buffer, jni_text_bitmap,
+    primitives::copy_region_blend, settings_menu_geometry, view_menu_geometry,
 };
 
 /// Render de la ZONA FIJA de la biblioteca (cabecera editorial + campo de
@@ -70,7 +31,7 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let h_fixed = lib_content_y0(
         reader.win_h,
-        reader.lib_search_open,
+        reader.library.lib_search_open,
         reader.status.is_some(),
     );
     if w <= 0 || h_fixed <= 0 {
@@ -299,7 +260,7 @@ pub(crate) fn render_library_zone(
     if reader.library_list.is_empty() {
         let content_y0 = lib_content_y0(
             reader.win_h,
-            reader.lib_search_open,
+            reader.library.lib_search_open,
             reader.status.is_some(),
         );
         let shift = -(content_y0 as f32 + band_origin as f32);
@@ -322,7 +283,7 @@ pub(crate) fn render_library_zone(
             for (i, book) in books.iter().enumerate() {
                 let card_w = lib_cont_card_w(w, reader.win_h);
                 let card_h = lib_cont_card_h(reader.win_h);
-                let cx = lib_cont_card_x(w, reader.win_h, i) - reader.lib_carousel_x;
+                let cx = lib_cont_card_x(w, reader.win_h, i) - reader.library.lib_carousel_x;
                 if cx + card_w < 0.0 || cx > w as f32 {
                     continue;
                 }
@@ -508,10 +469,12 @@ pub(crate) fn render_library_zone(
                             ));
                         }
                         // Badge de progreso sobre la portada (SHOW PROGRESS)
-                        let pct =
-                            persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
-                                .map(|bp| bp.pct())
-                                .unwrap_or(0.0);
+                        let pct = persist::progress_for(
+                            &reader.library.lib_books,
+                            &reader.entry_path(entry),
+                        )
+                        .map(|bp| bp.pct())
+                        .unwrap_or(0.0);
                         if reader.cover_progress && pct > 0.0 {
                             let pct_val = (pct * 100.0).round() as u32;
                             if pct_val > 0 {
@@ -629,10 +592,12 @@ pub(crate) fn render_library_zone(
                         ));
                         let bar_y = cy + 72.0;
                         let track_w = cell_w - 24.0;
-                        let pct =
-                            persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
-                                .map(|bp| bp.pct())
-                                .unwrap_or(0.0);
+                        let pct = persist::progress_for(
+                            &reader.library.lib_books,
+                            &reader.entry_path(entry),
+                        )
+                        .map(|bp| bp.pct())
+                        .unwrap_or(0.0);
                         rects.push(CanvasRect::rounded(
                             cx + 12.0,
                             bar_y,
@@ -693,9 +658,10 @@ pub(crate) fn render_library_zone(
                     p.base_100,
                 ));
 
-                let pct = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
-                    .map(|bp| bp.pct())
-                    .unwrap_or(0.0);
+                let pct =
+                    persist::progress_for(&reader.library.lib_books, &reader.entry_path(entry))
+                        .map(|bp| bp.pct())
+                        .unwrap_or(0.0);
 
                 let text_x = if !reader.hide_covers {
                     let cw = (60.0 * cover_size_multiplier(reader.cover_size)).round();
@@ -822,11 +788,11 @@ pub(crate) fn render_library_zone(
 
         // 5. Sin resultados con filtro activo (buscador con teclado o
         // filtros legacy conservados).
-        if reader.lib_filtered.is_empty()
-            && (!reader.lib_query.is_empty()
-                || reader.lib_letter.is_some()
-                || reader.lib_folder.is_some()
-                || reader.lib_status.is_some())
+        if reader.library.lib_filtered.is_empty()
+            && (!reader.library.lib_query.is_empty()
+                || reader.library.lib_letter.is_some()
+                || reader.library.lib_folder.is_some()
+                || reader.library.lib_status.is_some())
         {
             texts.push(CanvasText::new(
                 w as f32 / 2.0,
@@ -1036,9 +1002,9 @@ pub(crate) fn render_search_chip_row(reader: &Reader, row: usize) -> Option<Bitm
         return None;
     }
     let scroll = if row == 0 {
-        reader.lib_letters_x
+        reader.library.lib_letters_x
     } else {
-        reader.lib_folders_x
+        reader.library.lib_folders_x
     };
     let row_w = chips
         .iter()
@@ -1089,9 +1055,9 @@ pub(crate) fn render_org_chip_row(reader: &Reader, row: usize) -> Option<Bitmap>
         return None;
     }
     let scroll = if row == 0 {
-        reader.lib_sort_x
+        reader.library.lib_sort_x
     } else {
-        reader.lib_filter_x
+        reader.library.lib_filter_x
     };
     let row_w = chips
         .iter()
@@ -1293,9 +1259,10 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
                     let Some(entry) = reader.grid_entry_at(row, col) else {
                         continue;
                     };
-                    let pct = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
-                        .map(|bp| bp.pct())
-                        .unwrap_or(0.0);
+                    let pct =
+                        persist::progress_for(&reader.library.lib_books, &reader.entry_path(entry))
+                            .map(|bp| bp.pct())
+                            .unwrap_or(0.0);
                     if pct > 0.0 {
                         let pct_val = (pct * 100.0).round() as u32;
                         if pct_val > 0 {
@@ -1342,9 +1309,10 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
                 let Some(entry) = reader.list_entry_at(i) else {
                     continue;
                 };
-                let pct = persist::progress_for(&reader.lib_books, &reader.entry_path(entry))
-                    .map(|bp| bp.pct())
-                    .unwrap_or(0.0);
+                let pct =
+                    persist::progress_for(&reader.library.lib_books, &reader.entry_path(entry))
+                        .map(|bp| bp.pct())
+                        .unwrap_or(0.0);
                 if pct > 0.0 {
                     let pct_val = (pct * 100.0).round() as u32;
                     if pct_val > 0 {
@@ -1403,15 +1371,15 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
 /// "M · Download"): texto mostrable + si hay filtro (para el "✕").
 fn search_summary(reader: &Reader) -> (String, bool) {
     // Buscador con TECLADO: el texto tecleado es el filtro principal.
-    if !reader.lib_query.is_empty() {
-        return (reader.lib_query.clone(), true);
+    if !reader.library.lib_query.is_empty() {
+        return (reader.library.lib_query.clone(), true);
     }
     // Filtros legacy por letra/carpeta (sin UI desde 2026-08-25).
     let mut parts = Vec::new();
-    if let Some(l) = reader.lib_letter {
+    if let Some(l) = reader.library.lib_letter {
         parts.push(l.to_string());
     }
-    if let Some(f) = &reader.lib_folder {
+    if let Some(f) = &reader.library.lib_folder {
         parts.push(f.trim_end_matches('/').to_string());
     }
     if parts.is_empty() {

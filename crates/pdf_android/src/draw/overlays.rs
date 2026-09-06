@@ -5,22 +5,12 @@
 //! texto, aviso breve (toast), panel "Preguntar a la IA" y snapshot de
 //! la biblioteca para el fade al abrir un libro.
 
-use pdf_core::Bitmap;
-use crate::reader::{
-    AiPhase,
-    Reader,
-    lib_content_y0,
-};
+use crate::reader::{AiPhase, Reader, lib_content_y0};
 use crate::theme;
+use pdf_core::Bitmap;
 
 use super::{
-    ButtonRect,
-    CanvasRect,
-    CanvasText,
-    TextAlign,
-    copy_region,
-    draw_button,
-    fill_buffer,
+    ButtonRect, CanvasRect, CanvasText, TextAlign, copy_region, draw_button, fill_buffer,
     jni_text_bitmap,
 };
 
@@ -429,7 +419,7 @@ pub(crate) fn compose_library_snapshot(reader: &Reader) -> Option<Bitmap> {
     }
     let content_y0 = lib_content_y0(
         reader.win_h,
-        reader.lib_search_open,
+        reader.library.lib_search_open,
         reader.status.is_some(),
     );
     let mut out = Bitmap {
@@ -441,11 +431,11 @@ pub(crate) fn compose_library_snapshot(reader: &Reader) -> Option<Bitmap> {
     let dst = out.data.as_mut_ptr();
     let p = reader.theme.palette();
     fill_buffer(dst, w as usize, h as usize, w as usize, 4, p.rgba_lib_bg());
-    if let Some(header) = reader.lib_header.as_ref() {
+    if let Some(header) = reader.library.lib_header.as_ref() {
         copy_region(dst, w as usize, h as usize, w as usize, 4, header, 0, 0);
     }
-    if let Some((band, origin)) = reader.lib_band.as_ref() {
-        let sy = content_y0 - (reader.lib_scroll as i32 - *origin);
+    if let Some((band, origin)) = reader.library.lib_band.as_ref() {
+        let sy = content_y0 - (reader.library.lib_scroll as i32 - *origin);
         copy_region(dst, w as usize, h as usize, w as usize, 4, band, 0, sy);
     }
     Some(out)

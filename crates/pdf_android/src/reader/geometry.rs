@@ -397,9 +397,9 @@ pub(crate) fn lib_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonRect,
         lib_search_chips_y1(reader)
     };
     let scroll = if row == 0 {
-        reader.lib_letters_x
+        reader.library.lib_letters_x
     } else {
-        reader.lib_folders_x
+        reader.library.lib_folders_x
     };
     let mut out = Vec::new();
     let mut x = x0;
@@ -416,15 +416,35 @@ pub(crate) fn lib_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonRect,
             x += w + gap;
         };
     if row == 0 {
-        push("All".to_string(), 3, reader.lib_letter.is_none(), &mut out);
+        push(
+            "All".to_string(),
+            3,
+            reader.library.lib_letter.is_none(),
+            &mut out,
+        );
         for c in 'A'..='Z' {
-            push(c.to_string(), 1, reader.lib_letter == Some(c), &mut out);
+            push(
+                c.to_string(),
+                1,
+                reader.library.lib_letter == Some(c),
+                &mut out,
+            );
         }
-        push("#".to_string(), 1, reader.lib_letter == Some('#'), &mut out);
+        push(
+            "#".to_string(),
+            1,
+            reader.library.lib_letter == Some('#'),
+            &mut out,
+        );
     } else {
-        push("All".to_string(), 3, reader.lib_folder.is_none(), &mut out);
+        push(
+            "All".to_string(),
+            3,
+            reader.library.lib_folder.is_none(),
+            &mut out,
+        );
         for f in reader.lib_folders() {
-            let active = reader.lib_folder.as_deref() == Some(f.as_str());
+            let active = reader.library.lib_folder.as_deref() == Some(f.as_str());
             let n = f.chars().count();
             push(f, n, active, &mut out);
         }
@@ -453,17 +473,17 @@ pub(crate) fn lib_org_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonR
     let gap = 8.0;
     let x0 = grid_pad(win_w) + lib_org_label_w();
     let scroll = if row == 0 {
-        reader.lib_sort_x
+        reader.library.lib_sort_x
     } else {
-        reader.lib_filter_x
+        reader.library.lib_filter_x
     };
     let content_y0 = lib_content_y0(
         reader.win_h,
-        reader.lib_search_open,
+        reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
-    let y0 =
-        content_y0 - reader.lib_scroll + lib_org_y(win_w, reader.win_h, reader.lib_has_cont(), row);
+    let y0 = content_y0 - reader.library.lib_scroll
+        + lib_org_y(win_w, reader.win_h, reader.lib_has_cont(), row);
     let chip_h = lib_org_chip_h(reader.win_h);
     let mut out = Vec::new();
     let mut x = x0;
@@ -481,20 +501,29 @@ pub(crate) fn lib_org_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonR
 fn lib_org_row(reader: &Reader, row: usize) -> Vec<(&'static str, bool)> {
     if row == 0 {
         vec![
-            ("Recientes", reader.lib_sort == LibSort::RecentlyAdded),
-            ("Leídos", reader.lib_sort == LibSort::RecentlyRead),
-            ("Título", reader.lib_sort == LibSort::Title),
-            ("Autor", reader.lib_sort == LibSort::Author),
+            (
+                "Recientes",
+                reader.library.lib_sort == LibSort::RecentlyAdded,
+            ),
+            ("Leídos", reader.library.lib_sort == LibSort::RecentlyRead),
+            ("Título", reader.library.lib_sort == LibSort::Title),
+            ("Autor", reader.library.lib_sort == LibSort::Author),
         ]
     } else {
         vec![
-            ("Todos", reader.lib_status.is_none()),
-            ("En lectura", reader.lib_status == Some(BookStatus::Reading)),
+            ("Todos", reader.library.lib_status.is_none()),
+            (
+                "En lectura",
+                reader.library.lib_status == Some(BookStatus::Reading),
+            ),
             (
                 "Terminados",
-                reader.lib_status == Some(BookStatus::Finished),
+                reader.library.lib_status == Some(BookStatus::Finished),
             ),
-            ("Por leer", reader.lib_status == Some(BookStatus::Unread)),
+            (
+                "Por leer",
+                reader.library.lib_status == Some(BookStatus::Unread),
+            ),
         ]
     }
 }
@@ -514,10 +543,10 @@ pub(crate) fn lib_empty_state_geom(reader: &Reader) -> Option<EmptyStateGeom> {
     }
     let content_y0 = lib_content_y0(
         reader.win_h,
-        reader.lib_search_open,
+        reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
-    let ctop = content_y0 - reader.lib_scroll;
+    let ctop = content_y0 - reader.library.lib_scroll;
     let h = reader.win_h as f32;
     let cy = ctop + (h - ctop) * 0.40;
     let (bw, bh) = (96.0f32, 128.0f32);

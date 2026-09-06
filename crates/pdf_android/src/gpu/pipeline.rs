@@ -854,11 +854,11 @@ impl Gpu {
             self.draw_bitmap(s, reader.sheet_id, 0, -slide, 1.0);
         }
 
-        if let Some((started, snap)) = &reader.lib_fade {
+        if let Some((started, snap)) = &reader.library.lib_fade {
             let t = started.elapsed().as_secs_f32();
             let alpha = (1.0 - t / crate::LIB_FADE_MS).clamp(0.0, 1.0);
             if alpha > 0.0 {
-                let tex = self.fade_tex(reader.lib_fade_id, snap);
+                let tex = self.fade_tex(reader.library.lib_fade_id, snap);
                 self.draw_tex_quad(tex, snap, 0, 0, alpha);
             } else {
                 self.free_fade_tex(); // fade expirado: liberar la textura grande

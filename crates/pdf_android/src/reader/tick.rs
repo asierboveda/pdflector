@@ -40,7 +40,7 @@ impl Reader {
             || self.toast.is_some()
             || self.gesture.press_pending()
             // Transición al abrir un libro: el tick expira el fade.
-            || self.lib_fade.is_some()
+            || self.library.lib_fade.is_some()
             // Consulta de IA en vuelo: `tick` sondea el canal del hilo de
             // fondo (sin esto el poll bloquearía y la respuesta tardaría en
             // aparecer hasta el siguiente evento de input).
@@ -121,9 +121,9 @@ impl Reader {
         // Transición al abrir un libro: expirada → se libera (el visor ya
         // muestra solo la página). Durante la transición, cada tick redibuja
         // con un alfa decreciente (el fade se anima en `blit`).
-        if let Some((started, _)) = self.lib_fade {
+        if let Some((started, _)) = self.library.lib_fade {
             if started.elapsed().as_secs_f32() >= LIB_FADE_MS {
-                self.lib_fade = None;
+                self.library.lib_fade = None;
                 self.redraw();
             } else {
                 self.redraw(); // un frame más de la transición
@@ -143,12 +143,12 @@ impl Reader {
             self.redraw();
         }
         if self.mode == UiMode::Library && self.pump_thumbs(app) {
-            if let Some((mut band, origin)) = self.lib_band.take() {
+            if let Some((mut band, origin)) = self.library.lib_band.take() {
                 // Pegar las portadas nuevas sobre la banda EXISTENTE (memcpy
                 // por celda): sin re-render del canvas (antes un rebuild
                 // completo de la pantalla por cada lote de portadas).
                 paste_lib_thumbs(self, &mut band, origin);
-                self.lib_band = Some((band, origin));
+                self.library.lib_band = Some((band, origin));
                 self.splice_band_rows();
                 self.redraw();
             } else {
@@ -223,10 +223,13 @@ impl Reader {
         if !self.lib_has_cont() {
             return false;
         }
-        let content_y0 =
-            lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some()) as f32;
+        let content_y0 = lib_content_y0(
+            self.win_h,
+            self.library.lib_search_open,
+            self.status.is_some(),
+        ) as f32;
         let block_h = lib_cont_block_h(self.win_w, self.win_h, true);
-        let top = content_y0 - self.lib_scroll;
+        let top = content_y0 - self.library.lib_scroll;
         let bottom = top + block_h;
         bottom > content_y0 && top < self.win_h as f32
     }
@@ -235,10 +238,13 @@ impl Reader {
     /// scroll vertical actual: (primera fila, nº de filas con 1 de margen de
     /// prefetch por abajo). Coords compartidas con el render y el tap.
     pub(crate) fn lib_visible_grid_rows(&self) -> (usize, usize) {
-        let content_y0 =
-            lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some()) as f32;
-        let grid_y0_screen =
-            content_y0 + lib_grid_y0(self.win_w, self.win_h, self.lib_has_cont()) - self.lib_scroll;
+        let content_y0 = lib_content_y0(
+            self.win_h,
+            self.library.lib_search_open,
+            self.status.is_some(),
+        ) as f32;
+        let grid_y0_screen = content_y0 + lib_grid_y0(self.win_w, self.win_h, self.lib_has_cont())
+            - self.library.lib_scroll;
         if grid_y0_screen >= self.win_h as f32 {
             return (0, 0); // la rejilla está por debajo de la ventana
         }
@@ -251,10 +257,13 @@ impl Reader {
 
     /// Rango de filas de la lista VISIBLES con el scroll vertical actual.
     pub(crate) fn lib_visible_list_rows(&self) -> (usize, usize) {
-        let content_y0 =
-            lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some()) as f32;
-        let grid_y0_screen =
-            content_y0 + lib_grid_y0(self.win_w, self.win_h, self.lib_has_cont()) - self.lib_scroll;
+        let content_y0 = lib_content_y0(
+            self.win_h,
+            self.library.lib_search_open,
+            self.status.is_some(),
+        ) as f32;
+        let grid_y0_screen = content_y0 + lib_grid_y0(self.win_w, self.win_h, self.lib_has_cont())
+            - self.library.lib_scroll;
         if grid_y0_screen >= self.win_h as f32 {
             return (0, 0);
         }
@@ -373,7 +382,7 @@ impl Reader {
             || self.tool_gesture.is_some()
             || self.sheet_anim
             || self.ai_rx.is_some()
-            || self.lib_fade.is_some()
+            || self.library.lib_fade.is_some()
     }
 
     /// ¿Tenemos ventana (ANativeWindow activo)? El bucle principal usa un

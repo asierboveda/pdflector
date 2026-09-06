@@ -4,13 +4,13 @@
 //! Ciclo de vida del `Reader` (extraído de `reader.rs`, 2026-09-06): construcción (`Reader::new`), apertura de la ventana (`set_window`, `init_window`) y su liberación (`terminate_window`).
 
 use super::AiPhase;
-use super::LibSort;
 use super::LibraryCoverFit;
 use super::LibraryGroupBy;
 use super::LibraryViewMode;
 use super::PickerKind;
 use super::Reader;
 use super::UiMode;
+use super::library_state::LibraryState;
 use super::load_pen_mode;
 use super::scan_pdfs;
 use crate::PINCH_MAX;
@@ -70,16 +70,7 @@ impl Reader {
             sdk_int: android_sdk_int(),
             grant_pending: false,
             list_scroll: 0,
-            lib_scroll: 0.0,
-            lib_carousel_x: 0.0,
-            lib_folders_x: 0.0,
-            lib_letters_x: 0.0,
-            lib_sort_x: 0.0,
-            lib_filter_x: 0.0,
-            lib_letter: None,
-            lib_folder: None,
-            lib_search_open: false,
-            lib_query: String::new(),
+            library: LibraryState::new(app.internal_data_path().as_deref()),
             ime_active: false,
             view_mode: LibraryViewMode::Grid,
             cover_fit: LibraryCoverFit::Crop,
@@ -93,10 +84,6 @@ impl Reader {
             cover_progress: false,
             clear_confirm_until: None,
             group_by: LibraryGroupBy::None,
-            lib_sort: LibSort::RecentlyAdded,
-            lib_status: None,
-            lib_books: persist::load_progress(app.internal_data_path().as_deref()),
-            lib_filtered: Vec::new(),
             recents: persist::load_recents(app.internal_data_path().as_deref()),
             list_dirty: true,
             status: None,
@@ -126,11 +113,6 @@ impl Reader {
             eraser_cursor_id: 0,
             thumbs: ThumbCache::new(THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES),
             thumb_failed: HashSet::new(),
-            lib_header: None,
-            lib_band: None,
-            lib_row_dirty: None,
-            lib_fade: None,
-            lib_fade_id: 0,
             list_drag: None,
             annotations: AnnotationSet::new(),
             annot_sidecar: None,
@@ -325,8 +307,8 @@ impl Reader {
     pub(crate) fn init_window(&mut self, window: NativeWindow) {
         self.set_window(window);
         self.bitmap = None;
-        self.lib_header = None;
-        self.lib_band = None;
+        self.library.lib_header = None;
+        self.library.lib_band = None;
         self.page_badge = None;
         self.mode_badge = None;
         self.sheet_bitmap = None;

@@ -146,8 +146,8 @@ impl Reader {
             self.win_w = w;
             self.win_h = h;
             self.bitmap = None; // lista del picker → re-render
-            self.lib_header = None; // zona fija de la biblioteca: tamaño nuevo
-            self.lib_band = None; // banda de contenido: tamaño nuevo
+            self.library.lib_header = None; // zona fija de la biblioteca: tamaño nuevo
+            self.library.lib_band = None; // banda de contenido: tamaño nuevo
             self.cache.clear(); // nueva escala cover → los bitmaps viejos no sirven
             self.list_dirty = true;
             self.page_badge = None;
@@ -220,14 +220,17 @@ impl Reader {
                 // HORIZONTALES (carousel, panel de búsqueda y organización)
                 // se clampean igual contra su ancho total.
                 let max_v = self.lib_max_scroll();
-                if self.lib_scroll > max_v {
-                    self.lib_scroll = max_v;
+                if self.library.lib_scroll > max_v {
+                    self.library.lib_scroll = max_v;
                 }
-                self.lib_carousel_x = self.lib_carousel_x.min(self.lib_cont_max_x());
-                self.lib_letters_x = self.lib_letters_x.min(self.lib_chips_max_x(0));
-                self.lib_folders_x = self.lib_folders_x.min(self.lib_chips_max_x(1));
-                self.lib_sort_x = self.lib_sort_x.min(self.lib_org_max_x(0));
-                self.lib_filter_x = self.lib_filter_x.min(self.lib_org_max_x(1));
+                self.library.lib_carousel_x =
+                    self.library.lib_carousel_x.min(self.lib_cont_max_x());
+                self.library.lib_letters_x =
+                    self.library.lib_letters_x.min(self.lib_chips_max_x(0));
+                self.library.lib_folders_x =
+                    self.library.lib_folders_x.min(self.lib_chips_max_x(1));
+                self.library.lib_sort_x = self.library.lib_sort_x.min(self.lib_org_max_x(0));
+                self.library.lib_filter_x = self.library.lib_filter_x.min(self.lib_org_max_x(1));
 
                 if self.list_dirty {
                     // Cambio ESTRUCTURAL (datos/filtros/sort/search/estado/
@@ -236,7 +239,7 @@ impl Reader {
                     // render CARO (Canvas+JNI), pagado una vez por cambio,
                     // nunca por frame de scroll.
                     self.rebuild_library();
-                } else if let Some(zone) = self.lib_row_dirty {
+                } else if let Some(zone) = self.library.lib_row_dirty {
                     // Solo una fila HORIZONTAL se arrastró (carousel o
                     // chips): re-renderizar ESA fila y remendarla sobre su
                     // contenedor — barato (área pequeña), sin tocar el resto.
@@ -267,10 +270,10 @@ impl Reader {
     /// status, ventana, entrada), nunca por frame de scroll.
     fn rebuild_library(&mut self) {
         self.list_dirty = false;
-        self.lib_row_dirty = None;
+        self.library.lib_row_dirty = None;
         // 1) Zona fija (cabecera editorial + campo de búsqueda + panel +
         //    franja de estado).
-        self.lib_header = render_library_header(self);
+        self.library.lib_header = render_library_header(self);
         // 2) Banda de contenido en la posición actual del scroll.
         self.rebuild_library_band();
         // 3) Filas horizontales dentro de sus contenedores (carousel,
@@ -283,7 +286,11 @@ impl Reader {
     /// al rebuild completo. El render es Canvas+JNI UNA vez por banda; el
     /// scroll dentro de la banda es memcpy.
     fn rebuild_library_band(&mut self) {
-        let content_y0 = lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
+        let content_y0 = lib_content_y0(
+            self.win_h,
+            self.library.lib_search_open,
+            self.status.is_some(),
+        );
         let viewport = (self.win_h - content_y0).max(0);
         let content_h = self.lib_content_h() as i32;
         let margin = if self.is_grid() {
@@ -293,29 +300,32 @@ impl Reader {
             list_row_h(self.win_h, self.cover_size) as i32
         };
         let band_h = (viewport + 2 * margin).min(content_h.max(viewport));
-        let band_origin = ((self.lib_scroll as i32) - margin)
+        let band_origin = ((self.library.lib_scroll as i32) - margin)
             .max(0)
             .min((content_h - band_h).max(0));
         if let Some(bmp) = render_library_zone(self, band_origin, band_h) {
             let mut band = bmp;
             paste_lib_thumbs(self, &mut band, band_origin);
-            self.lib_band = Some((band, band_origin));
+            self.library.lib_band = Some((band, band_origin));
             self.splice_band_rows();
         } else {
-            self.lib_band = None;
+            self.library.lib_band = None;
         }
     }
 
     /// ¿La banda actual cubre la ventana de contenido con el scroll actual?
     /// false → hay que re-bandear (render de la banda en la nueva posición).
     fn lib_band_covers(&self) -> bool {
-        match &self.lib_band {
+        match &self.library.lib_band {
             None => false,
             Some((bmp, origin)) => {
-                let content_y0 =
-                    lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
+                let content_y0 = lib_content_y0(
+                    self.win_h,
+                    self.library.lib_search_open,
+                    self.status.is_some(),
+                );
                 let viewport = (self.win_h - content_y0).max(0);
-                let s = self.lib_scroll as i32;
+                let s = self.library.lib_scroll as i32;
                 s >= *origin && s + viewport <= *origin + bmp.height as i32
             }
         }
@@ -325,22 +335,22 @@ impl Reader {
     /// barato) y la remienda sobre su contenedor: el arrastre horizontal del
     /// carousel o de chips no re-renderiza la pantalla completa.
     fn rebuild_library_row(&mut self, zone: u8) {
-        self.lib_row_dirty = None;
+        self.library.lib_row_dirty = None;
         match zone {
             2 | 3 => {
                 // Chips del panel de búsqueda → cabecera (zona fija).
                 let row = render_search_chip_row(self, (zone - 2) as usize);
                 let x = if zone == 2 {
-                    self.lib_letters_x as i32
+                    self.library.lib_letters_x as i32
                 } else {
-                    self.lib_folders_x as i32
+                    self.library.lib_folders_x as i32
                 };
                 let y = if zone == 2 {
                     lib_search_chips_y0(self)
                 } else {
                     lib_search_chips_y1(self)
                 };
-                if let (Some(row), Some(h)) = (row, self.lib_header.as_mut()) {
+                if let (Some(row), Some(h)) = (row, self.library.lib_header.as_mut()) {
                     splice_row(h, &row, -x, y as i32);
                 }
             }
@@ -355,21 +365,21 @@ impl Reader {
     /// Se llama tras un rebuild completo (los contenedores acaban de
     /// renderizarse SIN las filas, que se leen de `lib_*_x`).
     fn splice_library_rows(&mut self) {
-        let letters_row = if self.lib_search_open {
+        let letters_row = if self.library.lib_search_open {
             render_search_chip_row(self, 0)
         } else {
             None
         };
-        let folders_row = if self.lib_search_open {
+        let folders_row = if self.library.lib_search_open {
             render_search_chip_row(self, 1)
         } else {
             None
         };
-        let lx = self.lib_letters_x as i32;
-        let fx = self.lib_folders_x as i32;
+        let lx = self.library.lib_letters_x as i32;
+        let fx = self.library.lib_folders_x as i32;
         let cy0 = lib_search_chips_y0(self) as i32;
         let cy1 = lib_search_chips_y1(self) as i32;
-        if let Some(header) = self.lib_header.as_mut() {
+        if let Some(header) = self.library.lib_header.as_mut() {
             if let Some(row) = letters_row {
                 splice_row(header, &row, -lx, cy0);
             }
@@ -592,10 +602,13 @@ impl Reader {
                 // del visor), NO un re-render Canvas+JNI por frame. El
                 // scroll solo cambia de dónde se copia la banda (`.1` =
                 // contenido-y de su borde superior).
-                let content_y0 =
-                    lib_content_y0(self.win_h, self.lib_search_open, self.status.is_some());
-                let header = self.lib_header.as_ref();
-                let band = self.lib_band.as_ref().map(|(b, o)| (b, *o));
+                let content_y0 = lib_content_y0(
+                    self.win_h,
+                    self.library.lib_search_open,
+                    self.status.is_some(),
+                );
+                let header = self.library.lib_header.as_ref();
+                let band = self.library.lib_band.as_ref().map(|(b, o)| (b, *o));
                 // Aviso breve (toast) integrado en el MISMO lock+present
                 // que la biblioteca (antes: un segundo present por frame
                 // durante ~1,5 s — innecesario).
@@ -616,7 +629,7 @@ impl Reader {
                     p.rgba_lib_bg(),
                     header,
                     band,
-                    self.lib_scroll as i32,
+                    self.library.lib_scroll as i32,
                     content_y0,
                     toast_ov,
                 );

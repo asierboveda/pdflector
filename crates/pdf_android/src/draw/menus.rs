@@ -4,33 +4,15 @@
 //! Menús desplegables del visor (⋯ View / ☰ Settings) y lista del
 //! picker: ítems, geometría compartida con `input` y renders Canvas+JNI.
 
-use pdf_core::Bitmap;
 use crate::reader::{
-    LibSort,
-    LibraryCoverFit,
-    LibraryGroupBy,
-    PickRow,
-    PickerKind,
-    Reader,
-    human_size,
-    picker_btn_h,
-    picker_btn_w,
-    picker_header_h,
-    picker_row_h,
-    settings_menu_button_rect,
-    truncate_name,
-    view_menu_button_rect,
+    LibSort, LibraryCoverFit, LibraryGroupBy, PickRow, PickerKind, Reader, human_size,
+    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect,
+    truncate_name, view_menu_button_rect,
 };
 use crate::theme;
+use pdf_core::Bitmap;
 
-use super::{
-    CanvasRect,
-    CanvasText,
-    TextAlign,
-    draw_button,
-    draw_card_shadow,
-    jni_text_bitmap,
-};
+use super::{CanvasRect, CanvasText, TextAlign, draw_button, draw_card_shadow, jni_text_bitmap};
 
 /// Renderiza la lista del picker a un bitmap RGBA8 de tamaño de ventana.
 pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
@@ -261,7 +243,7 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
 /// Estructura FIJA (no scrollea): cabecera editorial (título "Library"
 /// grande + botón "＋ Add book") + campo de búsqueda (+ panel de chips de
 /// letra/carpeta si está abierto) + franja de estado (si la hay). Contenido
-/// SCROLLABLE (desplazado `reader.lib_scroll` px): [Continue Reading:
+/// SCROLLABLE (desplazado `reader.library.lib_scroll` px): [Continue Reading:
 /// carousel horizontal de tarjetas con portada 2:3 grande, título, autor,
 /// barra de progreso, "Page X of Y · Z%" y botón Read] + [título "My
 /// Library" + chips de organización (sort/filter) + rejilla 3×3 de portadas
@@ -786,11 +768,17 @@ pub(crate) fn draw_view_menu(
     ));
     y += sec_h;
     for (label, active) in [
-        ("Título", reader.lib_sort == LibSort::Title),
-        ("Autor", reader.lib_sort == LibSort::Author),
-        ("Fecha añadido", reader.lib_sort == LibSort::RecentlyAdded),
-        ("Última lectura", reader.lib_sort == LibSort::RecentlyRead),
-        ("Progreso", reader.lib_sort == LibSort::Progress),
+        ("Título", reader.library.lib_sort == LibSort::Title),
+        ("Autor", reader.library.lib_sort == LibSort::Author),
+        (
+            "Fecha añadido",
+            reader.library.lib_sort == LibSort::RecentlyAdded,
+        ),
+        (
+            "Última lectura",
+            reader.library.lib_sort == LibSort::RecentlyRead,
+        ),
+        ("Progreso", reader.library.lib_sort == LibSort::Progress),
     ] {
         if active {
             rects.push(CanvasRect::rounded(

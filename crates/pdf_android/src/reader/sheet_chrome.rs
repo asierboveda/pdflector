@@ -130,8 +130,8 @@ impl Reader {
         self.sheet_bitmap = None;
         self.chrome_top_bitmap = None;
         self.chrome_bottom_bitmap = None;
-        self.lib_header = None;
-        self.lib_band = None;
+        self.library.lib_header = None;
+        self.library.lib_band = None;
         self.toast_bitmap = None;
         self.sel_menu = None;
         info!("theme set to {:?} (dark: {})", self.theme, self.dark);
@@ -148,8 +148,8 @@ impl Reader {
         self.sheet_bitmap = None;
         self.chrome_top_bitmap = None;
         self.chrome_bottom_bitmap = None;
-        self.lib_header = None;
-        self.lib_band = None;
+        self.library.lib_header = None;
+        self.library.lib_band = None;
         self.toast_bitmap = None;
         self.sel_menu = None;
         info!("theme cycled to {:?} (dark: {})", self.theme, self.dark);
