@@ -781,6 +781,18 @@ impl Gpu {
         }
     }
 
+    /// Fondo del visor (tema; rojo de error sin documento) para los clears.
+    /// La dry FBO y el fb0 comparten color: con el pan aplicado al quad de
+    /// composición, las bandas que el desplazamiento deja al descubierto en
+    /// fb0 son del mismo tono que el fondo horneado en la dry.
+    fn view_bg(&self, reader: &Reader) -> [u8; 4] {
+        if reader.doc.is_none() {
+            crate::theme::ERROR_BG_RGBA
+        } else {
+            reader.theme.palette().rgba_bg()
+        }
+    }
+
     // ------------------------------------------------- página como textura
 
     pub(crate) fn upload_page_if_needed(&mut self, page: u32, rendered_zoom: f32, bmp: &Bitmap) {
@@ -1425,12 +1437,7 @@ impl Gpu {
             gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, self.dry_fbo);
             gl::glViewport(0, 0, self.win_w, self.win_h);
 
-            let p = reader.theme.palette();
-            let bg = if reader.doc.is_none() {
-                crate::theme::ERROR_BG_RGBA
-            } else {
-                p.rgba_bg()
-            };
+            let bg = self.view_bg(reader);
             self.clear(bg);
 
             // 1. Dibujar página PDF
@@ -1449,8 +1456,11 @@ impl Gpu {
                 };
                 let pw = bmp.width as f32 * blit_zoom;
                 self.upload_page_if_needed(reader.page, reader.rendered_zoom, bmp);
-                page_dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
-                page_dy = reader.pan_y.round();
+                // El pan NO se hornea aquí: lo aplica el quad de composición
+                // en present_viewer (Tarea 2.3). Horneado + quad desplazado
+                // duplicarían el pan (2×pan) en cada re-render de la dry.
+                page_dx = ((reader.win_w as f32 - pw) / 2.0).round();
+                page_dy = 0.0;
 
                 gl::glUseProgram(self.prog_tex.prog);
                 gl::glActiveTexture(gl::GL_TEXTURE0);
@@ -1745,6 +1755,11 @@ impl Gpu {
         unsafe {
             gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
             gl::glViewport(0, 0, self.win_w, self.win_h);
+
+            // Limpiar fb0 con el fondo del visor: con pan ≠ 0 el quad de la
+            // dry no cubre toda la pantalla y esas bandas deben ser del color
+            // de fondo (no contenido indefinido tras el swap).
+            self.clear(self.view_bg(reader));
 
             // Dibujar capa Dry base, trasladada por el pan del visor: la
             // página entera se desplaza con el dedo (offset en el quad de
