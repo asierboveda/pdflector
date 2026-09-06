@@ -29,6 +29,10 @@ use log::{info, warn};
 use crate::reader::Reader;
 use pdf_core::{Bitmap, FrameTimer};
 
+// Clave de invalidación de la capa Dry en módulo puro (sin FFI/GL, testeable en host).
+mod dry_key;
+pub(crate) use dry_key::DryKey;
+
 // ------------------------------------------------------------------ FFI EGL
 
 pub mod ffi {
@@ -478,20 +482,6 @@ pub(crate) struct Gpu {
     frame_timer: FrameTimer,
     presents: u64,
     last_present: Option<std::time::Instant>,
-}
-
-/// Clave de invalidación de la capa base persistente (Dry FBO).
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct DryKey {
-    page: u32,
-    zoom_bits: u32,
-    pan_x: i32,
-    pan_y: i32,
-    ann_count: usize,
-    dark: bool,
-    chrome_visible: bool,
-    sheet_progress_bits: u32,
-    has_toast: bool,
 }
 
 struct OverlayTex {
@@ -1748,16 +1738,11 @@ impl Gpu {
         let key = DryKey {
             page: reader.page,
             zoom_bits: reader.zoom.to_bits(),
-            pan_x: reader.pan_x.round() as i32,
-            pan_y: reader.pan_y.round() as i32,
             ann_count: anns_count,
             dark: reader.dark,
-            chrome_visible: reader.chrome_visible,
-            sheet_progress_bits: (reader.sheet_progress * 100.0).round() as u32,
-            has_toast: reader.toast.is_some(),
         };
 
-        if self.dry_dirty || self.dry_key != Some(key) {
+        if self.dry_dirty || self.dry_key.is_none_or(|old| key.invalidates(&old)) {
             self.render_dry(reader);
             self.dry_dirty = false;
             self.dry_key = Some(key);
