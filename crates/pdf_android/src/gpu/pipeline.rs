@@ -766,6 +766,8 @@ impl Gpu {
         }
     }
     /// Present completo del visor por GPU con arquitectura Dual FBO (Wet/Dry).
+    /// Toma `&mut Reader` porque tras el swap CONSUME la instrumentación del
+    /// turno (`page_turn_t0`, log `page_turn` — ver bloque A2 al final).
     ///
     /// - Capa Dry: se re-renderiza SOLO al cambiar página, zoom, anotaciones o
     ///   dark (los 4 campos de la `DryKey`). Durante la escritura activa, la
@@ -777,7 +779,7 @@ impl Gpu {
     /// - Composición: compone `dry_fbo ⊕ wet_fbo` en el framebuffer 0 (la
     ///   ventana visible) y encima los overlays de UI por frame (no invalidan
     ///   la dry).
-    pub(crate) fn present_viewer(&mut self, reader: &Reader) {
+    pub(crate) fn present_viewer(&mut self, reader: &mut Reader) {
         let t0 = std::time::Instant::now();
         // Volver al visor desde Library/Picker: liberar las texturas grandes
         // de sus planos (cabecera/banda/lista) — ya no se pintan y retienen
@@ -788,7 +790,8 @@ impl Gpu {
         }
 
         // 1. Comprobar si la capa Dry (base persistente) está sucia
-        let anns_count = reader.annotations.for_page(reader.page as usize).len();
+        // `count_for_page` (A2): O(1) sin el Vec intermedio de `for_page`.
+        let anns_count = reader.annotations.count_for_page(reader.page as usize);
         let key = DryKey {
             page: reader.page,
             zoom_bits: reader.zoom.to_bits(),
@@ -908,6 +911,19 @@ impl Gpu {
                     p95.as_secs_f64() * 1000.0,
                     self.presents
                 );
+            }
+        }
+        // A2 (fase A): latencia real de cambio de página — desde que
+        // `goto_page` fijó `page_turn_t0` hasta el primer frame que presenta
+        // la página REAL horneada en la dry (`dry_key.page == reader.page` y
+        // sin `fallback_page` pendiente: el fallback NO es la página pedida).
+        // UNA medición por turno: al loguear se limpia `page_turn_t0`; con el
+        // render del worker aún en vuelo el campo se conserva para el frame
+        // en que aterrice. Infraestructura de la fase B / aceptación TCL.
+        if ok && reader.fallback_page.is_none() && reader.page_turn_t0.is_some() {
+            let on_target = self.dry_key.is_some_and(|k| k.page == reader.page);
+            if on_target && let Some(turn_t0) = reader.page_turn_t0.take() {
+                info!("page_turn {}ms", turn_t0.elapsed().as_millis());
             }
         }
     }

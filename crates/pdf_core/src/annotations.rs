@@ -343,6 +343,14 @@ impl AnnotationSet {
         }
     }
 
+    /// Number of annotations on `page_idx` (0 for a page without any).
+    ///
+    /// O(1) and allocation-free, unlike `for_page(page).len()` which builds
+    /// the intermediate `Vec`; used on the hot UI path (GPU dry key).
+    pub fn count_for_page(&self, page_idx: usize) -> usize {
+        self.by_page.get(&page_idx).map_or(0, Vec::len)
+    }
+
     /// Total number of annotations across all pages.
     pub fn len(&self) -> usize {
         self.by_page.values().map(Vec::len).sum()
@@ -733,6 +741,25 @@ mod tests {
         assert_eq!(page0_anns[0].id, page0);
 
         assert!(set.for_page(99).is_empty());
+    }
+
+    #[test]
+    fn count_for_page_counts_only_annotations_on_that_page() {
+        let mut set = AnnotationSet::new();
+        let page1_first = set.add(1, Annotation::Stroke(stroke())).expect("add");
+        set.add(0, Annotation::Stroke(stroke())).expect("add");
+        set.add(1, Annotation::Highlight(highlight())).expect("add");
+
+        assert_eq!(set.count_for_page(0), 1);
+        assert_eq!(set.count_for_page(1), 2);
+        // Página sin anotaciones (bucket nunca creado o podado por la goma) → 0.
+        assert_eq!(set.count_for_page(2), 0);
+        assert_eq!(set.count_for_page(usize::MAX), 0);
+
+        // Tras borrar la última anotación de la página el contador vuelve a 0.
+        assert!(set.remove(page1_first));
+        assert_eq!(set.count_for_page(1), 1);
+        assert_eq!(set.len(), 2);
     }
 
     #[test]

@@ -31,6 +31,10 @@ impl Reader {
         self.page_badge = None; // el indicador "N / total" cambia
         self.sheet_bitmap = None; // el indicador del sheet cambia
         info!("page {}", self.page + 1);
+        // Instrumentación (A2): arranca el cronómetro del turno — lo cierra
+        // `present_viewer` con el log `page_turn <ms>` cuando la página real
+        // (no el fallback) queda horneada en la dry.
+        self.page_turn_t0 = Some(Instant::now());
         // Cambio de página SIN congelar: si la nueva está en caché (prefetch
         // previo), el blit es inmediato; si no, se muestra la página ANTERIOR
         // (fallback) mientras el worker renderiza la nueva asíncronamente.

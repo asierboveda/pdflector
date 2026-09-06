@@ -155,6 +155,7 @@ impl Reader {
             fallback_page: None,
             state_dirty: false,
             state_dirty_since: None,
+            page_turn_t0: None,
             thumb_worker: None,
             thumb_rx: None,
         };

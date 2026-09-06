@@ -600,8 +600,10 @@ impl Reader {
                     self.eraser_cursor_id = self.ovl_seq;
                 }
                 // Present GPU: se toma el Gpu del Option (take) para poder
-                // pasar `&self`Reader sin conflicto de préstamos — el
-                // present solo LEE el Reader.
+                // pasar el Reader (reborrow `&mut`) sin conflicto de
+                // préstamos — el present LEE el Reader y consume la
+                // instrumentación del cambio de página (`page_turn_t0` →
+                // log `page_turn`, A2).
                 if let Some(mut g) = self.gpu.take() {
                     g.present_viewer(self);
                     self.gpu = Some(g);

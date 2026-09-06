@@ -804,6 +804,13 @@ pub(crate) struct Reader {
     /// pinch, toggles, apertura) siguen eager: son infrecuentes.
     state_dirty: bool,
     state_dirty_since: Option<Instant>,
+    /// Latencia de cambio de página (A2, instrumentación permanente):
+    /// instante en que `goto_page` fijó la página objetivo. `present_viewer`
+    /// loguea `page_turn <ms>` cuando la página REAL queda horneada en la
+    /// dry (`dry_key.page == self.page` y sin `fallback_page`) y limpia el
+    /// campo — UNA medición por turno. Infraestructura de la fase B y de la
+    /// aceptación TCL; overhead: 1 `Instant` por cambio de página.
+    pub(crate) page_turn_t0: Option<Instant>,
     /// Worker actor para render de portadas en segundo plano (Fase E1).
     thumb_worker: Option<crate::thumbs::ThumbWorker>,
     thumb_rx: Option<std::sync::mpsc::Receiver<crate::thumbs::ThumbMsg>>,
