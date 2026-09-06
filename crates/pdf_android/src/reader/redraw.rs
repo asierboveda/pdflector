@@ -668,14 +668,9 @@ impl Reader {
                     // Fallback SW (sin EGL).
                     sw_blit = true;
                     match self.bitmap.as_ref() {
-                        Some(bmp) => blit_fast(
-                            window,
-                            bmp,
-                            1.0,
-                            bg,
-                            (self.offset_x, self.offset_y),
-                            None,
-                        ),
+                        Some(bmp) => {
+                            blit_fast(window, bmp, 1.0, bg, (self.offset_x, self.offset_y), None)
+                        }
                         None => {
                             // Sin lista: solo el fondo (guard hace
                             // unlock_and_post al caer).
