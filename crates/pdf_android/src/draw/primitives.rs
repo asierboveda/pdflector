@@ -56,13 +56,18 @@ fn copy_row_rgba_to(dst: &mut [u8], src: &[u8], bpp: usize) {
     match bpp {
         4 => dst.copy_from_slice(&src[..dst.len()]),
         2 => {
-            for (out, px) in dst.chunks_exact_mut(2).zip(src.chunks_exact(4)) {
+            for (out, px) in dst
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(src.as_chunks::<4>().0)
+            {
                 out.copy_from_slice(&rgb565(px[0], px[1], px[2]).to_ne_bytes());
             }
         }
         _ => {
             let n = bpp.min(3);
-            for (out, px) in dst.chunks_exact_mut(bpp).zip(src.chunks_exact(4)) {
+            for (out, px) in dst.chunks_exact_mut(bpp).zip(src.as_chunks::<4>().0) {
                 out[..n].copy_from_slice(&px[..n]);
             }
         }
@@ -119,7 +124,7 @@ pub(crate) fn copy_region_rect(
             dst_row.copy_from_slice(&src_row[..copy_w * 4]);
         } else {
             let n = bpp.min(3);
-            for (o, px) in src_row.chunks_exact(4).enumerate() {
+            for (o, px) in src_row.as_chunks::<4>().0.iter().enumerate() {
                 dst_row[o * bpp..o * bpp + n].copy_from_slice(&px[..n]);
             }
         }
@@ -211,7 +216,7 @@ pub(super) fn copy_region_blend(
             )
         };
         if bpp == 4 {
-            for (i, px) in src_row.chunks_exact(4).enumerate() {
+            for (i, px) in src_row.as_chunks::<4>().0.iter().enumerate() {
                 let a = px[3];
                 if a == 0 {
                     continue;
@@ -230,7 +235,7 @@ pub(super) fn copy_region_blend(
         } else {
             // bpp != 4 (raro: el buffer se fuerza a RGBA): copia directa.
             let n = bpp.min(3);
-            for (i, px) in src_row.chunks_exact(4).enumerate() {
+            for (i, px) in src_row.as_chunks::<4>().0.iter().enumerate() {
                 let o = i * bpp;
                 dst_row[o..o + n].copy_from_slice(&px[..n]);
             }

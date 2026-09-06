@@ -207,7 +207,13 @@ mod tests {
     fn scale_uniform_source_stays_uniform() {
         let src = solid(3, 2, [10, 20, 30, 40]);
         let out = scale_bitmap(&src, 9, 7).expect("scale");
-        assert!(out.data.chunks_exact(4).all(|p| p == [10, 20, 30, 40]));
+        assert!(
+            out.data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| *p == [10, 20, 30, 40])
+        );
     }
 
     #[test]

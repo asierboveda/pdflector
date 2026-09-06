@@ -14,6 +14,7 @@
 //! - `menus`: picker de PDFs y menús ⋯/☰.
 //! - `library`: pantalla de biblioteca (cabecera, zona, portadas).
 //! - `overlays`: menú de selección, toast, panel IA, snapshot de fade.
+//!
 //! Los paths `crate::draw::X` del código previo se conservan con los
 //! re-exports de abajo (consumidores: `reader`, `input`, `zoom`, `gpu`).
 
