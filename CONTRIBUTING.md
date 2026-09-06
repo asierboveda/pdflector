@@ -12,7 +12,7 @@ Proyecto personal de aprendizaje en Rust; aportes externos no esperados, pero bi
 ```bash
 python3 tools/generate_corpus.py        # si falta corpus
 cargo test -p pdf_core
-cargo fmt --all && cargo clippy --all-targets -- -D warnings
+cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings
 # Android (NDK r28, ver README):
 cargo check -p pdf_android --target aarch64-linux-android
 ```

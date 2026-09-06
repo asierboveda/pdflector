@@ -20,7 +20,7 @@
   AGENTS.md: fila CI con "job Android en CI (sin TCL)", `cargo fmt` en los 6
   ficheros con deriva local. Los `#[allow(dead_code)]` restantes (43) protegen
   API de fases futuras, UI oculta por diseño o ítems superados-documentados —
-  inventario por caso en `.superpowers/.../task-4.6-report.md`.
+  inventario por caso en el historial git de la reestructuración (commit `c236c27`).
 - Verificación: `cargo check -p pdf_android --target aarch64-linux-android`
   0 errores / 0 warnings; `cargo test -p pdf_core` 161/0; `cargo clippy
   --all-targets -- -D warnings` verde; `cargo fmt --all -- --check` verde;

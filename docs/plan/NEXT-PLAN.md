@@ -39,7 +39,7 @@
 - C1-C4 [x] · cierre [ ] (4.39/2.39ms medidos).
 - D pendiente.
 - E1/E4 [x] (E4 ejecutado: sin tope de libros) · E2/E3 [ ].
-- Cifras de líneas actuales: `reader.rs` 5605 · `draw.rs` 4899 · `gpu.rs` 1899 · `input.rs` 1701.
+- Tras la Fase 4 ya no hay megaficheros: `reader/` 14 ficheros (mod.rs + 13 submódulos, `library_state` incluido) · `draw/` 8 · `gpu/` 8 · `input/` 5; fichero mayor: `draw/library.rs` con 1615 líneas (ninguno ≥ 2000).
 
 Ver cada fase para detalle auditado y tareas.
 
