@@ -33,6 +33,11 @@ use pdf_core::{Bitmap, FrameTimer};
 mod dry_key;
 pub(crate) use dry_key::DryKey;
 
+// Política de presupuesto LRU por bytes de las texturas de overlay en módulo
+// puro (sin FFI/GL, testeable en host): evicción y bytes NO dependen de GL.
+mod ovl_budget;
+pub(crate) use ovl_budget::{OvlBudget, OVL_BYTE_BUDGET};
+
 // ------------------------------------------------------------------ FFI EGL
 
 pub mod ffi {
@@ -463,7 +468,18 @@ pub(crate) struct Gpu {
     page_loaded: Option<(u32, f32, u32)>,
     vbo_quad: u32,
     vbo_ink: u32,
+    /// Caché de texturas de overlay claveada por id de generación (ver
+    /// `OverlayTex`); el presupuesto LRU por bytes vive en `ovl_budget`
+    /// (misma fuente de verdad: un id residente en la caché está SIEMPRE en
+    /// el budget y viceversa).
     ovl_cache: Vec<OverlayTex>,
+    ovl_budget: OvlBudget,
+    /// Textura dedicada del fade de apertura (`Reader::lib_fade`): snapshot
+    /// de ventana COMPLETA que puede exceder `OVL_BYTE_BUDGET`, así que se
+    /// sube una vez por transición y vive FUERA del presupuesto (misma
+    /// categoría que `page_tex`). Some((id_del_snapshot, tex)); se libera al
+    /// terminar el fade o al empezar otro.
+    fade_tex: Option<(u64, u32)>,
 
     // --- Fase W1/W2/W3: Pipeline Dual FBO (Wet / Dry Ink) ---
     dry_fbo: u32,
@@ -484,9 +500,14 @@ pub(crate) struct Gpu {
     last_present: Option<std::time::Instant>,
 }
 
+/// Entrada de la caché de texturas de overlay: `id` = generación del bitmap
+/// (id monótono asignado por el Reader en cada re-render, ver
+/// `Reader::ovl_seq`) y `tex` = nombre GL. La política LRU por bytes vive en
+/// `OvlBudget`, que usa el MISMO `id` como clave de unión y devuelve los ids
+/// evictados para que `overlay_tex` borre sus texturas. El bitmap NO se
+/// clona aquí: quien posee el id posee el bitmap (ABA del puntero resuelto).
 struct OverlayTex {
-    key_ptr: *const u8,
-    _keep: Vec<u8>,
+    id: u64,
     tex: u32,
 }
 
@@ -661,6 +682,8 @@ impl Gpu {
                 vbo_quad,
                 vbo_ink,
                 ovl_cache: Vec::new(),
+                ovl_budget: OvlBudget::new(OVL_BYTE_BUDGET),
+                fade_tex: None,
                 dry_fbo: 0,
                 dry_tex: 0,
                 dry_dirty: true,
@@ -864,8 +887,53 @@ impl Gpu {
 
     // ------------------------------------------------- quads y overlays
 
-    fn draw_bitmap(&mut self, b: &Bitmap, x: i32, y: i32, alpha: f32) {
-        let tex = self.overlay_tex(b);
+    /// Sube `b` como textura RGBA8 y devuelve el nombre GL (sin cachear).
+    /// Lo comparten `overlay_tex` (caché LRU con presupuesto) y `fade_tex`
+    /// (textura dedicada del fade, que puede exceder el presupuesto).
+    fn upload_texture(&mut self, b: &Bitmap) -> u32 {
+        let mut tex = 0u32;
+        unsafe {
+            gl::glGenTextures(1, &mut tex);
+            gl::glBindTexture(gl::GL_TEXTURE_2D, tex);
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_MIN_FILTER,
+                gl::GL_LINEAR as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_MAG_FILTER,
+                gl::GL_LINEAR as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_WRAP_S,
+                gl::GL_CLAMP_TO_EDGE as i32,
+            );
+            gl::glTexParameteri(
+                gl::GL_TEXTURE_2D,
+                gl::GL_TEXTURE_WRAP_T,
+                gl::GL_CLAMP_TO_EDGE as i32,
+            );
+            gl::glTexImage2D(
+                gl::GL_TEXTURE_2D,
+                0,
+                gl::GL_RGBA as i32,
+                b.width as i32,
+                b.height as i32,
+                0,
+                gl::GL_RGBA,
+                gl::GL_UNSIGNED_BYTE,
+                b.data.as_ptr(),
+            );
+        }
+        tex
+    }
+
+    /// Dibuja un quad texturizado (prog_ovl, alpha uniforme) con una textura
+    /// YA resuelta (`overlay_tex` o `fade_tex`). Coordenadas de pantalla; el
+    /// pan NO se aplica (los overlays son UI fija).
+    fn draw_tex_quad(&mut self, tex: u32, b: &Bitmap, x: i32, y: i32, alpha: f32) {
         unsafe {
             gl::glActiveTexture(gl::GL_TEXTURE0);
             gl::glBindTexture(gl::GL_TEXTURE_2D, tex);
@@ -945,59 +1013,86 @@ impl Gpu {
         }
     }
 
-    fn overlay_tex(&mut self, b: &Bitmap) -> u32 {
-        let key = b.data.as_ptr();
-        if let Some(o) = self.ovl_cache.iter().find(|o| o.key_ptr == key) {
+    /// Dibuja el bitmap de overlay `b` como quad texturizado, cacheándolo
+    /// por su id de generación (ver `overlay_tex`).
+    fn draw_bitmap(&mut self, b: &Bitmap, id: u64, x: i32, y: i32, alpha: f32) {
+        let tex = self.overlay_tex(id, b);
+        if tex == 0 {
+            // Entrada mayor que el presupuesto: no se cachea ni se dibuja
+            // (bindear la textura 0 pintaría un quad indefinido).
+            return;
+        }
+        self.draw_tex_quad(tex, b, x, y, alpha);
+    }
+
+    /// Textura (cacheada) del bitmap de overlay `b`. El `id` lo asigna el
+    /// Reader en CADA re-render del overlay (`Reader::ovl_seq` → campo
+    /// `<overlay>_id`): la clave NUNCA es el puntero de `Bitmap::data` —
+    /// cuando el allocator reusa la dirección de un bitmap ya liberado
+    /// (ABA), el hit por puntero devolvía la textura del contenido ANTERIOR.
+    /// El bitmap NO se clona aquí: quien posee el id posee el bitmap. El
+    /// presupuesto LRU por bytes (`ovl_budget`, OVL_BYTE_BUDGET) evicta del
+    /// frente y devuelve los ids evictados → `delete_ovl_tex` (glDeleteTextures).
+    fn overlay_tex(&mut self, id: u64, b: &Bitmap) -> u32 {
+        if let Some(o) = self.ovl_cache.iter().find(|o| o.id == id) {
+            self.ovl_budget.touch(id); // hit: pasa a MRU del presupuesto
             return o.tex;
         }
-        let mut tex = 0u32;
-        unsafe {
-            gl::glGenTextures(1, &mut tex);
-            gl::glBindTexture(gl::GL_TEXTURE_2D, tex);
-            gl::glTexParameteri(
-                gl::GL_TEXTURE_2D,
-                gl::GL_TEXTURE_MIN_FILTER,
-                gl::GL_LINEAR as i32,
-            );
-            gl::glTexParameteri(
-                gl::GL_TEXTURE_2D,
-                gl::GL_TEXTURE_MAG_FILTER,
-                gl::GL_LINEAR as i32,
-            );
-            gl::glTexParameteri(
-                gl::GL_TEXTURE_2D,
-                gl::GL_TEXTURE_WRAP_S,
-                gl::GL_CLAMP_TO_EDGE as i32,
-            );
-            gl::glTexParameteri(
-                gl::GL_TEXTURE_2D,
-                gl::GL_TEXTURE_WRAP_T,
-                gl::GL_CLAMP_TO_EDGE as i32,
-            );
-            gl::glTexImage2D(
-                gl::GL_TEXTURE_2D,
-                0,
-                gl::GL_RGBA as i32,
-                b.width as i32,
-                b.height as i32,
-                0,
-                gl::GL_RGBA,
-                gl::GL_UNSIGNED_BYTE,
-                b.data.as_ptr(),
-            );
+        let bytes = (b.width as usize) * (b.height as usize) * 4;
+        let evicted = self.ovl_budget.insert(id, bytes);
+        if !self.ovl_budget.contains(id) {
+            // No cabe ni vaciando la caché (bytes > presupuesto): se borran
+            // las texturas evictadas y no se sube nada (draw_bitmap dibuja 0).
+            for vid in evicted {
+                self.delete_ovl_tex(vid);
+            }
+            return 0;
         }
-        self.ovl_cache.push(OverlayTex {
-            key_ptr: key,
-            _keep: b.data.clone(),
-            tex,
-        });
-        if self.ovl_cache.len() > 8 {
-            let old = self.ovl_cache.remove(0);
+        for vid in evicted {
+            self.delete_ovl_tex(vid);
+        }
+        let tex = self.upload_texture(b);
+        self.ovl_cache.push(OverlayTex { id, tex });
+        tex
+    }
+
+    /// Borra la textura del overlay `vid` (evicción LRU del presupuesto).
+    fn delete_ovl_tex(&mut self, vid: u64) {
+        if let Some(pos) = self.ovl_cache.iter().position(|o| o.id == vid) {
+            let old = self.ovl_cache.swap_remove(pos);
             unsafe {
                 gl::glDeleteTextures(1, &old.tex);
             }
         }
-        tex
+    }
+
+    /// Textura dedicada del fade de apertura (`Reader::lib_fade`): el
+    /// snapshot es de ventana COMPLETA y puede exceder `OVL_BYTE_BUDGET`, así
+    /// que no pasa por `ovl_budget` (misma categoría que `page_tex`). Se sube
+    /// una vez por transición: id nuevo por snapshot (`lib_fade_id`), reuso
+    /// mientras el fade siga vivo y liberación al terminar o al reemplazarlo.
+    fn fade_tex(&mut self, id: u64, b: &Bitmap) -> u32 {
+        if let Some((old, tex)) = self.fade_tex
+            && old == id
+        {
+            return tex;
+        }
+        let new = self.upload_texture(b);
+        if let Some((_, tex)) = self.fade_tex.replace((id, new)) {
+            unsafe {
+                gl::glDeleteTextures(1, &tex);
+            }
+        }
+        new
+    }
+
+    /// Libera la textura del fade (transición terminada o sin fade activo).
+    fn free_fade_tex(&mut self) {
+        if let Some((_, tex)) = self.fade_tex.take() {
+            unsafe {
+                gl::glDeleteTextures(1, &tex);
+            }
+        }
     }
 
     fn draw_solid_quad(&mut self, l: f32, t: f32, r: f32, b: f32, rgba: [u8; 4]) {
@@ -1777,11 +1872,14 @@ impl Gpu {
         // 3b. Overlays de UI directamente a fb0 (por frame): chrome, sheet,
         // toast, sel_menu, ai_panel, lib_fade, badges. Nunca invalidan la dry
         // (Fase 2): la dry cachea página + anotaciones, esto es UI viva.
+        // Cada (bitmap, id) lleva el id de generación que el Reader asignó en
+        // su último re-render (`Reader::ovl_seq`): el hit de la caché de
+        // texturas es por id, nunca por puntero (ABA, Tarea 2.4).
         let mut ovl = OverlayList::new();
         OverlayList::collect_viewer(reader, &mut ovl);
-        for (b, x, y) in ovl.items {
+        for (b, id, x, y) in ovl.items {
             // El pan NO se aplica a los overlays: son UI fija en coords de pantalla.
-            self.draw_bitmap(b, x, y, 1.0);
+            self.draw_bitmap(b, id, x, y, 1.0);
         }
 
         if reader.sheet_progress > 0.0
@@ -1790,15 +1888,20 @@ impl Gpu {
             let slide = (crate::reader::sheet_h(reader.win_h) as f32
                 * (1.0 - reader.sheet_progress))
                 .round() as i32;
-            self.draw_bitmap(s, 0, -slide, 1.0);
+            self.draw_bitmap(s, reader.sheet_id, 0, -slide, 1.0);
         }
 
         if let Some((started, snap)) = &reader.lib_fade {
             let t = started.elapsed().as_secs_f32();
             let alpha = (1.0 - t / crate::LIB_FADE_MS).clamp(0.0, 1.0);
             if alpha > 0.0 {
-                self.draw_bitmap(snap, 0, 0, alpha);
+                let tex = self.fade_tex(reader.lib_fade_id, snap);
+                self.draw_tex_quad(tex, snap, 0, 0, alpha);
+            } else {
+                self.free_fade_tex(); // fade expirado: liberar la textura grande
             }
+        } else {
+            self.free_fade_tex(); // sin fade activo: no retener el snapshot
         }
 
         // 4. Conmutación dinámica de swap interval:
@@ -1860,10 +1963,12 @@ impl Drop for Gpu {
 }
 
 /// Copia de la lista de overlays del visor (mismos bitmaps y posiciones que
-/// la rama Viewer de `Reader::blit`) — los (bitmap, x, y) que la GPU sube
-/// como quads texturizados.
+/// la rama Viewer de `Reader::blit`) — los (bitmap, id, x, y) que la GPU sube
+/// como quads texturizados. El `id` es el de generación del bitmap
+/// (`Reader::ovl_seq`, campo `<overlay>_id`): la caché de texturas se clavea
+/// por él (ABA resuelto, Tarea 2.4).
 struct OverlayList<'a> {
-    items: Vec<(&'a Bitmap, i32, i32)>,
+    items: Vec<(&'a Bitmap, u64, i32, i32)>,
 }
 
 impl<'a> OverlayList<'a> {
@@ -1879,36 +1984,37 @@ impl<'a> OverlayList<'a> {
             let (_, by, _, _) = crate::reader::page_badge_rect(reader.win_w, reader.win_h);
             let tx = (reader.win_w - tb.width as i32) / 2;
             let ty = by - tb.height as i32 - 8;
-            out.items.push((tb, tx, ty));
+            out.items.push((tb, reader.toast_id, tx, ty));
         }
         if reader.chrome_visible {
             if let Some(top) = reader.chrome_top_bitmap.as_ref() {
-                out.items.push((top, 0, 0));
+                out.items.push((top, reader.chrome_top_id, 0, 0));
             }
             if let Some(bot) = reader.chrome_bottom_bitmap.as_ref() {
-                out.items.push((bot, 0, reader.win_h - bot.height as i32));
+                out.items.push((bot, reader.chrome_bottom_id, 0, reader.win_h - bot.height as i32));
             }
         } else if let Some(b) = reader.page_badge.as_ref() {
             let (bx, by, _, _) = crate::reader::page_badge_rect(reader.win_w, reader.win_h);
-            out.items.push((b, bx, by));
+            out.items.push((b, reader.page_badge_id, bx, by));
         }
         if !reader.chrome_visible
             && let Some(mb) = reader.mode_badge.as_ref()
         {
             let (bx, by, _, _) = crate::draw::mode_badge_rect(reader.win_w, reader.win_h);
-            out.items.push((mb, bx, by));
+            out.items.push((mb, reader.mode_badge_id, bx, by));
         }
         if let Some(menu) = reader.sel_menu.as_ref() {
-            out.items.push((&menu.bitmap, menu.x, menu.y));
+            out.items.push((&menu.bitmap, reader.sel_menu_id, menu.x, menu.y));
         }
         if let Some(panel) = reader.ai_panel.as_ref() {
-            out.items.push((&panel.bitmap, panel.x, panel.y));
+            out.items.push((&panel.bitmap, reader.ai_panel_id, panel.x, panel.y));
         }
         if let Some(eb) = reader.eraser_cursor.as_ref()
             && let Some((ex, ey)) = reader.erase_pt
         {
             out.items.push((
                 eb,
+                reader.eraser_cursor_id,
                 ex as i32 - (eb.width as i32) / 2,
                 ey as i32 - (eb.height as i32) / 2,
             ));

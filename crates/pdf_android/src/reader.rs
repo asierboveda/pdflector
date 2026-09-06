@@ -1227,10 +1227,23 @@ pub(crate) struct Reader {
     pub(crate) chrome_visible: bool,
     /// Momento de expiración para auto-ocultar el chrome del visor (≤ 2.5 s).
     pub(crate) chrome_hide_at: Option<Instant>,
+    /// Contador monótono de generaciones de los bitmaps de overlay (chrome,
+    /// toast, sheet, badges, menús, cursor de goma, fade): cada re-render de
+    /// un overlay consume un id nuevo (`<overlay>_id = next_ovl_id()`). La
+    /// caché de texturas GPU (`Gpu::ovl_cache`) se clavea por ese id y NUNCA
+    /// por el puntero de `Bitmap::data`: con el puntero, cuando el allocator
+    /// reusa la dirección de un bitmap ya liberado (ABA) el hit devolvía la
+    /// textura del contenido ANTERIOR. Quien posee el id posee el bitmap: la
+    /// caché ya no clona los pixels (Tarea 2.4).
+    pub(crate) ovl_seq: u64,
     /// Bitmap renderizado de la barra superior de chrome del visor.
     pub(crate) chrome_top_bitmap: Option<Bitmap>,
+    /// Id de generación de `chrome_top_bitmap` (caché GPU; ver `ovl_seq`).
+    pub(crate) chrome_top_id: u64,
     /// Bitmap renderizado de la barra inferior de chrome del visor.
     pub(crate) chrome_bottom_bitmap: Option<Bitmap>,
+    /// Id de generación de `chrome_bottom_bitmap` (caché GPU; ver `ovl_seq`).
+    pub(crate) chrome_bottom_id: u64,
     /// ¿Objetivo del sheet de ajustes? (true = abierto). La animación real
     /// vive en `sheet_progress`; `sheet_anim` marca que está en vuelo.
     pub(crate) sheet_open: bool,
@@ -1248,14 +1261,20 @@ pub(crate) struct Reader {
     /// cacheado: se invalida al cambiar ventana, página o modo oscuro y se
     /// LIBERA al cerrar del todo (`progress == 0`).
     pub(crate) sheet_bitmap: Option<Bitmap>,
+    /// Id de generación de `sheet_bitmap` (caché GPU; ver `ovl_seq`).
+    pub(crate) sheet_id: u64,
     /// Bitmap del indicador de página "N / total" (overlay abajo a la
     /// izquierda, tap = página siguiente), cacheado: se invalida al cambiar
     /// ventana, página o modo oscuro.
     pub(crate) page_badge: Option<Bitmap>,
+    /// Id de generación de `page_badge` (caché GPU; ver `ovl_seq`).
+    pub(crate) page_badge_id: u64,
     /// Bitmap del indicador de MODO del boli (overlay abajo a la derecha,
     /// ✏️/🖍️): se invalida al alternar modo o cambiar ventana — el usuario
     /// siempre ve en qué modo va a dibujar el boli.
     pub(crate) mode_badge: Option<Bitmap>,
+    /// Id de generación de `mode_badge` (caché GPU; ver `ovl_seq`).
+    pub(crate) mode_badge_id: u64,
     /// Posición de pantalla de la GOMA durante el borrado (None = sin gesto
     /// de borrado): dibuja el cursor circular (`eraser_cursor`) para que el
     /// usuario vea exactamente qué área se va a borrar.
@@ -1265,6 +1284,8 @@ pub(crate) struct Reader {
     pub(crate) erase_r_px: f32,
     /// Bitmap cacheado del cursor circular de la goma (se regenera por gesto).
     pub(crate) eraser_cursor: Option<Bitmap>,
+    /// Id de generación de `eraser_cursor` (caché GPU; ver `ovl_seq`).
+    pub(crate) eraser_cursor_id: u64,
     /// Caché LRU de portadas de la biblioteca (content:// URI → portada de la
     /// página 1, `THUMB_W` px de ancho). Se limpia al abrir un PDF: las
     /// portadas y la `PageCache` del visor no compiten por el mismo
@@ -1307,6 +1328,9 @@ pub(crate) struct Reader {
     /// (blend RGB por filas, ~1-5 ms/frame en la tablet; ~12 frames). Se
     /// libera al terminar; None = sin transición.
     pub(crate) lib_fade: Option<(Instant, Bitmap)>,
+    /// Id de generación del snapshot de `lib_fade` (textura dedicada GPU del
+    /// fade; ver `ovl_seq`).
+    pub(crate) lib_fade_id: u64,
     /// Estado del arrastre de las listas (picker y biblioteca): punto del
     /// Down + scrolls de partida + zona de la biblioteca (qué arrastra en
     /// horizontal). Ver `ListDrag`.
@@ -1336,12 +1360,16 @@ pub(crate) struct Reader {
     /// posición/geometría en px de ventana (ver `SelMenu`). Some mientras el
     /// menú esté abierto; tocar fuera lo cierra y descarta la selección.
     pub(crate) sel_menu: Option<SelMenu>,
+    /// Id de generación del bitmap de `sel_menu` (caché GPU; ver `ovl_seq`).
+    pub(crate) sel_menu_id: u64,
     /// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta tipo
     /// `SelMenu` con cabecera (título + ✕/▲/▼) y cuerpo de texto envuelto
     /// con scroll (ver `AiPanel`). Some mientras esté abierto (fase
     /// Asking/Answer/Error); se abre al tocar "IA" en el menú de selección
     /// (`ask_ai`) y se cierra con ✕ o tap fuera (`close_ai_panel`).
     pub(crate) ai_panel: Option<AiPanel>,
+    /// Id de generación del bitmap de `ai_panel` (caché GPU; ver `ovl_seq`).
+    pub(crate) ai_panel_id: u64,
     /// Texto actual del panel de IA: "preguntando…" mientras la consulta
     /// está en vuelo, la respuesta del modelo o el mensaje de error. Lo
     /// consume `draw::ai_panel_layout` para envolver las líneas.
@@ -1362,6 +1390,8 @@ pub(crate) struct Reader {
     /// Bitmap cacheado del aviso breve (`draw::render_toast`), None sin
     /// aviso o con texto nuevo (se re-renderiza al cambiarlo).
     pub(crate) toast_bitmap: Option<Bitmap>,
+    /// Id de generación de `toast_bitmap` (caché GPU; ver `ovl_seq`).
+    pub(crate) toast_id: u64,
     /// Herramienta de anotación activa en el visor (Fase 3.5): Navegar
     /// (gestos normales) / Resaltar / Boli. Con una herramienta distinta de
     /// Navegar el arrastre de UN dedo (o el lápiz de la tablet) dibuja en
@@ -1596,23 +1626,31 @@ impl Reader {
             dark: false,
             chrome_visible: false,
             chrome_hide_at: None,
+            ovl_seq: 0,
             chrome_top_bitmap: None,
+            chrome_top_id: 0,
             chrome_bottom_bitmap: None,
+            chrome_bottom_id: 0,
             sheet_open: false,
             sheet_progress: 0.0,
             sheet_anim: false,
             sheet_bitmap: None,
+            sheet_id: 0,
             page_badge: None,
+            page_badge_id: 0,
             mode_badge: None,
+            mode_badge_id: 0,
             erase_pt: None,
             erase_r_px: 0.0,
             eraser_cursor: None,
+            eraser_cursor_id: 0,
             thumbs: ThumbCache::new(THUMB_BYTE_BUDGET, THUMB_MAX_ENTRIES),
             thumb_failed: HashSet::new(),
             lib_header: None,
             lib_band: None,
             lib_row_dirty: None,
             lib_fade: None,
+            lib_fade_id: 0,
             list_drag: None,
             annotations: AnnotationSet::new(),
             annot_sidecar: None,
@@ -1620,12 +1658,15 @@ impl Reader {
             status_bar_top: 0, // se fija en runtime (content_rect top)
             sel: None,
             sel_menu: None,
+            sel_menu_id: 0,
             ai_panel: None,
+            ai_panel_id: 0,
             ai_text: String::new(),
             ai_phase: AiPhase::Asking,
             ai_rx: None,
             toast: None,
             toast_bitmap: None,
+            toast_id: 0,
             tool: ToolKind::Navigate,
             erase_dirty: false,
             erase_last: None,
@@ -1767,6 +1808,14 @@ impl Reader {
         reader
     }
 
+    /// Siguiente id de generación de un bitmap de overlay: cada re-render
+    /// consume un id nuevo (monótono, nunca se reusa) que la caché de
+    /// texturas GPU usa de clave. Ver `ovl_seq`.
+    fn next_ovl_id(&mut self) -> u64 {
+        self.ovl_seq += 1;
+        self.ovl_seq
+    }
+
     /// Sustituye el handle de ventana por el actual y re-fuerza el formato del
     /// buffer. `app.native_window()` devuelve siempre el window vigente de la
     /// glue de NativeActivity; tras una recreación de la surface es un
@@ -1873,16 +1922,20 @@ impl Reader {
                 if self.chrome_visible {
                     if self.chrome_top_bitmap.is_none() {
                         self.chrome_top_bitmap = render_viewer_top_chrome(self);
+                        self.chrome_top_id = self.next_ovl_id();
                     }
                     if self.chrome_bottom_bitmap.is_none() {
                         self.chrome_bottom_bitmap = render_viewer_bottom_chrome(self);
+                        self.chrome_bottom_id = self.next_ovl_id();
                     }
                 }
                 if self.doc.is_some() && self.page_badge.is_none() {
                     self.page_badge = render_page_badge(self);
+                    self.page_badge_id = self.next_ovl_id();
                 }
                 if self.sheet_progress > 0.0 && self.sheet_bitmap.is_none() {
                     self.sheet_bitmap = render_sheet(self);
+                    self.sheet_id = self.next_ovl_id();
                 }
                 if self.sheet_progress <= 0.0 {
                     self.sheet_bitmap = None;
@@ -2307,16 +2360,27 @@ impl Reader {
                 //
                 // Materialización de overlays (misma que el blit SW): los
                 // bitmaps se generan aquí si faltan y `present_viewer` los
-                // sube como texturas cacheadas por puntero.
+                // sube como texturas cacheadas por id de generación (Tarea
+                // 2.4: nunca por puntero — ABA cuando el allocator reusa la
+                // dirección de un bitmap ya liberado).
                 if self.toast.is_some() && self.toast_bitmap.is_none() {
                     self.toast_bitmap = render_toast(self);
+                    // Id nuevo inline: `window` (borrow de `self.window`) vive
+                    // hasta el blit de abajo — un `&mut self` completo
+                    // (next_ovl_id) chocaría; los campos son disjuntos.
+                    self.ovl_seq += 1;
+                    self.toast_id = self.ovl_seq;
                 }
                 if !self.chrome_visible && self.mode_badge.is_none() {
                     self.mode_badge = render_mode_badge(self);
+                    self.ovl_seq += 1;
+                    self.mode_badge_id = self.ovl_seq;
                 }
                 if self.erase_pt.is_some() && self.eraser_cursor.is_none() && self.erase_r_px > 4.0
                 {
                     self.eraser_cursor = render_eraser_cursor(self, self.erase_r_px as i32);
+                    self.ovl_seq += 1;
+                    self.eraser_cursor_id = self.ovl_seq;
                 }
                 // Present GPU: se toma el Gpu del Option (take) para poder
                 // pasar `&self`Reader sin conflicto de préstamos — el
@@ -2342,6 +2406,10 @@ impl Reader {
                 // durante ~1,5 s — innecesario).
                 if self.toast.is_some() && self.toast_bitmap.is_none() {
                     self.toast_bitmap = render_toast(self);
+                    // Id nuevo inline (mismo motivo que el blit del visor:
+                    // `window` prestado hasta `blit_library`).
+                    self.ovl_seq += 1;
+                    self.toast_id = self.ovl_seq;
                 }
                 let toast_ov: Option<(&Bitmap, i32, i32)> = self.toast_bitmap.as_ref().map(|tb| {
                     let tx = (self.win_w - tb.width as i32) / 2;
@@ -2962,6 +3030,7 @@ impl Reader {
             visible: layout.visible,
             scrollable: layout.scrollable,
         });
+        self.ai_panel_id = self.next_ovl_id(); // contenido nuevo del panel
     }
 
     /// Cierra el panel de IA (✕ o tap fuera): descarta el resultado
@@ -2999,9 +3068,13 @@ impl Reader {
         }
         // Re-render con la nueva ventana de líneas visibles (ambos lados se
         // evalúan antes de bindear: el bitmap es owned, el préstamo mutable
-        // de `ai_panel` vive solo en el cuerpo).
-        if let (Some(bmp), Some(p)) = (render_ai_panel(self), self.ai_panel.as_mut()) {
-            p.bitmap = bmp;
+        // de `ai_panel` vive solo en el cuerpo y termina antes del bump).
+        if let Some(bmp) = render_ai_panel(self) {
+            if let Some(p) = self.ai_panel.as_mut() {
+                p.bitmap = bmp;
+            }
+            // Contenido nuevo del panel → id de generación nuevo (caché GPU).
+            self.ai_panel_id = self.next_ovl_id();
         }
         self.redraw();
     }
@@ -3025,6 +3098,7 @@ impl Reader {
             bitmap,
             buttons: layout.buttons,
         });
+        self.sel_menu_id = self.next_ovl_id(); // menú nuevo → textura nueva
     }
 
     /// ¿Trabajo diferido pendiente en el bucle de eventos? (poll con timeout
@@ -3088,6 +3162,7 @@ impl Reader {
         if self.sheet_progress > 0.0 && self.sheet_bitmap.is_none() {
             // El sheet se empieza a ver: materializar su bitmap cacheado.
             self.sheet_bitmap = render_sheet(self);
+            self.sheet_id = self.next_ovl_id();
         }
         self.redraw();
     }
@@ -4497,6 +4572,7 @@ impl Reader {
                 };
                 if let Some(s) = snapshot {
                     self.lib_fade = Some((Instant::now(), s));
+                    self.lib_fade_id = self.next_ovl_id(); // snapshot nuevo
                 }
                 self.lib_header = None; // biblioteca fuera: liberar planos
                 self.lib_band = None;
