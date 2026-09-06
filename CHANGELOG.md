@@ -5,6 +5,22 @@
 > Formato: `AAAA-MM-DD — Título`.
 
 
+## 2026-09-06 — CI Android: job `android` (aarch64-linux-android, NDK r28/API 35)
+
+- Nuevo job paralelo `android` en `.github/workflows/ci.yml`: toolchain rustup
+  stable con target `aarch64-linux-android` + NDK r28 (API 35,
+  `android-actions/setup-android-ndk`), `cargo check -p pdf_android --target
+  aarch64-linux-android` con cache `Swatinem/rust-cache` (workspaces
+  ". -> target"). Crea in-situ los placeholders gitignored
+  `groq_key.txt`/`google_key.txt` (include_str!) y exporta sysroot/PATH del NDK
+  (`ANDROID_NDK_HOME` + `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`).
+- AGENTS.md: el carril "Compilación cruzada Android" de la tabla de validación
+  pasa de "Dev local con NDK, no en CI actual" a "Dev local con NDK + CI
+  (job `android`)".
+- Verificación: YAML validado localmente (python yaml.safe_load, exit 0);
+  el job aún no ha corrido — V3.1 (workflow run real) y V3.2 (prueba de valor
+  con rama que rompe) requieren push a remoto, diferidas a decisión del usuario.
+
 ## 2026-09-06 — Reestructuración Fase 1 completa: docs & gobernanza
 
 - Lote 1 (1.0–1.4, correcciones puntuales): CHANGELOG completo (G1, era

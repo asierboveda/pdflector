@@ -49,7 +49,7 @@ docs/adr/          # ADR-001 MuPDF/AGPL, ADR-005 Android nativo (ADR-004 superse
 |--------|------------|------------------|
 | Host (`cargo test -p pdf_core`, `cargo bench -p pdf_bench -- --quick`) | Lógica `pdf_core`, regresiones de rendimiento en host | Dev local y CI |
 | CI (`.github/workflows/ci.yml`) | `fmt --check` + `clippy --all-targets -- -D warnings` + `test pdf_core` con corpus generado | Ubuntu hosted, sin Android ni TCL |
-| Compilación cruzada Android (`-p pdf_android --target aarch64-linux-android`) | Que el producto compila para la tablet (NDK r28, API 35) | Dev local con NDK, no en CI actual |
+| Compilación cruzada Android (`-p pdf_android --target aarch64-linux-android`) | Que el producto compila para la tablet (NDK r28, API 35) | Dev local con NDK + CI (job `android`) |
 | Medición real TCL (9469X, `adb`, `dumpsys`, `screencap`) | p95 frame, render <25ms, PSS producto, gestos lápiz/subrayador | Solo tablet física, nunca afirmable desde host/CI |
 
 ## Comandos
