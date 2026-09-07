@@ -493,11 +493,15 @@ impl Gpu {
                 .or_else(|| reader.fallback_page.and_then(|pg| reader.cache.peek(pg)))
             {
                 let bmp = &page.bitmap;
-                let blit_zoom = if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
-                    reader.zoom / reader.rendered_zoom
-                } else {
-                    1.0
-                };
+                // Blit EFECTIVO del bitmap residente (fix salto-pinch): deriva
+                // del propio bitmap, no de `rendered_zoom` (puede discrepar).
+                let blit_zoom = reader.entry_blit_zoom().unwrap_or(
+                    if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
+                        reader.zoom / reader.rendered_zoom
+                    } else {
+                        1.0
+                    },
+                );
                 // Propiedad del crop a ventana (fix de residency): el bitmap
                 // cacheado es el recorte del render full a la ventana del
                 // worker — X CENTRADO (`crop_x = (full_w − w)/2`, compensa el
@@ -516,11 +520,11 @@ impl Gpu {
                 // render sharp (`poll_render` → `invalidate_dry`).
                 let pw = bmp.width as f32 * blit_zoom;
                 self.upload_page_if_needed(reader.page, reader.rendered_zoom, bmp);
-                // El pan NO se hornea aquí: lo aplica el quad de composición
-                // en present_viewer (Tarea 2.3). Horneado + quad desplazado
-                // duplicarían el pan (2×pan) en cada re-render de la dry.
-                let page_dx = ((reader.win_w as f32 - pw) / 2.0).round();
-                let page_dy = 0.0;
+                // Pan horneado en el quad de la página: la dry FBO es la ventana
+                // visible y dibuja la región del documento correspondiente a
+                // (pan_x, pan_y); la composición a fb0 va con offset (0,0).
+                let page_dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
+                let page_dy = reader.pan_y.round();
                 // Origen de la capa de ANOTACIONES (abajo): la esquina de la
                 // CAJA FULL del render en pantalla (sin pan). Difiere del
                 // origen del quad (`page_dx/page_dy`, que posiciona el CROP)
@@ -651,11 +655,15 @@ impl Gpu {
                     scale = crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h)
                         * reader.zoom;
                 }
-                let blit_zoom = if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
-                    reader.zoom / reader.rendered_zoom
-                } else {
-                    1.0
-                };
+                // Blit EFECTIVO del bitmap residente (fix salto-pinch): deriva
+                // del propio bitmap, no de `rendered_zoom` (puede discrepar).
+                let blit_zoom = reader.entry_blit_zoom().unwrap_or(
+                    if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
+                        reader.zoom / reader.rendered_zoom
+                    } else {
+                        1.0
+                    },
+                );
                 // Origen de la capa transitoria: la CAJA FULL del render
                 // (tinta/resaltado están en coords de página `doc × scale`,
                 // igual que `screen_to_page` y que la capa de anotaciones de
@@ -830,10 +838,11 @@ impl Gpu {
         let key = DryKey {
             page: reader.page,
             zoom_bits: reader.zoom.to_bits(),
+            pan_x: reader.pan_x.round() as i32,
+            pan_y: reader.pan_y.round() as i32,
             ann_count: anns_count,
             dark: reader.dark,
         };
-
         if self.dry_dirty || self.dry_key.is_none_or(|old| key.invalidates(&old)) {
             self.render_dry(reader);
             self.dry_dirty = false;
@@ -862,10 +871,9 @@ impl Gpu {
             // de fondo (no contenido indefinido tras el swap).
             self.clear(self.view_bg(reader));
 
-            // Dibujar capa Dry base, trasladada por el pan del visor: la
-            // página entera se desplaza con el dedo (offset en el quad de
-            // vértices, misma proyección).
-            self.draw_fullscreen_texture(self.dry_tex, 1.0, (reader.pan_x, reader.pan_y));
+            // Dibujar capa Dry base: el pan ya está horneado en page_dx/page_dy
+            // dentro de dry_tex; el quad cubre la ventana 1:1 sin traslación.
+            self.draw_fullscreen_texture(self.dry_tex, 1.0, (0.0, 0.0));
 
             // Componer encima la capa Wet transparente con premultiplied alpha.
             // La Wet se compone SIEMPRE con offset (0,0): el trazo en vuelo ya

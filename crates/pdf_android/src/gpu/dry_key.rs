@@ -6,13 +6,14 @@
 //! crate requiera Android (ver plan 2026-09-06, Tarea 2.0).
 
 /// Clave de invalidación de la capa base persistente (Dry FBO).
-/// Reducida desde 9 campos (incluía pan/chrome/sheet/toast) a 4: solo lo que
-/// cambia el CONTENIDO de página+anotaciones. Pan, chrome, sheet y toast se
-/// componen como overlays en fb0 y ya no invalidan la dry.
+/// Contiene página, zoom, pan, anotaciones y modo oscuro. Los overlays de UI
+/// (chrome, sheet, toast) se componen en fb0 y no invalidan la dry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DryKey {
     pub(crate) page: u32,
     pub(crate) zoom_bits: u32,
+    pub(crate) pan_x: i32,
+    pub(crate) pan_y: i32,
     pub(crate) ann_count: usize,
     pub(crate) dark: bool,
 }
@@ -32,6 +33,8 @@ mod tests {
         DryKey {
             page: 3,
             zoom_bits: 0x3F800000,
+            pan_x: 0,
+            pan_y: 0,
             ann_count: 12,
             dark: false,
         }
@@ -48,6 +51,8 @@ mod tests {
             },
             DryKey { ann_count: 13, ..k },
             DryKey { dark: true, ..k },
+            DryKey { pan_x: 1, ..k },
+            DryKey { pan_y: 1, ..k },
         ] {
             assert!(k.invalidates(&other), "debe invalidar: {other:?}");
         }

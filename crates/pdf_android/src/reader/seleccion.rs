@@ -242,10 +242,17 @@ impl Reader {
         // nítido en reposo (`rendered_zoom == zoom`), vecino-más-cercano del
         // bitmap viejo durante el pinch. Si no es finita (defensa), no hay
         // imagen que mandar.
-        let blit_zoom = if self.rendered_zoom.is_finite() && self.rendered_zoom > 0.0 {
-            self.zoom / self.rendered_zoom
-        } else {
-            return None;
+        // Blit EFECTIVO del bitmap residente (fix salto-pinch): deriva del
+        // propio bitmap, no de `rendered_zoom` (puede discrepar del residente).
+        let blit_zoom = match self.entry_blit_zoom() {
+            Some(b) => b,
+            None => {
+                if self.rendered_zoom.is_finite() && self.rendered_zoom > 0.0 {
+                    self.zoom / self.rendered_zoom
+                } else {
+                    return None;
+                }
+            }
         };
         if !blit_zoom.is_finite() || blit_zoom <= 0.0 {
             return None;

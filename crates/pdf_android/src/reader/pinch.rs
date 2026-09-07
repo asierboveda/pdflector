@@ -86,6 +86,28 @@ impl Reader {
         }
     }
 
+    /// Blit EFECTIVO del bitmap residente de la página actual (fix salto-pinch):
+    /// escala del bitmap que HAY en caché (`full_w` frente al tamaño cover) en
+    /// vez de `zoom / rendered_zoom`. El campo `rendered_zoom` sigue al último
+    /// render de la página actual, pero la entrada residente puede venir de otro
+    /// lote o sobrevivir a evicciones vecinas (desfase observado en tablet:
+    /// bitmap a escala ~1.0 con `rendered_zoom = 1.793` → `set_zoom_sharp`
+    /// calculaba un `old_w` ficticio y el pan saltaba +435 px). Derivar del
+    /// propio bitmap equivale (salvo ≤1 px por el redondeo del render a px
+    /// enteros) y es correcto cuando discrepan.
+    /// `None` sin bitmap residente o con página degenerada (el llamador usa la
+    /// fórmula clásica como fallback).
+    pub(crate) fn entry_blit_zoom(&self) -> Option<f32> {
+        let full_w = self.cache.peek(self.page)?.full_w as f32;
+        let (dw, _) = self.page_doc_size_px(self.page);
+        if !dw.is_finite() || dw <= 0.0 || full_w <= 0.0 {
+            return None;
+        }
+        let entry_scale = full_w / dw;
+        let b = self.zoom / entry_scale;
+        b.is_finite().then_some(b)
+    }
+
     /// Fija el anclaje del pinch en curso: el centro del pinch en px de
     /// ventana + el zoom y el pan de partida. `input` lo llama al caer el
     /// segundo dedo (PointerDown); `set_zoom_fast` recalcula después el pan
@@ -243,7 +265,12 @@ impl Reader {
                 // entre fast y sharp alinea el CONTENIDO. Con `bmp.width`
                 // (crop) el dx_fast quedaría desplazado `crop_x·blit_zoom`
                 // px → salto visible al soltar.
-                let old_blit = self.zoom / self.rendered_zoom.max(1e-4);
+                // Blit EFECTIVO del bitmap residente (fix salto-pinch): sin
+                // esto, un `rendered_zoom` rancio calculaba un `old_w` ficticio
+                // y el pan saltaba al soltar (p. ej. +435 px en tablet).
+                let old_blit = self
+                    .entry_blit_zoom()
+                    .unwrap_or(self.zoom / self.rendered_zoom.max(1e-4));
                 let old_w = match self.cache.peek(self.page) {
                     Some(b) => b.full_w as f32 * old_blit,
                     None => dw * zoom, // sin bitmap (defensa): sin corrección

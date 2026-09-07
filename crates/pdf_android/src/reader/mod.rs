@@ -794,6 +794,13 @@ pub(crate) struct Reader {
     /// seq no es el actual (el usuario hizo otro zoom/página), se descarta.
     render_rx: Option<std::sync::mpsc::Receiver<WorkerMsg>>,
     render_seq: u64,
+    /// Zoom objetivo del último lote lanzado al worker (`launch_render`): lo
+    /// usa `render_in_flight_for` para no duplicar renders del mismo nivel
+    /// (el `rendered_zoom` aún es el del lote ANTERIOR hasta que aterriza el
+    /// actual — compararlo invitaba a un lanzamiento por Move). Se limpia al
+    /// llegar la página actual del lote (`poll_render`) y al detener el
+    /// worker (`stop_render_worker`, cambio de documento).
+    inflight_target: Option<f32>,
     /// Actor persistente de render (F3.1): UN hilo con su propio documento
     /// para toda la vida del documento abierto. `None` hasta `open_pdf_at`.
     render_worker: Option<RenderWorker>,

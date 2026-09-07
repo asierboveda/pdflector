@@ -151,6 +151,7 @@ impl Reader {
             last_stylus_time: None,
             render_rx: None,
             render_seq: 0,
+            inflight_target: None,
             render_worker: None,
             last_pinch_move: None,
             fallback_page: None,

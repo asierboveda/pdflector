@@ -54,6 +54,12 @@ pub(crate) struct WorkerMsg {
     full_h: u32,
     crop_x: u32,
     crop_y: u32,
+    /// Lote "early" de nitidez progresiva (`clamp_level` del pinch): pista
+    /// descartable — `poll_render` lo ignora para la página actual si ya hay
+    /// un residente más fino y el zoom siguió subiendo (llegó tarde y más
+    /// grueso de lo que hay y de lo que se pide). Los lotes finales
+    /// (`clamp_level=false`: sharp, debounce, prefetch) siempre aplican.
+    early: bool,
 }
 
 /// Petición de render al worker actor: páginas a la escala pedida, ventana
@@ -141,20 +147,21 @@ fn render_worker_req(
                 // los píxeles del render full (ver render_dry); los
                 // metadatos permiten a los consumidores (pinch fast→sharp,
                 // sel_image) volver a la cuadrícula del render full.
-                let (bitmap, (crop_x, crop_y)) = if req.win_w > 0 && req.win_h > 0 {
-                    let (cw, ch) = (
-                        bmp.width.min(req.win_w as u32),
-                        bmp.height.min(req.win_h as u32),
-                    );
-                    if cw == bmp.width && ch == bmp.height {
-                        (bmp, (0, 0)) // ya cabe en la ventana: sin recorte
+                let (bitmap, (crop_x, crop_y)) =
+                    if req.win_w > 0 && req.win_h > 0 && req.target_zoom <= 1.01 {
+                        let (cw, ch) = (
+                            bmp.width.min(req.win_w as u32),
+                            bmp.height.min(req.win_h as u32),
+                        );
+                        if cw == bmp.width && ch == bmp.height {
+                            (bmp, (0, 0)) // ya cabe en la ventana: sin recorte
+                        } else {
+                            let x = (bmp.width - cw) / 2;
+                            (pdf_core::crop_rect(&bmp, x, 0, cw, ch), (x, 0))
+                        }
                     } else {
-                        let x = (bmp.width - cw) / 2;
-                        (pdf_core::crop_rect(&bmp, x, 0, cw, ch), (x, 0))
-                    }
-                } else {
-                    (bmp, (0, 0))
-                };
+                        (bmp, (0, 0))
+                    };
                 let _ = req.reply.send(WorkerMsg {
                     seq: req.seq,
                     page,
@@ -164,6 +171,7 @@ fn render_worker_req(
                     full_h,
                     crop_x,
                     crop_y,
+                    early: req.clamp_level,
                 });
             }
         }
@@ -806,6 +814,7 @@ impl Reader {
         self.render_seq += 1;
         let seq = self.render_seq;
         let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
+        self.inflight_target = Some(target_zoom);
         self.render_rx = Some(rx);
         let (win_w, win_h) = (self.win_w, self.win_h);
         let _ = worker.tx.send(WorkerCmd::Render(WorkerReq {
@@ -820,11 +829,16 @@ impl Reader {
     }
 
     /// ¿Hay un lote en vuelo para este `zoom`? (ventana ±50%: el sharp final
-    /// y el early-sharp del pinch comparten objetivo aproximado).
+    /// y el early-sharp del pinch comparten objetivo aproximado). Se compara
+    /// contra el objetivo LANZADO (`inflight_target`), no contra
+    /// `rendered_zoom` (aún el del lote anterior hasta que aterriza el
+    /// actual — comparar ese invitaba a un lanzamiento por Move).
     pub(crate) fn render_in_flight_for(&self, zoom: f32) -> bool {
-        self.render_rx.is_some() && (self.rendered_zoom - zoom).abs() / zoom.max(1e-4) < 0.5
+        self.render_rx.is_some()
+            && self
+                .inflight_target
+                .is_some_and(|t| (t - zoom).abs() / zoom.max(1e-4) < 0.5)
     }
-
     /// Arranca el worker actor de render con `path` como documento. Llamado
     /// UNA vez por documento (`open_pdf_at` y el intent "abrir con"): el
     /// hilo abre SU PROPIO `MupdfDocument` (MuPDF no es Send) y lo retiene
@@ -868,6 +882,7 @@ impl Reader {
         }
         // Los resultados en vuelo de lotes antiguos caducan solos:
         // `poll_render` ya descarta por `seq != render_seq`.
+        self.inflight_target = None;
     }
 
     /// Sondeo del worker de render (desde `tick`): aplica los bitmaps
@@ -896,6 +911,24 @@ impl Reader {
                         warn!("dropping degenerate bitmap for page {}", msg.page + 1);
                         continue;
                     }
+                    // Lote early que llegó tarde y grueso: el pinch siguió
+                    // (el zoom actual supera su escala EFECTIVA, ya recortada
+                    // por nivel y presupuesto) y la caché guarda un residente
+                    // más fino — aplicar degradaría la página actual y
+                    // re-apuntaría `rendered_zoom` al pasado. Se descarta sin
+                    // insertar ni repintar; el sharp final (no early) manda.
+                    // Los lotes finales siempre aplican (nitidez del zoom).
+                    if msg.early && msg.page == self.page {
+                        let (dw, _) = self.page_doc_size_px(msg.page);
+                        if dw > 0.0
+                            && let Some(res) = self.cache.peek(msg.page)
+                            && (res.full_w as f32) / dw > msg.target_zoom
+                            && msg.target_zoom < self.zoom
+                        {
+                            self.inflight_target = None;
+                            continue;
+                        }
+                    }
                     self.cache.insert(
                         msg.page,
                         crate::cache::CachedPage {
@@ -908,6 +941,7 @@ impl Reader {
                     );
                     if msg.page == self.page {
                         self.rendered_zoom = msg.target_zoom;
+                        self.inflight_target = None;
                         self.fallback_page = None;
                         self.mark_repaint();
                         // La dry puede estar horneada con el FALLBACK bajo la
