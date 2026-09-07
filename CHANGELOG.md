@@ -6,6 +6,21 @@
 
 
 
+## 2026-09-07 — Velocidad de pase de página (fases A-D + guards)
+
+- Fix corrección: la página real no se mostraba tras un miss (dry horneada con fallback
+  sin re-bake; `invalidate_dry` era dead code). Ahora `poll_render` invalida al aterrizar.
+- `save_state` diferido (0 I/O en el tap; flush 2 s + transiciones + Pause). `count_for_page`
+  O(1) con TDD. Instrumentación permanente `page_turn <ms>`.
+- Prefetch direccional asimétrico (2 por delante, 1 por detrás, preemption por lote).
+- Fix raíz: crop centrado a píxeles de ventana en el worker (bitmaps 27.4→12.7 MB;
+  `CachedPage` con metadatos; overlays anclados a caja full) + evicción diferida a ticks idle.
+- Guards anti-negro (fallback verificado + bitmap degenerado descartado, con warns).
+- Medición TCL 9469X (2026-09-07, `docs/benchmark-results.md`): 11/15 turnos a 6-10 ms
+  (p50 ≈ 8 ms; antes: 115 ms sistemáticos); misses a 102-168 ms (un render); nitidez 1:1
+  verificada visualmente. Deuda: display lists sin cota (+6-7 MB/página nueva en libro
+  complejo) y PSS pico post-ciclos.
+
 ## 2026-09-06 — Reestructuración Fase 2 completa: pipeline Dry/Overlays + productor único EGL
 
 - GPU: `DryKey` reducida a `{page, zoom_bits, ann_count, dark}` (pan/chrome/sheet/toast ya no
