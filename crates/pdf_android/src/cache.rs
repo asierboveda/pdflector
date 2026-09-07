@@ -44,16 +44,24 @@
 //!   prefetch del paso de página (fase B: 2 por delante en la dirección de
 //!   viaje + 1 por detrás + la actual, direccional — ver `navigation.rs`),
 //!   sin dejar crecer la cola LRU.
-//! - **Evicción**: least-recently-used. `get` promueve la entrada (recencia
-//!   real, evita re-render en el render de cada frame); `insert` expulsa del
-//!   frente de la cola LRU hasta cumplir `byte_budget` y `max_entries`. Con
-//!   crops a ventana (~12,1 MiB) el lote completo de la fase B (2+1+actual =
-//!   4 páginas ≈ 48,4 MiB) queda justo AL LÍMITE de los 48 MiB: la inserción
-//!   del 4º crop puede expulsar al más antiguo del lote — la página de atrás,
-//!   que `prefetch_pages` lanza la primera a propósito. Comportamiento
-//!   correcto por diseño: el log de evict (`pagecache evict`) es la señal
-//!   permanente de residency — en lectura secuencial (≤ 3 páginas en vuelo)
-//!   debe CALLAR; si vuelve a aparecer en cada turno, la residency se rompió.
+//! - **Evicción DIFERIDA (fix p95)**: least-recently-used — `get` promueve
+//!   la entrada (recencia real, evita re-render en el render de cada frame);
+//!   `insert` expulsa del frente de la cola LRU SOLO si se excede el tope de
+//!   entradas (`max_entries`) o si los bytes superan `byte_budget +
+//!   EVICT_SLACK` (32 MiB — ver la constante). El free de un bitmap (~12 MiB
+//!   ≈ 13 ms por página en la TCL, medido) NO cae en el frame que presenta
+//!   la página de un turno: el lote de renders del turno (~3 crops ≈
+//!   36-38 MiB) entra sobre una caché a presupuesto sin evictar, y
+//!   `trim_to_budget` — invocado por el tick SOLO en ticks realmente idle
+//!   (poll sin inserciones y sin repaint pendiente, ver `reader/tick.rs`) —
+//!   recorta al presupuesto estricto fuera del camino crítico del turno.
+//!   Overshoot transitorio sobre el presupuesto ≤ `EVICT_SLACK` (32 MiB; con
+//!   crops a ventana el tope real lo fija antes `max_entries`: 5 × ~12,7 MiB
+//!   ≈ 63 MiB en total), recogido en el siguiente tick idle (~8 ms): sin
+//!   crecimiento sostenido (todo tick idle trimea). En lectura secuencial el
+//!   log de evict (`pagecache evict`) debe caer en ticks idle POSTERIORES al
+//!   `page_turn` del turno; si reaparece dentro del frame del turno (entre
+//!   el tap y el present de la página), la deferencia se rompió.
 //!   Si una única página supera todo el presupuesto (zoom alto: una página
 //!   a 8× puede pesar cientos de MiB) se expulsa TODO y entra sola —
 //!   best-effort, idéntico a `pdf_core::cache`, y el footprint coincide con
@@ -76,6 +84,32 @@ pub(crate) const CACHE_BYTE_BUDGET: usize = 48 * 1024 * 1024;
 
 /// Tope de entradas (páginas) residentes.
 pub(crate) const CACHE_MAX_ENTRIES: usize = 5;
+
+/// Holgura de evicción DIFERIDA: bytes sobre `CACHE_BYTE_BUDGET` que
+/// `insert` tolera antes de expulsar (fix p95 — ver cabecera y
+/// `trim_to_budget`). ¿Por qué 32 MiB?
+///
+/// - **Cobertura de la ráfaga del turno**: el objetivo es que el lote en
+///   vuelo de un turno miss (hasta 3 crops ≈ 36-38 MiB) NUNCA dispare un
+///   free dentro del frame que presenta la página. Los renders llegan
+///   espaciados ~18-25 ms (uno por página desde el worker) y el trim idle
+///   corre cada ~8 ms, pero sin slack la 4ª entrada sobre una caché recién
+///   trimeada (~36-38 MiB) ya excede los 48 MiB y evicta en el tick de
+///   llegada. Con 32 MiB de holgura incluso un drenado con las 3 llegadas
+///   coalescidas en un solo tick (36,4 + 36,4 ≈ 72,8 MiB < 48 + 32) cabe
+///   sin evictar; el peor caso teórico (caché a 48 MiB exactos + 3 misses
+///   a 12,7 MiB = 86 MiB) evicta 1 en la 3ª llegada — nunca las 3 del
+///   diseño anterior.
+/// - **Cota del overshoot**: 48 + 32 = 80 MiB ≈ 6 crops a ventana, pero en
+///   la práctica el tope de entradas (5 × ~12,7 MiB ≈ 63 MiB) acota antes;
+///   `trim_to_budget` recoge el exceso en el siguiente tick idle (~8 ms),
+///   así que el RSS objetivo (< 150 MB) nunca se compromete de forma
+///   sostenida.
+/// - **Simetría con el pipeline**: 32 MiB ≈ el bitmap MÁS GRANDE que
+///   produce el render (el full a cover en landscape, 2200×3112×4 B =
+///   27,4 MiB — la cifra del fix de residency): la holgura cubre con
+///   margen cualquier página individual, no solo crops a ventana.
+pub(crate) const EVICT_SLACK: usize = 32 * 1024 * 1024;
 
 /// Página renderizada residente: el bitmap es el recorte a la ventana del
 /// render full — X CENTRADO + Y ALINEADO ARRIBA (`crop_rect` con
@@ -126,6 +160,11 @@ pub(crate) struct PageCache {
     bytes: usize,
     byte_budget: usize,
     max_entries: usize,
+    /// Contador monótono de inserciones (`insert`): el tick del bucle hace
+    /// un snapshot antes/después de `poll_render` para saber si el poll
+    /// insertó algo en este tick (evicción diferida — ver `insert_count` y
+    /// `reader/tick.rs`).
+    insert_seq: u64,
 }
 
 impl PageCache {
@@ -136,6 +175,7 @@ impl PageCache {
             bytes: 0,
             byte_budget,
             max_entries,
+            insert_seq: 0,
         }
     }
 
@@ -156,9 +196,14 @@ impl PageCache {
         self.map.get(&page)
     }
 
-    /// Inserta (o reemplaza) la `CachedPage` de `page`, expulsando LRU hasta
-    /// caber en `byte_budget` y `max_entries`. Una página que supera todo el
-    /// presupuesto expulsa el resto y entra sola (best-effort, ver cabecera).
+    /// Inserta (o reemplaza) la `CachedPage` de `page`. Evicción DIFERIDA
+    /// (fix p95): expulsa del frente LRU solo si se excede el tope de
+    /// entradas (`max_entries`) o si los bytes superan `byte_budget +
+    /// EVICT_SLACK` — un lote de turno que entra sobre una caché a
+    /// presupuesto NO libera memoria dentro del frame que presenta la
+    /// página; `trim_to_budget` recorta al presupuesto estricto desde el
+    /// tick idle. Una página que supera todo el presupuesto expulsa el
+    /// resto y entra sola (best-effort, ver cabecera).
     pub(crate) fn insert(&mut self, page: u32, cached: CachedPage) {
         let incoming = bitmap_bytes(&cached);
         // Reemplazo de una página ya residente: liberar sus bytes y su hueco
@@ -172,12 +217,13 @@ impl PageCache {
         while self.map.len() >= self.max_entries && !self.lru.is_empty() {
             self.evict_lru();
         }
-        while self.bytes + incoming > self.byte_budget && !self.lru.is_empty() {
+        while self.bytes + incoming > self.byte_budget + EVICT_SLACK && !self.lru.is_empty() {
             self.evict_lru();
         }
         self.bytes += incoming;
         self.map.insert(page, cached);
         self.lru.push_back(page);
+        self.insert_seq += 1;
     }
 
     /// Descarta todo (cambio de zoom, de ventana o de documento): los bitmaps
@@ -186,6 +232,21 @@ impl PageCache {
         self.map.clear();
         self.lru.clear();
         self.bytes = 0;
+    }
+
+    /// Recorta la caché a los límites ESTRICTOS (`max_entries` entradas y
+    /// `byte_budget` bytes, SIN `EVICT_SLACK`): recoge el exceso que
+    /// `insert` dejó pasar con la evicción diferida (fix p95 — ver
+    /// cabecera). Lo invoca el tick del bucle SOLO en ticks realmente idle
+    /// (poll de render sin inserciones y sin repaint pendiente, ver
+    /// `reader/tick.rs`): el coste del free cae fuera del camino crítico
+    /// del turno. O(1) cuando ya cabe: una comparación y return.
+    pub(crate) fn trim_to_budget(&mut self) {
+        while (self.map.len() > self.max_entries || self.bytes > self.byte_budget)
+            && !self.lru.is_empty()
+        {
+            self.evict_lru();
+        }
     }
 
     /// Nº de páginas residentes (para el log de debug).
@@ -198,6 +259,13 @@ impl PageCache {
     #[allow(dead_code)] // métrica de debug
     pub(crate) fn resident_bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// Nº total de inserciones (`insert_seq`). El tick del bucle lo usa como
+    /// snapshot alrededor de `poll_render`: si no cambió, el poll no insertó
+    /// nada en este tick → tick idle → `trim_to_budget` (evicción diferida).
+    pub(crate) fn insert_count(&self) -> u64 {
+        self.insert_seq
     }
 
     #[allow(dead_code)]
@@ -213,10 +281,11 @@ impl PageCache {
             && let Some(cached) = self.map.remove(&victim)
         {
             self.bytes -= bitmap_bytes(&cached);
-            // Señal PERMANENTE de residency (fix del diagnóstico de speed): en
-            // lectura secuencial con crops a ventana (~12,1 MiB, ~3 caben en
-            // el presupuesto) el lote de prefetch NO debe evictar — si este
-            // log aparece en cada turno, la residency volvió a romperse.
+            // Señal de residency (fix p95 — ver cabecera): con la evicción
+            // DIFERIDA este log debe caer en ticks idle POSTERIORES al
+            // present del turno (el que hace `trim_to_budget`); si reaparece
+            // dentro del frame de un turno (entre el tap y el `page_turn`),
+            // la deferencia se rompió (¿lote mayor que budget + slack?).
             log::info!("pagecache evict page={victim} total={}", self.bytes);
         }
     }
