@@ -472,10 +472,12 @@ pub(crate) struct Reader {
     /// la lista): clave de la textura GPU dedicada del picker. El present
     /// GPU solo la re-sube cuando esta versión cambia (Tarea 2.7).
     pub(crate) picker_bmp_ver: u64,
-    /// Caché LRU de páginas renderizadas (página → Bitmap) para el paso de
-    /// página INSTANTÁNEO (prev/next): evita re-renderizar al volver atrás y
-    /// precarga la vecina (`ensure_pages_rendered`). Guarda SIEMPRE bitmaps
-    /// normales; la inversión de modo oscuro se aplica al blitear
+    /// Caché LRU de páginas renderizadas (página → `CachedPage`: crop
+    /// centrado a ventana del render cover + metadatos del render full) para
+    /// el paso de página INSTANTÁNEO (prev/next): evita re-renderizar al
+    /// volver atrás y precarga la vecina (el worker async; el render síncrono
+    /// `ensure_pages_rendered` quedó como camino legacy). Guarda SIEMPRE
+    /// bitmaps normales; la inversión de modo oscuro se aplica al blitear
     /// (`draw::blit_page`). SOLO se dibuja la página actual (modo UNA HOJA);
     /// las vecinas solo se cachean.
     pub(crate) cache: PageCache,

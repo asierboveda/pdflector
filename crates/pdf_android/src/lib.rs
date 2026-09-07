@@ -87,10 +87,11 @@
 //! `ensure_pages_rendered`), pero las vecinas nunca se dibujan:
 //!
 //! - `cache.rs` (`PageCache`): LRU en RAM de páginas renderizadas
-//!   (página → `Bitmap`), limitada por bytes (48 MiB) y por entradas (5),
-//!   coherente con el RSS < 150 MB; evita el re-render al volver atrás.
-//!   Los bitmaps se guardan SIEMPRE normales: la inversión de modo oscuro se
-//!   aplica al blitear (`draw::blit_page`).
+//!   (página → `CachedPage`: el crop CENTRADO a la ventana del render cover
+//!   + metadatos `full_w/full_h/crop_x/crop_y`), limitada por bytes (48 MiB)
+//!   y por entradas (5), coherente con el RSS < 150 MB; evita el re-render al
+//!   volver atrás. Los bitmaps se guardan SIEMPRE normales: la inversión de
+//!   modo oscuro se aplica al blitear (`draw::blit_page`).
 //! - Render (vía caché) de la página actual + 1 vecina por lado (prefetch
 //!   simple: el paso de página es instantáneo); el blit dibuja SOLO la
 //!   página actual (centrado cover + pan de anclaje del pinch, recorte a la

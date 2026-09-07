@@ -34,14 +34,25 @@ use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::{Bitmap, Document, RenderEngine};
 use std::time::Instant;
 
-/// Mensaje del worker de render asíncrono: un bitmap listo a la escala
+/// Mensaje del worker de render asíncrono: el bitmap cacheable a la escala
 /// pedida (`target_zoom` = factor de zoom con el que se renderizó, la "escala
-/// efectiva" = cover × target_zoom).
+/// efectiva" = cover × target_zoom) + metadatos del render. El bitmap NO es
+/// el render full: es su recorte CENTRADO a la ventana del worker
+/// (`crop_centered`, fix de residency — el full a cover pesa 27,4 MiB en
+/// landscape y dejaba 1 solo residente en la caché; el crop deja ≤ ~12,7 MiB
+/// → ~3 residentes). `full_w/full_h` son las dims del render FULL (lo que se
+/// dibujó antes de recortar) y `crop_x/crop_y` el origen del recorte dentro
+/// de él: los consumidores que convierten pantalla ↔ píxeles del render
+/// (transición fast→sharp del pinch, selección → imagen) compensan el origen.
 pub(crate) struct WorkerMsg {
     seq: u64,
     page: u32,
     bitmap: Bitmap,
     target_zoom: f32,
+    full_w: u32,
+    full_h: u32,
+    crop_x: u32,
+    crop_y: u32,
 }
 
 /// Petición de render al worker actor: páginas a la escala pedida, ventana
@@ -115,11 +126,31 @@ fn render_worker_req(
             }
             let target_eff = if cover > 0.0 { scale / cover } else { 1.0 };
             if let Ok(bmp) = doc.render_page(page, scale) {
+                let (full_w, full_h) = (bmp.width, bmp.height);
+                // Crop CENTRADO a la ventana (fix raíz de residency): el
+                // render full a cover excede la ventana en al menos un eje y
+                // pesa hasta 27,4 MiB en landscape (2200×3112) — solo cabía 1
+                // residente en la caché de 48 MiB y cada turno re-renderizaba
+                // (~115 ms). Recortado a (min(bw, win_w), min(bh, win_h))
+                // queda ≤ ~12,7 MiB → ~3 residentes y turnos sin re-render.
+                // La composición NO cambia (con blit_zoom == 1 el centrado
+                // del crop compensa el centrado del blit — ver render_dry);
+                // los metadatos del render full permiten a los consumidores
+                // (pinch fast→sharp, sel_image) volver a su cuadrícula.
+                let (bitmap, (crop_x, crop_y)) = if req.win_w > 0 && req.win_h > 0 {
+                    pdf_core::crop_centered(&bmp, req.win_w as u32, req.win_h as u32)
+                } else {
+                    (bmp, (0, 0))
+                };
                 let _ = req.reply.send(WorkerMsg {
                     seq: req.seq,
                     page,
-                    bitmap: bmp,
+                    bitmap,
                     target_zoom: target_eff,
+                    full_w,
+                    full_h,
+                    crop_x,
+                    crop_y,
                 });
             }
         }
@@ -518,7 +549,19 @@ impl Reader {
                         self.cache.len(),
                         self.cache.resident_bytes() as f64 / (1024.0 * 1024.0)
                     );
-                    self.cache.insert(page, bmp);
+                    self.cache.insert(
+                        page,
+                        crate::cache::CachedPage {
+                            // Camino SÍNCRONO (legacy, sin crop): el render
+                            // ocupa el full de su cuadrícula (origen 0). El
+                            // worker async es el que recorta a ventana.
+                            full_w: bmp.width,
+                            full_h: bmp.height,
+                            crop_x: 0,
+                            crop_y: 0,
+                            bitmap: bmp,
+                        },
+                    );
                 }
                 Err(e) => {
                     error!("render page {page}: {e}");
@@ -829,7 +872,16 @@ impl Reader {
                     if msg.seq != self.render_seq {
                         continue; // lote obsoleto: descartar
                     }
-                    self.cache.insert(msg.page, msg.bitmap);
+                    self.cache.insert(
+                        msg.page,
+                        crate::cache::CachedPage {
+                            bitmap: msg.bitmap,
+                            full_w: msg.full_w,
+                            full_h: msg.full_h,
+                            crop_x: msg.crop_x,
+                            crop_y: msg.crop_y,
+                        },
+                    );
                     if msg.page == self.page {
                         self.rendered_zoom = msg.target_zoom;
                         self.fallback_page = None;

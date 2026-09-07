@@ -488,16 +488,31 @@ impl Gpu {
             let mut page_drawn = false;
             let mut scale = 1.0f32;
             let (mut page_dx, mut page_dy) = (0.0f32, 0.0f32);
-            if let Some(bmp) = reader
+            if let Some(page) = reader
                 .cache
                 .peek(reader.page)
                 .or_else(|| reader.fallback_page.and_then(|pg| reader.cache.peek(pg)))
             {
+                let bmp = &page.bitmap;
                 let blit_zoom = if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
                     reader.zoom / reader.rendered_zoom
                 } else {
                     1.0
                 };
+                // Propiedad del crop a ventana (fix de residency): el bitmap
+                // cacheado es el recorte CENTRADO del render full
+                // (`CachedPage.bitmap`), y este quad lo dibuja centrado con
+                // su PROPIO tamaño — a `blit_zoom == 1` (reposo,
+                // `rendered_zoom == zoom`) el crop llena la ventana 1:1 y el
+                // centrado del crop compensa exactamente el centrado del
+                // blit: píxeles de página IDÉNTICOS a los que mostraría el
+                // render full sin recortar. Por eso la composición NO usa
+                // `full_w/crop_x/crop_y` (los consumen pinch y sel_image
+                // para volver a la cuadrícula del render full). Caveat: con
+                // `blit_zoom != 1` (preview del pinch, vecino-más-cercano
+                // del bitmap viejo) los bordes del crop pueden mostrar smear
+                // transitorio hasta que aterriza el render sharp
+                // (`poll_render` → `invalidate_dry`).
                 let pw = bmp.width as f32 * blit_zoom;
                 self.upload_page_if_needed(reader.page, reader.rendered_zoom, bmp);
                 // El pan NO se hornea aquí: lo aplica el quad de composición
@@ -634,7 +649,7 @@ impl Gpu {
                 let pw = reader
                     .cache
                     .peek(reader.page)
-                    .map(|b| b.width as f32 * blit_zoom)
+                    .map(|b| b.bitmap.width as f32 * blit_zoom)
                     .unwrap_or(0.0);
                 let dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
                 let dy = reader.pan_y.round();

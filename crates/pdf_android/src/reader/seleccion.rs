@@ -216,13 +216,18 @@ impl Reader {
     /// el llamador cae al envío solo-texto.
     ///
     /// Mapeo ventana → píxeles del bitmap: la MISMA geometría del blit
-    /// (`blit`): el bitmap se dibuja en `(dx, dy)` escalado por
-    /// `blit_zoom = zoom / rendered_zoom`, así que un px de pantalla `s`
-    /// cae en el px de bitmap `(s − origen) / blit_zoom`. Se usa floor/ceil
-    /// para que el crop cubra al menos la región seleccionada y se recorta
-    /// a los bordes del bitmap (clamp) — el rect de selección ya viene
-    /// recortado a la hoja por `sel_screen_rect`, pero el pan puede dejar
-    /// parte del rect fuera del bitmap.
+    /// (`blit`): el render FULL de la página se dibujaría en `(dx, dy)`
+    /// escalado por `blit_zoom = zoom / rendered_zoom`, así que un px de
+    /// pantalla `s` cae en el px del render full `(s − origen) / blit_zoom`.
+    /// El bitmap residente es el CROP centrado a ventana de ese render
+    /// (fix de residency), así que se resta el origen del crop
+    /// (`cached.crop_x/crop_y`) para caer en los píxeles realmente
+    /// almacenados; si la selección cae fuera del crop (pan/zoom extremos
+    /// que dejan ver parte de la página recortada) el clamp recorta a lo
+    /// disponible. Se usa floor/ceil para que el crop cubra al menos la
+    /// región seleccionada — el rect de selección ya viene recortado a la
+    /// hoja por `sel_screen_rect`, pero el pan puede dejar parte del rect
+    /// fuera del bitmap.
     ///
     /// Modo oscuro: la caché guarda SIEMPRE bitmaps normales (la inversión
     /// se aplica al blitear, `draw::blit_page`), así que el crop sale con
@@ -230,9 +235,10 @@ impl Reader {
     /// ecuación la información es la misma y el modelo de visión no se
     /// confunde con un fondo negro.
     pub(crate) fn sel_image_png_base64(&self) -> Option<String> {
-        let bmp = self.cache.peek(self.page)?;
+        let cached = self.cache.peek(self.page)?;
+        let bmp = &cached.bitmap;
         let (l, t, r, b) = self.sel_screen_rect()?;
-        // Escala de dibujo del bitmap cacheado (relativa a su render): 1:1
+        // Escala de dibujo del render cacheado (relativa a su render): 1:1
         // nítido en reposo (`rendered_zoom == zoom`), vecino-más-cercano del
         // bitmap viejo durante el pinch. Si no es finita (defensa), no hay
         // imagen que mandar.
@@ -244,20 +250,22 @@ impl Reader {
         if !blit_zoom.is_finite() || blit_zoom <= 0.0 {
             return None;
         }
-        // Esquina del bitmap escalado en pantalla (misma aritmética que el
-        // blit: centrado horizontal cover + pan de anclaje; Y alineado
-        // arriba).
-        let dx = (((self.win_w as f32 - bmp.width as f32 * blit_zoom) / 2.0) + self.pan_x).round();
+        // Esquina del render FULL escalado en pantalla (misma aritmética que
+        // el blit sobre el bitmap sin recortar: centrado horizontal cover +
+        // pan de anclaje; Y alineado arriba). El bitmap residente es el crop
+        // centrado a ventana de ese render: restamos el origen del crop para
+        // caer en los píxeles almacenados (ver doc del mapeo arriba).
+        let dx =
+            (((self.win_w as f32 - cached.full_w as f32 * blit_zoom) / 2.0) + self.pan_x).round();
         let dy = self.pan_y.round();
-        // Rect de selección en píxeles del bitmap, cubriendo al menos lo
-        // seleccionado (floor/ceil) y recortado a los bordes del bitmap.
-        let x0 = ((l - dx) / blit_zoom).floor();
-        let y0 = ((t - dy) / blit_zoom).floor();
-        let x1 = ((r - dx) / blit_zoom).ceil();
-        let y1 = ((b - dy) / blit_zoom).ceil();
+        let x0 = ((l - dx) / blit_zoom).floor() - cached.crop_x as f32;
+        let y0 = ((t - dy) / blit_zoom).floor() - cached.crop_y as f32;
+        let x1 = ((r - dx) / blit_zoom).ceil() - cached.crop_x as f32;
+        let y1 = ((b - dy) / blit_zoom).ceil() - cached.crop_y as f32;
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
             return None; // NaN/inf (defensa): sin imagen
         }
+        // Rect en píxeles del bitmap residente (crop), recortado a sus bordes.
         let (x0, y0) = (x0.max(0.0) as u32, y0.max(0.0) as u32);
         let (x1, y1) = (
             (x1 as i64).min(bmp.width as i64) as u32,

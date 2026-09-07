@@ -76,6 +76,13 @@ const WHITE_THRESHOLD: u8 = 245;
 /// coordinador la use luego. En un cdylib rustc la marca dead_code aunque sea
 /// `pub`; se suprime la advertencia para mantener el build sin warnings, y se
 /// elimina el `#[allow]` cuando el primer caller la consuma.
+///
+/// Auditoría (fix C de speed, 2026-09-07): NINGÚN llamador consume bitmaps de
+/// la `PageCache` por aquí (sus únicos usos son los tests de abajo con bitmaps
+/// sintéticos). Si un futuro caller le pasara un bitmap CACHEADO (el crop
+/// centrado a ventana de `CachedPage`), el bbox de márgenes saldría relativo
+/// al CROP (la ventana), no a la página completa: habría que componer con
+/// `full_w/full_h/crop_x/crop_y` o medir sobre un render full.
 #[allow(dead_code)]
 pub fn crop_margins(bitmap: &Bitmap) -> Option<(u32, u32, u32, u32)> {
     let (w, h) = (bitmap.width as usize, bitmap.height as usize);
