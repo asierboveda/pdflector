@@ -623,3 +623,35 @@ pantalla ON (`svc power stayon true`), batería cargando (7 %).
 ### Verificación ADR-007 §8.3/§8.4 (deuda transversal de NEXT-PLAN)
 - p95 present 4.19 ms < 8.33 ms ✅ (§8.3). PSS 174–178 MB en reposo vs < 150 MB (§8.4): cumple en
   arranque/lectura, no en peor caso post-ciclos → misma deuda del criterio 3.
+
+## Velocidad de pase de página — fases A/B/C/D + guards (2026-09-07, TCL 9469X)
+
+Build: release `25a8dd7` (A0/A1/A2 + prefetch direccional B + crop a ventana C + evicción
+diferida D + guards anti-negro). Método: taps secuenciales con gaps 2.2 s, logcat streaming
+(buffer 256 KB se desborda), pantalla ON. Libros: dense_textbook (93 pág, generado) y
+Análisis Funcional (346 pág, tipografía densa real).
+
+### Baseline pre-trabajo (build v0.1.0, dense_textbook)
+- 12/12 turnos a ~115 ms (0 % hits): la caché retenía 1 página (bitmaps de 27.4 MB en
+  landscape-cover frente a presupuesto de 48 MB). Causa raíz medida con telemetría
+  temporal: `insert page=N bytes=27385600 resident=1` → evict en cada inserción.
+- Causas compuestas: bug de unidades en el tope (`max_px = BUDGET/4` compara píxeles
+  contra bytes) + cover que produce 2.16× los píxeles de pantalla.
+
+### Tras fix C (crop centrado a ventana, 12.7 MB/pág) + D (evicción diferida)
+- Serie 15 turnos (Análisis, portrait): `9,158,8,8,155,8,6,102,7,6,6,7,102,10,10` ms →
+  **11/15 hits a 6-10 ms**, 4/15 misses a 102-168 ms (un render). p50 ≈ 8 ms.
+- Residency ≥3 verificada (log de evict solo desliza ventana, ~1 evict/turno).
+- Nitidez 1:1 verificada visualmente (3 screencaps, texto matemático denso perfecto).
+- PSS: ~190-205 MB en este libro (ver deuda display-lists abajo). Turno típico 19× más
+  rápido que baseline (6 ms vs 115 ms).
+
+### Deuda nueva medida (no bloqueante, registrada)
+- **Display lists sin cota** (`MupdfDocument.display_lists`, sin evicción por diseño F3.3):
+  +65/+79 MB en dos rondas de 11 turnos (~6-7 MB/página nueva en libro complejo).
+  El prefetch más agresivo acelera su acumulación. Propuesta: LRU en display lists o
+  soltar páginas lejanas (tarea futura, con test en pdf_core).
+- Frames negros transitorios (2 en ~40 turnos, no reproducibles: las mismas páginas
+  revisadas muestran contenido perfecto): guards añadidos (fallback con presencia
+  verificada + descarte de bitmap degenerado, ambos con warn permanente). 0 disparos
+  en la ronda de caza de 15 turnos.
