@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Navegación y apertura de documentos (extraído de `reader.rs`, 2026-09-06): cambio de página (`goto_page`, `next_page`, `prev_page`, `jump_page`), persistencia de posición (`save_state`) y apertura de PDFs (`open_pdf`, `open_pdf_at`).
+//! Navegación y apertura de documentos (extraído de `reader.rs`, 2026-09-06): cambio de página (`goto_page`, `next_page`, `prev_page`, `jump_page`), persistencia de posición (`save_state` con flush diferido A1: `mark_state_dirty`, `flush_state`, `flush_state_if_due`) y apertura de PDFs (`open_pdf`, `open_pdf_at`).
 
 use super::Reader;
 use super::UiMode;
@@ -9,9 +9,11 @@ use crate::annotations::ToolKind;
 use crate::draw::compose_library_snapshot;
 use log::error;
 use log::info;
+use log::warn;
 use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::{Document, RenderEngine};
 use std::path::Path;
+use std::time::Duration;
 use std::time::Instant;
 
 impl Reader {
@@ -21,34 +23,134 @@ impl Reader {
     /// tap derecho/izquierdo. No hay salto con re-render: las páginas vecinas
     /// salen de la caché (paso instantáneo). Invalida los overlays cacheados
     /// (indicador, sheet, frame de la animación).
+    ///
+    /// Fase B (prefetch direccional): registra la dirección del turno
+    /// (`last_direction`, signo del delta) y, cuando la página nueva NO está
+    /// en caché, lanza la ventana asimétrica 2-delante/1-detrás de
+    /// `prefetch_pages` (solo misses) en lugar del ±1 simétrico histórico.
     fn goto_page(&mut self, page: u32) {
         let prev = self.page;
         if prev == page {
             return;
         }
         self.page = page;
+        // Dirección de viaje (fase B): signo del delta. next/prev/jump y los
+        // taps delegan todos aquí, así que el signo se calcula UNA vez en el
+        // punto común (el delta i64 evita el overflow de u32 sin signo).
+        self.last_direction = (page as i64 - prev as i64).signum() as i8;
         self.page_badge = None; // el indicador "N / total" cambia
         self.sheet_bitmap = None; // el indicador del sheet cambia
         info!("page {}", self.page + 1);
+        // Instrumentación (A2): arranca el cronómetro del turno — lo cierra
+        // `present_viewer` con el log `page_turn <ms>` cuando la página real
+        // (no el fallback) queda horneada en la dry.
+        self.page_turn_t0 = Some(Instant::now());
         // Cambio de página SIN congelar: si la nueva está en caché (prefetch
         // previo), el blit es inmediato; si no, se muestra la página ANTERIOR
         // (fallback) mientras el worker renderiza la nueva asíncronamente.
         if self.cache.peek(page).is_none() {
-            self.fallback_page = Some(prev);
-            let pages = {
-                let n = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
-                let lo = page.saturating_sub(1);
-                let hi = (page + 1).min(n.saturating_sub(1));
-                (lo..=hi)
-                    .filter(|&p| self.cache.peek(p).is_none())
-                    .collect()
-            };
+            // Guard (robustez del pase de página): el fallback solo sirve si
+            // `prev` SIGUE en caché para mostrarse — el sliding window pudo
+            // evictarla (miss en N y prev ausente → dry vacía = fondo en vez
+            // de contenido). Con `prev` fuera no fijar fallback: el re-bake
+            // de la página real al llegar N funciona igual.
+            if self.cache.peek(prev).is_some() {
+                self.fallback_page = Some(prev);
+            } else {
+                warn!(
+                    "turn to {} without fallback (prev {} evicted)",
+                    page + 1,
+                    prev + 1
+                );
+            }
+            let pages = self
+                .prefetch_pages(page) // ventana direccional ordenada (fase B)
+                .into_iter()
+                .filter(|&p| self.cache.peek(p).is_none())
+                .collect::<Vec<u32>>();
             self.launch_render(pages, self.rendered_zoom, false);
         }
-        self.save_state();
+        // A1: la persistencia pasa a DIFERIDA (flush a los 2 s desde `tick`
+        // o explícito en enter_library/open_pdf_at/Pause) — quita el I/O
+        // síncrono de state.json+library.json del tap de pasar página.
+        self.mark_state_dirty();
         if self.window.is_some() {
             self.blit();
         }
+    }
+
+    /// Páginas candidatas del prefetch alrededor de `page` (fase B), en ORDEN
+    /// de lanzamiento:
+    /// 1. la página por DETRÁS de la dirección de viaje (radio 1),
+    /// 2. la página ACTUAL (`page`),
+    /// 3. hacia DELANTE en la dirección de viaje, de la más cercana a la más
+    ///    lejana (radio 2).
+    ///
+    /// El orden no es el del ejemplo del brief (vecina delantera primero):
+    /// con la página de atrás como PRIMERA llegada, el LRU de la caché la
+    /// sacrifica antes que la actual cuando el lote completo (2+1+actual = 4
+    /// páginas ≈ 51 MiB a 12,7 MiB/página) excede los 48 MiB del presupuesto
+    /// — la inserción del 4º bitmap expulsa al más antiguo (frente LRU), que
+    /// es la de atrás, y la actual sobrevive al lote (nunca pantalla en
+    /// blanco tras un salto con lote completo). En el caso común (la de
+    /// atrás ya cacheada — el usuario viene de ella) la actual queda PRIMERA
+    /// del lote y minimiza la latencia del turno; las delanteras (siguientes
+    /// taps probables) entran justo después.
+    ///
+    /// Sin dirección (`last_direction == 0`: apertura, restore, salto
+    /// inicial) → ventana simétrica ±1 (comportamiento previo a la fase B).
+    /// Devuelve páginas clampadas al documento, sin duplicados y SIN filtrar
+    /// por caché (el llamador lanza solo los misses).
+    fn prefetch_pages(&self, page: u32) -> Vec<u32> {
+        let Some(doc) = self.doc.as_ref() else {
+            return Vec::new();
+        };
+        let n = doc.page_count();
+        if n == 0 {
+            return Vec::new();
+        }
+        let last = n - 1;
+        let mut pages = Vec::with_capacity(4);
+        // Añade `p` (los guards evitan el overflow de u32 y los duplicados
+        // al clampear: docs de 1 página o page == last).
+        let mut push = |p: u32| pages.push(p);
+        match self.last_direction {
+            1 => {
+                if page > 0 {
+                    push(page - 1); // detrás (radio 1) — víctima LRU natural
+                }
+                push(page); // actual: sustituye al fallback en un turno miss
+                if page < last {
+                    push(page + 1); // delante, cercana → lejana (radio 2)
+                }
+                if page + 1 < last {
+                    push(page + 2);
+                }
+            }
+            -1 => {
+                if page < last {
+                    push(page + 1); // detrás (radio 1) — víctima LRU natural
+                }
+                push(page); // actual
+                if page > 0 {
+                    push(page - 1); // delante, cercana → lejana (radio 2)
+                }
+                if page > 1 {
+                    push(page - 2);
+                }
+            }
+            _ => {
+                // Sin dirección: ventana simétrica ±1 (comportamiento previo).
+                if page > 0 {
+                    push(page - 1);
+                }
+                push(page);
+                if page < last {
+                    push(page + 1);
+                }
+            }
+        }
+        pages
     }
 
     pub(crate) fn next_page(&mut self) {
@@ -80,9 +182,12 @@ impl Reader {
     }
 
     /// Persiste la posición actual (ruta, página, zoom) + modo oscuro en
-    /// `internal/state.json` (ver `persist`). Escritura *eager*: se llama en
-    /// cada cambio de página, al soltar el pinch, al abrir un documento y al
-    /// alternar el modo oscuro — un cierre inesperado no pierde la posición.
+    /// `internal/state.json` (ver `persist`). Desde la fase A1 la escritura
+    /// es DIFERIDA para el cambio de página: `goto_page` solo marca
+    /// (`mark_state_dirty`) y `flush_state_if_due`/`flush_state` escriben
+    /// aquí (ver `state_dirty`). Siguen *eager* (llamada directa) las
+    /// acciones infrecuentes: soltar el pinch, toggles de ajustes y la
+    /// apertura de un documento — un cierre inesperado no pierde la posición.
     ///
     /// Además actualiza el REGISTRO DE PROGRESO por libro
     /// (`internal/library.json`, ver `persist::BookProgress`): página actual,
@@ -121,6 +226,42 @@ impl Reader {
         }
     }
 
+    /// Marca el estado como pendiente de persistir (A1, diferido): registra
+    /// `state_dirty_since` para que `flush_state_if_due` (2 s desde `tick`)
+    /// escriba sin I/O en el tap. `goto_page` es su único llamador.
+    fn mark_state_dirty(&mut self) {
+        self.state_dirty = true;
+        self.state_dirty_since = Some(Instant::now());
+    }
+
+    /// Guarda YA si hay cambios pendientes (flush explícito). Puntos de
+    /// salida del visor: `enter_library`, `open_pdf_at` (antes de sustituir
+    /// el documento) y el `Pause` de la activity en `android_main`. Sin
+    /// estos flushes, un kill dentro de la ventana de 2 s del diferido
+    /// perdería la navegación reciente (trade-off documentado en
+    /// `state_dirty`).
+    pub(crate) fn flush_state(&mut self) {
+        if self.state_dirty {
+            self.save_state();
+            self.state_dirty = false;
+            self.state_dirty_since = None;
+        }
+    }
+
+    /// Flush periódico del estado diferido (A1): si `goto_page` marcó dirty
+    /// hace más de 2 s → `save_state` + limpiar. Llamado desde `tick` (~8 ms
+    /// con ventana): el coste en reposo es una comparación de `bool` +
+    /// `Instant`, sin I/O hasta que toca.
+    pub(crate) fn flush_state_if_due(&mut self) {
+        if self.state_dirty
+            && self
+                .state_dirty_since
+                .is_some_and(|t| t.elapsed() >= Duration::from_millis(2000))
+        {
+            self.flush_state();
+        }
+    }
+
     /// Abre un PDF por ruta (picker) y pasa al visor con la página 1.
     /// Devuelve false (y deja el estado intacto) si no se pudo abrir.
     pub(crate) fn open_pdf(&mut self, path: &str) -> bool {
@@ -141,6 +282,11 @@ impl Reader {
         };
         match engine.open(Path::new(path)) {
             Ok(doc) => {
+                // A1: flush explícito del estado diferido antes de sustituir
+                // el documento — conserva en library.json la última posición
+                // del PDF anterior (el `save_state` del final registra el
+                // nuevo; state.json solo guarda un estado actual).
+                self.flush_state();
                 let pages = doc.page_count();
                 info!("opened: {pages} pages");
                 // Página de apertura: la guardada (reanudar lectura) o la 1.
@@ -150,6 +296,9 @@ impl Reader {
                 };
                 self.doc = Some(doc);
                 self.page = page;
+                // Apertura/restore: NO es un turno de navegación — sin
+                // dirección de viaje previa → ventana ±1 simétrica (fase B).
+                self.last_direction = 0;
                 self.zoom = 1.0;
                 self.rendered_zoom = 1.0;
                 self.pan_x = 0.0;

@@ -87,10 +87,11 @@
 //! `ensure_pages_rendered`), pero las vecinas nunca se dibujan:
 //!
 //! - `cache.rs` (`PageCache`): LRU en RAM de páginas renderizadas
-//!   (página → `Bitmap`), limitada por bytes (48 MiB) y por entradas (5),
-//!   coherente con el RSS < 150 MB; evita el re-render al volver atrás.
-//!   Los bitmaps se guardan SIEMPRE normales: la inversión de modo oscuro se
-//!   aplica al blitear (`draw::blit_page`).
+//!   (página → `CachedPage`: el crop a ventana del render cover — X
+//!   centrado, Y arriba — + metadatos `full_w/full_h/crop_x/crop_y`), limitada por bytes (48 MiB)
+//!   y por entradas (5), coherente con el RSS < 150 MB; evita el re-render al
+//!   volver atrás. Los bitmaps se guardan SIEMPRE normales: la inversión de
+//!   modo oscuro se aplica al blitear (`draw::blit_page`).
 //! - Render (vía caché) de la página actual + 1 vecina por lado (prefetch
 //!   simple: el paso de página es instantáneo); el blit dibuja SOLO la
 //!   página actual (centrado cover + pan de anclaje del pinch, recorte a la
@@ -710,6 +711,13 @@ pub fn android_main(app: AndroidApp) {
                 // marca "pendiente de conceder permiso" — el selector de
                 // añadir re-comprueba el permiso por sí mismo al invocarse.
                 reader.grant_pending = false;
+            }
+            PollEvent::Main(MainEvent::Pause) => {
+                info!("Pause");
+                // A1: flush explícito del estado diferido al pausar (Home /
+                // cambio de app): el proceso puede morir en segundo plano
+                // antes de que `tick` cumpla los 2 s del flush periódico.
+                reader.flush_state();
             }
             PollEvent::Main(MainEvent::Destroy) => {
                 info!("Destroy: saliendo del bucle");

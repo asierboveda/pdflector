@@ -221,20 +221,31 @@ impl Reader {
                 self.pan_y = 0.0;
             } else {
                 // Transición fast→sharp SIN salto: durante el pinch el bitmap
-                // VIEJO se dibuja con tamaño `round(bmp.width × zoom/rendered_zoom)`
-                // px (vecino-más-cercano) y tras el re-render el NUEVO a
-                // `round(dw × zoom)` px 1:1 — la diferencia (≤ 1 px, por el
-                // redondeo de píxeles del render) desplazaría el borde
-                // izquierdo de la página al soltar. Corregimos el pan para
-                // que el borde DIBUJADO quede en el mismo píxel: en `blit`,
-                // `dx = round((win − w)/2 + pan)`, así que para que el nuevo
-                // dx iguale al dibujado en fast basta
-                // `pan_nuevo = dx_fast − (win − w_nuevo)/2` (la corrección es
-                // solo en X: en Y el borde superior es `dy = round(pan_y)`,
-                // independiente del tamaño del bitmap).
+                // VIEJO se dibuja con tamaño `round(ancho_FULL del render viejo
+                // × zoom/rendered_zoom)` px (vecino-más-cercano) y tras el
+                // re-render el NUEVO a `round(dw × zoom)` px 1:1 — la
+                // diferencia (≤ 1 px, por el redondeo de píxeles del render)
+                // desplazaría el borde izquierdo de la página al soltar.
+                // Corregimos el pan para que el borde DIBUJADO quede en el
+                // mismo píxel: en `blit`, `dx = round((win − w)/2 + pan)`,
+                // así que para que el nuevo dx iguale al dibujado en fast
+                // basta `pan_nuevo = dx_fast − (win − w_nuevo)/2` (la
+                // corrección es solo en X: en Y el borde superior es
+                // `dy = round(pan_y)`, independiente del tamaño del bitmap).
+                //
+                // El ancho se toma de `full_w` del CachedPage, NO de
+                // `bmp.width`: el bitmap cacheado es el recorte a la ventana
+                // del render full (X-centrado, Y-top — fix de residency) y
+                // `bmp.width` es la ventana, no la página. El anclaje/clamp
+                // del pinch trabajan sobre la caja FULL (`dw·zoom`), y el
+                // crop X-centrado se dibuja compensando exactamente el
+                // centrado X del blit (ver render_dry): alinear la caja full
+                // entre fast y sharp alinea el CONTENIDO. Con `bmp.width`
+                // (crop) el dx_fast quedaría desplazado `crop_x·blit_zoom`
+                // px → salto visible al soltar.
                 let old_blit = self.zoom / self.rendered_zoom.max(1e-4);
                 let old_w = match self.cache.peek(self.page) {
-                    Some(b) => b.width as f32 * old_blit,
+                    Some(b) => b.full_w as f32 * old_blit,
                     None => dw * zoom, // sin bitmap (defensa): sin corrección
                 };
                 let new_w = (dw as f64 * zoom as f64).round() as f32;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Tick del bucle de eventos (extraído de `reader.rs`, 2026-09-06): `tick` y su predicado `needs_tick`, visibilidad de filas/carousel (`lib_cont_visible`, `lib_visible_grid_rows`/`lib_visible_list_rows`), pump de portadas (`thumbs_pending`, `ensure_thumb_worker`, `pump_thumbs`) y accesores de frame del bucle (`take_repaint`, `needs_repaint`, `has_window`).
+//! Tick del bucle de eventos (extraído de `reader.rs`, 2026-09-06): `tick` y su predicado `needs_tick`, visibilidad de filas/carousel (`lib_cont_visible`, `lib_visible_grid_rows`/`lib_visible_list_rows`), pump de portadas (`thumbs_pending`, `ensure_thumb_worker`, `pump_thumbs`), la evicción diferida del pagecache en ticks idle (`trim_to_budget`, fix p95 — ver `crate::cache`) y accesores de frame del bucle (`take_repaint`, `needs_repaint`, `has_window`).
 
 use super::AiPhase;
 use super::Reader;
@@ -59,6 +59,9 @@ impl Reader {
     /// los eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
     /// despertar el loop en reposo).
     pub(crate) fn tick(&mut self, app: &AndroidApp) {
+        // Persistencia diferida (A1): si el estado lleva >2 s sucio (cambio
+        // de página reciente) se escribe aquí — el tap de página no hace I/O.
+        self.flush_state_if_due();
         // Buscador con teclado: recoger lo tecleado y re-filtrar la rejilla
         // (el IME escribe en un EditText invisible; ver `jni::ime_text`).
         self.poll_ime_query(app);
@@ -74,7 +77,21 @@ impl Reader {
         crate::input::tick_gestures(self, app);
         // Render ASÍNCRONO (zoom sharp / cambio de página): aplica los
         // bitmaps que ya llegaron — el UI nunca se congela esperándolos.
+        let cache_inserts_before = self.cache.insert_count();
         self.poll_render();
+        // Evicción DIFERIDA fuera del frame del turno (fix p95): `insert` no
+        // evicta hasta `byte_budget + EVICT_SLACK` (ver `crate::cache`); el
+        // recorte estricto a presupuesto ocurre AQUÍ, solo en ticks
+        // REALMENTE idle — el poll no insertó nada en este tick (snapshot de
+        // `insert_count`; un tick que recibe renders presenta o cachea el
+        // lote del turno y no debe pagar frees) y no hay repaint pendiente
+        // (un tick con repaint presenta frame; el free no debe pisar ese
+        // frame). El coste del free cae fuera del camino crítico del pase de
+        // página y el overshoot de `EVICT_SLACK` se recoge en el siguiente
+        // tick idle (~8 ms).
+        if cache_inserts_before == self.cache.insert_count() && !self.repaint {
+            self.cache.trim_to_budget();
+        }
         // Debounce del pinch (F3.2): 350 ms de quietud con los dedos en
         // pantalla y el bitmap a otro zoom (> 5%) → render nítido SIN
         // esperar a soltar. Con el actor persistente el lote en vuelo no

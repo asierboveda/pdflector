@@ -376,7 +376,10 @@ impl Gpu {
         }
     }
     /// Invalida explícitamente la capa base (Dry FBO) para forzar su re-render.
-    #[allow(dead_code)]
+    /// Llamado por `poll_render` cuando llega el render de la página actual:
+    /// la dry puede estar horneada con el fallback bajo la clave de la página
+    /// nueva (misma DryKey) y sin esta invalidación el fallback quedaría
+    /// visible para siempre.
     pub(crate) fn invalidate_dry(&mut self) {
         self.dry_dirty = true;
     }
@@ -481,27 +484,53 @@ impl Gpu {
             let bg = self.view_bg(reader);
             self.clear(bg);
 
-            // 1. Dibujar página PDF
-            let mut page_drawn = false;
-            let mut scale = 1.0f32;
-            let (mut page_dx, mut page_dy) = (0.0f32, 0.0f32);
-            if let Some(bmp) = reader
+            // 1. Dibujar página PDF y, sobre ella, las anotaciones
+            // consolidadas: la dry hornea ambas juntas porque el quad de la
+            // composición las desplaza como una sola capa (el pan).
+            if let Some(page) = reader
                 .cache
                 .peek(reader.page)
                 .or_else(|| reader.fallback_page.and_then(|pg| reader.cache.peek(pg)))
             {
+                let bmp = &page.bitmap;
                 let blit_zoom = if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
                     reader.zoom / reader.rendered_zoom
                 } else {
                     1.0
                 };
+                // Propiedad del crop a ventana (fix de residency): el bitmap
+                // cacheado es el recorte del render full a la ventana del
+                // worker — X CENTRADO (`crop_x = (full_w − w)/2`, compensa el
+                // centrado X de este quad) e Y ALINEADO ARRIBA (`crop_y = 0`,
+                // igual que este quad: `page_dy = 0`). Por eso este quad
+                // dibuja el crop con su PROPIO tamaño sin conocer la caja
+                // full: a `blit_zoom == 1` (reposo, `rendered_zoom == zoom`)
+                // reproduce los píxeles de página del render full sin
+                // recortar (en X por la compensación del centrado; en Y por
+                // la alineación top compartida) y llena la ventana 1:1.
+                // `full_w/crop_x/crop_y` los consumen pinch y sel_image (y
+                // `ann_dx` aquí abajo) para volver a la cuadrícula del render
+                // full. Caveat: con `blit_zoom != 1` (preview del pinch,
+                // vecino-más-cercano del bitmap viejo) los bordes del crop
+                // pueden mostrar smear transitorio hasta que aterriza el
+                // render sharp (`poll_render` → `invalidate_dry`).
                 let pw = bmp.width as f32 * blit_zoom;
                 self.upload_page_if_needed(reader.page, reader.rendered_zoom, bmp);
                 // El pan NO se hornea aquí: lo aplica el quad de composición
                 // en present_viewer (Tarea 2.3). Horneado + quad desplazado
                 // duplicarían el pan (2×pan) en cada re-render de la dry.
-                page_dx = ((reader.win_w as f32 - pw) / 2.0).round();
-                page_dy = 0.0;
+                let page_dx = ((reader.win_w as f32 - pw) / 2.0).round();
+                let page_dy = 0.0;
+                // Origen de la capa de ANOTACIONES (abajo): la esquina de la
+                // CAJA FULL del render en pantalla (sin pan). Difiere del
+                // origen del quad (`page_dx/page_dy`, que posiciona el CROP)
+                // en el origen del recorte: las anotaciones viven en coords
+                // de PÁGINA (doc × scale), igual que `screen_to_page`, así
+                // que se anclan a la caja full, no al crop — si no, se
+                // desplazan `crop_x·blit_zoom` px respecto al contenido que
+                // marcan.
+                let ann_dx = page_dx - page.crop_x as f32 * blit_zoom;
+                let ann_dy = page_dy - page.crop_y as f32 * blit_zoom;
 
                 gl::glUseProgram(self.prog_tex.prog);
                 gl::glActiveTexture(gl::GL_TEXTURE0);
@@ -553,17 +582,16 @@ impl Gpu {
                 gl::glDisableVertexAttribArray(self.prog_tex.a_uv as u32);
                 gl::glBindBuffer(gl::GL_ARRAY_BUFFER, 0);
 
-                page_drawn = true;
-            }
-
-            // 2. Dibujar anotaciones consolidadas
-            if page_drawn {
+                // 2. Anotaciones consolidadas: se hornean con la página (el
+                // pan las desplaza juntas). Ancladas a la caja FULL
+                // (`ann_dx/ann_dy`), no al quad del crop.
+                let mut scale = 1.0f32;
                 if let Some((pw, ph)) = reader.page_size_pt(reader.page) {
                     scale = crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h)
                         * reader.zoom;
                 }
-                let dx = page_dx;
-                let dy = page_dy;
+                let dx = ann_dx;
+                let dy = ann_dy;
                 let anns = reader.annotations.for_page(reader.page as usize);
                 for a in &anns {
                     if let pdf_core::Annotation::Highlight(h) = &a.kind {
@@ -628,10 +656,20 @@ impl Gpu {
                 } else {
                     1.0
                 };
+                // Origen de la capa transitoria: la CAJA FULL del render
+                // (tinta/resaltado están en coords de página `doc × scale`,
+                // igual que `screen_to_page` y que la capa de anotaciones de
+                // la dry — ver `ann_dx/ann_dy` allí). El bitmap cacheado es
+                // el crop a ventana (X-centrado, Y-top) de ese render: la
+                // esquina de la caja full está `crop_x·blit_zoom` px a la
+                // izquierda del quad del crop (y `crop_y·blit_zoom` arriba),
+                // así que se usa `full_w` — con el ancho del crop la tinta
+                // saldría desplazada `crop_x·blit_zoom` px bajo el boli.
+                // La wet se compone con offset (0,0): hornea su propio pan.
                 let pw = reader
                     .cache
                     .peek(reader.page)
-                    .map(|b| b.width as f32 * blit_zoom)
+                    .map(|b| b.full_w as f32 * blit_zoom)
                     .unwrap_or(0.0);
                 let dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
                 let dy = reader.pan_y.round();
@@ -763,6 +801,8 @@ impl Gpu {
         }
     }
     /// Present completo del visor por GPU con arquitectura Dual FBO (Wet/Dry).
+    /// Toma `&mut Reader` porque tras el swap CONSUME la instrumentación del
+    /// turno (`page_turn_t0`, log `page_turn` — ver bloque A2 al final).
     ///
     /// - Capa Dry: se re-renderiza SOLO al cambiar página, zoom, anotaciones o
     ///   dark (los 4 campos de la `DryKey`). Durante la escritura activa, la
@@ -774,7 +814,7 @@ impl Gpu {
     /// - Composición: compone `dry_fbo ⊕ wet_fbo` en el framebuffer 0 (la
     ///   ventana visible) y encima los overlays de UI por frame (no invalidan
     ///   la dry).
-    pub(crate) fn present_viewer(&mut self, reader: &Reader) {
+    pub(crate) fn present_viewer(&mut self, reader: &mut Reader) {
         let t0 = std::time::Instant::now();
         // Volver al visor desde Library/Picker: liberar las texturas grandes
         // de sus planos (cabecera/banda/lista) — ya no se pintan y retienen
@@ -785,7 +825,8 @@ impl Gpu {
         }
 
         // 1. Comprobar si la capa Dry (base persistente) está sucia
-        let anns_count = reader.annotations.for_page(reader.page as usize).len();
+        // `count_for_page` (A2): O(1) sin el Vec intermedio de `for_page`.
+        let anns_count = reader.annotations.count_for_page(reader.page as usize);
         let key = DryKey {
             page: reader.page,
             zoom_bits: reader.zoom.to_bits(),
@@ -905,6 +946,19 @@ impl Gpu {
                     p95.as_secs_f64() * 1000.0,
                     self.presents
                 );
+            }
+        }
+        // A2 (fase A): latencia real de cambio de página — desde que
+        // `goto_page` fijó `page_turn_t0` hasta el primer frame que presenta
+        // la página REAL horneada en la dry (`dry_key.page == reader.page` y
+        // sin `fallback_page` pendiente: el fallback NO es la página pedida).
+        // UNA medición por turno: al loguear se limpia `page_turn_t0`; con el
+        // render del worker aún en vuelo el campo se conserva para el frame
+        // en que aterrice. Infraestructura de la fase B / aceptación TCL.
+        if ok && reader.fallback_page.is_none() && reader.page_turn_t0.is_some() {
+            let on_target = self.dry_key.is_some_and(|k| k.page == reader.page);
+            if on_target && let Some(turn_t0) = reader.page_turn_t0.take() {
+                info!("page_turn {}ms", turn_t0.elapsed().as_millis());
             }
         }
     }

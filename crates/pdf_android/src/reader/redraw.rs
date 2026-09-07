@@ -34,14 +34,26 @@ use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::{Bitmap, Document, RenderEngine};
 use std::time::Instant;
 
-/// Mensaje del worker de render asíncrono: un bitmap listo a la escala
+/// Mensaje del worker de render asíncrono: el bitmap cacheable a la escala
 /// pedida (`target_zoom` = factor de zoom con el que se renderizó, la "escala
-/// efectiva" = cover × target_zoom).
+/// efectiva" = cover × target_zoom) + metadatos del render. El bitmap NO es
+/// el render full: es su recorte a la ventana del worker — X CENTRADO +
+/// Y ALINEADO ARRIBA (`crop_rect`, fix de residency — el full a cover pesa
+/// 27,4 MiB en landscape y dejaba 1 solo residente en la caché; el recorte
+/// deja ≤ ~12,7 MiB → ~3 residentes). `full_w/full_h` son las dims del
+/// render FULL (lo que se dibujó antes de recortar) y `crop_x/crop_y` el
+/// origen del recorte dentro de él: los consumidores que convierten pantalla
+/// ↔ píxeles del render (transición fast→sharp del pinch, selección →
+/// imagen, capa de anotaciones/tinta) compensan el origen.
 pub(crate) struct WorkerMsg {
     seq: u64,
     page: u32,
     bitmap: Bitmap,
     target_zoom: f32,
+    full_w: u32,
+    full_h: u32,
+    crop_x: u32,
+    crop_y: u32,
 }
 
 /// Petición de render al worker actor: páginas a la escala pedida, ventana
@@ -115,11 +127,43 @@ fn render_worker_req(
             }
             let target_eff = if cover > 0.0 { scale / cover } else { 1.0 };
             if let Ok(bmp) = doc.render_page(page, scale) {
+                let (full_w, full_h) = (bmp.width, bmp.height);
+                // Crop a la ventana (fix raíz de residency): el render full a
+                // cover excede la ventana en al menos un eje y pesa hasta
+                // 27,4 MiB en landscape (2200×3112) — solo cabía 1 residente
+                // en la caché de 48 MiB y cada turno re-renderizaba (~115 ms).
+                // Recortado a (min(bw, win_w), min(bh, win_h)) queda ≤ ~12,7
+                // MiB → ~3 residentes y turnos sin re-render. Origen: X
+                // CENTRADO (compensa el centrado X del blit) e Y = 0 (el blit
+                // alinea ARRIBA en Y — un crop centrado en Y mostraría la
+                // franja central de la página en vez de la superior). La
+                // composición NO cambia: a blit_zoom == 1 el crop reproduce
+                // los píxeles del render full (ver render_dry); los
+                // metadatos permiten a los consumidores (pinch fast→sharp,
+                // sel_image) volver a la cuadrícula del render full.
+                let (bitmap, (crop_x, crop_y)) = if req.win_w > 0 && req.win_h > 0 {
+                    let (cw, ch) = (
+                        bmp.width.min(req.win_w as u32),
+                        bmp.height.min(req.win_h as u32),
+                    );
+                    if cw == bmp.width && ch == bmp.height {
+                        (bmp, (0, 0)) // ya cabe en la ventana: sin recorte
+                    } else {
+                        let x = (bmp.width - cw) / 2;
+                        (pdf_core::crop_rect(&bmp, x, 0, cw, ch), (x, 0))
+                    }
+                } else {
+                    (bmp, (0, 0))
+                };
                 let _ = req.reply.send(WorkerMsg {
                     seq: req.seq,
                     page,
-                    bitmap: bmp,
+                    bitmap,
                     target_zoom: target_eff,
+                    full_w,
+                    full_h,
+                    crop_x,
+                    crop_y,
                 });
             }
         }
@@ -518,7 +562,19 @@ impl Reader {
                         self.cache.len(),
                         self.cache.resident_bytes() as f64 / (1024.0 * 1024.0)
                     );
-                    self.cache.insert(page, bmp);
+                    self.cache.insert(
+                        page,
+                        crate::cache::CachedPage {
+                            // Camino SÍNCRONO (legacy, sin crop): el render
+                            // ocupa el full de su cuadrícula (origen 0). El
+                            // worker async es el que recorta a ventana.
+                            full_w: bmp.width,
+                            full_h: bmp.height,
+                            crop_x: 0,
+                            crop_y: 0,
+                            bitmap: bmp,
+                        },
+                    );
                 }
                 Err(e) => {
                     error!("render page {page}: {e}");
@@ -600,8 +656,10 @@ impl Reader {
                     self.eraser_cursor_id = self.ovl_seq;
                 }
                 // Present GPU: se toma el Gpu del Option (take) para poder
-                // pasar `&self`Reader sin conflicto de préstamos — el
-                // present solo LEE el Reader.
+                // pasar el Reader (reborrow `&mut`) sin conflicto de
+                // préstamos — el present LEE el Reader y consume la
+                // instrumentación del cambio de página (`page_turn_t0` →
+                // log `page_turn`, A2).
                 if let Some(mut g) = self.gpu.take() {
                     g.present_viewer(self);
                     self.gpu = Some(g);
@@ -827,11 +885,37 @@ impl Reader {
                     if msg.seq != self.render_seq {
                         continue; // lote obsoleto: descartar
                     }
-                    self.cache.insert(msg.page, msg.bitmap);
+                    // Guard (robustez del pase de página): un bitmap
+                    // degenerado (0×0 o data vacía — dims degenerados del
+                    // render) NUNCA entra en la caché: envenenaría la página
+                    // hasta su evicción (pantalla en negro transitoria). Se
+                    // descarta sin insertar y sin limpiar el fallback — el
+                    // contenido previo persiste: mejor que negro.
+                    if msg.bitmap.width == 0 || msg.bitmap.height == 0 || msg.bitmap.data.is_empty()
+                    {
+                        warn!("dropping degenerate bitmap for page {}", msg.page + 1);
+                        continue;
+                    }
+                    self.cache.insert(
+                        msg.page,
+                        crate::cache::CachedPage {
+                            bitmap: msg.bitmap,
+                            full_w: msg.full_w,
+                            full_h: msg.full_h,
+                            crop_x: msg.crop_x,
+                            crop_y: msg.crop_y,
+                        },
+                    );
                     if msg.page == self.page {
                         self.rendered_zoom = msg.target_zoom;
                         self.fallback_page = None;
                         self.mark_repaint();
+                        // La dry puede estar horneada con el FALLBACK bajo la
+                        // clave de la página nueva (la `DryKey` no cambia al
+                        // llegar el render real: misma página/zoom/anns/dark).
+                        // Sin esta invalidación la página real no se mostraría
+                        // nunca (quedaría el fallback hasta otra invalidación).
+                        self.gpu.as_mut().map(|g| g.invalidate_dry());
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,

@@ -455,6 +455,13 @@ pub(crate) struct Reader {
     /// sin columna de páginas). Alimenta el indicador "N / total", los saltos
     /// ±10 y la persistencia.
     pub(crate) page: u32,
+    /// Dirección de viaje del último cambio de página (fase B, prefetch
+    /// direccional): +1 avanzando, -1 retrocediendo, 0 sin dirección previa
+    /// (apertura del documento o restauración de posición — no hay viaje).
+    /// La fija `goto_page` — punto común de `next_page`/`prev_page`/
+    /// `jump_page` y de los taps — con el signo del delta; decide la ventana
+    /// asimétrica 2-delante/1-detrás de `prefetch_pages` (navigation.rs).
+    last_direction: i8,
     /// Referencia owned al ANativeWindow (Some entre InitWindow y TerminateWindow).
     window: Option<NativeWindow>,
     /// Bitmap de la LISTA del picker (render de pantalla completa con
@@ -465,10 +472,12 @@ pub(crate) struct Reader {
     /// la lista): clave de la textura GPU dedicada del picker. El present
     /// GPU solo la re-sube cuando esta versión cambia (Tarea 2.7).
     pub(crate) picker_bmp_ver: u64,
-    /// Caché LRU de páginas renderizadas (página → Bitmap) para el paso de
-    /// página INSTANTÁNEO (prev/next): evita re-renderizar al volver atrás y
-    /// precarga la vecina (`ensure_pages_rendered`). Guarda SIEMPRE bitmaps
-    /// normales; la inversión de modo oscuro se aplica al blitear
+    /// Caché LRU de páginas renderizadas (página → `CachedPage`: crop
+    /// centrado a ventana del render cover + metadatos del render full) para
+    /// el paso de página INSTANTÁNEO (prev/next): evita re-renderizar al
+    /// volver atrás y precarga la vecina (el worker async; el render síncrono
+    /// `ensure_pages_rendered` quedó como camino legacy). Guarda SIEMPRE
+    /// bitmaps normales; la inversión de modo oscuro se aplica al blitear
     /// (`draw::blit_page`). SOLO se dibuja la página actual (modo UNA HOJA);
     /// las vecinas solo se cachean.
     pub(crate) cache: PageCache,
@@ -794,6 +803,23 @@ pub(crate) struct Reader {
     /// Página ANTERIOR dibujable mientras llega el render de la nueva (si
     /// está en caché): evita el parpadeo en blanco al pasar página.
     pub(crate) fallback_page: Option<u32>,
+    /// Persistencia de posición DIFERIDA (A1): `goto_page` ya no escribe en
+    /// el tap — marca `state_dirty` (con `state_dirty_since`) y `tick`
+    /// flushea a los 2 s (`flush_state_if_due`); `enter_library`,
+    /// `open_pdf_at` y el `Pause` de la activity flushean explícito
+    /// (`flush_state`). Trade-off asumido: un kill dentro de la ventana de
+    /// 2 s pierde como mucho 2 s de navegación (se conserva la última
+    /// posición flusheada). El resto de llamadores de `save_state` (fin de
+    /// pinch, toggles, apertura) siguen eager: son infrecuentes.
+    state_dirty: bool,
+    state_dirty_since: Option<Instant>,
+    /// Latencia de cambio de página (A2, instrumentación permanente):
+    /// instante en que `goto_page` fijó la página objetivo. `present_viewer`
+    /// loguea `page_turn <ms>` cuando la página REAL queda horneada en la
+    /// dry (`dry_key.page == self.page` y sin `fallback_page`) y limpia el
+    /// campo — UNA medición por turno. Infraestructura de la fase B y de la
+    /// aceptación TCL; overhead: 1 `Instant` por cambio de página.
+    pub(crate) page_turn_t0: Option<Instant>,
     /// Worker actor para render de portadas en segundo plano (Fase E1).
     thumb_worker: Option<crate::thumbs::ThumbWorker>,
     thumb_rx: Option<std::sync::mpsc::Receiver<crate::thumbs::ThumbMsg>>,
