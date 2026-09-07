@@ -37,13 +37,14 @@ use std::time::Instant;
 /// Mensaje del worker de render asíncrono: el bitmap cacheable a la escala
 /// pedida (`target_zoom` = factor de zoom con el que se renderizó, la "escala
 /// efectiva" = cover × target_zoom) + metadatos del render. El bitmap NO es
-/// el render full: es su recorte CENTRADO a la ventana del worker
-/// (`crop_centered`, fix de residency — el full a cover pesa 27,4 MiB en
-/// landscape y dejaba 1 solo residente en la caché; el crop deja ≤ ~12,7 MiB
-/// → ~3 residentes). `full_w/full_h` son las dims del render FULL (lo que se
-/// dibujó antes de recortar) y `crop_x/crop_y` el origen del recorte dentro
-/// de él: los consumidores que convierten pantalla ↔ píxeles del render
-/// (transición fast→sharp del pinch, selección → imagen) compensan el origen.
+/// el render full: es su recorte a la ventana del worker — X CENTRADO +
+/// Y ALINEADO ARRIBA (`crop_rect`, fix de residency — el full a cover pesa
+/// 27,4 MiB en landscape y dejaba 1 solo residente en la caché; el recorte
+/// deja ≤ ~12,7 MiB → ~3 residentes). `full_w/full_h` son las dims del
+/// render FULL (lo que se dibujó antes de recortar) y `crop_x/crop_y` el
+/// origen del recorte dentro de él: los consumidores que convierten pantalla
+/// ↔ píxeles del render (transición fast→sharp del pinch, selección →
+/// imagen, capa de anotaciones/tinta) compensan el origen.
 pub(crate) struct WorkerMsg {
     seq: u64,
     page: u32,
@@ -127,18 +128,30 @@ fn render_worker_req(
             let target_eff = if cover > 0.0 { scale / cover } else { 1.0 };
             if let Ok(bmp) = doc.render_page(page, scale) {
                 let (full_w, full_h) = (bmp.width, bmp.height);
-                // Crop CENTRADO a la ventana (fix raíz de residency): el
-                // render full a cover excede la ventana en al menos un eje y
-                // pesa hasta 27,4 MiB en landscape (2200×3112) — solo cabía 1
-                // residente en la caché de 48 MiB y cada turno re-renderizaba
-                // (~115 ms). Recortado a (min(bw, win_w), min(bh, win_h))
-                // queda ≤ ~12,7 MiB → ~3 residentes y turnos sin re-render.
-                // La composición NO cambia (con blit_zoom == 1 el centrado
-                // del crop compensa el centrado del blit — ver render_dry);
-                // los metadatos del render full permiten a los consumidores
-                // (pinch fast→sharp, sel_image) volver a su cuadrícula.
+                // Crop a la ventana (fix raíz de residency): el render full a
+                // cover excede la ventana en al menos un eje y pesa hasta
+                // 27,4 MiB en landscape (2200×3112) — solo cabía 1 residente
+                // en la caché de 48 MiB y cada turno re-renderizaba (~115 ms).
+                // Recortado a (min(bw, win_w), min(bh, win_h)) queda ≤ ~12,7
+                // MiB → ~3 residentes y turnos sin re-render. Origen: X
+                // CENTRADO (compensa el centrado X del blit) e Y = 0 (el blit
+                // alinea ARRIBA en Y — un crop centrado en Y mostraría la
+                // franja central de la página en vez de la superior). La
+                // composición NO cambia: a blit_zoom == 1 el crop reproduce
+                // los píxeles del render full (ver render_dry); los
+                // metadatos permiten a los consumidores (pinch fast→sharp,
+                // sel_image) volver a la cuadrícula del render full.
                 let (bitmap, (crop_x, crop_y)) = if req.win_w > 0 && req.win_h > 0 {
-                    pdf_core::crop_centered(&bmp, req.win_w as u32, req.win_h as u32)
+                    let (cw, ch) = (
+                        bmp.width.min(req.win_w as u32),
+                        bmp.height.min(req.win_h as u32),
+                    );
+                    if cw == bmp.width && ch == bmp.height {
+                        (bmp, (0, 0)) // ya cabe en la ventana: sin recorte
+                    } else {
+                        let x = (bmp.width - cw) / 2;
+                        (pdf_core::crop_rect(&bmp, x, 0, cw, ch), (x, 0))
+                    }
                 } else {
                     (bmp, (0, 0))
                 };

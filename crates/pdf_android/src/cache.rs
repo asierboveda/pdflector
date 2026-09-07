@@ -11,17 +11,20 @@
 //!
 //! El bitmap residente NO es el render full a cover (`cover × rendered_zoom`
 //! puede pesar 27,4 MiB en landscape — 2200×3112 — y cabía UNA página en el
-//! presupuesto), sino el recorte CENTRADO a la ventana de ese render
-//! (`pdf_core::crop_centered`, `(min(bw, win_w), min(bh, win_h))`):
-//! ≤ ~12,7 MiB por página → ~3 residentes en ambas orientaciones y turnos de
-//! página sin re-render. `CachedPage` guarda además los metadatos del render
-//! FULL (`full_w/full_h`) y el origen del recorte dentro de él
-//! (`crop_x/crop_y`): la composición dibuja el crop tal cual (a `blit_zoom
-//! == 1` el centrado del crop compensa el centrado del blit y la página
-//! llena la ventana 1:1), pero los consumidores que convierten pantalla ↔
-//! píxeles del bitmap (transición fast→sharp del pinch, `sel_image_png_base64`)
-//! operan sobre la cuadrícula del render FULL y compensan el origen — ver
-//! `gpu::pipeline::render_dry`, `pinch.rs` y `seleccion.rs`.
+//! presupuesto), sino el recorte a la ventana de ese render: X CENTRADO +
+//! Y ALINEADO ARRIBA (`pdf_core::crop_rect` con `(x=(full_w−w)/2, y=0)`,
+//! dims `(min(bw, win_w), min(bh, win_h))`) — ≤ ~12,7 MiB por página → ~3
+//! residentes en ambas orientaciones y turnos de página sin re-render.
+//! `CachedPage` guarda además los metadatos del render FULL
+//! (`full_w/full_h`) y el origen del recorte dentro de él
+//! (`crop_x/crop_y`): el quad de la página dibuja el crop tal cual (a
+//! `blit_zoom == 1` el crop X-centrado compensa el centrado X del blit y la
+//! alineación Y-top coincide con la del blit → la página llena la ventana
+//! 1:1 con los mismos píxeles que el render full), pero los consumidores
+//! que convierten pantalla ↔ píxeles del render (transición fast→sharp del
+//! pinch, `sel_image_png_base64`) y la capa de anotaciones/tinta operan
+//! sobre la cuadrícula del render FULL y compensan el origen — ver
+//! `gpu::pipeline::render_dry`/`render_wet`, `pinch.rs` y `seleccion.rs`.
 //!
 //! ## Política (límites y evicción — documentada)
 //!
@@ -74,14 +77,16 @@ pub(crate) const CACHE_BYTE_BUDGET: usize = 48 * 1024 * 1024;
 /// Tope de entradas (páginas) residentes.
 pub(crate) const CACHE_MAX_ENTRIES: usize = 5;
 
-/// Página renderizada residente: el bitmap es el recorte CENTRADO a la
-/// ventana del render full (`crop_centered`, fix de residency — el render
-/// full a cover pesa hasta 27,4 MiB en landscape y dejaba 1 solo residente;
-/// el crop deja ≤ ~12,7 MiB → ~3 residentes). Los metadatos describen el
-/// render FULL (la escala cover × rendered_zoom con la que se dibujó) y la
-/// posición del recorte dentro de él: los consumidores que convierten
-/// pantalla ↔ píxeles del render (transición fast→sharp del pinch,
-/// selección → imagen) operan sobre la cuadrícula FULL y compensan el origen.
+/// Página renderizada residente: el bitmap es el recorte a la ventana del
+/// render full — X CENTRADO + Y ALINEADO ARRIBA (`crop_rect` con
+/// `y = 0`, fix de residency — el render full a cover pesa hasta 27,4 MiB
+/// en landscape y dejaba 1 solo residente; el recorte deja ≤ ~12,7 MiB →
+/// ~3 residentes). Los metadatos describen el render FULL (la escala
+/// cover × rendered_zoom con la que se dibujó) y la posición del recorte
+/// dentro de él: los consumidores que convierten pantalla ↔ píxeles del
+/// render (transición fast→sharp del pinch, selección → imagen) y la capa
+/// de anotaciones/tinta operan sobre la cuadrícula FULL y compensan el
+/// origen.
 pub(crate) struct CachedPage {
     /// Recorte a ventana del render full (`full_w × full_h`), cuyo píxel
     /// (0,0) corresponde al píxel (`crop_x`, `crop_y`) del render full.
@@ -91,11 +96,12 @@ pub(crate) struct CachedPage {
     /// Alto del render FULL (pre-recorte), en píxeles del render.
     ///
     /// `allow(dead_code)`: hoy ningún consumidor lee `full_h` (el mapeo
-    /// pantalla→render solo usa `full_w` — en Y la caja full arranca en el
-    /// borde superior, `dy = pan_y`, independiente del alto). Se conserva
-    /// como parte del contrato del render full (simetría con `full_w`, que
-    /// sí consumen pinch y sel_image) y por si la capa de anotaciones pasa a
-    /// compensar `crop_y` (ver informe fix C).
+    /// pantalla→render usa `full_w`/`crop_x`/`crop_y` — en Y la caja full
+    /// arranca en el borde superior, `dy = pan_y`, independiente del alto).
+    /// Se conserva como parte del contrato del render full (simetría con
+    /// `full_w`, que consumen pinch, sel_image y la capa de tinta) por si un
+    /// consumidor futuro necesite el alto pre-recorte (p. ej. sel_image si
+    /// algún día mide sobre el full en vez del crop).
     #[allow(dead_code)]
     pub(crate) full_h: u32,
     /// Columna inicial del recorte dentro del render full.

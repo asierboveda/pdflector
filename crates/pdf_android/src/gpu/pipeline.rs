@@ -484,10 +484,9 @@ impl Gpu {
             let bg = self.view_bg(reader);
             self.clear(bg);
 
-            // 1. Dibujar página PDF
-            let mut page_drawn = false;
-            let mut scale = 1.0f32;
-            let (mut page_dx, mut page_dy) = (0.0f32, 0.0f32);
+            // 1. Dibujar página PDF y, sobre ella, las anotaciones
+            // consolidadas: la dry hornea ambas juntas porque el quad de la
+            // composición las desplaza como una sola capa (el pan).
             if let Some(page) = reader
                 .cache
                 .peek(reader.page)
@@ -500,26 +499,38 @@ impl Gpu {
                     1.0
                 };
                 // Propiedad del crop a ventana (fix de residency): el bitmap
-                // cacheado es el recorte CENTRADO del render full
-                // (`CachedPage.bitmap`), y este quad lo dibuja centrado con
-                // su PROPIO tamaño — a `blit_zoom == 1` (reposo,
-                // `rendered_zoom == zoom`) el crop llena la ventana 1:1 y el
-                // centrado del crop compensa exactamente el centrado del
-                // blit: píxeles de página IDÉNTICOS a los que mostraría el
-                // render full sin recortar. Por eso la composición NO usa
-                // `full_w/crop_x/crop_y` (los consumen pinch y sel_image
-                // para volver a la cuadrícula del render full). Caveat: con
-                // `blit_zoom != 1` (preview del pinch, vecino-más-cercano
-                // del bitmap viejo) los bordes del crop pueden mostrar smear
-                // transitorio hasta que aterriza el render sharp
-                // (`poll_render` → `invalidate_dry`).
+                // cacheado es el recorte del render full a la ventana del
+                // worker — X CENTRADO (`crop_x = (full_w − w)/2`, compensa el
+                // centrado X de este quad) e Y ALINEADO ARRIBA (`crop_y = 0`,
+                // igual que este quad: `page_dy = 0`). Por eso este quad
+                // dibuja el crop con su PROPIO tamaño sin conocer la caja
+                // full: a `blit_zoom == 1` (reposo, `rendered_zoom == zoom`)
+                // reproduce los píxeles de página del render full sin
+                // recortar (en X por la compensación del centrado; en Y por
+                // la alineación top compartida) y llena la ventana 1:1.
+                // `full_w/crop_x/crop_y` los consumen pinch y sel_image (y
+                // `ann_dx` aquí abajo) para volver a la cuadrícula del render
+                // full. Caveat: con `blit_zoom != 1` (preview del pinch,
+                // vecino-más-cercano del bitmap viejo) los bordes del crop
+                // pueden mostrar smear transitorio hasta que aterriza el
+                // render sharp (`poll_render` → `invalidate_dry`).
                 let pw = bmp.width as f32 * blit_zoom;
                 self.upload_page_if_needed(reader.page, reader.rendered_zoom, bmp);
                 // El pan NO se hornea aquí: lo aplica el quad de composición
                 // en present_viewer (Tarea 2.3). Horneado + quad desplazado
                 // duplicarían el pan (2×pan) en cada re-render de la dry.
-                page_dx = ((reader.win_w as f32 - pw) / 2.0).round();
-                page_dy = 0.0;
+                let page_dx = ((reader.win_w as f32 - pw) / 2.0).round();
+                let page_dy = 0.0;
+                // Origen de la capa de ANOTACIONES (abajo): la esquina de la
+                // CAJA FULL del render en pantalla (sin pan). Difiere del
+                // origen del quad (`page_dx/page_dy`, que posiciona el CROP)
+                // en el origen del recorte: las anotaciones viven en coords
+                // de PÁGINA (doc × scale), igual que `screen_to_page`, así
+                // que se anclan a la caja full, no al crop — si no, se
+                // desplazan `crop_x·blit_zoom` px respecto al contenido que
+                // marcan.
+                let ann_dx = page_dx - page.crop_x as f32 * blit_zoom;
+                let ann_dy = page_dy - page.crop_y as f32 * blit_zoom;
 
                 gl::glUseProgram(self.prog_tex.prog);
                 gl::glActiveTexture(gl::GL_TEXTURE0);
@@ -571,17 +582,16 @@ impl Gpu {
                 gl::glDisableVertexAttribArray(self.prog_tex.a_uv as u32);
                 gl::glBindBuffer(gl::GL_ARRAY_BUFFER, 0);
 
-                page_drawn = true;
-            }
-
-            // 2. Dibujar anotaciones consolidadas
-            if page_drawn {
+                // 2. Anotaciones consolidadas: se hornean con la página (el
+                // pan las desplaza juntas). Ancladas a la caja FULL
+                // (`ann_dx/ann_dy`), no al quad del crop.
+                let mut scale = 1.0f32;
                 if let Some((pw, ph)) = reader.page_size_pt(reader.page) {
                     scale = crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h)
                         * reader.zoom;
                 }
-                let dx = page_dx;
-                let dy = page_dy;
+                let dx = ann_dx;
+                let dy = ann_dy;
                 let anns = reader.annotations.for_page(reader.page as usize);
                 for a in &anns {
                     if let pdf_core::Annotation::Highlight(h) = &a.kind {
@@ -646,10 +656,20 @@ impl Gpu {
                 } else {
                     1.0
                 };
+                // Origen de la capa transitoria: la CAJA FULL del render
+                // (tinta/resaltado están en coords de página `doc × scale`,
+                // igual que `screen_to_page` y que la capa de anotaciones de
+                // la dry — ver `ann_dx/ann_dy` allí). El bitmap cacheado es
+                // el crop a ventana (X-centrado, Y-top) de ese render: la
+                // esquina de la caja full está `crop_x·blit_zoom` px a la
+                // izquierda del quad del crop (y `crop_y·blit_zoom` arriba),
+                // así que se usa `full_w` — con el ancho del crop la tinta
+                // saldría desplazada `crop_x·blit_zoom` px bajo el boli.
+                // La wet se compone con offset (0,0): hornea su propio pan.
                 let pw = reader
                     .cache
                     .peek(reader.page)
-                    .map(|b| b.bitmap.width as f32 * blit_zoom)
+                    .map(|b| b.full_w as f32 * blit_zoom)
                     .unwrap_or(0.0);
                 let dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
                 let dy = reader.pan_y.round();

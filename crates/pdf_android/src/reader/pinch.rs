@@ -234,14 +234,15 @@ impl Reader {
                 // `dy = round(pan_y)`, independiente del tamaño del bitmap).
                 //
                 // El ancho se toma de `full_w` del CachedPage, NO de
-                // `bmp.width`: el bitmap cacheado es el CROP centrado a la
-                // ventana del render full (fix de residency) y `bmp.width`
-                // es la ventana, no la página. El anclaje/clamp del pinch
-                // trabajan sobre la caja FULL (`dw·zoom`), y el crop centrado
-                // se dibuja compensando exactamente ese centrado (ver
-                // render_dry): alinear la caja full entre fast y sharp alinea
-                // el CONTENIDO. Con `bmp.width` (crop) el dx_fast quedaría
-                // desplazado `crop_x·blit_zoom` px → salto visible al soltar.
+                // `bmp.width`: el bitmap cacheado es el recorte a la ventana
+                // del render full (X-centrado, Y-top — fix de residency) y
+                // `bmp.width` es la ventana, no la página. El anclaje/clamp
+                // del pinch trabajan sobre la caja FULL (`dw·zoom`), y el
+                // crop X-centrado se dibuja compensando exactamente el
+                // centrado X del blit (ver render_dry): alinear la caja full
+                // entre fast y sharp alinea el CONTENIDO. Con `bmp.width`
+                // (crop) el dx_fast quedaría desplazado `crop_x·blit_zoom`
+                // px → salto visible al soltar.
                 let old_blit = self.zoom / self.rendered_zoom.max(1e-4);
                 let old_w = match self.cache.peek(self.page) {
                     Some(b) => b.full_w as f32 * old_blit,

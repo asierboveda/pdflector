@@ -219,8 +219,8 @@ impl Reader {
     /// (`blit`): el render FULL de la página se dibujaría en `(dx, dy)`
     /// escalado por `blit_zoom = zoom / rendered_zoom`, así que un px de
     /// pantalla `s` cae en el px del render full `(s − origen) / blit_zoom`.
-    /// El bitmap residente es el CROP centrado a ventana de ese render
-    /// (fix de residency), así que se resta el origen del crop
+    /// El bitmap residente es el recorte a ventana (X-centrado, Y-top) de
+    /// ese render (fix de residency), así que se resta el origen del crop
     /// (`cached.crop_x/crop_y`) para caer en los píxeles realmente
     /// almacenados; si la selección cae fuera del crop (pan/zoom extremos
     /// que dejan ver parte de la página recortada) el clamp recorta a lo

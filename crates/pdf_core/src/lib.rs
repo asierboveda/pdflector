@@ -46,7 +46,7 @@ pub use sync::{
 };
 pub use textcache::PageTextCache;
 pub use theme::{DesignTokens, ThemeColor, ThemeMode};
-pub use zoom::{crop_centered, scale_bitmap, scale_level_for_zoom};
+pub use zoom::{crop_centered, crop_rect, scale_bitmap, scale_level_for_zoom};
 /// Corpus directory. `PDFLECTOR_CORPUS_DIR` wins when set (e.g. on device);
 /// otherwise falls back to the workspace-relative corpus folder (desktop).
 /// Same scheme as pdf_bench's `corpus_dir`.

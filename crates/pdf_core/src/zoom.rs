@@ -92,6 +92,40 @@ pub fn scale_bitmap(src: &Bitmap, target_width: u32, target_height: u32) -> Resu
     })
 }
 
+/// Recorte GENERAL de un bitmap RGBA8 (row-major, 4 B/px): copia literal la
+/// región `[x, x+w) × [y, y+h)` en píxeles del source (sin interpolación) y
+/// devuelve el bitmap recortado. El rect se INTERSECA con el bitmap (clamp:
+/// `x ≤ width`, `y ≤ height`, `w ≤ width−x`, `h ≤ height−y`), así que un
+/// origen/dims fuera de rango nunca paniquea; si la intersección queda vacía
+/// devuelve un bitmap de ancho/alto 0 con `data` vacío (invariante
+/// `data.len() == w*h*4` intacto).
+///
+/// Contraste con `crop_centered`: aquí el caller fija el ORIGEN exacto. El
+/// worker del visor usa esta forma con origen X-centrado + Y-top
+/// (`x = (full_w − w)/2`, `y = 0`) porque el blit alinea ARRIBA en Y (ver
+/// `render_dry` en pdf_android) — un crop centrado en Y mostraría la franja
+/// central de la página en vez de la superior.
+///
+/// Precondición documentada (invariante de pdf_core): `data.len() == width *
+/// height * 4` — todo bitmap que entra viene de `render_page`/`scale_bitmap`.
+pub fn crop_rect(bmp: &Bitmap, x: u32, y: u32, w: u32, h: u32) -> Bitmap {
+    let x = x.min(bmp.width);
+    let y = y.min(bmp.height);
+    let w = w.min(bmp.width - x);
+    let h = h.min(bmp.height - y);
+    let src_row = bmp.width as usize * 4;
+    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+    for row in y..y + h {
+        let start = row as usize * src_row + x as usize * 4;
+        out.extend_from_slice(&bmp.data[start..start + w as usize * 4]);
+    }
+    Bitmap {
+        width: w,
+        height: h,
+        data: out,
+    }
+}
+
 /// Recorte CENTRADO de un bitmap RGBA8 (row-major, 4 B/px) al tamaño máximo
 /// `max_w × max_h` (píxeles): devuelve `(bitmap, (crop_x, crop_y))` con el
 /// bitmap recortado y el ORIGEN del recorte en píxeles del render original.
@@ -102,18 +136,20 @@ pub fn scale_bitmap(src: &Bitmap, target_width: u32, target_height: u32) -> Resu
 /// - Centrado exacto: `crop_x = (src.width − w) / 2` (división entera — con
 ///   exceso impar el píxel extra sobrante queda en el lado final; el origen
 ///   devuelto es SIEMPRE el offset real de la primera columna/fila copiada).
-/// - Píxeles: copia literal (sin interpolación ni filtro) — el resultado es
-///   EXACTAMENTE la región `[crop_y, crop_y + h) × [crop_x, crop_x + w)` del
-///   source, de modo que `crop.pixel(x, y) == src.pixel(x + crop_x, y + crop_y)`.
+/// - Píxeles: copia literal (sin interpolación ni filtro) — delega en
+///   `crop_rect` con el origen calculado, de modo que
+///   `crop.pixel(x, y) == src.pixel(x + crop_x, y + crop_y)`.
 ///
 /// Precondición documentada (invariante de pdf_core): `data.len() == width *
 /// height * 4` — todo bitmap que entra viene de `render_page`/`scale_bitmap`,
 /// que lo garantizan; el recorte no añade un canal de error (contrato simple
 /// del worker, que solo recorta renders OK).
 ///
-/// Uso (fix de residency del visor): el worker renderiza la página a cover y
-/// recorta aquí al tamaño de VENTANA (`(min(bw, win_w), min(bh, win_h))`); los
-/// consumidores que convierten pantalla → píxeles del render (transición
+/// Uso (fix de residency del visor): `crop_centered` sirve para recortar a
+/// ventana cuando ambos ejes se centran; el WORKER real usa `crop_rect` con
+/// origen X-centrado + Y-top (el blit del visor alinea arriba en Y — un crop
+/// centrado en Y mostraría la franja central de la página, no la superior).
+/// Los consumidores que convierten pantalla → píxeles del render (transición
 /// fast→sharp del pinch, selección → imagen) compensan `(crop_x, crop_y)`
 /// para volver a la cuadrícula del render FULL — ver `CachedPage` en
 /// pdf_android (`cache.rs`).
@@ -125,20 +161,7 @@ pub fn crop_centered(bmp: &Bitmap, max_w: u32, max_h: u32) -> (Bitmap, (u32, u32
     if w == bmp.width && h == bmp.height {
         return (bmp.clone(), (0, 0)); // ya cabe: no-op (origen 0)
     }
-    let src_row = bmp.width as usize * 4;
-    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
-    for row in crop_y..crop_y + h {
-        let start = row as usize * src_row + crop_x as usize * 4;
-        out.extend_from_slice(&bmp.data[start..start + w as usize * 4]);
-    }
-    (
-        Bitmap {
-            width: w,
-            height: h,
-            data: out,
-        },
-        (crop_x, crop_y),
-    )
+    (crop_rect(bmp, crop_x, crop_y, w, h), (crop_x, crop_y))
 }
 
 /// Maps a continuous zoom factor to the nearest ladder level
@@ -346,6 +369,62 @@ mod tests {
             height: h,
             data,
         }
+    }
+
+    /// crop_rect: copia EXACTA de la región pedida (origen + dims en píxeles
+    /// del source) — píxel a píxel, sin recálculo de origen.
+    #[test]
+    fn crop_rect_copies_the_requested_region_exactly() {
+        let src = pixel_indexed(10, 8);
+        let crop = crop_rect(&src, 3, 2, 4, 4);
+        assert_eq!((crop.width, crop.height), (4, 4));
+        for y in 0..4 {
+            for x in 0..4 {
+                let c = ((y * 4 + x) * 4) as usize;
+                let s = (((y + 2) * 10 + (x + 3)) * 4) as usize;
+                assert_eq!(&crop.data[c..c + 4], &src.data[s..s + 4]);
+            }
+        }
+        // La región coincide con el crop CENTRADO a esas dims (delegación):
+        let (centered, origin) = crop_centered(&src, 4, 4);
+        assert_eq!(origin, (3, 2));
+        assert_eq!(crop.data, centered.data);
+    }
+
+    /// crop_rect: región con origen Y = 0 (alineada ARRIBA, el caso del
+    /// worker — el blit del visor alinea arriba en Y, no centra).
+    #[test]
+    fn crop_rect_top_aligned_region_starts_at_row_zero() {
+        let src = pixel_indexed(10, 8);
+        // (10−6)/2 = 2 en X (centrado), Y = 0 (top): la franja visible del
+        // render full cuando la ventana recorta el ancho.
+        let crop = crop_rect(&src, 2, 0, 6, 8);
+        assert_eq!((crop.width, crop.height), (6, 8));
+        for y in 0..8 {
+            for x in 0..6 {
+                let c = ((y * 6 + x) * 4) as usize;
+                let s = ((y * 10 + (x + 2)) * 4) as usize;
+                assert_eq!(&crop.data[c..c + 4], &src.data[s..s + 4]);
+            }
+        }
+    }
+
+    /// crop_rect: el rect se INTERSECA con el bitmap (clamp) — un origen o
+    /// tamaño fuera de rango no paniquea ni produce índices inválidos.
+    #[test]
+    fn crop_rect_clamps_to_the_bitmap_bounds() {
+        let src = pixel_indexed(10, 8);
+        // Origen (8,6) con tamaño 5×5: sobran 3 en X y 3 en Y → 2×2.
+        let crop = crop_rect(&src, 8, 6, 5, 5);
+        assert_eq!((crop.width, crop.height), (2, 2));
+        let c = 0usize;
+        let s = ((6 * 10 + 8) * 4) as usize;
+        assert_eq!(&crop.data[c..c + 4], &src.data[s..s + 4]);
+        // Origen exactamente en el borde derecho: región vacía (w = 0), sin
+        // pánico y sin bytes (invariante data.len() == w*h*4 intacto).
+        let crop = crop_rect(&src, 10, 0, 4, 4);
+        assert_eq!((crop.width, crop.height), (0, 4));
+        assert!(crop.data.is_empty());
     }
 
     /// crop_centered: exceso PAR en ambos ejes → origen exactamente centrado
