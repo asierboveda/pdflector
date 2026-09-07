@@ -394,8 +394,8 @@ impl Reader {
         for id in snapshot {
             // El kind se lee POR REFERENCIA en cada iteración (el set puede
             // haber mutado en las anteriores): CERO clones por muestra —
-            // split_stroke/trim_highlight trabajan sobre &Stroke/&Highlight y
-            // solo remove/add tocan el set (después del hit-test). Con 276
+            // split_stroke trabaja sobre &Stroke y el hit-test de Highlight
+            // sobre &Highlight, y solo remove/add tocan el set. Con 276
             // trazos y el boli tocando 0-2 por muestra, este bucle es memcpy
             // de ids + hit-tests, nada más.
             let Some(ann) = self
@@ -432,26 +432,33 @@ impl Reader {
                     }
                 }
                 pdf_core::Annotation::Highlight(h) => {
-                    // GOMA REAL sobre subrayado: se parte en rectos (con
-                    // barrido: una goma rápida no salta la línea).
-                    if let Some(rects) = pdf_core::annotations::trim_highlight(
-                        h,
-                        pt,
-                        ERASE_HL_PAD_PT,
-                        self.erase_last,
-                    ) {
-                        let color = h.color; // Copy: último uso del borrow del set
-                        self.annotations.remove(id);
-                        if !rects.is_empty() {
-                            self.annotations.add(
-                                self.page as usize,
-                                pdf_core::Annotation::Highlight(pdf_core::Highlight {
-                                    rects,
-                                    color,
-                                }),
-                            );
+                    // Borrado completo de subrayado: tocar cualquier parte
+                    // (o cruzarla con el barrido) elimina la anotación entera.
+                    let hit = h.rects.iter().any(|r| {
+                        let in_rect = |p: (f32, f32)| -> bool {
+                            p.0 >= r.x - ERASE_HL_PAD_PT
+                                && p.0 <= r.x + r.w + ERASE_HL_PAD_PT
+                                && p.1 >= r.y - ERASE_HL_PAD_PT
+                                && p.1 <= r.y + r.h + ERASE_HL_PAD_PT
+                        };
+                        if in_rect(pt) {
+                            return true;
                         }
-                        info!("erase: highlight {id} trimmed");
+                        if let Some(pr) = self.erase_last {
+                            const SWEEP_SAMPLES: usize = 8;
+                            for i in 1..=SWEEP_SAMPLES {
+                                let t = i as f32 / SWEEP_SAMPLES as f32;
+                                let s = (pr.0 + (pt.0 - pr.0) * t, pr.1 + (pt.1 - pr.1) * t);
+                                if in_rect(s) {
+                                    return true;
+                                }
+                            }
+                        }
+                        false
+                    });
+                    if hit {
+                        self.annotations.remove(id);
+                        info!("erase: highlight {id} removed");
                         changed = true;
                     }
                 }

@@ -47,9 +47,9 @@ use pdf_core::{Color, TextSpan};
 pub(crate) const PEN_BTN_MODE: ButtonState = ButtonState(0x40);
 
 /// Botón "DOWN" del boli: MANTENIDO + boli apoyado = BORRAR con GOMA real
-/// (recorta trazos y subrayados; ver `pdf_core::{split_stroke,trim_highlight}`
-/// y `Reader::{begin,update,end}_erase_gesture`). Calibrado en el botón
-/// INFERIOR de este boli (0x20).
+/// (recorta trazos parcialmente y elimina subrayados completos; ver
+/// `pdf_core::split_stroke` y `Reader::{begin,update,end}_erase_gesture`).
+/// Calibrado en el botón INFERIOR de este boli (0x20).
 pub(crate) const PEN_BTN_ERASE: ButtonState = ButtonState(0x20);
 
 /// Radio de hit-test del borrado en puntos DE PÁGINA: distancia punto→seg-

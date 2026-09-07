@@ -39,23 +39,20 @@ pub enum Gesture {
 
 /// Builds a `Highlight` from a gesture and the page's extracted lines.
 ///
-/// **Trazo (Points)** — comportamiento de ROTULADOR REAL (optimización
-/// 2026-08-23, petición del autor): cada línea se subraya SOLO si el trazo
-/// pasa por su banda vertical (tolerancia ±[`BAND_TOL`] pt) y el tramo
-/// marcado es el recorrido X del trazo dentro de la línea, clavado al bbox
-/// de la línea. Con esto:
-///   - "pasarse a la siguiente línea subraya todo lo que une": un trazo que
-///     baja de una línea a la siguiente marca AMBAS (y las intermedias por
-///     las que pasa la tinta del rotulador);
-///   - en papers de DOS COLUMNAS no se "une" ni se pinta el gutter: una
-///     línea de la otra columna solo se marca si el trazo llega hasta su x
-///     (el clip por el bbox de la línea lo garantiza).
+/// **Trazo (Points)** — marker stroke with reading-order extents:
+/// lines are touched if the stroke passes through their vertical band (±[`BAND_TOL`] pt)
+/// or crosses them. Touched lines are ordered by reading order (document `y`):
+///   - Top line extends from the top gesture endpoint to the end of the line;
+///   - Strictly intermediate lines are completely highlighted;
+///   - Bottom line extends from the start of the line to the bottom gesture endpoint;
+///   - When both endpoints fall on the same line: horizontal extent `[min, max]` of both endpoints;
+///   - Direction agnostic: drawing top-to-bottom or bottom-to-top produces the same result;
+///   - Two-column papers: a line in the other column is only touched if the stroke physically reaches it.
 ///
-/// Un roce mínimo deja marca visible ([`MIN_STROKE_SPAN`] pt).
+/// A minimal touch leaves a visible mark ([`MIN_STROKE_SPAN`] pt).
 ///
-/// **Marquee (Rect)** — selección de BLOQUE: líneas cuyo bbox intersecta el
-/// rect, recortadas al tramo horizontal (semántica de abarcar, no de
-/// rotulador).
+/// **Marquee (Rect)** — block selection: lines whose bbox intersects the
+/// rect, clipped to the horizontal extent.
 ///
 /// Degenerate gestures (no points, empty rect) or pages without matching
 /// spans yield `None`, so callers can decide whether to create the
@@ -131,7 +128,13 @@ fn finish(rects: Vec<Rect>, color: Color) -> Option<Highlight> {
 /// and the Y-indexed paths; behaviour documented on
 /// [`highlight_under_gesture`]).
 fn match_points(spans: &[crate::engine::TextSpan], pts: &[(f32, f32)]) -> Vec<Rect> {
-    let mut out = Vec::new();
+    if pts.is_empty() || spans.is_empty() {
+        return Vec::new();
+    }
+
+    // 1. Identify touched spans using line vertical band tolerance (±BAND_TOL)
+    // and segment crossing logic, exactly as before.
+    let mut touched: Vec<&crate::engine::TextSpan> = Vec::new();
     for span in spans {
         let y0 = span.y - BAND_TOL;
         let y1 = span.y + span.h + BAND_TOL;
@@ -157,17 +160,112 @@ fn match_points(spans: &[crate::engine::TextSpan], pts: &[(f32, f32)]) -> Vec<Re
         if !x_min.is_finite() {
             continue;
         }
-        let x_max = if x_max - x_min < MIN_STROKE_SPAN {
+        let eff_x_max = if x_max - x_min < MIN_STROKE_SPAN {
             x_min + MIN_STROKE_SPAN
         } else {
             x_max
         };
         let x0 = span.x.max(x_min);
+        let x1 = (span.x + span.w).min(eff_x_max);
+        if x1 - x0 > 0.0 {
+            touched.push(span);
+        }
+    }
+
+    if touched.is_empty() {
+        return Vec::new();
+    }
+
+    // 2. Sort touched spans by document order (y ascending, tie-break by x).
+    touched.sort_by(|a, b| {
+        a.y.partial_cmp(&b.y)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let p_down = pts[0];
+    let p_up = pts[pts.len() - 1];
+
+    // 3. Map pen-down and pen-up to touched spans: span containing py,
+    // or nearest touched span in Y if outside all touched spans.
+    let find_span_idx = |p: (f32, f32)| -> usize {
+        let (px, py) = p;
+        let mut best_idx = 0;
+        let mut best_dy = f32::INFINITY;
+        let mut best_dx = f32::INFINITY;
+        for (idx, span) in touched.iter().enumerate() {
+            let dy = if py < span.y {
+                span.y - py
+            } else if py > span.y + span.h {
+                py - (span.y + span.h)
+            } else {
+                0.0
+            };
+            let dx = if px < span.x {
+                span.x - px
+            } else if px > span.x + span.w {
+                px - (span.x + span.w)
+            } else {
+                0.0
+            };
+            if dy < best_dy || (dy == best_dy && dx < best_dx) {
+                best_dy = dy;
+                best_dx = dx;
+                best_idx = idx;
+            }
+        }
+        best_idx
+    };
+
+    let down_idx = find_span_idx(p_down);
+    let up_idx = find_span_idx(p_up);
+
+    let mut out = Vec::new();
+
+    if down_idx == up_idx {
+        // Both endpoints fall on the same line: [min, max] of both endpoints' X.
+        let span = touched[down_idx];
+        let x_min = p_down.0.min(p_up.0);
+        let mut x_max = p_down.0.max(p_up.0);
+        if x_max - x_min < MIN_STROKE_SPAN {
+            x_max = x_min + MIN_STROKE_SPAN;
+        }
+        let x0 = span.x.max(x_min);
         let x1 = (span.x + span.w).min(x_max);
         if x1 - x0 > 0.0 {
             out.push(Rect::new(x0, span.y, x1 - x0, span.h));
         }
+    } else {
+        // Multi-line selection: top line from extreme to line end,
+        // intermediate lines full, bottom line from line start to extreme.
+        let sup_idx = down_idx.min(up_idx);
+        let inf_idx = down_idx.max(up_idx);
+        let x_sup = if down_idx < up_idx { p_down.0 } else { p_up.0 };
+        let x_inf = if down_idx < up_idx { p_up.0 } else { p_down.0 };
+
+        let total = inf_idx - sup_idx;
+        for (offset, &span) in touched[sup_idx..=inf_idx].iter().enumerate() {
+            let (x_min, mut x_max) = if offset == 0 {
+                (x_sup, span.x + span.w)
+            } else if offset == total {
+                (span.x, x_inf)
+            } else {
+                (span.x, span.x + span.w)
+            };
+
+            if x_max >= x_min {
+                if x_max - x_min < MIN_STROKE_SPAN {
+                    x_max = x_min + MIN_STROKE_SPAN;
+                }
+                let x0 = span.x.max(x_min);
+                let x1 = (span.x + span.w).min(x_max);
+                if x1 - x0 > 0.0 {
+                    out.push(Rect::new(x0, span.y, x1 - x0, span.h));
+                }
+            }
+        }
     }
+
     out
 }
 
@@ -251,31 +349,91 @@ mod tests {
     #[test]
     fn point_gesture_selects_lines_under_y_band_and_clips_x() {
         // Stroke crossing lines 1 and 2, from x=20 to x=60.
+        // Under reading order: top line extends from pen-down to line end,
+        // bottom line extends from line start to pen-up.
         let gesture = Gesture::Points(vec![(20.0, 25.0), (60.0, 25.0), (60.0, 41.0)]);
         let hl = highlight_under_gesture(&spans(), &gesture, HIGHLIGHT_COLOR)
             .expect("lines under the stroke");
         assert_eq!(hl.rects.len(), 2);
-        // Line 1 (x 10..100): clipped to the stroke's horizontal extent.
-        assert_eq!(hl.rects[0], Rect::new(20.0, 20.0, 40.0, 12.0));
-        // Line 2 (x 10..90): el trazo solo la toca en su borde (x=60): el
-        // tramo marcado es el tramo mínimo (3 pt) donde la rozó, no todo el
-        // rango X del gesto (semántica de rotulador real, 2026-08-23).
-        assert_eq!(hl.rects[1], Rect::new(60.0, 34.0, 3.0, 12.0));
+        // Line 1 (x 10..100): pen-down at x=20 to line end (x=100) -> w=80.
+        assert_eq!(hl.rects[0], Rect::new(20.0, 20.0, 80.0, 12.0));
+        // Line 2 (x 10..90): line start (x=10) to pen-up at x=60 -> w=50.
+        assert_eq!(hl.rects[1], Rect::new(10.0, 34.0, 50.0, 12.0));
         assert_eq!(hl.color, HIGHLIGHT_COLOR);
     }
 
     #[test]
     fn stroke_going_down_marks_lines_it_joins() {
-        // "Pasar a la siguiente línea subraya todo lo que une": un trazo que
-        // baja de la línea 1 a la 3 diagonalmente marca las 3 líneas (las
-        // que la tinta del rotulador toca en su recorrido).
+        // Stroke crossing lines 1, 2, and 3: top line from pen-down to line end,
+        // intermediate line complete, bottom line from line start to pen-up.
         let gesture = Gesture::Points(vec![(20.0, 25.0), (70.0, 25.0), (70.0, 41.0), (40.0, 55.0)]);
         let hl =
             highlight_under_gesture(&spans(), &gesture, HIGHLIGHT_COLOR).expect("joined lines");
         assert_eq!(hl.rects.len(), 3);
-        assert_eq!(hl.rects[0], Rect::new(20.0, 20.0, 50.0, 12.0));
-        assert_eq!(hl.rects[1], Rect::new(40.0, 34.0, 30.0, 12.0)); // trazo x 40..70
-        assert_eq!(hl.rects[2], Rect::new(40.0, 48.0, 30.0, 12.0)); // trazo x 40..70
+        assert_eq!(hl.rects[0], Rect::new(20.0, 20.0, 80.0, 12.0)); // line 1: 20..100
+        assert_eq!(hl.rects[1], Rect::new(10.0, 34.0, 80.0, 12.0)); // line 2: full line 10..90
+        assert_eq!(hl.rects[2], Rect::new(10.0, 48.0, 30.0, 12.0)); // line 3: 10..40
+    }
+
+    #[test]
+    fn diagonal_mitad_a_mitad_en_2_lineas() {
+        // Diagonal from middle of line 1 (x=50) to middle of line 2 (x=50):
+        // line 1 from x=50 to line end (x=100); line 2 from line start (x=10) to x=50.
+        let gesture = Gesture::Points(vec![(50.0, 25.0), (50.0, 40.0)]);
+        let hl = highlight_under_gesture(&spans(), &gesture, HIGHLIGHT_COLOR)
+            .expect("two lines selected");
+        assert_eq!(hl.rects.len(), 2);
+        assert_eq!(hl.rects[0], Rect::new(50.0, 20.0, 50.0, 12.0));
+        assert_eq!(hl.rects[1], Rect::new(10.0, 34.0, 40.0, 12.0));
+    }
+
+    #[test]
+    fn gesto_abajo_arriba_espejado() {
+        // Same diagonal gesture drawn bottom-to-top produces the exact same highlight rects.
+        let gesture_down = Gesture::Points(vec![(50.0, 25.0), (50.0, 40.0)]);
+        let gesture_up = Gesture::Points(vec![(50.0, 40.0), (50.0, 25.0)]);
+        let hl_down = highlight_under_gesture(&spans(), &gesture_down, HIGHLIGHT_COLOR)
+            .expect("down gesture");
+        let hl_up =
+            highlight_under_gesture(&spans(), &gesture_up, HIGHLIGHT_COLOR).expect("up gesture");
+        assert_eq!(hl_up.rects, hl_down.rects);
+    }
+
+    #[test]
+    fn tres_lineas_intermedia_completa() {
+        // Gesture crossing lines 1, 2, and 3:
+        // top line from pen-down (x=30) to line end (x=100),
+        // intermediate line 2 completely highlighted (x=10..90),
+        // bottom line 3 from line start (x=10) to pen-up (x=60).
+        let gesture = Gesture::Points(vec![(30.0, 25.0), (50.0, 40.0), (60.0, 55.0)]);
+        let hl = highlight_under_gesture(&spans(), &gesture, HIGHLIGHT_COLOR)
+            .expect("three lines selected");
+        assert_eq!(hl.rects.len(), 3);
+        assert_eq!(hl.rects[0], Rect::new(30.0, 20.0, 70.0, 12.0));
+        assert_eq!(hl.rects[1], Rect::new(10.0, 34.0, 80.0, 12.0)); // full intermediate line
+        assert_eq!(hl.rects[2], Rect::new(10.0, 48.0, 50.0, 12.0));
+    }
+
+    #[test]
+    fn una_sola_linea_sin_cambios() {
+        // Stroke on a single line: [min, max] of both endpoints clipped to line bbox.
+        let gesture = Gesture::Points(vec![(20.0, 25.0), (60.0, 25.0)]);
+        let hl = highlight_under_gesture(&spans(), &gesture, HIGHLIGHT_COLOR)
+            .expect("single line selected");
+        assert_eq!(hl.rects, vec![Rect::new(20.0, 20.0, 40.0, 12.0)]);
+    }
+
+    #[test]
+    fn suelta_en_gutter_nearest() {
+        // Stroke starts on line 1 at (20, 25), crosses line 2, and pen-up is released
+        // in the gutter below line 2 at (60, 46.5) (line 2 y is 34..46).
+        // Nearest touched line in Y is line 2.
+        let gesture = Gesture::Points(vec![(20.0, 25.0), (60.0, 40.0), (60.0, 46.5)]);
+        let hl = highlight_under_gesture(&spans(), &gesture, HIGHLIGHT_COLOR)
+            .expect("lines under stroke");
+        assert_eq!(hl.rects.len(), 2);
+        assert_eq!(hl.rects[0], Rect::new(20.0, 20.0, 80.0, 12.0));
+        assert_eq!(hl.rects[1], Rect::new(10.0, 34.0, 50.0, 12.0));
     }
 
     #[test]

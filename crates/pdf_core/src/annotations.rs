@@ -416,10 +416,6 @@ pub fn highlight_hit(h: &Highlight, pt: (f32, f32), pad: f32) -> bool {
     })
 }
 
-/// Sliver de un rect recortado por la goma: trozos más cortos no se crean
-/// (evita motas en el subrayado al pasar la goma por el borde).
-const ERASE_MIN_SLIVER_PT: f32 = 2.0;
-
 /// GOMA REAL sobre un trazo: elimina los vértices que caen dentro del círculo
 /// de la goma (`radius` + `width/2` efectivos) o dentro del BARRIIDO entre la
 /// posición anterior de la goma (`prev`) y la actual (`center`) — un barrido
@@ -573,58 +569,6 @@ fn clip_segment_by_circle(
         }
         out
     }
-}
-
-/// GOMA REAL sobre un subrayado: cada rect cuya expansión `pad` contiene el
-/// punto de la goma — o es cruzado por el BARRIO de la goma entre `prev` y
-/// `center` (muestreo del segmento) — se parte en dos (izquierda/derecha del
-/// corte); los trozos menores de `ERASE_MIN_SLIVER_PT` se descartan. Los
-/// rects no tocados se conservan. `None` = no tocado; `Some(rects)` = rects
-/// restantes (puede ser vacío → eliminar el highlight). Pura.
-pub fn trim_highlight(
-    h: &Highlight,
-    center: (f32, f32),
-    pad: f32,
-    prev: Option<(f32, f32)>,
-) -> Option<Vec<Rect>> {
-    let mut out: Vec<Rect> = Vec::new();
-    let mut any = false;
-    for r in &h.rects {
-        let hit_at = |p: (f32, f32)| -> bool {
-            p.0 >= r.x - pad && p.0 <= r.x + r.w + pad && p.1 >= r.y - pad && p.1 <= r.y + r.h + pad
-        };
-        // Punto actual o, si existe barrido, la primera muestra del segmento
-        // prev→center que toca la caja (una goma rápida no puede "saltar"
-        // por encima de una línea de subrayado entre dos frames).
-        let mut sweep_cut: Option<f32> = None;
-        if let Some(pr) = prev {
-            const SWEEP_SAMPLES: usize = 8;
-            for i in 1..=SWEEP_SAMPLES {
-                let t = i as f32 / SWEEP_SAMPLES as f32;
-                let s = (pr.0 + (center.0 - pr.0) * t, pr.1 + (center.1 - pr.1) * t);
-                if hit_at(s) {
-                    sweep_cut = Some(s.0);
-                    break;
-                }
-            }
-        }
-        if !hit_at(center) && sweep_cut.is_none() {
-            out.push(*r);
-            continue;
-        }
-        any = true;
-        // Recortar al rect real (un toque en el pad exterior corta en el borde).
-        let cut_x = sweep_cut.unwrap_or(center.0).clamp(r.x, r.x + r.w);
-        let left = Rect::new(r.x, r.y, cut_x - r.x, r.h);
-        let right = Rect::new(cut_x, r.y, r.x + r.w - cut_x, r.h);
-        if left.w >= ERASE_MIN_SLIVER_PT {
-            out.push(left);
-        }
-        if right.w >= ERASE_MIN_SLIVER_PT {
-            out.push(right);
-        }
-    }
-    if any { Some(out) } else { None }
 }
 
 #[cfg(test)]
@@ -1060,7 +1004,7 @@ mod tests {
         assert!(!highlight_hit(&h, (20.0, 35.0), 0.0)); // between lines
     }
 
-    // --- Eraser trimming (the real-gum split; see `split_stroke`/`trim_highlight`) ---
+    // --- Eraser trimming (the real-gum split; see `split_stroke`) ---
 
     #[test]
     fn split_stroke_none_when_not_touched() {
@@ -1126,65 +1070,5 @@ mod tests {
         // Sin barrido y con el círculo LEJOS de todos los segmentos
         // (y=10, radio efectivo 2) → `None` (nada que recortar).
         assert!(split_stroke(&s, (15.0, 10.0), 1.0, None).is_none());
-    }
-
-    #[test]
-    fn trim_highlight_splits_touched_line_at_eraser() {
-        let h = Highlight {
-            rects: vec![Rect::new(10.0, 20.0, 100.0, 12.0)],
-            color: color(),
-        };
-        let rects = trim_highlight(&h, (50.0, 26.0), 4.0, None).unwrap();
-        assert_eq!(rects.len(), 2);
-        assert_eq!(rects[0], Rect::new(10.0, 20.0, 40.0, 12.0));
-        assert_eq!(rects[1], Rect::new(50.0, 20.0, 60.0, 12.0));
-    }
-
-    #[test]
-    fn trim_highlight_keeps_untouched_lines_and_handles_edges() {
-        let h = Highlight {
-            rects: vec![
-                Rect::new(10.0, 20.0, 100.0, 12.0),
-                Rect::new(10.0, 40.0, 80.0, 12.0),
-            ],
-            color: color(),
-        };
-        // Toca la segunda línea: la primera se conserva intacta.
-        let rects = trim_highlight(&h, (20.0, 45.0), 4.0, None).unwrap();
-        assert!(rects.contains(&Rect::new(10.0, 20.0, 100.0, 12.0)));
-        assert_eq!(rects.len(), 3); // izquierda + derecha del corte + línea 1
-        // Toca a 1 pt del borde IZQUIERDO: el trozo izquierdo es un sliver
-        // (< 2 pt) y se descarta; el derecho queda casi completo (99 pt).
-        let rects = trim_highlight(&h, (11.0, 26.0), 4.0, None).unwrap();
-        assert_eq!(rects.len(), 2);
-        assert!(rects.contains(&Rect::new(10.0, 40.0, 80.0, 12.0)));
-        assert!(rects.contains(&Rect::new(11.0, 20.0, 99.0, 12.0)));
-    }
-
-    #[test]
-    fn trim_highlight_none_when_not_touched() {
-        let h = Highlight {
-            rects: vec![Rect::new(10.0, 20.0, 100.0, 12.0)],
-            color: color(),
-        };
-        assert!(trim_highlight(&h, (10.0, 60.0), 4.0, None).is_none());
-    }
-
-    #[test]
-    fn trim_highlight_sweep_hits_when_center_jumped_over() {
-        // La goma se mueve rápido: el CENTRO cae fuera del rect expandido
-        // (x=120 > 114) pero el barrido prev→center CRUZA la caja → corta.
-        let h = Highlight {
-            rects: vec![Rect::new(10.0, 20.0, 100.0, 12.0)],
-            color: color(),
-        };
-        // El barrido CRUZA la caja por la primera muestra (t=1/8 → x=19.375),
-        // así que el rect se parte en dos por ese x.
-        let rects = trim_highlight(&h, (120.0, 26.0), 4.0, Some((5.0, 26.0))).unwrap();
-        assert_eq!(rects.len(), 2);
-        assert!(rects.contains(&Rect::new(10.0, 20.0, 9.375, 12.0)));
-        assert!(rects.contains(&Rect::new(19.375, 20.0, 90.625, 12.0)));
-        // Sin barrido, el mismo centro NO toca nada.
-        assert!(trim_highlight(&h, (120.0, 26.0), 4.0, None).is_none());
     }
 }
