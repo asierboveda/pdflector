@@ -655,3 +655,47 @@ Análisis Funcional (346 pág, tipografía densa real).
   revisadas muestran contenido perfecto): guards añadidos (fallback con presencia
   verificada + descarte de bitmap degenerado, ambos con warn permanente). 0 disparos
   en la ronda de caza de 15 turnos.
+
+## Batch TCL 2026-09-07 — cierres A5/E/C pendientes (TCL 9469X, Android 15, portrait 1440×2200)
+
+App release HEAD f51d75c (speed A-D), pantalla ON, limpieza `stayon false` + Dozing
+verificados. Logs de serie en el informe del batch (no versionados).
+
+### 1. Primer frame cold-start (cierre E): 349 ms — NO alcanza <200 ms
+- Método: force-stop + `logcat -c` + marcador COLDMARK + `am start`; primer frame =
+  primera línea `gl_present|blit`. Restaura visor pág. 61/346 (Análisis, SepiaDark).
+  N=3: 338, 355, 349 → mediana 349 ms (rango 338-355).
+- Desglose (run 1): marcador→opened 346 pp 213 ms → InitWindow 73 ms → primer
+  `gl_present` 52 ms (present 14.1 ms, swap 2.8 ms).
+- Lectura: dominan apertura de documento (213 ms) e InitWindow (73 ms), no el present.
+  Solo cierra con open más rápido o arranque diferido (deuda nueva en NEXT-PLAN).
+
+### 2. Scroll biblioteca p95, 11 libros con overflow (E3 parcial)
+- Rejilla (N=535 presents/14.1 s, 5+5 swipes): intervalo med 8.0 ms, **p95 10.0 ms**
+  (intra-swipe máx 11.0 ms); coste present med 1.22 ms, p95 2.61 ms, máx 5.06 ms;
+  swap med 0.83 ms p95 2.20 ms; 0 re-renders durante el scroll.
+- Carousel 'Seguir leyendo' (N=556/15.4 s): intervalo med 8.0 ms p95 10.0 ms; coste
+  med 1.19 ms p95 2.58 ms.
+- Nota metodológica: la vía library no emite `frame p95=` (solo el viewer cada 120
+  presents); p95 calculado de timestamps. El `frame p95=` del viewer mezcla gaps de
+  idle (p95=13693 ms tras quietud): solo interpretable con presents continuos.
+- Variante 256 libros no ejecutada (3 taps/libro × 256 inviable por UI; 11 libros con
+  overflow ya ejercitan el path).
+
+### 3. PSS bajo interacción, 15 pases (A5 parcial)
+- Libro 346 pp, págs. 60→75 (15/15 turnos OK; 5-8 ms hit / 133-149 ms miss).
+- TOTAL PSS KB: base 234713 → +5: 242790 → +10: 248394 → +15: 287565;
+  +20 s: 287522, +40 s: 287518 (asentado, sin fuga en 40 s).
+- Salto +39.2 MB entre turnos 11-15 sin reflejo en log (coherente con display lists).
+- Desglose final: Native Heap 176.0 MB, GL mtrack 68.7 MB, EGL mtrack 28.9 MB,
+  TOTAL RSS 416.6 MB.
+
+### 4. Sheet E2: sin re-blit de página ✅
+- Apertura 13 presents en ~130 ms (1.04-4.06 ms c/u) + 1 tex create ovl 1440x924;
+  cierre 13 presents (1.27-4.27 ms). 0 `render page`, 0 evict, 0 tex de página.
+
+### 5-6. Highlight con dedo / 200 trazos: BLOCKED (requieren lápiz físico)
+- Timebox 12 min, 4 intentos: badge-pen sin handler táctil, swipes sin rect de
+  selección. El código lo confirma (ToolDrawing solo con stylus; dedo = pan).
+- Sin PDFs con anotaciones densas en el dispositivo (todos los libros: 0) y
+  sidecars inaccesibles en release (sin run-as).

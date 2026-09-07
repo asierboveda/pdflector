@@ -38,8 +38,10 @@
 - B cerrada (2026-09-05).
 - C1-C4 [x] · cierre [ ] (4.39/2.39ms medidos).
 - D pendiente.
-- E1/E4 [x] (E4 ejecutado: sin tope de libros) · E2/E3 [ ].
+- E1/E2/E4 [x] (E2: sheet sin re-blit verificado 2026-09-07) · E3 [ ] (scroll p95 10 ms con 11 libros; variante 256 pendiente).
 - Tras la Fase 4 ya no hay megaficheros: `reader/` 14 ficheros (mod.rs + 13 submódulos, `library_state` incluido) · `draw/` 8 · `gpu/` 8 · `input/` 5; fichero mayor: `draw/library.rs` con 1615 líneas (ninguno ≥ 2000).
+- v0.1.0 publicada (tag + release + APK; PR #31): reestructuración fases 1-4 + CI Android.
+- Speed 2026-09-07 (PR #32): pase de página p50 ≈ 8 ms (11/15 turnos 6-10 ms), residency ≥3, nitidez 1:1.
 
 Ver cada fase para detalle auditado y tareas.
 
@@ -47,7 +49,10 @@ Ver cada fase para detalle auditado y tareas.
 
 | Deuda | Estado | Dónde se cierra |
 |---|---|---|
-| EGL_BAD_ALLOC 0x3003 Library→Viewer | Abierta (CHANGELOG 2026-09-04) | Fase 2 del plan de reestructuración (2026-09-06) |
-| Verificación ADR-007 §8.4 (PSS<150MB, p95<8.33ms) | Sin entrada en benchmark-results | Fase 2 del plan de reestructuración |
+| EGL_BAD_ALLOC 0x3003 Library→Viewer | ✅ Cerrada 2026-09-06 (10 ciclos Library→Viewer, 0 errores; `benchmark-results.md` §Fase 2 GPU) | — |
+| Verificación ADR-007 §8.4 (PSS<150MB, p95<8.33ms) | ✅ Verificada 2026-09-06 (p95 present 4.19ms < 8.33ms; PSS 174-178 reposo; pico 232 como deuda nueva abajo) | — |
 | Bug pantalla apagada | Abierta, hipótesis H1-H3 | Medición TCL pendiente (BUG-pantalla-apagada.md) |
 | 419 unwrap/expect en tests/benches | Deuda registrada (ADR-008:37) | Limpieza continua |
+| Display lists sin cota en `MupdfDocument` | Abierta, medida 2026-09-07 (+6-7 MB/página nueva, PSS 190→330) | Propuesta: LRU o soltar lejanas (tarea futura) |
+| PSS pico 232 MB tras ciclos rápidos | Abierta, medida 2026-09-06 (reposo 174-178) | Vigilar tras LRU de display lists |
+| Primer frame cold-start viewer 349 ms (objetivo E <200 ms) | Medido 2026-09-07 (open 213 ms + InitWindow 73 ms dominan) | Tarea futura: open más rápido o arranque diferido |
