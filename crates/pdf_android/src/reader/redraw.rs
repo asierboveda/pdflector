@@ -885,6 +885,17 @@ impl Reader {
                     if msg.seq != self.render_seq {
                         continue; // lote obsoleto: descartar
                     }
+                    // Guard (robustez del pase de página): un bitmap
+                    // degenerado (0×0 o data vacía — dims degenerados del
+                    // render) NUNCA entra en la caché: envenenaría la página
+                    // hasta su evicción (pantalla en negro transitoria). Se
+                    // descarta sin insertar y sin limpiar el fallback — el
+                    // contenido previo persiste: mejor que negro.
+                    if msg.bitmap.width == 0 || msg.bitmap.height == 0 || msg.bitmap.data.is_empty()
+                    {
+                        warn!("dropping degenerate bitmap for page {}", msg.page + 1);
+                        continue;
+                    }
                     self.cache.insert(
                         msg.page,
                         crate::cache::CachedPage {

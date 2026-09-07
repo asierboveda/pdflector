@@ -9,6 +9,7 @@ use crate::annotations::ToolKind;
 use crate::draw::compose_library_snapshot;
 use log::error;
 use log::info;
+use log::warn;
 use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::{Document, RenderEngine};
 use std::path::Path;
@@ -48,7 +49,20 @@ impl Reader {
         // previo), el blit es inmediato; si no, se muestra la página ANTERIOR
         // (fallback) mientras el worker renderiza la nueva asíncronamente.
         if self.cache.peek(page).is_none() {
-            self.fallback_page = Some(prev);
+            // Guard (robustez del pase de página): el fallback solo sirve si
+            // `prev` SIGUE en caché para mostrarse — el sliding window pudo
+            // evictarla (miss en N y prev ausente → dry vacía = fondo en vez
+            // de contenido). Con `prev` fuera no fijar fallback: el re-bake
+            // de la página real al llegar N funciona igual.
+            if self.cache.peek(prev).is_some() {
+                self.fallback_page = Some(prev);
+            } else {
+                warn!(
+                    "turn to {} without fallback (prev {} evicted)",
+                    page + 1,
+                    prev + 1
+                );
+            }
             let pages = self
                 .prefetch_pages(page) // ventana direccional ordenada (fase B)
                 .into_iter()
