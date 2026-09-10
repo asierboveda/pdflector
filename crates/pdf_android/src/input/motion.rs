@@ -20,15 +20,14 @@ use crate::reader::discover_state::{DiscoverScreen, DiscoverTab};
 use crate::reader::{
     BookStatus, LibSort, LibraryCoverFit, LibraryGroupBy, LibraryViewMode, ListDrag, PickRow,
     PickerKind, Reader, UiMode, disc_card_action_rect, disc_card_gap, disc_card_h, disc_card_rect,
-    disc_card_w, disc_cat_row_rect, disc_content_y0, disc_detail_action_rect,
-    disc_detail_back_rect, disc_more_btn_rect, disc_search_rect, disc_subtabs_rect, grid_cell_h,
-    grid_cell_w, grid_gap, grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_block_h,
-    lib_cont_card_w, lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
-    lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h,
-    lib_search_panel_h, lib_section_title_h, lib_tabs_rect, list_row_gap, list_row_h, picker_btn_w,
-    picker_header_h, picker_row_h, settings_menu_button_rect, view_menu_button_rect,
+    disc_cat_row_rect, disc_content_y0, disc_detail_back_rect, disc_detail_layout,
+    disc_more_btn_rect, disc_search_rect, disc_subtabs_rect, grid_cell_h, grid_cell_w, grid_gap,
+    grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w,
+    lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
+    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
+    lib_section_title_h, lib_tabs_rect, list_row_gap, list_row_h, picker_btn_w, picker_header_h,
+    picker_row_h, settings_menu_button_rect, view_menu_button_rect,
 };
-use crate::theme;
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 use android_activity::AndroidApp;
 use android_activity::input::{Button, ButtonState, MotionAction};
@@ -1406,20 +1405,10 @@ fn discover_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                         return;
                     }
 
-                    let is_in_lib = reader
-                        .library_list
-                        .iter()
-                        .any(|b| b.name.contains(&entry.id));
-                    if hit_action && is_in_lib {
-                        if let Some(local_entry) = reader
-                            .library_list
-                            .iter()
-                            .find(|b| b.name.contains(&entry.id))
-                            .cloned()
-                        {
-                            reader.open_library_entry(app, &local_entry);
-                            return;
-                        }
+                    let local_entry = reader.find_arxiv_in_library(&entry.id);
+                    if hit_action && local_entry.is_some() {
+                        reader.open_library_entry(app, &local_entry.unwrap());
+                        return;
                     }
                     // Tocar tarjeta o botón "Ficha": abrir ficha detallada
                     reader.discover.selected_entry = Some(entry.clone());
@@ -1461,47 +1450,20 @@ fn discover_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         }
         DiscoverScreen::Detail => {
             if let Some(entry) = reader.discover.selected_entry.clone() {
-                let is_in_lib = reader
-                    .library_list
-                    .iter()
-                    .any(|b| b.name.contains(&entry.id));
-                if is_in_lib {
-                    if let Some(local_entry) = reader
-                        .library_list
-                        .iter()
-                        .find(|b| b.name.contains(&entry.id))
-                        .cloned()
-                    {
-                        reader.open_library_entry(app, &local_entry);
-                        return;
-                    }
-                }
-
-                let is_downloading =
-                    reader.discover.downloading_id.as_deref() == Some(entry.id.as_str());
-                let card_w = disc_card_w(reader.win_w);
-                let max_chars = ((card_w / (theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
-                let title_lines = (entry.title.len() / max_chars).max(1);
-                let author_lines = (entry.authors.join(", ").len() / (max_chars + 10)).max(1);
-                let btn_y = 16.0
-                    + 8.0
-                    + 44.0
-                    + title_lines as f32 * 26.0
-                    + 6.0
-                    + author_lines as f32 * 22.0
-                    + 10.0
-                    + 20.0;
-                let action_rect = disc_detail_action_rect(reader.win_w, btn_y);
-
+                let (action_rect, _) = disc_detail_layout(reader.win_w, &entry);
                 if x >= action_rect.0
                     && x <= action_rect.2
                     && cy >= action_rect.1
                     && cy <= action_rect.3
                 {
+                    let is_downloading =
+                        reader.discover.downloading_id.as_deref() == Some(entry.id.as_str());
                     if is_downloading {
                         reader.discover.cancel();
                         reader.show_toast("Descarga cancelada");
                         reader.redraw();
+                    } else if let Some(local_entry) = reader.find_arxiv_in_library(&entry.id) {
+                        reader.open_library_entry(app, &local_entry);
                     } else {
                         let id = entry.id.clone();
                         reader.discover_download(&id, Some(entry));

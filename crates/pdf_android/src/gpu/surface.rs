@@ -71,8 +71,8 @@ pub(crate) struct Gpu {
     // versión cambia (una subida por frame de ~12 MB sería lenta). Se
     // liberan al volver al visor (`present_viewer` → `free_ui_planes`) y al
     // soltar la surface (`drop_surface_only`).
-    pub(crate) lib_header_plane: Option<(u64, u32)>,
-    pub(crate) lib_band_plane: Option<(u64, u32)>,
+    pub(crate) lib_header_plane: Option<((u8, u64), u32)>,
+    pub(crate) lib_band_plane: Option<((u8, u64), u32)>,
     pub(crate) picker_plane: Option<(u64, u32)>,
 
     // --- Contadores del ciclo de vida EGL/GLES (Tarea 2.6) ---

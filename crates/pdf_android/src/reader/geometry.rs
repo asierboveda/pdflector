@@ -822,3 +822,58 @@ pub(crate) fn disc_detail_action_rect(win_w: i32, y: f32) -> ButtonRect {
     let btn_h = 50.0f32;
     (pad, y, pad + btn_w, y + btn_h)
 }
+
+/// Helper para envolver texto en líneas según un ancho máximo aproximado en caracteres.
+pub(crate) fn wrap_text_chars(text: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let trimmed = para.trim();
+        if trimmed.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut cur = String::new();
+        for word in trimmed.split_whitespace() {
+            if cur.is_empty() {
+                cur = word.to_string();
+            } else if cur.chars().count() + 1 + word.chars().count() <= max_chars {
+                cur.push(' ');
+                cur.push_str(word);
+            } else {
+                out.push(std::mem::take(&mut cur));
+                cur = word.to_string();
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+    }
+    out
+}
+
+/// Calcula el layout exacto de la pantalla de Ficha (Detail):
+/// devuelve (rectángulo_botón_acción, altura_total_contenido).
+pub(crate) fn disc_detail_layout(
+    win_w: i32,
+    entry: &pdf_core::arxiv::ArxivEntry,
+) -> (ButtonRect, f32) {
+    let card_w = disc_card_w(win_w);
+    let max_chars = ((card_w / (crate::theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
+
+    let title_lines = wrap_text_chars(&entry.title, max_chars);
+    let authors_lines = wrap_text_chars(&entry.authors.join(", "), max_chars + 10);
+    let abstract_lines = wrap_text_chars(&entry.summary, max_chars + 12);
+
+    let badge_y = 24.0f32;
+    let title_y = badge_y + 44.0;
+    let authors_y = title_y + title_lines.len() as f32 * 26.0 + 6.0;
+    let meta_y = authors_y + authors_lines.len() as f32 * 22.0 + 10.0;
+    let btn_y = meta_y + 20.0;
+    let action_btn = disc_detail_action_rect(win_w, btn_y);
+
+    let abstract_header_y = btn_y + 50.0 + 20.0;
+    let abstract_body_y = abstract_header_y + 22.0;
+    let total_h = abstract_body_y + abstract_lines.len() as f32 * 20.0 + 90.0;
+
+    (action_btn, total_h)
+}

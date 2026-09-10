@@ -1055,6 +1055,7 @@ impl Gpu {
     /// compartida por Biblioteca y Discover (arXiv). Orden: fondo -> banda -> cabecera -> toast.
     pub(crate) fn present_two_plane(
         &mut self,
+        mode_id: u8,
         reader: &Reader,
         content_y0: i32,
         header: Option<(&Bitmap, u64)>,
@@ -1073,14 +1074,14 @@ impl Gpu {
         self.set_swap_interval(1);
 
         if let Some((b, origin, ver)) = band {
-            let tex = self.lib_band_tex(ver, b);
+            let tex = self.lib_band_tex(mode_id, ver, b);
             if tex != 0 {
                 let sy = content_y0 - (scroll_y as i32 - origin);
                 self.draw_tex_quad(tex, b, 0, sy, 1.0);
             }
         }
         if let Some((h, ver)) = header {
-            let tex = self.lib_header_tex(ver, h);
+            let tex = self.lib_header_tex(mode_id, ver, h);
             if tex != 0 {
                 self.draw_tex_quad(tex, h, 0, 0, 1.0);
             }
@@ -1116,7 +1117,14 @@ impl Gpu {
             .lib_band
             .as_ref()
             .map(|(b, orig)| (b, *orig, reader.library.lib_band_ver));
-        self.present_two_plane(reader, content_y0, header, band, reader.library.lib_scroll);
+        self.present_two_plane(
+            0,
+            reader,
+            content_y0,
+            header,
+            band,
+            reader.library.lib_scroll,
+        );
     }
 
     pub(crate) fn present_discover(&mut self, reader: &Reader, content_y0: i32) {
@@ -1131,7 +1139,7 @@ impl Gpu {
             .as_ref()
             .map(|(b, orig)| (b, *orig, reader.discover.band_ver));
         let scroll = reader.discover_scroll();
-        self.present_two_plane(reader, content_y0, header, band, scroll);
+        self.present_two_plane(1, reader, content_y0, header, band, scroll);
     }
     /// Present del PICKER por GPU (productor único EGL, Tarea 2.7): la lista
     /// (`Reader::bitmap`, render de pantalla completa) se sube como textura

@@ -10,8 +10,8 @@ use crate::reader::discover_state::{DiscoverPhase, DiscoverScreen, DiscoverTab};
 use crate::reader::{
     Reader, UiMode, disc_card_action_rect, disc_card_gap, disc_card_h, disc_card_pad,
     disc_card_rect, disc_card_w, disc_cat_row_h, disc_cat_row_rect, disc_content_y0,
-    disc_detail_action_rect, disc_detail_back_rect, disc_more_btn_rect, disc_search_rect,
-    disc_subtabs_rect, grid_pad, lib_tabs_rect,
+    disc_detail_back_rect, disc_detail_layout, disc_more_btn_rect, disc_search_rect,
+    disc_subtabs_rect, grid_pad, lib_tabs_rect, wrap_text_chars,
 };
 use crate::theme;
 use pdf_core::Bitmap;
@@ -87,34 +87,6 @@ pub(crate) fn draw_header_tabs(
         active_mode == UiMode::Discover,
         "Descubrir",
     );
-}
-
-/// Helper simple para envolver texto en líneas según ancho aproximado en caracteres.
-fn wrap_text_chars(text: &str, max_chars: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    for para in text.split('\n') {
-        let trimmed = para.trim();
-        if trimmed.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-        let mut cur = String::new();
-        for word in trimmed.split_whitespace() {
-            if cur.is_empty() {
-                cur = word.to_string();
-            } else if cur.chars().count() + 1 + word.chars().count() <= max_chars {
-                cur.push(' ');
-                cur.push_str(word);
-            } else {
-                out.push(std::mem::take(&mut cur));
-                cur = word.to_string();
-            }
-        }
-        if !cur.is_empty() {
-            out.push(cur);
-        }
-    }
-    out
 }
 
 /// Render de la ZONA FIJA de Discover: cabecera editorial + sub-pestañas (Feed, Buscar, Áreas)
@@ -608,10 +580,7 @@ pub(crate) fn render_discover_zone(
                     let is_downloading =
                         reader.discover.downloading_id.as_deref() == Some(entry.id.as_str());
 
-                    let is_in_library = reader
-                        .library_list
-                        .iter()
-                        .any(|b| b.name.contains(&entry.id));
+                    let is_in_library = reader.is_arxiv_in_library(&entry.id);
 
                     if is_downloading {
                         let dl_label = if reader.discover.download_bytes > 0 {
@@ -883,7 +852,8 @@ pub(crate) fn render_discover_zone(
                 bx += bw_oa + 8.0;
 
                 if !entry.primary_category.is_empty() {
-                    let bw_cat = (entry.primary_category.len() as f32 * 8.0 + 16.0).max(50.0);
+                    let label = category_label(&entry.primary_category);
+                    let bw_cat = (label.chars().count() as f32 * 7.5 + 16.0).max(50.0);
                     rects.push(CanvasRect::rounded(
                         bx,
                         badge_y,
@@ -899,7 +869,7 @@ pub(crate) fn render_discover_zone(
                         p.base_content,
                         TextAlign::Center,
                         true,
-                        &entry.primary_category,
+                        label,
                     ));
                 }
 
@@ -958,18 +928,18 @@ pub(crate) fn render_discover_zone(
                     meta_str,
                 ));
 
-                // Botón de acción (Descargar / Descargando / Leer)
-                cur_y += 20.0;
-                let action_btn = disc_detail_action_rect(w, cur_y);
+                // Botón de acción (Descargar / Descargando / Leer) usando el layout unificado
+                let (action_btn_layout, _) = disc_detail_layout(w, entry);
+                let action_btn = (
+                    action_btn_layout.0,
+                    action_btn_layout.1 - band_origin as f32,
+                    action_btn_layout.2,
+                    action_btn_layout.3 - band_origin as f32,
+                );
 
                 let is_downloading =
                     reader.discover.downloading_id.as_deref() == Some(entry.id.as_str());
-
-                let is_in_library = reader
-                    .library_list
-                    .iter()
-                    .any(|b| b.name.contains(&entry.id));
-
+                let is_in_library = reader.is_arxiv_in_library(&entry.id);
                 if is_downloading {
                     let dl_label = if reader.discover.download_bytes > 0 {
                         format!(
@@ -1026,7 +996,7 @@ pub(crate) fn render_discover_zone(
                 }
 
                 // Resumen / Abstract completo
-                cur_y += 70.0;
+                cur_y = action_btn.3 + 20.0;
                 texts.push(CanvasText::new(
                     pad,
                     cur_y,

@@ -10,7 +10,19 @@ use std::path::Path;
 
 use super::discover_state::{DiscoverPhase, DiscoverScreen, DiscoverTab};
 use super::discover_worker::{DiscoverCmd, DiscoverMsg, DiscoverWorker};
-use super::{Reader, UiMode};
+use super::{LibraryEntry, Reader, UiMode};
+
+/// Busca si un paper de arXiv ya está presente en la biblioteca curada.
+/// Maneja tanto IDs modernos (2401.12345) como clásicos con barra sustituida por guion bajo (hep-th_9901001).
+pub(crate) fn find_arxiv_in_library<'a>(
+    library_list: &'a [LibraryEntry],
+    arxiv_id: &str,
+) -> Option<&'a LibraryEntry> {
+    let sanitized = arxiv_id.replace('/', "_");
+    library_list
+        .iter()
+        .find(|b| b.name.contains(arxiv_id) || b.name.contains(&sanitized))
+}
 use crate::persist::{self, PaperMeta};
 use android_activity::AndroidApp;
 use log::{error, info, warn};
@@ -40,6 +52,16 @@ impl Reader {
         self.discover.is_busy()
     }
 
+    /// ¿Está el paper de arXiv indicado ya presente en la biblioteca?
+    pub(crate) fn is_arxiv_in_library(&self, arxiv_id: &str) -> bool {
+        find_arxiv_in_library(&self.library_list, arxiv_id).is_some()
+    }
+
+    /// Busca la entrada correspondiente a un paper de arXiv en la biblioteca.
+    pub(crate) fn find_arxiv_in_library(&self, arxiv_id: &str) -> Option<LibraryEntry> {
+        find_arxiv_in_library(&self.library_list, arxiv_id).cloned()
+    }
+
     /// Sondea el canal del worker Discover sin bloquear (`try_recv`).
     /// Si una descarga finaliza, añade la entrada a la biblioteca curada y a `papers.json`.
     pub(crate) fn pump_discover(&mut self, app: &AndroidApp) {
@@ -65,6 +87,7 @@ impl Reader {
                     self.discover.feed_has_more = has_more;
                     self.discover.phase = DiscoverPhase::Idle;
                     self.discover.worker_busy = false;
+                    self.discover.dirty = true;
                     self.redraw();
                 }
                 DiscoverMsg::SearchLoaded {
@@ -80,6 +103,7 @@ impl Reader {
                     self.discover.search_has_more = has_more;
                     self.discover.phase = DiscoverPhase::Idle;
                     self.discover.worker_busy = false;
+                    self.discover.dirty = true;
                     self.redraw();
                 }
                 DiscoverMsg::MoreLoaded { entries, has_more } => {
@@ -100,18 +124,21 @@ impl Reader {
                     }
                     self.discover.phase = DiscoverPhase::Idle;
                     self.discover.worker_busy = false;
+                    self.discover.dirty = true;
                     self.redraw();
                 }
                 DiscoverMsg::QueryFailed { error } => {
                     warn!("Discover: consulta fallida: {error}");
                     self.discover.phase = DiscoverPhase::Error(error);
                     self.discover.worker_busy = false;
+                    self.discover.dirty = true;
                     self.redraw();
                 }
                 DiscoverMsg::DownloadProgress { id, bytes } => {
                     if self.discover.downloading_id.as_deref() == Some(&id) {
                         self.discover.download_bytes = bytes;
                     }
+                    self.discover.dirty = true;
                     self.redraw();
                 }
                 DiscoverMsg::DownloadFinished { id, path, entry } => {
@@ -121,6 +148,7 @@ impl Reader {
                     self.discover.worker_busy = false;
                     self.library_add_entry(app, &path, entry.as_ref());
                     self.show_toast(&format!("Descargado: {id}"));
+                    self.discover.dirty = true;
                     self.redraw();
                 }
                 DiscoverMsg::DownloadFailed { id, error } => {
@@ -131,6 +159,7 @@ impl Reader {
                     if error != "Descarga cancelada" {
                         self.show_toast(&format!("Fallo descarga {id}: {error}"));
                     }
+                    self.discover.dirty = true;
                     self.redraw();
                 }
             }
@@ -241,7 +270,13 @@ impl Reader {
     /// Alto total del contenido de Discover según la pantalla activa.
     pub(crate) fn discover_content_h(&self) -> f32 {
         match self.discover.screen {
-            DiscoverScreen::Detail => 850.0,
+            DiscoverScreen::Detail => {
+                if let Some(entry) = &self.discover.selected_entry {
+                    crate::reader::disc_detail_layout(self.win_w, entry).1
+                } else {
+                    400.0
+                }
+            }
             DiscoverScreen::Areas => {
                 crate::reader::discover_categories::ARXIV_CATEGORIES.len() as f32
                     * crate::reader::disc_cat_row_h()
@@ -290,6 +325,7 @@ impl Reader {
         self.discover.phase = DiscoverPhase::Loading;
         let cats = self.discover.selected_cats.clone();
         self.discover.send_cmd(DiscoverCmd::Feed { cats });
+        self.discover.dirty = true;
         self.redraw();
     }
 
@@ -304,6 +340,7 @@ impl Reader {
         self.discover.screen = DiscoverScreen::Search;
         self.discover.active_tab = DiscoverTab::Search;
         self.discover.send_cmd(DiscoverCmd::Search(q));
+        self.discover.dirty = true;
         self.redraw();
     }
 
@@ -312,6 +349,7 @@ impl Reader {
         self.discover.phase = DiscoverPhase::Loading;
         self.discover.send_cmd(DiscoverCmd::More);
         self.redraw();
+        self.discover.dirty = true;
     }
 
     /// Inicia la descarga de un paper por su identificador y metadatos opcionales.
@@ -322,6 +360,7 @@ impl Reader {
             id: id.to_string(),
             entry,
         });
+        self.discover.dirty = true;
         self.redraw();
     }
 }

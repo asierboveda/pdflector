@@ -210,29 +210,31 @@ impl Gpu {
     // contenido nuevo (misma cadencia que el re-render Canvas del camino SW).
     /// Textura dedicada del plano de cabecera de la biblioteca
     /// (`LibraryState::lib_header`, versión `lib_header_ver`).
-    pub(crate) fn lib_header_tex(&mut self, ver: u64, b: &Bitmap) -> u32 {
-        if let Some((v, tex)) = self.lib_header_plane
+    pub(crate) fn lib_header_tex(&mut self, mode_id: u8, ver: u64, b: &Bitmap) -> u32 {
+        if let Some(((m, v), tex)) = self.lib_header_plane
+            && m == mode_id
             && v == ver
         {
             return tex;
         }
-        let new = self.upload_texture(b, "lib_header");
-        if let Some((_, tex)) = self.lib_header_plane.replace((ver, new)) {
-            self.delete_texture(tex, "lib_header");
+        let new = self.upload_texture(b, "ui_header");
+        if let Some((_, tex)) = self.lib_header_plane.replace(((mode_id, ver), new)) {
+            self.delete_texture(tex, "ui_header");
         }
         new
     }
-    /// Textura dedicada de la banda de contenido de la biblioteca
-    /// (`LibraryState::lib_band`, versión `lib_band_ver`).
-    pub(crate) fn lib_band_tex(&mut self, ver: u64, b: &Bitmap) -> u32 {
-        if let Some((v, tex)) = self.lib_band_plane
+    /// Textura dedicada de la banda de contenido de la biblioteca / discover
+    /// (`LibraryState::lib_band` / `DiscoverState::band`, versión `lib_band_ver` / `band_ver`).
+    pub(crate) fn lib_band_tex(&mut self, mode_id: u8, ver: u64, b: &Bitmap) -> u32 {
+        if let Some(((m, v), tex)) = self.lib_band_plane
+            && m == mode_id
             && v == ver
         {
             return tex;
         }
-        let new = self.upload_texture(b, "lib_band");
-        if let Some((_, tex)) = self.lib_band_plane.replace((ver, new)) {
-            self.delete_texture(tex, "lib_band");
+        let new = self.upload_texture(b, "ui_band");
+        if let Some((_, tex)) = self.lib_band_plane.replace(((mode_id, ver), new)) {
+            self.delete_texture(tex, "ui_band");
         }
         new
     }
