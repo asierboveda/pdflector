@@ -405,6 +405,136 @@ pub(crate) fn clear_state(internal_dir: Option<&Path>) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Metadatos de papers arXiv (`papers.json`) y preferencias de Discover (`discover.json`)
+// ---------------------------------------------------------------------------
+
+/// Metadatos persistidos de un paper arXiv asociado a un PDF local.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PaperMeta {
+    /// Ruta local del PDF descargado (clave del documento).
+    pub path: String,
+    /// Identificador canónico de arXiv (ej: "2401.12345" o "hep-th/9901001").
+    pub arxiv_id: String,
+    /// Título del paper.
+    #[serde(default)]
+    pub title: String,
+    /// Autores del paper.
+    #[serde(default)]
+    pub authors: Vec<String>,
+    /// Fecha o timestamp de actualización/publicación.
+    #[serde(default)]
+    pub updated: String,
+}
+
+#[cfg(test)]
+impl PaperMeta {
+    pub(crate) fn test(path: &str, arxiv_id: &str) -> Self {
+        Self {
+            path: path.to_string(),
+            arxiv_id: arxiv_id.to_string(),
+            title: String::new(),
+            authors: Vec::new(),
+            updated: String::new(),
+        }
+    }
+}
+
+/// Ruta de `papers.json` dentro del almacenamiento interno de la app.
+pub fn papers_path(internal_dir: &Path) -> PathBuf {
+    internal_dir.join("papers.json")
+}
+
+/// Actualiza (upsert) la lista de metadatos de papers por `path`.
+/// Función pura sin efectos colaterales para testing directo.
+pub fn touch_paper(papers: &[PaperMeta], m: PaperMeta) -> Vec<PaperMeta> {
+    let mut v: Vec<PaperMeta> = papers
+        .iter()
+        .filter(|p| p.path != m.path)
+        .cloned()
+        .collect();
+    v.push(m);
+    v
+}
+
+/// Carga los metadatos de papers; vector vacío si no existe o si está corrupto (best-effort).
+pub fn load_papers(internal_dir: Option<&Path>) -> Vec<PaperMeta> {
+    let Some(dir) = internal_dir else {
+        return Vec::new();
+    };
+    let text = match fs::read_to_string(papers_path(dir)) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    match serde_json::from_str::<Vec<PaperMeta>>(&text) {
+        Ok(list) => {
+            info!("papers metadata loaded: {} entries", list.len());
+            list
+        }
+        Err(e) => {
+            warn!("papers.json corrupt ({e}): ignoring");
+            Vec::new()
+        }
+    }
+}
+
+/// Guarda los metadatos de papers (best-effort: fallos de escritura solo se loguean).
+pub fn save_papers(internal_dir: Option<&Path>, papers: &[PaperMeta]) {
+    let Some(dir) = internal_dir else {
+        return;
+    };
+    let path = papers_path(dir);
+    let Ok(text) = serde_json::to_string_pretty(papers) else {
+        return;
+    };
+    if let Err(e) = fs::write(&path, text) {
+        error!("save papers {}: {e}", path.display());
+    }
+}
+
+/// Preferencias persistidas de la pestaña Discover (categorías arXiv seleccionadas).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DiscoverPrefs {
+    #[serde(default)]
+    pub cats: Vec<String>,
+}
+
+/// Ruta de `discover.json` dentro del almacenamiento interno de la app.
+pub fn discover_path(internal_dir: &Path) -> PathBuf {
+    internal_dir.join("discover.json")
+}
+
+/// Carga las preferencias de Discover; default si no existe o está corrupto (best-effort).
+pub fn load_discover(internal_dir: Option<&Path>) -> DiscoverPrefs {
+    let Some(dir) = internal_dir else {
+        return DiscoverPrefs::default();
+    };
+    let text = match fs::read_to_string(discover_path(dir)) {
+        Ok(t) => t,
+        Err(_) => return DiscoverPrefs::default(),
+    };
+    match serde_json::from_str::<DiscoverPrefs>(&text) {
+        Ok(prefs) => prefs,
+        Err(e) => {
+            warn!("discover.json corrupt ({e}): ignoring");
+            DiscoverPrefs::default()
+        }
+    }
+}
+
+/// Guarda las preferencias de Discover (best-effort: fallos de escritura solo se loguean).
+pub fn save_discover(internal_dir: Option<&Path>, prefs: &DiscoverPrefs) {
+    let Some(dir) = internal_dir else {
+        return;
+    };
+    let path = discover_path(dir);
+    let Ok(text) = serde_json::to_string_pretty(prefs) else {
+        return;
+    };
+    if let Err(e) = fs::write(&path, text) {
+        error!("save discover {}: {e}", path.display());
+    }
+}
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -462,5 +592,72 @@ mod tests {
         };
         assert_eq!(empty.pct(), 0.0);
         assert!(!empty.is_finished());
+    }
+
+    #[test]
+    fn touch_paper_upserts_by_path() {
+        let a = touch_paper(&[], PaperMeta::test("a.pdf", "2401.1"));
+        let b = touch_paper(&a, PaperMeta::test("a.pdf", "2401.1"));
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+    }
+
+    #[test]
+    fn touch_paper_updates_content_and_keeps_others() {
+        let p1 = PaperMeta {
+            path: "a.pdf".into(),
+            arxiv_id: "2401.12345".into(),
+            title: "Old Title".into(),
+            authors: vec!["Alice".into()],
+            updated: "2024-01-01".into(),
+        };
+        let list = touch_paper(&[], p1);
+        let p2 = PaperMeta {
+            path: "b.pdf".into(),
+            arxiv_id: "2401.99999".into(),
+            title: "Other Paper".into(),
+            authors: vec!["Bob".into()],
+            updated: "2024-01-02".into(),
+        };
+        let list = touch_paper(&list, p2);
+        assert_eq!(list.len(), 2);
+
+        let p1_updated = PaperMeta {
+            path: "a.pdf".into(),
+            arxiv_id: "2401.12345".into(),
+            title: "New Title".into(),
+            authors: vec!["Alice".into(), "Charlie".into()],
+            updated: "2024-01-03".into(),
+        };
+        let list = touch_paper(&list, p1_updated);
+        assert_eq!(list.len(), 2);
+        let updated_entry = list.iter().find(|p| p.path == "a.pdf").unwrap();
+        assert_eq!(updated_entry.title, "New Title");
+        assert_eq!(updated_entry.authors.len(), 2);
+    }
+
+    #[test]
+    fn discover_prefs_serde_default_roundtrip() {
+        let empty_json = "{}";
+        let prefs: DiscoverPrefs = serde_json::from_str(empty_json).unwrap();
+        assert!(prefs.cats.is_empty());
+
+        let custom = DiscoverPrefs {
+            cats: vec!["cs.AI".into(), "cs.LG".into()],
+        };
+        let ser = serde_json::to_string(&custom).unwrap();
+        let de: DiscoverPrefs = serde_json::from_str(&ser).unwrap();
+        assert_eq!(de.cats, vec!["cs.AI", "cs.LG"]);
+    }
+
+    #[test]
+    fn papers_meta_serde_defaults() {
+        let json = r#"{"path":"test.pdf","arxiv_id":"1234.5678"}"#;
+        let meta: PaperMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.path, "test.pdf");
+        assert_eq!(meta.arxiv_id, "1234.5678");
+        assert!(meta.title.is_empty());
+        assert!(meta.authors.is_empty());
+        assert!(meta.updated.is_empty());
     }
 }
