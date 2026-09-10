@@ -533,6 +533,23 @@ impl Gpu {
             reader.theme.palette().rgba_bg()
         }
     }
+    /// Invalida y limpia el estado de renderizado del documento (FBO dry, clave
+    /// de dry, textura cargada y fade). Debe llamarse al cambiar de documento
+    /// o al salir del visor para evitar que el visor muestre la página del
+    /// documento anterior si las claves coinciden (p. ej. pág 0 / zoom 1.0).
+    pub(crate) fn reset_document(&mut self, bg: [u8; 4]) {
+        self.dry_dirty = true;
+        self.dry_key = None;
+        self.page_loaded = None;
+        self.free_fade_tex();
+        if self.dry_fbo != 0 {
+            unsafe {
+                gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, self.dry_fbo);
+                gl::glViewport(0, 0, self.win_w, self.win_h);
+                self.clear(bg);
+            }
+        }
+    }
     /// Fija el swap interval de EGL si difiere del actual (0 = inmediato, 1 = 120 Hz vsync).
     pub(crate) fn set_swap_interval(&mut self, interval: i32) {
         if self.current_swap_interval == interval {

@@ -286,6 +286,11 @@ impl Reader {
                             // Modo UNA HOJA: la página restaurada se fija
                             // directamente (no hay scroll que alinear).
                             reader.cache.clear();
+                            reader.fallback_page = None;
+                            if let Some(g) = reader.gpu.as_mut() {
+                                let bg = reader.theme.palette().rgba_bg();
+                                g.reset_document(bg);
+                            }
                             reader.page_badge = None; // indicador de la página restaurada
                             info!(
                                 "restored {} @page {} zoom {:.3} theme {:?}",

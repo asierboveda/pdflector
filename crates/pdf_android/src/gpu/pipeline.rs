@@ -511,9 +511,9 @@ impl Gpu {
     /// (chrome, sheet, toast, sel_menu, ai_panel, lib_fade, badges, cursor de
     /// goma) NO viven aquí: se dibujan por frame en `present_viewer` directos
     /// a fb0 (Fase 2).
-    fn render_dry(&mut self, reader: &Reader) {
+    fn render_dry(&mut self, reader: &Reader) -> bool {
         if self.dry_fbo == 0 || self.dry_tex == 0 {
-            return;
+            return false;
         }
         unsafe {
             gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, self.dry_fbo);
@@ -662,11 +662,13 @@ impl Gpu {
                         self.pts_scratch = pts;
                     }
                 }
+                return true;
             }
 
             // 3. (Sin overlays: la UI se dibuja por frame en present_viewer.)
 
             gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+            false
         }
     }
     /// Renderiza la capa transitoria (Wet FBO transparente): avance del
@@ -913,9 +915,9 @@ impl Gpu {
             dark: reader.dark,
         };
         if self.dry_dirty || self.dry_key.is_none_or(|old| key.invalidates(&old)) {
-            self.render_dry(reader);
+            let has_page = self.render_dry(reader);
             self.dry_dirty = false;
-            self.dry_key = Some(key);
+            self.dry_key = if has_page { Some(key) } else { None };
         }
 
         // 2. Renderizar capa Wet si hay capa transitoria que pintar: trazo de

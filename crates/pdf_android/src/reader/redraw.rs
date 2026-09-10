@@ -959,6 +959,8 @@ impl Reader {
                 let _ = handle.join();
             }
         }
+        self.render_rx = None;
+        self.render_seq += 1;
         // Los resultados en vuelo de lotes antiguos caducan solos:
         // `poll_render` ya descarta por `seq != render_seq`.
         self.inflight_target = None;

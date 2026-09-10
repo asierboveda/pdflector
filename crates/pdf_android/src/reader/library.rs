@@ -67,6 +67,12 @@ impl Reader {
         // liberarla aquí evita RSS doble (páginas + zona fija + banda +
         // portadas) y se re-renderiza al volver a un PDF.
         self.cache.clear();
+        self.stop_render_worker();
+        self.fallback_page = None;
+        if let Some(g) = self.gpu.as_mut() {
+            let bg = self.theme.palette().rgba_bg();
+            g.reset_document(bg);
+        }
         // Re-cargar los registros persistidos (recents + progreso): la
         // biblioteca debe reflejar cualquier lectura hecha en otra sesión o
         // proceso (barras de progreso / sort-filtros).

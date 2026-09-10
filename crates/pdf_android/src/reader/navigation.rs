@@ -328,6 +328,11 @@ impl Reader {
                 self.library.lib_band = None;
                 self.library.lib_row_dirty = None;
                 self.cache.clear(); // otro documento: nada reutilizable
+                self.fallback_page = None;
+                if let Some(g) = self.gpu.as_mut() {
+                    let bg = self.theme.palette().rgba_bg();
+                    g.reset_document(bg);
+                }
                 self.mode = UiMode::Viewer;
                 // EGL (Tarea 2.7, productor único): la surface ya NO se suelta
                 // al entrar en Library/Picker, así que al volver al visor
