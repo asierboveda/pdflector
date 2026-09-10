@@ -39,7 +39,7 @@ reqwest = { version = "0.11", default-features = false, features = ["blocking", 
 # for Syncthing (one small .db per document). rusqlite is MIT; the `bundled`
 # feature compiles SQLite from source (no system lib), so cross-compiling to
 # aarch64-linux-android later needs no extra system dependency.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 # Filesystem change detection for Fase 4 sync (hot-reload of annotations changed
 # by Syncthing on another device). notify is MIT/Apache-2.0, std-ish, no unsafe
 # in our usage; only local FS events, no network.
