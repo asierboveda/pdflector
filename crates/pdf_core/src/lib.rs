@@ -7,6 +7,7 @@
 
 pub mod ai;
 pub mod annotations;
+pub mod arxiv;
 pub mod cache;
 pub mod dark;
 pub mod engine;
@@ -28,6 +29,7 @@ pub use annotations::{
     Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote,
     simplify_polyline, smooth_polyline,
 };
+pub use arxiv::{ArxivError, ArxivId, ArxivQuery, parse_arxiv_id};
 pub use cache::{CacheStats, PageKey, RenderCache, RenderedPage, scale_for_level};
 pub use dark::invert_bitmap;
 pub use engine::{Bitmap, Document, Error, PageText, RenderEngine, Result, TextSpan};
