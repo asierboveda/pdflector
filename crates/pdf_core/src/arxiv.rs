@@ -244,30 +244,65 @@ impl ArxivClient {
         *last = Some(std::time::Instant::now());
     }
 
+    fn backoff_delay(
+        &self,
+        attempt: usize,
+        retry_after: Option<std::time::Duration>,
+    ) -> std::time::Duration {
+        if self.min_interval == std::time::Duration::ZERO {
+            return std::time::Duration::ZERO;
+        }
+        if let Some(delay) = retry_after {
+            return delay;
+        }
+        let base_secs = 1u64.max(self.min_interval.as_secs());
+        let factor = 1u64.checked_shl(attempt as u32).unwrap_or(8);
+        let backoff_secs = base_secs.saturating_mul(factor);
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_millis() as u64)
+            .unwrap_or(0);
+        let jitter_ms = 50 + (now_millis % 200);
+        std::time::Duration::from_secs(backoff_secs) + std::time::Duration::from_millis(jitter_ms)
+    }
+
     /// Performs an arXiv search query and returns the matching entries.
     pub fn search(&self, q: &ArxivQuery) -> Result<Vec<ArxivEntry>, ArxivError> {
-        self.throttle();
         let url = format!("{}/query", self.api_base);
-        let mut req = self.client.get(&url);
-        for (k, v) in q.to_params() {
-            req = req.query(&[(k, v)]);
+        let params = q.to_params();
+
+        for attempt in 0..=3 {
+            self.throttle();
+            let mut req = self.client.get(&url);
+            for (k, v) in &params {
+                req = req.query(&[(k, v)]);
+            }
+            let resp = req.send().map_err(|e| ArxivError::Network(e.to_string()))?;
+            let status = resp.status().as_u16();
+            if status == 429 || status == 503 {
+                if attempt < 3 {
+                    let retry_after = parse_retry_after(resp.headers());
+                    let delay = self.backoff_delay(attempt, retry_after);
+                    if !delay.is_zero() {
+                        std::thread::sleep(delay);
+                    }
+                    continue;
+                }
+                return Err(ArxivError::RateLimited);
+            }
+            let bytes = resp
+                .bytes()
+                .map_err(|e| ArxivError::Network(e.to_string()))?;
+            let body = String::from_utf8_lossy(&bytes);
+            if status != 200 {
+                return Err(ArxivError::Http {
+                    status,
+                    body: body.into_owned(),
+                });
+            }
+            return parse_atom_body(&body);
         }
-        let resp = req.send().map_err(|e| ArxivError::Network(e.to_string()))?;
-        let status = resp.status().as_u16();
-        if status == 429 || status == 503 {
-            return Err(ArxivError::RateLimited);
-        }
-        let bytes = resp
-            .bytes()
-            .map_err(|e| ArxivError::Network(e.to_string()))?;
-        let body = String::from_utf8_lossy(&bytes);
-        if status != 200 {
-            return Err(ArxivError::Http {
-                status,
-                body: body.into_owned(),
-            });
-        }
-        parse_atom_body(&body)
+        Err(ArxivError::RateLimited)
     }
 
     /// Fetches papers by a list of arXiv IDs.
@@ -300,58 +335,77 @@ impl ArxivClient {
         w: &mut dyn std::io::Write,
     ) -> Result<DownloadOutcome, ArxivError> {
         let (base, _) = parse_arxiv_id(id)?;
-        self.throttle();
         let url = format!("{}/pdf/{}", self.pdf_base, base);
-        let mut resp = self
-            .client
-            .get(&url)
-            .send()
-            .map_err(|e| ArxivError::Network(e.to_string()))?;
-        let status = resp.status().as_u16();
-        if status == 429 || status == 503 {
-            return Err(ArxivError::RateLimited);
-        }
-        if status != 200 {
-            return Err(ArxivError::Http {
-                status,
-                body: String::new(),
+
+        for attempt in 0..=3 {
+            self.throttle();
+            let mut resp = self
+                .client
+                .get(&url)
+                .send()
+                .map_err(|e| ArxivError::Network(e.to_string()))?;
+            let status = resp.status().as_u16();
+            if status == 429 || status == 503 {
+                if attempt < 3 {
+                    let retry_after = parse_retry_after(resp.headers());
+                    let delay = self.backoff_delay(attempt, retry_after);
+                    if !delay.is_zero() {
+                        std::thread::sleep(delay);
+                    }
+                    continue;
+                }
+                return Err(ArxivError::RateLimited);
+            }
+            if status != 200 {
+                return Err(ArxivError::Http {
+                    status,
+                    body: String::new(),
+                });
+            }
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            if !ct.contains("application/pdf") {
+                return Err(ArxivError::Http {
+                    status,
+                    body: format!("bad content-type {ct}"),
+                });
+            }
+            let etag = resp
+                .headers()
+                .get("etag")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned());
+            let final_name = resp
+                .headers()
+                .get("content-disposition")
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_disposition_filename)
+                .unwrap_or_else(|| format!("{base}.pdf"));
+            let bytes = std::io::copy(&mut resp, w).map_err(|e| ArxivError::Io(e.to_string()))?;
+            return Ok(DownloadOutcome {
+                final_name,
+                etag,
+                bytes,
             });
         }
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_owned();
-        if !ct.contains("application/pdf") {
-            return Err(ArxivError::Http {
-                status,
-                body: format!("bad content-type {ct}"),
-            });
-        }
-        let etag = resp
-            .headers()
-            .get("etag")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_owned());
-        let final_name = resp
-            .headers()
-            .get("content-disposition")
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_content_disposition_filename)
-            .unwrap_or_else(|| format!("{base}.pdf"));
-        let bytes = std::io::copy(&mut resp, w).map_err(|e| ArxivError::Io(e.to_string()))?;
-        Ok(DownloadOutcome {
-            final_name,
-            etag,
-            bytes,
-        })
+        Err(ArxivError::RateLimited)
     }
 }
 
 /// Test helper exposing `parse_atom_body`.
 pub fn parse_atom_for_test(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
     parse_atom_body(body)
+}
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    let val = headers.get("retry-after")?.to_str().ok()?.trim();
+    if let Ok(secs) = val.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    None
 }
 
 fn parse_content_disposition_filename(disposition: &str) -> Option<String> {

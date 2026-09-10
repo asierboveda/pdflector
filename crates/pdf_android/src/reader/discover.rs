@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use super::discover_state::{DiscoverPhase, DiscoverScreen, DiscoverTab};
-use super::discover_worker::{DiscoverCmd, DiscoverMsg, DiscoverWorker};
+use super::discover_worker::{DiscoverCmd, DiscoverMsg, DiscoverWorker, MoreScope};
 use super::{LibraryEntry, Reader, UiMode};
 
 /// Busca si un paper de arXiv ya está presente en la biblioteca curada.
@@ -19,9 +19,8 @@ pub(crate) fn find_arxiv_in_library<'a>(
     arxiv_id: &str,
 ) -> Option<&'a LibraryEntry> {
     let sanitized = arxiv_id.replace('/', "_");
-    library_list
-        .iter()
-        .find(|b| b.name.contains(arxiv_id) || b.name.contains(&sanitized))
+    let target_name = format!("arxiv_{sanitized}.pdf");
+    library_list.iter().find(|b| b.name == target_name)
 }
 use crate::persist::{self, PaperMeta};
 use android_activity::AndroidApp;
@@ -85,8 +84,12 @@ impl Reader {
                     );
                     self.discover.feed_entries = entries;
                     self.discover.feed_has_more = has_more;
-                    self.discover.phase = DiscoverPhase::Idle;
-                    self.discover.worker_busy = false;
+                    self.discover.pending_requests =
+                        self.discover.pending_requests.saturating_sub(1);
+                    if self.discover.pending_requests == 0 {
+                        self.discover.phase = DiscoverPhase::Idle;
+                        self.discover.worker_busy = false;
+                    }
                     self.discover.dirty = true;
                     self.redraw();
                 }
@@ -101,36 +104,52 @@ impl Reader {
                     );
                     self.discover.search_entries = entries;
                     self.discover.search_has_more = has_more;
-                    self.discover.phase = DiscoverPhase::Idle;
-                    self.discover.worker_busy = false;
+                    self.discover.pending_requests =
+                        self.discover.pending_requests.saturating_sub(1);
+                    if self.discover.pending_requests == 0 {
+                        self.discover.phase = DiscoverPhase::Idle;
+                        self.discover.worker_busy = false;
+                    }
                     self.discover.dirty = true;
                     self.redraw();
                 }
-                DiscoverMsg::MoreLoaded { entries, has_more } => {
+                DiscoverMsg::MoreLoaded {
+                    scope,
+                    entries,
+                    has_more,
+                } => {
                     info!(
-                        "Discover: página adicional cargada con {} entradas",
-                        entries.len()
+                        "Discover: página adicional cargada con {} entradas ({:?})",
+                        entries.len(),
+                        scope
                     );
-                    match self.discover.screen {
-                        DiscoverScreen::Feed => {
+                    match scope {
+                        MoreScope::Feed => {
                             self.discover.feed_entries.extend(entries);
                             self.discover.feed_has_more = has_more;
                         }
-                        DiscoverScreen::Search => {
+                        MoreScope::Search => {
                             self.discover.search_entries.extend(entries);
                             self.discover.search_has_more = has_more;
                         }
-                        _ => {}
                     }
-                    self.discover.phase = DiscoverPhase::Idle;
-                    self.discover.worker_busy = false;
+                    self.discover.pending_requests =
+                        self.discover.pending_requests.saturating_sub(1);
+                    if self.discover.pending_requests == 0 {
+                        self.discover.phase = DiscoverPhase::Idle;
+                        self.discover.worker_busy = false;
+                    }
                     self.discover.dirty = true;
                     self.redraw();
                 }
                 DiscoverMsg::QueryFailed { error } => {
                     warn!("Discover: consulta fallida: {error}");
                     self.discover.phase = DiscoverPhase::Error(error);
-                    self.discover.worker_busy = false;
+                    self.discover.pending_requests =
+                        self.discover.pending_requests.saturating_sub(1);
+                    if self.discover.pending_requests == 0 {
+                        self.discover.worker_busy = false;
+                    }
                     self.discover.dirty = true;
                     self.redraw();
                 }
@@ -145,7 +164,11 @@ impl Reader {
                     info!("Discover: descarga completada: {id} -> {path}");
                     self.discover.downloading_id = None;
                     self.discover.download_bytes = 0;
-                    self.discover.worker_busy = false;
+                    self.discover.pending_requests =
+                        self.discover.pending_requests.saturating_sub(1);
+                    if self.discover.pending_requests == 0 {
+                        self.discover.worker_busy = false;
+                    }
                     self.library_add_entry(app, &path, entry.as_ref());
                     self.show_toast(&format!("Descargado: {id}"));
                     self.discover.dirty = true;
@@ -155,7 +178,11 @@ impl Reader {
                     warn!("Discover: error en descarga {id}: {error}");
                     self.discover.downloading_id = None;
                     self.discover.download_bytes = 0;
-                    self.discover.worker_busy = false;
+                    self.discover.pending_requests =
+                        self.discover.pending_requests.saturating_sub(1);
+                    if self.discover.pending_requests == 0 {
+                        self.discover.worker_busy = false;
+                    }
                     if error != "Descarga cancelada" {
                         self.show_toast(&format!("Fallo descarga {id}: {error}"));
                     }
@@ -218,7 +245,11 @@ impl Reader {
         }
 
         info!("library_add_entry: libro añadido con éxito ({path_str}, {page_count} págs)");
-        self.reload_curated_library(app);
+        if self.mode == UiMode::Library {
+            self.reload_curated_library(app);
+        } else {
+            self.refresh_curated_library_data();
+        }
     }
 
     /// Cambia al modo Discover y asegura la carga inicial del feed.

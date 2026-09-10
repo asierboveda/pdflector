@@ -128,15 +128,11 @@ impl Reader {
     /// portadas y aperturas van por ruta). Antes de listar ejecuta la
     /// MIGRACIÓN one-shot de instalaciones antiguas (`migrate_internal_pdfs`).
     /// Vacía → empty state con "Añadir PDF".
-    pub(crate) fn reload_curated_library(&mut self, _app: &AndroidApp) {
-        self.mode = UiMode::Library;
-        self.picker_kind = PickerKind::Files; // el selector temporal queda fuera
-        // Re-leer los registros persistidos: la biblioteca debe reflejar
-        // cualquier alta/lectura hecha en otro punto del flujo.
+    /// Refresca los datos en memoria de la biblioteca curada sin cambiar de modo
+    /// ni resetear scrolls ni invalidar la superficie activa si estamos en otro modo.
+    pub(crate) fn refresh_curated_library_data(&mut self) {
         self.library.lib_books = persist::load_progress(self.internal_dir.as_deref());
         self.migrate_internal_pdfs();
-        // Solo los registros cuyo fichero SIGUE existiendo: un registro
-        // huérfano (borrado a mano o evictado) no pinta ninguna celda.
         let mut entries = Vec::new();
         for b in &self.library.lib_books {
             let p = Path::new(&b.path);
@@ -159,11 +155,18 @@ impl Reader {
             self.library.lib_books.len()
         );
         self.library_list = entries;
-        // La rejilla curada NO requiere permiso de almacenamiento (lee solo
-        // ficheros propios); quien lo necesita es el SELECTOR de añadir, y
-        // ese lo re-comprueba `query_media_store` al invocarse. Con true, el
-        // empty state ofrece "Añadir PDF" en vez de "Conceder acceso".
         self.permission_granted = true;
+        self.refresh_lib_filtered();
+        self.list_dirty = true;
+        self.library.lib_header = None;
+        self.library.lib_band = None;
+        self.library.lib_row_dirty = None;
+    }
+
+    pub(crate) fn reload_curated_library(&mut self, _app: &AndroidApp) {
+        self.mode = UiMode::Library;
+        self.picker_kind = PickerKind::Files; // el selector temporal queda fuera
+        self.refresh_curated_library_data();
         // Datos nuevos: scroll al origen (vertical y horizontales) y lista
         // filtrada recalculada; el sort activo ordena por added/read.
         self.list_scroll = 0;
@@ -173,12 +176,7 @@ impl Reader {
         self.library.lib_letters_x = 0.0;
         self.library.lib_sort_x = 0.0;
         self.library.lib_filter_x = 0.0;
-        self.refresh_lib_filtered();
-        self.list_dirty = true;
         self.bitmap = None;
-        self.library.lib_header = None; // zona fija: se re-renderiza en el rebuild
-        self.library.lib_band = None;
-        self.library.lib_row_dirty = None;
         self.redraw();
     }
 

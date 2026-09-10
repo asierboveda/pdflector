@@ -543,6 +543,34 @@ fn hex_digit(b: u8) -> Option<u8> {
 /// - Texto que contenga cualquiera de las formas anteriores rodeado de espacios/mensaje.
 ///
 /// Devuelve `None` si la entrada no representa un paper de arXiv válido (ej. DOI, URL genérica o texto vacío).
+fn trim_trailing_punct(s: &str) -> &str {
+    s.trim_end_matches(|c: char| {
+        matches!(
+            c,
+            '.' | ','
+                | ';'
+                | ':'
+                | '!'
+                | '?'
+                | ')'
+                | ']'
+                | '}'
+                | '>'
+                | '"'
+                | '\''
+                | '»'
+                | '”'
+                | '’'
+        )
+    })
+}
+
+fn trim_leading_punct(s: &str) -> &str {
+    s.trim_start_matches(|c: char| {
+        matches!(c, '(' | '[' | '{' | '<' | '"' | '\'' | '«' | '“' | '‘')
+    })
+}
+
 pub(crate) fn parse_arxiv_target(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -553,7 +581,8 @@ pub(crate) fn parse_arxiv_target(raw: &str) -> Option<String> {
     // con título + URL), intentar primero si alguna palabra parsea como paper válido.
     if trimmed.contains(|c: char| c.is_whitespace()) {
         for word in trimmed.split_whitespace() {
-            if let Some(id) = parse_single_arxiv_target(word) {
+            let cleaned = trim_leading_punct(trim_trailing_punct(word));
+            if let Some(id) = parse_single_arxiv_target(cleaned) {
                 return Some(id);
             }
         }
@@ -563,7 +592,7 @@ pub(crate) fn parse_arxiv_target(raw: &str) -> Option<String> {
 }
 
 fn parse_single_arxiv_target(input: &str) -> Option<String> {
-    let input = input.trim();
+    let input = trim_leading_punct(trim_trailing_punct(input.trim()));
     if input.is_empty() {
         return None;
     }
@@ -638,6 +667,7 @@ fn parse_single_arxiv_target(input: &str) -> Option<String> {
     if let Some(rest) = s.strip_suffix(".pdf") {
         s = rest;
     }
+    let s = trim_trailing_punct(s.trim());
 
     // 5. Validación canónica y rechazo estricto de esquemas ajenos (ej. DOIs, URLs no-arXiv)
     let (canonical, _) = match pdf_core::parse_arxiv_id(s) {
@@ -1662,6 +1692,31 @@ mod tests {
         assert_eq!(
             parse_arxiv_target("export.arxiv.org/abs/2401.12345").as_deref(),
             Some("2401.12345")
+        );
+        // Trailing and leading punctuation variants
+        assert_eq!(
+            parse_arxiv_target("https://arxiv.org/abs/2401.12345.").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("https://arxiv.org/pdf/2401.12345.pdf,").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("(https://arxiv.org/abs/2401.12345)").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("Check this out: https://arxiv.org/abs/2401.12345!").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("2401.12345.").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("hep-th/9901001,").as_deref(),
+            Some("hep-th/9901001")
         );
 
         // Custom scheme pdflector://

@@ -74,11 +74,13 @@ max_sdk_version = 32
 [[package.metadata.android.uses_permission]]
 name = "android.permission.MANAGE_EXTERNAL_STORAGE"
 
-# --- Permiso INTERNET (Fase 5: "Preguntar a la IA" vía Groq) ---
-# `GroqClient` (pdf_core::ai) hace HTTPS a api.groq.com desde el hilo de fondo
-# de la consulta; sin este permiso la llamada de red falla al instante en
-# Android (SocketException: permission denied). No añade nada más: no hay
-# telemetría ni otros usos de red en la app.
+# --- Permiso INTERNET (Fase 5: "Preguntar a la IA" vía Groq; Fase B: Descubrir arXiv) ---
+# Usos de red exclusivos en hilos de fondo dedicados:
+# 1. `GroqClient` (pdf_core::ai): peticiones HTTPS a api.groq.com para consultas de IA.
+# 2. `ArxivClient` / `DiscoverWorker` (pdf_core::arxiv, pdf_android::discover): consultas
+#    a export.arxiv.org y descargas de PDFs de acceso abierto desde arxiv.org.
+# Sin este permiso la llamada de red falla al instante en Android (SocketException:
+# permission denied). No hay telemetría, analítica ni otros usos de red en la app.
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
 

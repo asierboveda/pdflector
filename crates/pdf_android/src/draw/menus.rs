@@ -917,7 +917,7 @@ pub(crate) fn settings_menu_geometry(
     // 5. ABOUT
     y += sec_h;
     // About is non-interactive
-    y += 34.0 + 26.0 + 12.0;
+    y += 34.0 + 26.0 + 24.0 + 12.0;
 
     let menu_b = y;
     ((menu_l, menu_t, menu_r, menu_b), items)
@@ -1199,6 +1199,16 @@ pub(crate) fn draw_settings_menu(
         TextAlign::Left,
         false,
         "Open source · AGPL-3.0".to_string(),
+    ));
+    y += 24.0;
+    texts.push(CanvasText::new(
+        ml + pad_x,
+        y + theme::FONT_CAPTION * 0.8 * 0.85,
+        theme::FONT_CAPTION * 0.8,
+        p.neutral_content,
+        TextAlign::Left,
+        false,
+        crate::draw::discover::ARXIV_ATTRIBUTION.to_string(),
     ));
 }
 

@@ -199,7 +199,7 @@ impl Gpu {
             self.delete_texture(tex, "fade");
         }
     }
-    // --- Planos de biblioteca/picker (Tarea 2.7: productor único EGL) ---
+    // --- Planos de UI (biblioteca / discover) y picker (Tarea 2.7: productor único EGL) ---
     // Cabecera, banda de contenido y lista del picker: texturas dedicadas
     // grandes (fuera del LRU de overlays, misma categoría que `page_tex` /
     // `fade_tex`). El `ver` es la generación del bitmap (el Reader la bumpea
@@ -208,8 +208,8 @@ impl Gpu {
     // se sube la nueva. Así el present por frame es solo clear + quads +
     // swap, y el coste de la subida (~12 MB de ventana) se paga UNA vez por
     // contenido nuevo (misma cadencia que el re-render Canvas del camino SW).
-    /// Textura dedicada del plano de cabecera de la biblioteca
-    /// (`LibraryState::lib_header`, versión `lib_header_ver`).
+    /// Textura dedicada del plano de cabecera de la UI (biblioteca o discover)
+    /// (`LibraryState::lib_header` / `DiscoverState::header`, versión con `mode_id`).
     pub(crate) fn lib_header_tex(&mut self, mode_id: u8, ver: u64, b: &Bitmap) -> u32 {
         if let Some(((m, v), tex)) = self.lib_header_plane
             && m == mode_id
@@ -252,16 +252,16 @@ impl Gpu {
         }
         new
     }
-    /// Libera las texturas de los planos de biblioteca y del picker (al
+    /// Libera las texturas de los planos de UI (cabecera, banda y picker) al
     /// volver al visor — `present_viewer` — o al soltar la surface: su
     /// contenido ya no se va a pintar y juntas pueden retener ~decenas de MB
-    /// fuera del LRU). Se re-suben con versión nueva al volver a entrar.
+    /// fuera del LRU. Se re-suben con versión nueva al volver a entrar.
     pub(crate) fn free_ui_planes(&mut self) {
         if let Some((_, tex)) = self.lib_header_plane.take() {
-            self.delete_texture(tex, "lib_header");
+            self.delete_texture(tex, "ui_header");
         }
         if let Some((_, tex)) = self.lib_band_plane.take() {
-            self.delete_texture(tex, "lib_band");
+            self.delete_texture(tex, "ui_band");
         }
         if let Some((_, tex)) = self.picker_plane.take() {
             self.delete_texture(tex, "picker");

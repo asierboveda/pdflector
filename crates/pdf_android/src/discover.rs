@@ -62,6 +62,13 @@ pub enum DiscoverCmd {
     Stop,
 }
 
+/// Ámbito al que pertenece una página de resultados adicionales (`MoreLoaded`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoreScope {
+    Feed,
+    Search,
+}
+
 /// Mensajes devueltos por el worker Discover al hilo de UI.
 #[derive(Debug, Clone)]
 pub enum DiscoverMsg {
@@ -78,6 +85,7 @@ pub enum DiscoverMsg {
     },
     /// Nuevas entradas añadidas por paginación (`More`).
     MoreLoaded {
+        scope: MoreScope,
         entries: Vec<ArxivEntry>,
         has_more: bool,
     },
@@ -392,6 +400,7 @@ impl DiscoverWorker {
                                     let has_more = cached.len() >= page_size;
                                     *start += cached.len();
                                     let _ = msg_tx.send(DiscoverMsg::MoreLoaded {
+                                        scope: MoreScope::Feed,
                                         entries: cached,
                                         has_more,
                                     });
@@ -421,8 +430,11 @@ impl DiscoverWorker {
                                         feed_cache.put(&cache_key, &entries);
                                         let has_more = entries.len() >= page_size;
                                         *start += entries.len();
-                                        let _ = msg_tx
-                                            .send(DiscoverMsg::MoreLoaded { entries, has_more });
+                                        let _ = msg_tx.send(DiscoverMsg::MoreLoaded {
+                                            scope: MoreScope::Feed,
+                                            entries,
+                                            has_more,
+                                        });
                                     }
                                     Err(e) => {
                                         if !cancel_flag_worker.load(Ordering::SeqCst) {
@@ -440,6 +452,7 @@ impl DiscoverWorker {
                                     let has_more = cached.len() >= page_size;
                                     *start += cached.len();
                                     let _ = msg_tx.send(DiscoverMsg::MoreLoaded {
+                                        scope: MoreScope::Search,
                                         entries: cached,
                                         has_more,
                                     });
@@ -468,8 +481,11 @@ impl DiscoverWorker {
                                         feed_cache.put(&cache_key, &entries);
                                         let has_more = entries.len() >= page_size;
                                         *start += entries.len();
-                                        let _ = msg_tx
-                                            .send(DiscoverMsg::MoreLoaded { entries, has_more });
+                                        let _ = msg_tx.send(DiscoverMsg::MoreLoaded {
+                                            scope: MoreScope::Search,
+                                            entries,
+                                            has_more,
+                                        });
                                     }
                                     Err(e) => {
                                         if !cancel_flag_worker.load(Ordering::SeqCst) {
@@ -639,16 +655,8 @@ impl Drop for DiscoverWorker {
 }
 
 /// Drena comandos más nuevos si hay ráfagas de input (preemption).
-fn drain_newer_cmd(rx: &Receiver<DiscoverCmd>, initial: DiscoverCmd) -> Option<DiscoverCmd> {
-    let mut cur = initial;
-    while let Ok(newer) = rx.try_recv() {
-        match newer {
-            DiscoverCmd::Stop => return Some(DiscoverCmd::Stop),
-            DiscoverCmd::Cancel => return Some(DiscoverCmd::Cancel),
-            other => cur = other,
-        }
-    }
-    Some(cur)
+fn drain_newer_cmd(_rx: &Receiver<DiscoverCmd>, initial: DiscoverCmd) -> Option<DiscoverCmd> {
+    Some(initial)
 }
 
 #[cfg(test)]

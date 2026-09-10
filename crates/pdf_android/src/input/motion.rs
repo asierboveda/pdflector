@@ -1442,8 +1442,7 @@ fn discover_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                     reader
                         .discover
                         .toggle_category(cat.code, reader.internal_dir.as_deref());
-                    reader.discover.dirty = true;
-                    reader.redraw();
+                    reader.discover_refresh_feed();
                     return;
                 }
             }

@@ -192,8 +192,8 @@ fn serve_once(
     response_body: &'static str,
 ) -> thread::JoinHandle<String> {
     thread::spawn(move || {
-        let (mut sock, _) = listener.accept().expect("client connects");
-        let request = read_request(&mut sock);
+        let max_serves = if status == 429 || status == 503 { 4 } else { 1 };
+        let mut last_request = String::new();
         let status_line = match status {
             200 => "HTTP/1.1 200 OK",
             400 => "HTTP/1.1 400 Bad Request",
@@ -212,9 +212,16 @@ fn serve_once(
              {response_body}",
             response_body.len()
         );
-        sock.write_all(response.as_bytes()).expect("write response");
-        sock.flush().expect("flush response");
-        request
+        for _ in 0..max_serves {
+            let (mut sock, _) = match listener.accept() {
+                Ok(conn) => conn,
+                Err(_) => break,
+            };
+            last_request = read_request(&mut sock);
+            sock.write_all(response.as_bytes()).expect("write response");
+            sock.flush().expect("flush response");
+        }
+        last_request
     })
 }
 
@@ -322,6 +329,38 @@ fn arxiv_client_search_handles_rate_limit_and_http_errors() {
         other => panic!("expected Http 500, got {other:?}"),
     }
     server500.join().expect("join");
+}
+#[test]
+fn arxiv_client_search_retries_on_rate_limit_and_succeeds() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let handle = thread::spawn(move || {
+        // First request gets 429 with Retry-After: 0
+        let (mut s1, _) = listener.accept().expect("conn 1");
+        let _ = read_request(&mut s1);
+        let resp1 = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        s1.write_all(resp1.as_bytes()).expect("write 429");
+        s1.flush().expect("flush");
+
+        // Second request (retry) gets 200 OK
+        let (mut s2, _) = listener.accept().expect("conn 2");
+        let _ = read_request(&mut s2);
+        let resp2 = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/atom+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            ARXIV_ATOM_FIXTURE_WITH_ENTITIES.len(),
+            ARXIV_ATOM_FIXTURE_WITH_ENTITIES
+        );
+        s2.write_all(resp2.as_bytes()).expect("write 200");
+        s2.flush().expect("flush");
+    });
+
+    let client = ArxivClient::for_tests(&format!("http://127.0.0.1:{port}"));
+    let entries = client
+        .search(&ArxivQuery::new())
+        .expect("succeeds after retry");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "2401.12345");
+    handle.join().expect("server completes");
 }
 
 #[test]
