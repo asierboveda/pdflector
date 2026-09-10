@@ -12,7 +12,7 @@ use std::sync::mpsc::Receiver;
 use pdf_core::arxiv::ArxivEntry;
 
 use super::discover_categories::default_categories;
-use crate::discover::{DiscoverCmd, DiscoverMsg, DiscoverWorker};
+use super::discover_worker::{DiscoverCmd, DiscoverMsg, DiscoverWorker};
 use crate::persist::{DiscoverPrefs, load_discover, save_discover};
 
 /// Pantalla activa dentro del modo Discover.

@@ -137,6 +137,10 @@ impl FeedCache {
             let _ = fs::remove_file(&p);
             return None;
         }
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .and_then(|f| f.set_modified(SystemTime::now()));
         Some(record.entries)
     }
 

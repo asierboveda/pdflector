@@ -16,8 +16,8 @@ use pdf_core::arxiv::ArxivEntry;
 use pdf_core::engine::mupdf::MupdfEngine;
 
 use super::discover_state::{DiscoverPhase, DiscoverScreen, DiscoverTab};
+use super::discover_worker::{DiscoverCmd, DiscoverMsg, DiscoverWorker};
 use super::{Reader, UiMode};
-use crate::discover::{DiscoverCmd, DiscoverMsg, DiscoverWorker};
 use crate::persist::{self, PaperMeta};
 
 impl Reader {
@@ -47,11 +47,16 @@ impl Reader {
     pub(crate) fn pump_discover(&mut self, app: &AndroidApp) {
         self.ensure_discover_worker(app);
 
-        let Some(rx) = self.discover.rx.as_ref() else {
-            return;
-        };
-
-        while let Ok(msg) = rx.try_recv() {
+        loop {
+            let msg = {
+                let Some(rx) = self.discover.rx.as_ref() else {
+                    return;
+                };
+                match rx.try_recv() {
+                    Ok(m) => m,
+                    Err(_) => break,
+                }
+            };
             match msg {
                 DiscoverMsg::FeedLoaded { entries, has_more } => {
                     info!(
@@ -125,7 +130,9 @@ impl Reader {
                     self.discover.downloading_id = None;
                     self.discover.download_bytes = 0;
                     self.discover.worker_busy = false;
-                    self.show_toast(&format!("Fallo descarga {id}: {error}"));
+                    if error != "Descarga cancelada" {
+                        self.show_toast(&format!("Fallo descarga {id}: {error}"));
+                    }
                     self.redraw();
                 }
             }
