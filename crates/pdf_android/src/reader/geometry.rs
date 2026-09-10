@@ -818,9 +818,11 @@ pub(crate) fn disc_detail_back_rect(win_w: i32, win_h: i32) -> ButtonRect {
 /// Rectángulo del botón principal de acción (Descargar / Leer) en la pantalla de Ficha.
 pub(crate) fn disc_detail_action_rect(win_w: i32, y: f32) -> ButtonRect {
     let pad = grid_pad(win_w);
+    let inner_pad = 16.0f32;
     let btn_w = (win_w as f32 * 0.45).clamp(240.0, 360.0);
     let btn_h = 50.0f32;
-    (pad, y, pad + btn_w, y + btn_h)
+    let x = pad + inner_pad;
+    (x, y, x + btn_w, y + btn_h)
 }
 
 /// Helper para envolver texto en líneas según un ancho máximo aproximado en caracteres.
@@ -857,23 +859,32 @@ pub(crate) fn disc_detail_layout(
     win_w: i32,
     entry: &pdf_core::arxiv::ArxivEntry,
 ) -> (ButtonRect, f32) {
-    let card_w = disc_card_w(win_w);
-    let max_chars = ((card_w / (crate::theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
+    let pad = grid_pad(win_w);
+    let inner_pad = 16.0f32;
+    let card_w = (win_w as f32 - 2.0 * pad).max(200.0);
+    let inner_w = (card_w - 2.0 * inner_pad).max(180.0);
+    let max_chars = ((inner_w / (crate::theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
 
     let title_lines = wrap_text_chars(&entry.title, max_chars);
-    let authors_lines = wrap_text_chars(&entry.authors.join(", "), max_chars + 10);
-    let abstract_lines = wrap_text_chars(&entry.summary, max_chars + 12);
+    let authors_lines = wrap_text_chars(&entry.authors.join(", "), max_chars + 8);
+    let abstract_lines = wrap_text_chars(&entry.summary, max_chars + 10);
 
-    let badge_y = 24.0f32;
-    let title_y = badge_y + 44.0;
-    let authors_y = title_y + title_lines.len() as f32 * 26.0 + 6.0;
-    let meta_y = authors_y + authors_lines.len() as f32 * 22.0 + 10.0;
-    let btn_y = meta_y + 20.0;
+    let hero_top = 16.0f32;
+    let badge_y = hero_top + 16.0;
+    let title_y = badge_y + 36.0;
+    let authors_y = title_y + title_lines.len() as f32 * 26.0 + 8.0;
+    let divider_y = authors_y + authors_lines.len() as f32 * 22.0 + 10.0;
+    let meta_y = divider_y + 18.0;
+    let btn_y = meta_y + 22.0;
     let action_btn = disc_detail_action_rect(win_w, btn_y);
+    let hero_bot = action_btn.3 + 20.0;
 
-    let abstract_header_y = btn_y + 50.0 + 20.0;
-    let abstract_body_y = abstract_header_y + 22.0;
-    let total_h = abstract_body_y + abstract_lines.len() as f32 * 20.0 + 90.0;
+    let abstract_top = hero_bot + 16.0;
+    let abstract_header_y = abstract_top + 28.0;
+    let abstract_body_y = abstract_header_y + 24.0;
+    let abstract_bot = abstract_body_y + abstract_lines.len() as f32 * 22.0 + 20.0;
+
+    let total_h = abstract_bot + 60.0;
 
     (action_btn, total_h)
 }

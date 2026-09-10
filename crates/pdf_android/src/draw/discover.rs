@@ -9,14 +9,16 @@ use crate::reader::discover_categories::{ARXIV_CATEGORIES, category_label};
 use crate::reader::discover_state::{DiscoverPhase, DiscoverScreen, DiscoverTab};
 use crate::reader::{
     Reader, UiMode, disc_card_action_rect, disc_card_gap, disc_card_h, disc_card_pad,
-    disc_card_rect, disc_card_w, disc_cat_row_h, disc_cat_row_rect, disc_content_y0,
-    disc_detail_back_rect, disc_detail_layout, disc_more_btn_rect, disc_search_rect,
-    disc_subtabs_rect, grid_pad, lib_tabs_rect, wrap_text_chars,
+    disc_card_rect, disc_cat_row_h, disc_cat_row_rect, disc_content_y0, disc_detail_back_rect,
+    disc_detail_layout, disc_more_btn_rect, disc_search_rect, disc_subtabs_rect, grid_pad,
+    lib_tabs_rect, wrap_text_chars,
 };
 use crate::theme;
 use pdf_core::Bitmap;
 
-use super::{ButtonRect, CanvasRect, CanvasText, TextAlign, draw_button, jni_text_bitmap};
+use super::{
+    ButtonRect, CanvasRect, CanvasText, TextAlign, draw_button, draw_card_shadow, jni_text_bitmap,
+};
 
 /// Texto de atribución requerido por las condiciones de interoperabilidad abierta de arXiv.
 pub(crate) const ARXIV_ATTRIBUTION: &str =
@@ -34,14 +36,16 @@ pub(crate) fn draw_header_tabs(
     let (tab_lib, tab_disc) = lib_tabs_rect(win_w, win_h);
     let p = theme.palette();
 
-    let render_tab = |rects: &mut Vec<CanvasRect>,
-                      texts: &mut Vec<CanvasText>,
-                      rect: ButtonRect,
-                      is_active: bool,
-                      label: &str| {
+    let mut render_tab = |rects: &mut Vec<CanvasRect>,
+                          texts: &mut Vec<CanvasText>,
+                          rect: ButtonRect,
+                          is_active: bool,
+                          label: &str| {
         let (left, top, right, bottom) = rect;
         let r = ((bottom - top) * 0.5).max(6.0);
+        let cy = top + (bottom - top) * 0.5 + theme::FONT_BODY * 0.35;
         if is_active {
+            draw_card_shadow(rects, left, top, right, bottom, r, p.is_dark);
             rects.push(CanvasRect::rounded(left, top, right, bottom, r, p.base_300));
             rects.push(CanvasRect::rounded(
                 left + 1.0,
@@ -53,7 +57,7 @@ pub(crate) fn draw_header_tabs(
             ));
             texts.push(CanvasText::new(
                 (left + right) / 2.0,
-                top + (bottom - top) * 0.68,
+                cy,
                 theme::FONT_BODY,
                 p.base_content,
                 TextAlign::Center,
@@ -61,9 +65,18 @@ pub(crate) fn draw_header_tabs(
                 label,
             ));
         } else {
+            rects.push(CanvasRect::rounded(left, top, right, bottom, r, p.base_300));
+            rects.push(CanvasRect::rounded(
+                left + 1.0,
+                top + 1.0,
+                right - 1.0,
+                bottom - 1.0,
+                r - 1.0,
+                p.base_200,
+            ));
             texts.push(CanvasText::new(
                 (left + right) / 2.0,
-                top + (bottom - top) * 0.68,
+                cy,
                 theme::FONT_BODY,
                 p.neutral_content,
                 TextAlign::Center,
@@ -126,6 +139,15 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
         DiscoverScreen::Detail => {
             // Cabecera de Ficha: botón [← Volver] y título
             let back_rect = disc_detail_back_rect(w, reader.win_h);
+            draw_card_shadow(
+                &mut rects,
+                back_rect.0,
+                back_rect.1,
+                back_rect.2,
+                back_rect.3,
+                8.0,
+                p.is_dark,
+            );
             draw_button(
                 &mut rects,
                 &mut texts,
@@ -141,9 +163,10 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
                 "← Volver",
             );
 
-            let title_y = back_rect.1 + (back_rect.3 - back_rect.1) * 0.72;
+            let title_y =
+                back_rect.1 + (back_rect.3 - back_rect.1) * 0.5 + theme::FONT_TITLE * 0.35;
             texts.push(CanvasText::new(
-                back_rect.2 + 24.0,
+                back_rect.2 + 20.0,
                 title_y,
                 theme::FONT_TITLE,
                 p.base_content,
@@ -176,35 +199,43 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
                 let (l, t, r, b) = rect;
                 let rad = ((b - t) * 0.5).max(4.0);
                 if is_active {
-                    rects.push(CanvasRect::rounded(l, t, r, b, rad, p.primary));
-                    texts.push(CanvasText::new(
-                        (l + r) / 2.0,
-                        t + (b - t) * 0.68,
-                        theme::FONT_BODY,
+                    draw_card_shadow(&mut rects, l, t, r, b, rad, p.is_dark);
+                    draw_button(
+                        &mut rects,
+                        &mut texts,
+                        l,
+                        t,
+                        r,
+                        b,
+                        p.primary,
+                        p.primary,
                         p.primary_content,
-                        TextAlign::Center,
+                        theme::FONT_BODY,
                         true,
                         label,
-                    ));
+                    );
                 } else {
-                    rects.push(CanvasRect::rounded(l, t, r, b, rad, p.base_100));
-                    texts.push(CanvasText::new(
-                        (l + r) / 2.0,
-                        t + (b - t) * 0.68,
-                        theme::FONT_BODY,
+                    draw_button(
+                        &mut rects,
+                        &mut texts,
+                        l,
+                        t,
+                        r,
+                        b,
+                        p.base_100,
+                        p.base_300,
                         p.base_content,
-                        TextAlign::Center,
+                        theme::FONT_BODY,
                         false,
                         label,
-                    ));
+                    );
                 }
             }
 
             // Barra de búsqueda en pantalla Search
             if reader.discover.screen == DiscoverScreen::Search {
                 let (input_r, clear_r, search_btn_r) = disc_search_rect(w, reader.win_h);
-                // Campo de texto
-                let rad = 8.0f32;
+                let rad = ((input_r.3 - input_r.1) * 0.5).min(10.0);
                 rects.push(CanvasRect::rounded(
                     input_r.0, input_r.1, input_r.2, input_r.3, rad, p.base_300,
                 ));
@@ -218,7 +249,7 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
                 ));
 
                 let query_text = if reader.discover.query.is_empty() {
-                    "Buscar por título, autor, id (ej. 2401.12345)…"
+                    "Buscar por título, autor o id (ej. 2401.12345)…"
                 } else {
                     &reader.discover.query
                 };
@@ -228,9 +259,10 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
                     p.base_content
                 };
 
+                let input_cy = input_r.1 + (input_r.3 - input_r.1) * 0.5 + theme::FONT_BODY * 0.35;
                 texts.push(CanvasText::new(
                     input_r.0 + 14.0,
-                    input_r.1 + (input_r.3 - input_r.1) * 0.68,
+                    input_cy,
                     theme::FONT_BODY,
                     query_color,
                     TextAlign::Left,
@@ -240,10 +272,17 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
 
                 // Botón limpiar '✕' si hay consulta
                 if !reader.discover.query.is_empty() {
+                    let cw = clear_r.2 - clear_r.0;
+                    let ch = clear_r.3 - clear_r.1;
+                    let crad = ((ch * 0.5).min(cw * 0.5)).max(4.0);
+                    rects.push(CanvasRect::rounded(
+                        clear_r.0, clear_r.1, clear_r.2, clear_r.3, crad, p.base_200,
+                    ));
+                    let clear_cy = clear_r.1 + ch * 0.5 + theme::FONT_CAPTION * 0.35;
                     texts.push(CanvasText::new(
                         (clear_r.0 + clear_r.2) / 2.0,
-                        clear_r.1 + (clear_r.3 - clear_r.1) * 0.70,
-                        theme::FONT_BODY,
+                        clear_cy,
+                        theme::FONT_CAPTION,
                         p.neutral_content,
                         TextAlign::Center,
                         true,
@@ -252,6 +291,15 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
                 }
 
                 // Botón Buscar
+                draw_card_shadow(
+                    &mut rects,
+                    search_btn_r.0,
+                    search_btn_r.1,
+                    search_btn_r.2,
+                    search_btn_r.3,
+                    rad,
+                    p.is_dark,
+                );
                 draw_button(
                     &mut rects,
                     &mut texts,
@@ -276,7 +324,7 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
         .as_deref()
         .or(reader.discover.status_msg.as_deref());
     if let Some(msg) = status {
-        let status_y = h_fixed as f32 - 12.0;
+        let status_y = h_fixed as f32 - 10.0;
         texts.push(CanvasText::new(
             grid_pad(w),
             status_y,
@@ -307,8 +355,6 @@ pub(crate) fn render_discover_zone(
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
 
-    let pad = disc_card_pad(w);
-
     match reader.discover.screen {
         DiscoverScreen::Feed | DiscoverScreen::Search => {
             let entries = if reader.discover.screen == DiscoverScreen::Feed {
@@ -320,15 +366,52 @@ pub(crate) fn render_discover_zone(
             let is_loading = reader.discover.phase == DiscoverPhase::Loading;
 
             if entries.is_empty() {
-                // Estado vacío / cargando
+                // Estado vacío / cargando / error
                 let center_x = w as f32 / 2.0;
-                let center_y = (band_h as f32 / 3.0).max(60.0);
+                let center_y = (band_h as f32 * 0.35).clamp(80.0, 200.0);
 
-                if is_loading {
+                if let DiscoverPhase::Error(err) = &reader.discover.phase {
                     texts.push(CanvasText::new(
                         center_x,
                         center_y,
-                        theme::FONT_TITLE,
+                        theme::FONT_DISPLAY,
+                        p.base_content,
+                        TextAlign::Center,
+                        true,
+                        "No se pudo conectar con arXiv",
+                    ));
+                    texts.push(CanvasText::new(
+                        center_x,
+                        center_y + 36.0,
+                        theme::FONT_BODY,
+                        p.neutral_content,
+                        TextAlign::Center,
+                        false,
+                        err,
+                    ));
+                    texts.push(CanvasText::new(
+                        center_x,
+                        center_y + 64.0,
+                        theme::FONT_CAPTION,
+                        p.neutral_content,
+                        TextAlign::Center,
+                        false,
+                        "Comprueba tu conexión a internet e inténtalo de nuevo.",
+                    ));
+                    texts.push(CanvasText::new(
+                        center_x,
+                        center_y + 110.0,
+                        theme::FONT_CAPTION,
+                        p.neutral_content,
+                        TextAlign::Center,
+                        false,
+                        ARXIV_ATTRIBUTION,
+                    ));
+                } else if is_loading {
+                    texts.push(CanvasText::new(
+                        center_x,
+                        center_y,
+                        theme::FONT_DISPLAY,
                         p.base_content,
                         TextAlign::Center,
                         true,
@@ -340,63 +423,128 @@ pub(crate) fn render_discover_zone(
                     ));
                     texts.push(CanvasText::new(
                         center_x,
-                        center_y + 32.0,
+                        center_y + 36.0,
                         theme::FONT_BODY,
                         p.neutral_content,
                         TextAlign::Center,
                         false,
                         "Consultando export.arxiv.org/api/query",
                     ));
+                    texts.push(CanvasText::new(
+                        center_x,
+                        center_y + 64.0,
+                        theme::FONT_CAPTION,
+                        p.neutral_content,
+                        TextAlign::Center,
+                        false,
+                        "Descargando resúmenes y metadatos de preprints",
+                    ));
+                    texts.push(CanvasText::new(
+                        center_x,
+                        center_y + 110.0,
+                        theme::FONT_CAPTION,
+                        p.neutral_content,
+                        TextAlign::Center,
+                        false,
+                        ARXIV_ATTRIBUTION,
+                    ));
                 } else if reader.discover.screen == DiscoverScreen::Feed {
                     texts.push(CanvasText::new(
                         center_x,
                         center_y,
-                        theme::FONT_TITLE,
+                        theme::FONT_DISPLAY,
                         p.base_content,
                         TextAlign::Center,
                         true,
-                        "No hay papers en las categorías seleccionadas",
+                        "Tu feed de arXiv está vacío",
                     ));
                     texts.push(CanvasText::new(
                         center_x,
-                        center_y + 32.0,
+                        center_y + 36.0,
                         theme::FONT_BODY,
                         p.neutral_content,
                         TextAlign::Center,
                         false,
-                        "Selecciona áreas de interés en la pestaña Áreas",
+                        "Selecciona áreas de interés en la pestaña Áreas para ver novedades.",
+                    ));
+                    texts.push(CanvasText::new(
+                        center_x,
+                        center_y + 90.0,
+                        theme::FONT_CAPTION,
+                        p.neutral_content,
+                        TextAlign::Center,
+                        false,
+                        ARXIV_ATTRIBUTION,
                     ));
                 } else {
+                    if reader.discover.query.is_empty() {
+                        texts.push(CanvasText::new(
+                            center_x,
+                            center_y,
+                            theme::FONT_DISPLAY,
+                            p.base_content,
+                            TextAlign::Center,
+                            true,
+                            "Explora millones de papers en arXiv",
+                        ));
+                        texts.push(CanvasText::new(
+                            center_x,
+                            center_y + 36.0,
+                            theme::FONT_BODY,
+                            p.neutral_content,
+                            TextAlign::Center,
+                            false,
+                            "Busca por término, autor o identificador de arXiv.",
+                        ));
+                        texts.push(CanvasText::new(
+                            center_x,
+                            center_y + 64.0,
+                            theme::FONT_CAPTION,
+                            p.neutral_content,
+                            TextAlign::Center,
+                            false,
+                            "Ejemplos: 2401.12345, attention, vaswani, cs.AI",
+                        ));
+                    } else {
+                        texts.push(CanvasText::new(
+                            center_x,
+                            center_y,
+                            theme::FONT_DISPLAY,
+                            p.base_content,
+                            TextAlign::Center,
+                            true,
+                            "Sin resultados encontrados",
+                        ));
+                        texts.push(CanvasText::new(
+                            center_x,
+                            center_y + 36.0,
+                            theme::FONT_BODY,
+                            p.neutral_content,
+                            TextAlign::Center,
+                            false,
+                            format!("No se encontraron papers para «{}»", reader.discover.query),
+                        ));
+                        texts.push(CanvasText::new(
+                            center_x,
+                            center_y + 64.0,
+                            theme::FONT_CAPTION,
+                            p.neutral_content,
+                            TextAlign::Center,
+                            false,
+                            "Intenta con términos más generales o un identificador arXiv directo.",
+                        ));
+                    }
+
                     texts.push(CanvasText::new(
                         center_x,
-                        center_y,
-                        theme::FONT_TITLE,
-                        p.base_content,
-                        TextAlign::Center,
-                        true,
-                        "Escribe un término o pega un ID de arXiv",
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 32.0,
-                        theme::FONT_BODY,
+                        center_y + 100.0,
+                        theme::FONT_CAPTION,
                         p.neutral_content,
                         TextAlign::Center,
                         false,
-                        "Ejemplos: 2401.12345, ti:attention, au:vaswani, cat:cs.AI",
+                        ARXIV_ATTRIBUTION,
                     ));
                 }
-
-                // Atribución de interoperabilidad obligatoria de arXiv
-                texts.push(CanvasText::new(
-                    center_x,
-                    center_y + 80.0,
-                    theme::FONT_CAPTION,
-                    p.neutral_content,
-                    TextAlign::Center,
-                    false,
-                    ARXIV_ATTRIBUTION,
-                ));
             } else {
                 // Lista de tarjetas de papers
                 for (idx, entry) in entries.iter().enumerate() {
@@ -411,9 +559,19 @@ pub(crate) fn render_discover_zone(
 
                     let card_l = card_rect.0;
                     let card_r = card_rect.2;
-                    let r = 10.0f32;
+                    let card_w = card_r - card_l;
+                    let r = 12.0f32;
 
-                    // Fondo y borde de la tarjeta
+                    // Sombra visible multicapa + fondo y borde redondeado
+                    draw_card_shadow(
+                        &mut rects,
+                        card_l,
+                        top_in_band,
+                        card_r,
+                        bot_in_band,
+                        r,
+                        p.is_dark,
+                    );
                     rects.push(CanvasRect::rounded(
                         card_l,
                         top_in_band,
@@ -434,6 +592,8 @@ pub(crate) fn render_discover_zone(
                     // Fila de insignias (Preprint / Open Access / Categoría)
                     let badge_y = top_in_band + 14.0;
                     let badge_h = 22.0f32;
+                    let badge_rad = badge_h * 0.5;
+                    let badge_text_cy = badge_y + badge_h * 0.5 + theme::FONT_LABEL_CAPS * 0.35;
 
                     // Badge [Preprint]
                     let mut bx = card_l + 16.0;
@@ -443,12 +603,20 @@ pub(crate) fn render_discover_zone(
                         badge_y,
                         bx + bw_prep,
                         badge_y + badge_h,
-                        4.0,
-                        p.neutral,
+                        badge_rad,
+                        p.base_300,
+                    ));
+                    rects.push(CanvasRect::rounded(
+                        bx + 1.0,
+                        badge_y + 1.0,
+                        bx + bw_prep - 1.0,
+                        badge_y + badge_h - 1.0,
+                        badge_rad - 1.0,
+                        p.base_200,
                     ));
                     texts.push(CanvasText::new(
                         bx + bw_prep / 2.0,
-                        badge_y + 15.0,
+                        badge_text_cy,
                         theme::FONT_LABEL_CAPS,
                         p.neutral_content,
                         TextAlign::Center,
@@ -458,18 +626,26 @@ pub(crate) fn render_discover_zone(
                     bx += bw_prep + 8.0;
 
                     // Badge [Open Access]
-                    let bw_oa = 84.0f32;
+                    let bw_oa = 88.0f32;
                     rects.push(CanvasRect::rounded(
                         bx,
                         badge_y,
                         bx + bw_oa,
                         badge_y + badge_h,
-                        4.0,
+                        badge_rad,
+                        p.base_300,
+                    ));
+                    rects.push(CanvasRect::rounded(
+                        bx + 1.0,
+                        badge_y + 1.0,
+                        bx + bw_oa - 1.0,
+                        badge_y + badge_h - 1.0,
+                        badge_rad - 1.0,
                         p.base_200,
                     ));
                     texts.push(CanvasText::new(
                         bx + bw_oa / 2.0,
-                        badge_y + 15.0,
+                        badge_text_cy,
                         theme::FONT_LABEL_CAPS,
                         p.primary,
                         TextAlign::Center,
@@ -477,87 +653,177 @@ pub(crate) fn render_discover_zone(
                         "OPEN ACCESS",
                     ));
                     bx += bw_oa + 8.0;
+
                     // Badge categoría primaria
                     if !entry.primary_category.is_empty() {
-                        let label = category_label(&entry.primary_category);
-                        let bw_cat = (label.chars().count() as f32 * 7.5 + 16.0).max(50.0);
+                        let full_label = category_label(&entry.primary_category);
+                        let label_candidate =
+                            (full_label.chars().count() as f32 * 7.5 + 16.0).max(46.0);
+                        let (cat_str, bw_cat) = if bx + label_candidate <= card_r - 16.0 {
+                            (full_label, label_candidate)
+                        } else {
+                            let code_w = (entry.primary_category.chars().count() as f32 * 8.0
+                                + 16.0)
+                                .max(44.0);
+                            (entry.primary_category.as_str(), code_w)
+                        };
                         rects.push(CanvasRect::rounded(
                             bx,
                             badge_y,
                             bx + bw_cat,
                             badge_y + badge_h,
-                            4.0,
+                            badge_rad,
+                            p.base_300,
+                        ));
+                        rects.push(CanvasRect::rounded(
+                            bx + 1.0,
+                            badge_y + 1.0,
+                            bx + bw_cat - 1.0,
+                            badge_y + badge_h - 1.0,
+                            badge_rad - 1.0,
                             p.base_200,
                         ));
                         texts.push(CanvasText::new(
                             bx + bw_cat / 2.0,
-                            badge_y + 15.0,
+                            badge_text_cy,
                             theme::FONT_LABEL_CAPS,
                             p.base_content,
                             TextAlign::Center,
                             true,
-                            label,
+                            cat_str,
                         ));
                     }
 
-                    // Título (truncado a ~95 caracteres)
-                    let title_text = if entry.title.chars().count() > 95 {
-                        let s: String = entry.title.chars().take(92).collect();
-                        format!("{s}…")
-                    } else {
-                        entry.title.clone()
-                    };
-                    texts.push(CanvasText::new(
-                        card_l + 16.0,
-                        top_in_band + 62.0,
-                        theme::FONT_TITLE,
-                        p.base_content,
-                        TextAlign::Left,
-                        true,
-                        title_text,
-                    ));
+                    // Título adaptativo (1 o 2 líneas)
+                    let title_max_chars =
+                        (((card_w - 32.0) / (theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
+                    let title_lines = wrap_text_chars(&entry.title, title_max_chars);
+                    let has_two_title_lines = title_lines.len() > 1;
+
+                    if has_two_title_lines {
+                        texts.push(CanvasText::new(
+                            card_l + 16.0,
+                            top_in_band + 58.0,
+                            theme::FONT_TITLE,
+                            p.base_content,
+                            TextAlign::Left,
+                            true,
+                            &title_lines[0],
+                        ));
+                        let line1_text = if title_lines.len() > 2 {
+                            format!("{}…", title_lines[1].trim_end())
+                        } else {
+                            title_lines[1].clone()
+                        };
+                        texts.push(CanvasText::new(
+                            card_l + 16.0,
+                            top_in_band + 78.0,
+                            theme::FONT_TITLE,
+                            p.base_content,
+                            TextAlign::Left,
+                            true,
+                            line1_text,
+                        ));
+                    } else if let Some(first_line) = title_lines.first() {
+                        texts.push(CanvasText::new(
+                            card_l + 16.0,
+                            top_in_band + 60.0,
+                            theme::FONT_TITLE,
+                            p.base_content,
+                            TextAlign::Left,
+                            true,
+                            first_line,
+                        ));
+                    }
 
                     // Autores
+                    let authors_y = if has_two_title_lines {
+                        top_in_band + 100.0
+                    } else {
+                        top_in_band + 84.0
+                    };
+                    let authors_max =
+                        (((card_w - 32.0) / (theme::FONT_BODY * 0.52)).floor() as usize).max(20);
                     let authors_str = entry.authors.join(", ");
-                    let authors_text = if authors_str.chars().count() > 80 {
-                        let s: String = authors_str.chars().take(77).collect();
-                        format!("{s}…")
+                    let authors_display = if authors_str.chars().count() > authors_max {
+                        format!(
+                            "{}…",
+                            authors_str
+                                .chars()
+                                .take(authors_max.saturating_sub(1))
+                                .collect::<String>()
+                        )
                     } else {
                         authors_str
                     };
                     texts.push(CanvasText::new(
                         card_l + 16.0,
-                        top_in_band + 90.0,
+                        authors_y,
                         theme::FONT_BODY,
                         p.neutral_content,
                         TextAlign::Left,
                         false,
-                        authors_text,
+                        authors_display,
                     ));
 
-                    // Resumen (snippet de ~130 chars)
-                    let summary_str: String = entry
+                    // Resumen / snippet
+                    let summary_clean: String = entry
                         .summary
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
-                    let summary_snippet = if summary_str.chars().count() > 130 {
-                        let s: String = summary_str.chars().take(127).collect();
-                        format!("{s}…")
-                    } else {
-                        summary_str
-                    };
-                    texts.push(CanvasText::new(
-                        card_l + 16.0,
-                        top_in_band + 120.0,
-                        theme::FONT_CAPTION,
-                        p.base_content,
-                        TextAlign::Left,
-                        false,
-                        summary_snippet,
-                    ));
+                    let caption_max =
+                        (((card_w - 32.0) / (theme::FONT_CAPTION * 0.52)).floor() as usize).max(25);
+                    let summary_lines = wrap_text_chars(&summary_clean, caption_max);
 
-                    // Fecha publicada abajo a la izquierda
+                    if has_two_title_lines {
+                        if let Some(first_sum) = summary_lines.first() {
+                            let text = if summary_lines.len() > 1 {
+                                format!("{first_sum}…")
+                            } else {
+                                first_sum.clone()
+                            };
+                            texts.push(CanvasText::new(
+                                card_l + 16.0,
+                                top_in_band + 122.0,
+                                theme::FONT_CAPTION,
+                                p.base_content,
+                                TextAlign::Left,
+                                false,
+                                text,
+                            ));
+                        }
+                    } else {
+                        if let Some(line0) = summary_lines.first() {
+                            texts.push(CanvasText::new(
+                                card_l + 16.0,
+                                top_in_band + 108.0,
+                                theme::FONT_CAPTION,
+                                p.base_content,
+                                TextAlign::Left,
+                                false,
+                                line0,
+                            ));
+                        }
+                        if summary_lines.len() > 1 {
+                            let line1 = if summary_lines.len() > 2 {
+                                format!("{}…", summary_lines[1])
+                            } else {
+                                summary_lines[1].clone()
+                            };
+                            texts.push(CanvasText::new(
+                                card_l + 16.0,
+                                top_in_band + 126.0,
+                                theme::FONT_CAPTION,
+                                p.base_content,
+                                TextAlign::Left,
+                                false,
+                                line1,
+                            ));
+                        }
+                    }
+
+                    // Fecha publicada y ID en la parte inferior izquierda
                     let pub_date = entry
                         .published
                         .split('T')
@@ -565,12 +831,12 @@ pub(crate) fn render_discover_zone(
                         .unwrap_or(&entry.published);
                     texts.push(CanvasText::new(
                         card_l + 16.0,
-                        bot_in_band - 20.0,
+                        bot_in_band - 26.0,
                         theme::FONT_CAPTION,
                         p.neutral_content,
                         TextAlign::Left,
                         false,
-                        format!("Publicado: {pub_date}  |  arXiv:{}", entry.id),
+                        format!("{pub_date}  •  arXiv:{}", entry.id),
                     ));
 
                     // Botón de acción en la esquina inferior derecha
@@ -579,9 +845,17 @@ pub(crate) fn render_discover_zone(
 
                     let is_downloading =
                         reader.discover.downloading_id.as_deref() == Some(entry.id.as_str());
-
                     let is_in_library = reader.is_arxiv_in_library(&entry.id);
 
+                    draw_card_shadow(
+                        &mut rects,
+                        action_rect.0,
+                        action_rect.1,
+                        action_rect.2,
+                        action_rect.3,
+                        6.0,
+                        p.is_dark,
+                    );
                     if is_downloading {
                         let dl_label = if reader.discover.download_bytes > 0 {
                             format!(
@@ -633,7 +907,7 @@ pub(crate) fn render_discover_zone(
                             p.base_content,
                             theme::FONT_BODY,
                             true,
-                            "Ficha",
+                            "Ver ficha →",
                         );
                     }
                 }
@@ -650,6 +924,15 @@ pub(crate) fn render_discover_zone(
 
                 if has_more && more_y > -50.0 && more_y < band_h as f32 + 50.0 {
                     let more_rect = disc_more_btn_rect(w, more_y);
+                    draw_card_shadow(
+                        &mut rects,
+                        more_rect.0,
+                        more_rect.1,
+                        more_rect.2,
+                        more_rect.3,
+                        10.0,
+                        p.is_dark,
+                    );
                     draw_button(
                         &mut rects,
                         &mut texts,
@@ -665,7 +948,7 @@ pub(crate) fn render_discover_zone(
                         if is_loading {
                             "Cargando…"
                         } else {
-                            "Cargar más"
+                            "Cargar más papers"
                         },
                     );
                 }
@@ -698,11 +981,20 @@ pub(crate) fn render_discover_zone(
 
                 let row_l = row_rect.0;
                 let row_r = row_rect.2;
-                let r = 8.0f32;
+                let r = 10.0f32;
 
                 let is_selected = reader.discover.selected_cats.iter().any(|c| c == cat.code);
 
-                // Fondo de la fila
+                // Sombra y tarjeta de la fila
+                draw_card_shadow(
+                    &mut rects,
+                    row_l,
+                    top_in_band,
+                    row_r,
+                    bot_in_band,
+                    r,
+                    p.is_dark,
+                );
                 let border_col = if is_selected { p.primary } else { p.base_300 };
                 rects.push(CanvasRect::rounded(
                     row_l,
@@ -721,28 +1013,56 @@ pub(crate) fn render_discover_zone(
                     p.base_100,
                 ));
 
-                // Código y etiqueta
+                // Pastilla / pill con el código de categoría a la izquierda
+                let code_h = 26.0f32;
+                let code_w = (cat.code.chars().count() as f32 * 8.0 + 16.0).max(52.0);
+                let code_t = top_in_band + (bot_in_band - top_in_band - code_h) / 2.0;
+                let code_b = code_t + code_h;
+                let code_l = row_l + 14.0;
+                let code_r = code_l + code_w;
+                let code_rad = code_h * 0.5;
+
+                rects.push(CanvasRect::rounded(
+                    code_l, code_t, code_r, code_b, code_rad, border_col,
+                ));
+                rects.push(CanvasRect::rounded(
+                    code_l + 1.0,
+                    code_t + 1.0,
+                    code_r - 1.0,
+                    code_b - 1.0,
+                    code_rad - 1.0,
+                    p.base_200,
+                ));
+                let code_text_color = if is_selected {
+                    p.primary
+                } else {
+                    p.base_content
+                };
+                let code_cy = code_t + code_h * 0.5 + theme::FONT_LABEL_CAPS * 0.35;
                 texts.push(CanvasText::new(
-                    row_l + 16.0,
-                    top_in_band + 24.0,
-                    theme::FONT_BODY,
-                    p.base_content,
-                    TextAlign::Left,
+                    (code_l + code_r) / 2.0,
+                    code_cy,
+                    theme::FONT_LABEL_CAPS,
+                    code_text_color,
+                    TextAlign::Center,
                     true,
                     cat.code,
                 ));
+
+                // Nombre y grupo temático
+                let label_x = code_r + 14.0;
                 texts.push(CanvasText::new(
-                    row_l + 100.0,
-                    top_in_band + 24.0,
+                    label_x,
+                    top_in_band + 21.0,
                     theme::FONT_BODY,
                     p.base_content,
                     TextAlign::Left,
-                    false,
+                    is_selected,
                     cat.label_es,
                 ));
                 texts.push(CanvasText::new(
-                    row_l + 100.0,
-                    top_in_band + 42.0,
+                    label_x,
+                    top_in_band + 39.0,
                     theme::FONT_CAPTION,
                     p.neutral_content,
                     TextAlign::Left,
@@ -751,7 +1071,7 @@ pub(crate) fn render_discover_zone(
                 ));
 
                 // Chip de estado de selección a la derecha
-                let chip_w = 90.0f32;
+                let chip_w = 94.0f32;
                 let chip_h = 32.0f32;
                 let chip_r = row_r - 14.0;
                 let chip_l = chip_r - chip_w;
@@ -759,31 +1079,35 @@ pub(crate) fn render_discover_zone(
                 let chip_b = chip_t + chip_h;
 
                 if is_selected {
-                    rects.push(CanvasRect::rounded(
-                        chip_l, chip_t, chip_r, chip_b, 4.0, p.primary,
-                    ));
-                    texts.push(CanvasText::new(
-                        (chip_l + chip_r) / 2.0,
-                        chip_t + 21.0,
-                        theme::FONT_LABEL_CAPS,
+                    draw_button(
+                        &mut rects,
+                        &mut texts,
+                        chip_l,
+                        chip_t,
+                        chip_r,
+                        chip_b,
+                        p.primary,
+                        p.primary,
                         p.primary_content,
-                        TextAlign::Center,
+                        theme::FONT_LABEL_CAPS,
                         true,
                         "✓ ACTIVA",
-                    ));
+                    );
                 } else {
-                    rects.push(CanvasRect::rounded(
-                        chip_l, chip_t, chip_r, chip_b, 4.0, p.base_200,
-                    ));
-                    texts.push(CanvasText::new(
-                        (chip_l + chip_r) / 2.0,
-                        chip_t + 21.0,
-                        theme::FONT_LABEL_CAPS,
+                    draw_button(
+                        &mut rects,
+                        &mut texts,
+                        chip_l,
+                        chip_t,
+                        chip_r,
+                        chip_b,
+                        p.base_100,
+                        p.base_300,
                         p.neutral_content,
-                        TextAlign::Center,
+                        theme::FONT_LABEL_CAPS,
                         false,
                         "+ AÑADIR",
-                    ));
+                    );
                 }
             }
 
@@ -805,24 +1129,87 @@ pub(crate) fn render_discover_zone(
         DiscoverScreen::Detail => {
             // Pantalla de Ficha detallada de un paper
             if let Some(entry) = &reader.discover.selected_entry {
-                let card_w = disc_card_w(w);
-                let top_in_band = 16.0 - band_origin as f32;
+                let pad = disc_card_pad(w);
+                let card_w = (w as f32 - 2.0 * pad).max(200.0);
+                let inner_pad = 16.0f32;
+                let inner_w = (card_w - 2.0 * inner_pad).max(180.0);
 
-                // Fila de insignias
-                let badge_y = top_in_band + 8.0;
-                let mut bx = pad;
+                let max_chars = ((inner_w / (theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
+                let title_lines = wrap_text_chars(&entry.title, max_chars);
+                let authors_lines = wrap_text_chars(&entry.authors.join(", "), max_chars + 8);
+                let abstract_lines = wrap_text_chars(&entry.summary, max_chars + 10);
+
+                let hero_top = 16.0f32 - band_origin as f32;
+                let badge_y = hero_top + 16.0;
+                let title_y = badge_y + 36.0;
+                let authors_y = title_y + title_lines.len() as f32 * 26.0 + 8.0;
+                let divider_y = authors_y + authors_lines.len() as f32 * 22.0 + 10.0;
+                let meta_y = divider_y + 18.0;
+
+                let (action_btn_layout, _) = disc_detail_layout(w, entry);
+                let action_btn = (
+                    action_btn_layout.0,
+                    action_btn_layout.1 - band_origin as f32,
+                    action_btn_layout.2,
+                    action_btn_layout.3 - band_origin as f32,
+                );
+                let hero_bot = action_btn.3 + 20.0;
+
+                let r = 14.0f32;
+
+                // Tarjeta 1: Metadatos y acción (Hero card)
+                draw_card_shadow(
+                    &mut rects,
+                    pad,
+                    hero_top,
+                    pad + card_w,
+                    hero_bot,
+                    r,
+                    p.is_dark,
+                );
+                rects.push(CanvasRect::rounded(
+                    pad,
+                    hero_top,
+                    pad + card_w,
+                    hero_bot,
+                    r,
+                    p.base_300,
+                ));
+                rects.push(CanvasRect::rounded(
+                    pad + 1.0,
+                    hero_top + 1.0,
+                    pad + card_w - 1.0,
+                    hero_bot - 1.0,
+                    r - 1.0,
+                    p.base_100,
+                ));
+
+                // Fila de insignias dentro de la tarjeta hero
+                let badge_h = 22.0f32;
+                let badge_rad = badge_h * 0.5;
+                let badge_text_cy = badge_y + badge_h * 0.5 + theme::FONT_LABEL_CAPS * 0.35;
+                let mut bx = pad + inner_pad;
+
                 let bw_prep = 68.0f32;
                 rects.push(CanvasRect::rounded(
                     bx,
                     badge_y,
                     bx + bw_prep,
-                    badge_y + 22.0,
-                    4.0,
-                    p.neutral,
+                    badge_y + badge_h,
+                    badge_rad,
+                    p.base_300,
+                ));
+                rects.push(CanvasRect::rounded(
+                    bx + 1.0,
+                    badge_y + 1.0,
+                    bx + bw_prep - 1.0,
+                    badge_y + badge_h - 1.0,
+                    badge_rad - 1.0,
+                    p.base_200,
                 ));
                 texts.push(CanvasText::new(
                     bx + bw_prep / 2.0,
-                    badge_y + 15.0,
+                    badge_text_cy,
                     theme::FONT_LABEL_CAPS,
                     p.neutral_content,
                     TextAlign::Center,
@@ -831,18 +1218,26 @@ pub(crate) fn render_discover_zone(
                 ));
                 bx += bw_prep + 8.0;
 
-                let bw_oa = 84.0f32;
+                let bw_oa = 88.0f32;
                 rects.push(CanvasRect::rounded(
                     bx,
                     badge_y,
                     bx + bw_oa,
-                    badge_y + 22.0,
-                    4.0,
+                    badge_y + badge_h,
+                    badge_rad,
+                    p.base_300,
+                ));
+                rects.push(CanvasRect::rounded(
+                    bx + 1.0,
+                    badge_y + 1.0,
+                    bx + bw_oa - 1.0,
+                    badge_y + badge_h - 1.0,
+                    badge_rad - 1.0,
                     p.base_200,
                 ));
                 texts.push(CanvasText::new(
                     bx + bw_oa / 2.0,
-                    badge_y + 15.0,
+                    badge_text_cy,
                     theme::FONT_LABEL_CAPS,
                     p.primary,
                     TextAlign::Center,
@@ -852,34 +1247,48 @@ pub(crate) fn render_discover_zone(
                 bx += bw_oa + 8.0;
 
                 if !entry.primary_category.is_empty() {
-                    let label = category_label(&entry.primary_category);
-                    let bw_cat = (label.chars().count() as f32 * 7.5 + 16.0).max(50.0);
+                    let full_label = category_label(&entry.primary_category);
+                    let label_candidate =
+                        (full_label.chars().count() as f32 * 7.5 + 16.0).max(46.0);
+                    let (cat_str, bw_cat) = if bx + label_candidate <= pad + card_w - inner_pad {
+                        (full_label, label_candidate)
+                    } else {
+                        let code_w =
+                            (entry.primary_category.chars().count() as f32 * 8.0 + 16.0).max(44.0);
+                        (entry.primary_category.as_str(), code_w)
+                    };
                     rects.push(CanvasRect::rounded(
                         bx,
                         badge_y,
                         bx + bw_cat,
-                        badge_y + 22.0,
-                        4.0,
+                        badge_y + badge_h,
+                        badge_rad,
+                        p.base_300,
+                    ));
+                    rects.push(CanvasRect::rounded(
+                        bx + 1.0,
+                        badge_y + 1.0,
+                        bx + bw_cat - 1.0,
+                        badge_y + badge_h - 1.0,
+                        badge_rad - 1.0,
                         p.base_200,
                     ));
                     texts.push(CanvasText::new(
                         bx + bw_cat / 2.0,
-                        badge_y + 15.0,
+                        badge_text_cy,
                         theme::FONT_LABEL_CAPS,
                         p.base_content,
                         TextAlign::Center,
                         true,
-                        label,
+                        cat_str,
                     ));
                 }
 
-                // Título completo (multilínea)
-                let max_chars = ((card_w / (theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
-                let title_lines = wrap_text_chars(&entry.title, max_chars);
-                let mut cur_y = badge_y + 44.0;
+                // Título multilínea
+                let mut cur_y = title_y;
                 for line in &title_lines {
                     texts.push(CanvasText::new(
-                        pad,
+                        pad + inner_pad,
                         cur_y,
                         theme::FONT_TITLE,
                         p.base_content,
@@ -890,12 +1299,11 @@ pub(crate) fn render_discover_zone(
                     cur_y += 26.0;
                 }
 
-                // Autores
-                cur_y += 6.0;
-                let authors_lines = wrap_text_chars(&entry.authors.join(", "), max_chars + 10);
+                // Autores multilínea
+                cur_y = authors_y;
                 for line in &authors_lines {
                     texts.push(CanvasText::new(
-                        pad,
+                        pad + inner_pad,
                         cur_y,
                         theme::FONT_BODY,
                         p.neutral_content,
@@ -906,8 +1314,16 @@ pub(crate) fn render_discover_zone(
                     cur_y += 22.0;
                 }
 
-                // Metadatos adicionales (fechas, ID, DOI)
-                cur_y += 10.0;
+                // Hairline divisoria
+                rects.push(CanvasRect::sharp(
+                    pad + inner_pad,
+                    divider_y,
+                    pad + card_w - inner_pad,
+                    divider_y + 1.0,
+                    p.base_300,
+                ));
+
+                // Metadatos
                 let pub_date = entry
                     .published
                     .split('T')
@@ -915,12 +1331,12 @@ pub(crate) fn render_discover_zone(
                     .unwrap_or(&entry.published);
                 let up_date = entry.updated.split('T').next().unwrap_or(&entry.updated);
                 let meta_str = format!(
-                    "ID: arXiv:{}  |  Publicado: {}  |  Actualizado: {}",
+                    "ID: arXiv:{}  •  Publicado: {}  •  Actualizado: {}",
                     entry.id, pub_date, up_date
                 );
                 texts.push(CanvasText::new(
-                    pad,
-                    cur_y,
+                    pad + inner_pad,
+                    meta_y,
                     theme::FONT_CAPTION,
                     p.neutral_content,
                     TextAlign::Left,
@@ -929,17 +1345,19 @@ pub(crate) fn render_discover_zone(
                 ));
 
                 // Botón de acción (Descargar / Descargando / Leer) usando el layout unificado
-                let (action_btn_layout, _) = disc_detail_layout(w, entry);
-                let action_btn = (
-                    action_btn_layout.0,
-                    action_btn_layout.1 - band_origin as f32,
-                    action_btn_layout.2,
-                    action_btn_layout.3 - band_origin as f32,
-                );
-
                 let is_downloading =
                     reader.discover.downloading_id.as_deref() == Some(entry.id.as_str());
                 let is_in_library = reader.is_arxiv_in_library(&entry.id);
+
+                draw_card_shadow(
+                    &mut rects,
+                    action_btn.0,
+                    action_btn.1,
+                    action_btn.2,
+                    action_btn.3,
+                    10.0,
+                    p.is_dark,
+                );
                 if is_downloading {
                     let dl_label = if reader.discover.download_bytes > 0 {
                         format!(
@@ -995,23 +1413,60 @@ pub(crate) fn render_discover_zone(
                     );
                 }
 
-                // Resumen / Abstract completo
-                cur_y = action_btn.3 + 20.0;
-                texts.push(CanvasText::new(
+                // Tarjeta 2: Resumen / Abstract
+                let abstract_top = hero_bot + 16.0;
+                let abstract_header_y = abstract_top + 28.0;
+                let abstract_body_y = abstract_header_y + 24.0;
+                let abstract_bot = abstract_body_y + abstract_lines.len() as f32 * 22.0 + 20.0;
+
+                draw_card_shadow(
+                    &mut rects,
                     pad,
-                    cur_y,
-                    theme::FONT_BODY,
+                    abstract_top,
+                    pad + card_w,
+                    abstract_bot,
+                    r,
+                    p.is_dark,
+                );
+                rects.push(CanvasRect::rounded(
+                    pad,
+                    abstract_top,
+                    pad + card_w,
+                    abstract_bot,
+                    r,
+                    p.base_300,
+                ));
+                rects.push(CanvasRect::rounded(
+                    pad + 1.0,
+                    abstract_top + 1.0,
+                    pad + card_w - 1.0,
+                    abstract_bot - 1.0,
+                    r - 1.0,
+                    p.base_100,
+                ));
+
+                texts.push(CanvasText::new(
+                    pad + inner_pad,
+                    abstract_header_y,
+                    theme::FONT_TITLE,
                     p.base_content,
                     TextAlign::Left,
                     true,
-                    "Resumen (Abstract):",
+                    "Resumen (Abstract)",
                 ));
 
-                cur_y += 22.0;
-                let abstract_lines = wrap_text_chars(&entry.summary, max_chars + 12);
+                rects.push(CanvasRect::sharp(
+                    pad + inner_pad,
+                    abstract_header_y + 10.0,
+                    pad + card_w - inner_pad,
+                    abstract_header_y + 11.0,
+                    p.base_300,
+                ));
+
+                cur_y = abstract_body_y;
                 for line in &abstract_lines {
                     texts.push(CanvasText::new(
-                        pad,
+                        pad + inner_pad,
                         cur_y,
                         theme::FONT_BODY,
                         p.base_content,
@@ -1019,17 +1474,17 @@ pub(crate) fn render_discover_zone(
                         false,
                         line,
                     ));
-                    cur_y += 20.0;
+                    cur_y += 22.0;
                 }
 
                 // Atribución requerida por arXiv
-                cur_y += 30.0;
+                let attr_y = abstract_bot + 36.0;
                 texts.push(CanvasText::new(
-                    pad,
-                    cur_y,
+                    w as f32 / 2.0,
+                    attr_y,
                     theme::FONT_CAPTION,
                     p.neutral_content,
-                    TextAlign::Left,
+                    TextAlign::Center,
                     false,
                     ARXIV_ATTRIBUTION,
                 ));
