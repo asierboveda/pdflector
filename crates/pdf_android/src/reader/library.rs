@@ -385,7 +385,14 @@ impl Reader {
     /// clave del registro de progreso (`library.json`), de `recents.json` y
     /// de `state.json`. Debe coincidir con la que usa `open_library_entry`.
     pub(crate) fn entry_path(&self, e: &LibraryEntry) -> String {
+        if Path::new(&e.uri).is_file() {
+            return e.uri.clone();
+        }
         let dir = self.internal_dir.as_deref().unwrap_or(Path::new(""));
+        let direct = dir.join("pdfs").join(&e.name);
+        if direct.is_file() {
+            return direct.display().to_string();
+        }
         dir.join("pdfs")
             .join(sanitize_pdf_name(&e.name))
             .display()

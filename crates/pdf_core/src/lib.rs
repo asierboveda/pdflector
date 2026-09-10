@@ -31,7 +31,7 @@ pub use annotations::{
 };
 pub use arxiv::{
     ArxivError, ArxivId, ArxivQuery, arxiv_filename, matches_arxiv_id, parse_arxiv_id,
-    resolve_unique_filename, sanitize_paper_title,
+    resolve_unique_filename, sanitize_paper_title, titled_filename,
 };
 pub use cache::{CacheStats, PageKey, RenderCache, RenderedPage, scale_for_level};
 pub use dark::invert_bitmap;

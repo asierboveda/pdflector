@@ -650,7 +650,7 @@ pub fn sanitize_paper_title(raw: &str) -> String {
 ///
 /// La longitud total está acotada a 80 caracteres (igual que `sanitize_pdf_name`),
 /// recortando el título para garantizar que ` [{id}].pdf` siempre permanezca intacto.
-pub fn arxiv_filename(title: Option<&str>, id: &str) -> String {
+pub fn titled_filename(title: Option<&str>, id: &str) -> String {
     let canonical_id = match parse_arxiv_id(id) {
         Ok((base, _)) => base,
         Err(_) => id.trim().to_string(),
@@ -679,6 +679,11 @@ pub fn arxiv_filename(title: Option<&str>, id: &str) -> String {
     } else {
         format!("{clean_title}{suffix}")
     }
+}
+
+/// Alias de `titled_filename` para compatibilidad.
+pub fn arxiv_filename(title: Option<&str>, id: &str) -> String {
+    titled_filename(title, id)
 }
 
 /// Resuelve unicidad de nombre de fichero para evitar sobreescrituras:

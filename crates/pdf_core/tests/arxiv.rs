@@ -10,7 +10,7 @@ use std::thread;
 use pdf_core::arxiv::{
     ARXIV_USER_AGENT, ArxivClient, ArxivEntry, ArxivError, ArxivId, ArxivQuery, DownloadOutcome,
     arxiv_filename, matches_arxiv_id, parse_arxiv_id, parse_atom_body, parse_atom_for_test,
-    resolve_unique_filename, sanitize_paper_title,
+    resolve_unique_filename, sanitize_paper_title, titled_filename,
 };
 
 const ARXIV_ATOM_FIXTURE_WITH_ENTITIES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -572,12 +572,15 @@ fn sanitize_paper_title_cleans_and_collapses() {
 
 #[test]
 fn arxiv_filename_format_and_fallback() {
-    // Standard with title and modern ID
+    // Standard with title and modern ID (both titled_filename and arxiv_filename)
+    assert_eq!(
+        titled_filename(Some("Attention Is All You Need"), "1706.03762"),
+        "Attention Is All You Need [1706.03762].pdf"
+    );
     assert_eq!(
         arxiv_filename(Some("Attention Is All You Need"), "1706.03762"),
         "Attention Is All You Need [1706.03762].pdf"
     );
-    // Classic ID with slash replaced
     assert_eq!(
         arxiv_filename(Some("String Theory"), "hep-th/9901001"),
         "String Theory [hep-th_9901001].pdf"

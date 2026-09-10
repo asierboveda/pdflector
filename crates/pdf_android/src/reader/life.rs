@@ -210,7 +210,11 @@ impl Reader {
                     reader.refresh_curated_library_data();
                     let mut found_path = None;
                     if let Some(entry) = reader.find_arxiv_in_library(&id) {
-                        found_path = Some(reader.entry_path(&entry));
+                        found_path = Some(if Path::new(&entry.uri).is_file() {
+                            entry.uri.clone()
+                        } else {
+                            reader.entry_path(&entry)
+                        });
                     } else if let Some(dir) = &reader.internal_dir {
                         let pdfs_dir = dir.join("pdfs");
                         if let Ok(entries) = std::fs::read_dir(&pdfs_dir) {

@@ -715,7 +715,7 @@ pub(crate) fn sanitize_pdf_name(raw: &str) -> String {
     let s: String = raw
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ' | '[' | ']') {
                 c
             } else {
                 '_'
@@ -1629,6 +1629,18 @@ mod tests {
         assert_eq!(
             percent_decode("pdflector%3A%2F%2Farxiv%2F2401.12345"),
             "pdflector://arxiv/2401.12345"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_pdf_name_preserves_brackets() {
+        assert_eq!(
+            sanitize_pdf_name("BERT [1810.04805].pdf"),
+            "BERT [1810.04805].pdf"
+        );
+        assert_eq!(
+            sanitize_pdf_name("Paper: A Survey [2401.12345] (2).pdf"),
+            "Paper_ A Survey [2401.12345] _2_.pdf"
         );
     }
 

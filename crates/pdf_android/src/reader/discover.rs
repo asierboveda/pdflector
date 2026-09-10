@@ -54,11 +54,39 @@ impl Reader {
 
     /// ¿Está el paper de arXiv indicado ya presente en la biblioteca?
     pub(crate) fn is_arxiv_in_library(&self, arxiv_id: &str) -> bool {
-        find_arxiv_in_library(&self.library_list, arxiv_id).is_some()
+        self.find_arxiv_in_library(arxiv_id).is_some()
     }
 
     /// Busca la entrada correspondiente a un paper de arXiv en la biblioteca.
+    /// Primero comprueba contra `papers.json` por `arxiv_id` y verifica que el fichero exista en disco.
+    /// Si no, busca en `library_list` comparando el nombre real en disco con `matches_arxiv_id`.
     pub(crate) fn find_arxiv_in_library(&self, arxiv_id: &str) -> Option<LibraryEntry> {
+        let (canonical, _) = pdf_core::parse_arxiv_id(arxiv_id)
+            .unwrap_or_else(|_| (arxiv_id.trim().to_string(), None));
+
+        // 1. Coincidencia por arxiv_id en papers.json con fichero existente en disco
+        let papers = persist::load_papers(self.internal_dir.as_deref());
+        for p in papers {
+            let (p_id, _) = pdf_core::parse_arxiv_id(&p.arxiv_id)
+                .unwrap_or_else(|_| (p.arxiv_id.trim().to_string(), None));
+            if p_id == canonical && Path::new(&p.path).is_file() {
+                if let Some(entry) = self.library_list.iter().find(|b| b.uri == p.path) {
+                    return Some(entry.clone());
+                }
+                let name = Path::new(&p.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                return Some(LibraryEntry {
+                    name,
+                    folder: "PDF".to_string(),
+                    uri: p.path,
+                    size: 0,
+                });
+            }
+        }
+
+        // 2. Coincidencia por nombre real en disco en library_list
         find_arxiv_in_library(&self.library_list, arxiv_id).cloned()
     }
 

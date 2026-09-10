@@ -19,7 +19,7 @@ use std::thread::{JoinHandle, spawn};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pdf_core::arxiv::{
-    ArxivClient, ArxivEntry, ArxivQuery, arxiv_filename, parse_arxiv_id, resolve_unique_filename,
+    ArxivClient, ArxivEntry, ArxivQuery, parse_arxiv_id, resolve_unique_filename, titled_filename,
 };
 
 /// Límite máximo de la caché en disco de feeds (4 MiB).
@@ -555,7 +555,7 @@ impl DiscoverWorker {
 
                         // Esquema {titulo-sanitizado} [{id}].pdf con fallback arxiv_{id}.pdf y no-pisado (2)
                         let title_opt = entry.as_ref().map(|e| e.title.as_str());
-                        let base_filename = arxiv_filename(title_opt, &canonical_id);
+                        let base_filename = titled_filename(title_opt, &canonical_id);
                         let safe_filename = resolve_unique_filename(&base_filename, |name| {
                             pdfs_dir.join(name).exists()
                         });
