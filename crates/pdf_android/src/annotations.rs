@@ -226,6 +226,8 @@ impl ToolGesture {
     /// Presión de la última muestra (grosor del próximo tramo): 0.5 si el
     /// gesto no la reportó (vec vacío — nunca en el boli, pero el Highlight
     /// comparte el tipo).
+    /// Retenido para futuro soporte de ancho variable por vértice en el motor.
+    #[allow(dead_code)]
     pub(crate) fn last_pressure(&self) -> f32 {
         self.pressures.last().copied().unwrap_or(0.5)
     }

@@ -34,6 +34,8 @@ impl Reader {
             return;
         }
         self.page = page;
+        // La visible no se expulsa (ni su propio lote ni el trim la echan).
+        self.cache.set_protected(page);
         // Dirección de viaje (fase B): signo del delta. next/prev/jump y los
         // taps delegan todos aquí, así que el signo se calcula UNA vez en el
         // punto común (el delta i64 evita el overflow de u32 sin signo).
@@ -69,6 +71,11 @@ impl Reader {
                 .filter(|&p| self.cache.peek(p).is_none())
                 .collect::<Vec<u32>>();
             self.launch_render(pages, self.rendered_zoom, false);
+        } else {
+            // Destino en caché: el fallback de otro turno ya no sirve (peek de
+            // la actual gana siempre). Limpiarlo evita que un rebake futuro
+            // muestre la página vieja con el badge nuevo.
+            self.fallback_page = None;
         }
         // A1: la persistencia pasa a DIFERIDA (flush a los 2 s desde `tick`
         // o explícito en enter_library/open_pdf_at/Pause) — quita el I/O
@@ -296,6 +303,7 @@ impl Reader {
                 };
                 self.doc = Some(doc);
                 self.page = page;
+                self.cache.set_protected(page);
                 // Apertura/restore: NO es un turno de navegación — sin
                 // dirección de viaje previa → ventana ±1 simétrica (fase B).
                 self.last_direction = 0;

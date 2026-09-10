@@ -361,6 +361,18 @@ use crate::reader::Reader;
 /// Radio (px) de movimiento máximo entre Down y Up para considerar el gesto un
 /// "tap" (no un swipe). ~20 px a 320 dpi (ViewConfiguration touch slop ≈ 8 dp).
 pub(crate) const TAP_SLOP: f32 = 24.0;
+/// Discriminación de gestos de dos dedos (pan vs pinch zoom):
+/// Desplazamiento mínimo acumulado del centro (px) para confirmar traslación pura (pan).
+pub(crate) const TWO_FINGER_PAN_MIN_DISP_PX: f32 = 4.0;
+/// Variación relativa de distancia entre dedos (|d − start_dist| / start_dist)
+/// necesaria para confirmar zoom desde el estado Undecided (3.5%).
+pub(crate) const TWO_FINGER_ZOOM_REL_THRESHOLD: f32 = 0.035;
+/// Cota mínima absoluta en px para confirmar zoom si los dedos están muy juntos.
+pub(crate) const TWO_FINGER_ZOOM_MIN_PX: f32 = 6.0;
+/// Variación relativa mínima para transición de Pan a Zoom (6.0%).
+pub(crate) const TWO_FINGER_PAN_TO_ZOOM_REL: f32 = 0.06;
+/// Cota mínima en px para transición de Pan a Zoom tras frenar la traslación.
+pub(crate) const TWO_FINGER_PAN_TO_ZOOM_MIN_PX: f32 = 12.0;
 /// Umbral de movimiento (px) tras el long-press para EXTENDER el rect de
 /// selección: el ancla es el punto del dedo al superar `LONG_PRESS_MS` y el
 /// rect (un punto) solo empieza a seguir al dedo si se mueve más de esto

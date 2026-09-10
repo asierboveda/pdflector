@@ -236,6 +236,7 @@ impl Reader {
                         if Path::new(&state.path).exists() && reader.open_pdf(&state.path) {
                             let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
                             reader.page = state.page.min(pages.saturating_sub(1));
+                            reader.cache.set_protected(reader.page);
                             reader.zoom = state.zoom.clamp(PINCH_MIN, PINCH_MAX);
                             reader.rendered_zoom = reader.zoom;
                             // Modo UNA HOJA: la página restaurada se fija

@@ -165,6 +165,12 @@ pub(crate) struct PageCache {
     /// insertó algo en este tick (evicción diferida — ver `insert_count` y
     /// `reader/tick.rs`).
     insert_seq: u64,
+    /// Página PROTEGIDA de evicción (la visible): `evict_lru` la salta.
+    /// `peek` no promueve recencia, así que sin pin la visible es expulsable
+    /// por su propio lote de prefetch o por el trim (turno 3→2 mostraba otra
+    /// página con el badge correcto). La fija el lector en cada cambio de
+    /// página (`set_protected`).
+    protected: Option<u32>,
 }
 
 impl PageCache {
@@ -176,6 +182,7 @@ impl PageCache {
             byte_budget,
             max_entries,
             insert_seq: 0,
+            protected: None,
         }
     }
 
@@ -215,10 +222,14 @@ impl PageCache {
             }
         }
         while self.map.len() >= self.max_entries && !self.lru.is_empty() {
-            self.evict_lru();
+            if !self.evict_lru() {
+                break; // solo queda la visible: entra igual (best-effort)
+            }
         }
         while self.bytes + incoming > self.byte_budget + EVICT_SLACK && !self.lru.is_empty() {
-            self.evict_lru();
+            if !self.evict_lru() {
+                break;
+            }
         }
         self.bytes += incoming;
         self.map.insert(page, cached);
@@ -245,7 +256,9 @@ impl PageCache {
         while (self.map.len() > self.max_entries || self.bytes > self.byte_budget)
             && !self.lru.is_empty()
         {
-            self.evict_lru();
+            if !self.evict_lru() {
+                break; // solo queda la visible
+            }
         }
     }
 
@@ -268,6 +281,11 @@ impl PageCache {
         self.insert_seq
     }
 
+    /// Fija la página protegida de evicción (la visible). Ver `protected`.
+    pub(crate) fn set_protected(&mut self, page: u32) {
+        self.protected = Some(page);
+    }
+
     #[allow(dead_code)]
     fn promote(&mut self, page: u32) {
         if let Some(pos) = self.lru.iter().position(|&p| p == page) {
@@ -276,17 +294,32 @@ impl PageCache {
         }
     }
 
-    fn evict_lru(&mut self) {
-        if let Some(victim) = self.lru.pop_front()
-            && let Some(cached) = self.map.remove(&victim)
-        {
-            self.bytes -= bitmap_bytes(&cached);
-            // Señal de residency (fix p95 — ver cabecera): con la evicción
-            // DIFERIDA este log debe caer en ticks idle POSTERIORES al
-            // present del turno (el que hace `trim_to_budget`); si reaparece
-            // dentro del frame de un turno (entre el tap y el `page_turn`),
-            // la deferencia se rompió (¿lote mayor que budget + slack?).
-            log::info!("pagecache evict page={victim} total={}", self.bytes);
+    /// Expulsa UNA entrada del frente LRU. La PROTEGIDA nunca sale: rota al
+    /// fondo y se prueba la siguiente. Devuelve `false` si no hay nada
+    /// expulsable (cola vacía o solo la visible): los llamadores cortan el
+    /// bucle para no girar en vacío (un bitmap ≪ presupuesto, siempre cabe).
+    fn evict_lru(&mut self) -> bool {
+        let n = self.lru.len();
+        for _ in 0..n {
+            let Some(victim) = self.lru.pop_front() else {
+                return false;
+            };
+            if Some(victim) == self.protected {
+                self.lru.push_back(victim);
+                continue;
+            }
+            if let Some(cached) = self.map.remove(&victim) {
+                self.bytes -= bitmap_bytes(&cached);
+                // Señal de residency (fix p95 — ver cabecera): con la evicción
+                // DIFERIDA este log debe caer en ticks idle POSTERIORES al
+                // present del turno (el que hace `trim_to_budget`); si reaparece
+                // dentro del frame de un turno (entre el tap y el `page_turn`),
+                // la deferencia se rompió (¿lote mayor que budget + slack?).
+                log::info!("pagecache evict page={victim} total={}", self.bytes);
+                return true;
+            }
+            // Clave colgada (sin bitmap): se descarta sin reencolar.
         }
+        false
     }
 }

@@ -27,6 +27,18 @@ impl Reader {
         self.mark_repaint();
     }
 
+    /// Pan RELATIVO por gesto de dos dedos (traslación pura dentro del
+    /// pinch): suma el delta al pan actual y lo clampa a los bordes de la
+    /// hoja (igual que el anclaje; sin clamp el contenido dejaría huecos).
+    pub(crate) fn pan_by(&mut self, dx: f32, dy: f32) {
+        let (dw, dh) = self.page_doc_size_px(self.page);
+        if dw > 0.0 && dh > 0.0 {
+            self.pan_x = Self::clamp_pan(self.pan_x + dx, dw * self.zoom, self.win_w as f32, false);
+            self.pan_y = Self::clamp_pan(self.pan_y + dy, dh * self.zoom, self.win_h as f32, true);
+            self.mark_repaint();
+        }
+    }
+
     /// ¿Debe ignorarse el táctil del dedo/palma por haber escrito hace poco con el stylus?
     pub(crate) fn should_ignore_touch(&self) -> bool {
         if let Some(t) = self.last_stylus_time {
@@ -135,10 +147,42 @@ impl Reader {
                     (last.1 + confirmed_pt.1) / 2.0,
                 );
                 let prev_mid = g.prev_mid;
+                let a = prev_mid.unwrap_or(last);
+
+                // Subdivisión adaptativa:
+                // steps = clamp(ceil(L_px / 4.0 * (1 - cos(theta))), 3, 14)
+                // donde theta es la deflexión angular entre el vector previo (a -> last)
+                // y el actual (last -> confirmed_pt) y L_px la longitud en píxeles de pantalla.
+                let scale = self
+                    .doc
+                    .as_ref()
+                    .and_then(|d| d.page_size(self.page).ok())
+                    .map(|(pw, ph)| initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom)
+                    .unwrap_or(1.0);
+
+                let v1 = (last.0 - a.0, last.1 - a.1);
+                let v2 = (confirmed_pt.0 - last.0, confirmed_pt.1 - last.1);
+                let l_pt = (v2.0 * v2.0 + v2.1 * v2.1).sqrt();
+                let l_px = l_pt * scale;
+
+                let steps = if prev_mid.is_none() {
+                    // Tramo inicial (recto): 3 pasos bastan para interpolar
+                    3usize
+                } else {
+                    let len1 = (v1.0 * v1.0 + v1.1 * v1.1).sqrt();
+                    let len2 = l_pt;
+                    let one_minus_cos = if len1 > 1e-4 && len2 > 1e-4 {
+                        let cos_th = ((v1.0 * v2.0 + v1.1 * v2.1) / (len1 * len2)).clamp(-1.0, 1.0);
+                        1.0 - cos_th
+                    } else {
+                        0.0
+                    };
+                    let raw_steps = ((l_px / 4.0) * one_minus_cos).ceil() as usize;
+                    raw_steps.clamp(3, 14)
+                };
+
                 // Muestrear en página la MISMA curva midpoint que dibuja el
                 // present (una sola fuente de verdad para la polilínea).
-                let a = prev_mid.unwrap_or(last);
-                let steps = 6usize;
                 for i in 1..=steps {
                     let t = i as f32 / steps as f32;
                     let om = 1.0 - t;
@@ -218,22 +262,70 @@ impl Reader {
         match g.tool {
             ToolKind::Ink => {
                 // REMATE M_last→P_up: asienta la masa virtual con StrokeEndPredictor
-                // y tapering suave de presión sin "cero-pop".
+                // y pasa los sub-pasos de settle() por la máquina midpoint.
                 let end_res = g.modeler.end_stroke();
                 let end_pt = end_res.confirmed_pt;
-                if let Some(m_last) = g.prev_mid.or_else(|| g.ink_pts.last().copied())
-                    && m_last != end_pt
-                {
-                    g.ink_pts.push(end_pt);
+                let p_last = g.last_pressure();
+                let (samples, count) = crate::ink::stroke_end::StrokeEndPredictor::settle(
+                    &mut g.modeler.spring_mass,
+                    end_pt,
+                    p_last,
+                );
+                if count > 0 {
+                    for s in &samples[..count] {
+                        let pt = s.pt;
+                        let Some(&last) = g.points.last() else {
+                            break;
+                        };
+                        let n0 = g.points.len();
+                        g.push_with_pressure(pt, 0.0, s.pressure);
+                        if g.points.len() == n0 {
+                            continue;
+                        }
+                        let mid = ((last.0 + pt.0) / 2.0, (last.1 + pt.1) / 2.0);
+                        let prev_mid = g.prev_mid;
+                        let a = prev_mid.unwrap_or(last);
+                        let steps = 3usize;
+                        for i in 1..=steps {
+                            let t = i as f32 / steps as f32;
+                            let om = 1.0 - t;
+                            let q = if prev_mid.is_some() {
+                                (
+                                    om * om * a.0 + 2.0 * om * t * last.0 + t * t * mid.0,
+                                    om * om * a.1 + 2.0 * om * t * last.1 + t * t * mid.1,
+                                )
+                            } else {
+                                (a.0 + t * (mid.0 - a.0), a.1 + t * (mid.1 - a.1))
+                            };
+                            g.ink_pts.push(q);
+                        }
+                        g.prev_mid = Some(mid);
+                    }
+                } else {
+                    // Fallback si count == 0: interpola Bézier manual de 3 pasos hasta end_pt
+                    if let Some(m_last) = g.prev_mid.or_else(|| g.ink_pts.last().copied())
+                        && m_last != end_pt
+                    {
+                        let ctrl = g.points.last().copied().unwrap_or(m_last);
+                        let steps = 3usize;
+                        for i in 1..=steps {
+                            let t = i as f32 / steps as f32;
+                            let om = 1.0 - t;
+                            let q = (
+                                om * om * m_last.0 + 2.0 * om * t * ctrl.0 + t * t * end_pt.0,
+                                om * om * m_last.1 + 2.0 * om * t * ctrl.1 + t * t * end_pt.1,
+                            );
+                            g.ink_pts.push(q);
+                        }
+                    }
                 }
                 // CERO POP: lo estampado en vivo ES el trazo final. Se
                 // persiste la polilínea MUESTREADA de la curva midpoint
                 // (`ink_pts`) simplificada con Douglas-Peucker fino
-                // (ε 0.35 pt ≈ 0.7 px a 2 px/pt: replay < 1 px del vivo —
-                // invisible). Sin Catmull-Rom ni re-rasterizado: la tinta del
-                // frame no se toca.
+                // (ε 0.20 pt ≈ 0.4 px a 2 px/pt). Sin Catmull-Rom ni re-rasterizado:
+                // la tinta del frame no se toca.
                 let sampled = if g.ink_pts.len() >= 40 {
-                    pdf_core::simplify_polyline(&g.ink_pts, 0.35)
+                    pdf_core::simplify_polyline(&g.ink_pts, 0.20)
                 } else {
                     g.ink_pts.clone()
                 };
@@ -351,6 +443,7 @@ impl Reader {
         self.erase_pt = Some((sx, sy));
         self.erase_r_px = self.eraser_radius_px();
         self.eraser_cursor = None;
+        self.mark_repaint();
         true
     }
 
@@ -378,12 +471,13 @@ impl Reader {
         self.last_stylus_time = Some(std::time::Instant::now());
         // Cursor de la goma sigue al boli (el radio se calculó al empezar).
         self.erase_pt = Some((sx, sy));
-        // Snapshot SOLO de IDS (sin clonar el `Annotation` completo): cada
-        // id se resuelve contra el estado VIGENTE dentro del bucle (el set
-        // puede mutar en iteraciones anteriores). Con history a 240 Hz (hasta
-        // 16 muestras/evento) esto elimina el coste dominante del borrado:
-        // antes se clonaba el set entero POR MUESTRA; ahora solo un Vec de
-        // u64 por llamada.
+
+        let pr = self.erase_last.unwrap_or(pt);
+        let min_sweep_x = pt.0.min(pr.0);
+        let max_sweep_x = pt.0.max(pr.0);
+        let min_sweep_y = pt.1.min(pr.1);
+        let max_sweep_y = pt.1.max(pr.1);
+
         let snapshot: Vec<u64> = self
             .annotations
             .for_page(self.page as usize)
@@ -392,12 +486,6 @@ impl Reader {
             .collect();
         let mut changed = false;
         for id in snapshot {
-            // El kind se lee POR REFERENCIA en cada iteración (el set puede
-            // haber mutado en las anteriores): CERO clones por muestra —
-            // split_stroke trabaja sobre &Stroke y el hit-test de Highlight
-            // sobre &Highlight, y solo remove/add tocan el set. Con 276
-            // trazos y el boli tocando 0-2 por muestra, este bucle es memcpy
-            // de ids + hit-tests, nada más.
             let Some(ann) = self
                 .annotations
                 .for_page(self.page as usize)
@@ -408,6 +496,27 @@ impl Reader {
             };
             match &ann.kind {
                 pdf_core::Annotation::Stroke(s) => {
+                    let r = ERASE_HIT_RADIUS_PT + s.width / 2.0;
+                    let min_x = min_sweep_x - r;
+                    let max_x = max_sweep_x + r;
+                    let min_y = min_sweep_y - r;
+                    let max_y = max_sweep_y + r;
+
+                    // Poda AABB: si la caja englobante del trazo no solapa el barrido, saltar
+                    let mut s_min_x = f32::INFINITY;
+                    let mut s_max_x = f32::NEG_INFINITY;
+                    let mut s_min_y = f32::INFINITY;
+                    let mut s_max_y = f32::NEG_INFINITY;
+                    for &(x, y) in &s.points {
+                        s_min_x = s_min_x.min(x);
+                        s_max_x = s_max_x.max(x);
+                        s_min_y = s_min_y.min(y);
+                        s_max_y = s_max_y.max(y);
+                    }
+                    if s_min_x > max_x || s_max_x < min_x || s_min_y > max_y || s_max_y < min_y {
+                        continue;
+                    }
+
                     // GOMA REAL sobre trazo: se recorta (parte la línea en
                     // trozos), no se elimina entera.
                     if let Some(parts) = pdf_core::annotations::split_stroke(
@@ -432,6 +541,22 @@ impl Reader {
                     }
                 }
                 pdf_core::Annotation::Highlight(h) => {
+                    let min_x = min_sweep_x - ERASE_HL_PAD_PT;
+                    let max_x = max_sweep_x + ERASE_HL_PAD_PT;
+                    let min_y = min_sweep_y - ERASE_HL_PAD_PT;
+                    let max_y = max_sweep_y + ERASE_HL_PAD_PT;
+
+                    let overlaps = h.rects.iter().any(|r| {
+                        let r_min_x = r.x.min(r.x + r.w);
+                        let r_max_x = r.x.max(r.x + r.w);
+                        let r_min_y = r.y.min(r.y + r.h);
+                        let r_max_y = r.y.max(r.y + r.h);
+                        !(r_min_x > max_x || r_max_x < min_x || r_min_y > max_y || r_max_y < min_y)
+                    });
+                    if !overlaps {
+                        continue;
+                    }
+
                     // Borrado completo de subrayado: tocar cualquier parte
                     // (o cruzarla con el barrido) elimina la anotación entera.
                     let hit = h.rects.iter().any(|r| {
@@ -468,8 +593,11 @@ impl Reader {
         self.erase_last = Some(pt);
         if changed {
             self.erase_dirty = true;
-            self.mark_repaint();
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.invalidate_dry();
+            }
         }
+        self.mark_repaint();
     }
 
     /// Fin del borrado (Up o Cancel del sistema): persiste UNA sola vez si
@@ -482,5 +610,6 @@ impl Reader {
             self.erase_dirty = false;
             self.save_annotations();
         }
+        self.mark_repaint();
     }
 }

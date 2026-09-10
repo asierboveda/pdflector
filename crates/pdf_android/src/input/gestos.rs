@@ -26,6 +26,18 @@ use std::time::Instant;
 /// mientras el dedo esté abajo).
 pub(crate) const LONG_PRESS_MS: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Modo del gesto de dos dedos (discriminación robusta pan vs pinch).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TwoFingerMode {
+    /// Fase indecisa (< 4-6 px de movimiento): filtra ruido inicial antes de
+    /// clasificar como traslación pura o zoom.
+    Undecided,
+    /// Traslación pura con dos dedos (zoom congelado, pan 1:1 vía `pan_by`).
+    Pan,
+    /// Pinch zoom activo (zoom continuo 1:1 vía `set_zoom_fast`, sin escalones).
+    Zoom,
+}
+
 /// Gesto multitáctil en curso (máquina de gestos).
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum GestureKind {
@@ -47,14 +59,24 @@ pub(crate) enum GestureKind {
     Pull {
         start_y: f32,
     },
-    /// Dos dedos: pinch zoom. `start_dist` es la distancia entre dedos al
-    /// iniciar el gesto y `start_zoom` el zoom de partida; el zoom resultante
-    /// es `start_zoom * dist / start_dist` (factor RELATIVO, no incremental
-    /// por evento). El anclaje (punto de pantalla fijo bajo los dedos) se
-    /// registra en `Reader::begin_pinch` con el centro del pinch.
+    /// Dos dedos: traslación (pan) o zoom (pinch). `start_dist` es la
+    /// distancia de referencia y `start_zoom` el zoom de partida.
+    /// Incorpora discriminación robusta por coherencia direccional,
+    /// umbral relativo (%) e histéresis de modo (`TwoFingerMode`) para
+    /// evitar zoom parásito durante traslaciones con dos dedos.
     Pinch {
         start_dist: f32,
         start_zoom: f32,
+        /// Centro del pinch al inicio del gesto (para desplazamiento acumulado).
+        start_mid: (f32, f32),
+        /// Centro del pinch del Move anterior (traslación: `pan += mid − prev_mid`).
+        prev_mid: (f32, f32),
+        /// Posición del puntero 0 en el Move anterior.
+        prev_a: (f32, f32),
+        /// Posición del puntero 1 en el Move anterior.
+        prev_b: (f32, f32),
+        /// Modo actual del gesto de dos dedos (Undecided, Pan o Zoom).
+        mode: TwoFingerMode,
     },
     /// Long-press + arrastre (selección de texto): el ancla es el punto del
     /// dedo al superar `LONG_PRESS_MS` (`tick_gestures` materializa el rect

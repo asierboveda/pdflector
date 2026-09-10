@@ -77,7 +77,7 @@ impl Reader {
     /// - Si `page < win` (página más pequeña; solo posible con zoom < 1):
     ///   centrada en X (el centrado ya lo hace `centered_base` → pan 0) y
     ///   arriba en Y (pan 0).
-    fn clamp_pan(pan: f32, page: f32, win: f32, align_top: bool) -> f32 {
+    pub(crate) fn clamp_pan(pan: f32, page: f32, win: f32, align_top: bool) -> f32 {
         if page >= win {
             let base = if align_top { 0.0 } else { (win - page) / 2.0 };
             pan.clamp(win - page - base, -base)

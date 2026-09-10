@@ -342,31 +342,69 @@ impl Gpu {
         self.ink_scratch = ribbon;
 
         // Tapas Y JUNTAS REDONDAS: disco (quad + distancia radial en el FS)
-        // en cada punto. Al unirse a la cinta, el trazo queda con extremos y
-        // esquinas redondeados (nada de "cuadrados").
+        // solo donde aporta: primer vértice, último vértice, vértices con giro
+        // brusco (> ~20°) para tapar esquinas rotas, o cuando la distancia acumulada
+        // desde el último disco supera `hw` para evitar huecos en curvas suaves.
         self.ink_scratch.clear();
-        for &(x, y) in &self.pts_scratch {
-            let corners = [
-                (x - hw, y - hw),
-                (x + hw, y - hw),
-                (x + hw, y + hw),
-                (x - hw, y - hw),
-                (x + hw, y + hw),
-                (x - hw, y + hw),
-            ];
-            for &(px, py) in &corners {
-                self.ink_scratch.push(InkVert {
-                    x: px,
-                    y: py,
-                    d: 0.0,
-                    hw,
-                    cx: x,
-                    cy: y,
-                    r: rgba[0],
-                    g: rgba[1],
-                    b: rgba[2],
-                    a: rgba[3],
-                });
+        let n = self.pts_scratch.len();
+        if n > 0 {
+            let cos_thresh = (20.0f32.to_radians()).cos(); // ~0.9397
+            let mut dist_since_last = 0.0f32;
+
+            for idx in 0..n {
+                let emit = if idx == 0 || idx == n - 1 {
+                    true
+                } else {
+                    let (p0x, p0y) = self.pts_scratch[idx - 1];
+                    let (p1x, p1y) = self.pts_scratch[idx];
+                    let (p2x, p2y) = self.pts_scratch[idx + 1];
+
+                    let (v1x, v1y) = (p1x - p0x, p1y - p0y);
+                    let (v2x, v2y) = (p2x - p1x, p2y - p1y);
+                    let len1 = (v1x * v1x + v1y * v1y).sqrt();
+                    let len2 = (v2x * v2x + v2y * v2y).sqrt();
+
+                    let sharp_turn = if len1 > 1e-4 && len2 > 1e-4 {
+                        let cos_angle = ((v1x * v2x + v1y * v2y) / (len1 * len2)).clamp(-1.0, 1.0);
+                        cos_angle < cos_thresh
+                    } else {
+                        false
+                    };
+
+                    sharp_turn || (dist_since_last + len1 >= hw)
+                };
+
+                if emit {
+                    let (x, y) = self.pts_scratch[idx];
+                    let corners = [
+                        (x - hw, y - hw),
+                        (x + hw, y - hw),
+                        (x + hw, y + hw),
+                        (x - hw, y - hw),
+                        (x + hw, y + hw),
+                        (x - hw, y + hw),
+                    ];
+                    for &(px, py) in &corners {
+                        self.ink_scratch.push(InkVert {
+                            x: px,
+                            y: py,
+                            d: 0.0,
+                            hw,
+                            cx: x,
+                            cy: y,
+                            r: rgba[0],
+                            g: rgba[1],
+                            b: rgba[2],
+                            a: rgba[3],
+                        });
+                    }
+                    dist_since_last = 0.0;
+                } else {
+                    let (p0x, p0y) = self.pts_scratch[idx - 1];
+                    let (p1x, p1y) = self.pts_scratch[idx];
+                    let (dx, dy) = (p1x - p0x, p1y - p0y);
+                    dist_since_last += (dx * dx + dy * dy).sqrt();
+                }
             }
         }
         if !self.ink_scratch.is_empty() {
@@ -688,9 +726,7 @@ impl Gpu {
                         for &(x, y) in &g.ink_pts {
                             self.pts_scratch.push((x * scale + dx, y * scale + dy));
                         }
-                        let w =
-                            crate::prediction::pressure_width(reader.ink_width, g.last_pressure());
-                        let hw = (w * scale / 2.0).max(0.5);
+                        let hw = (reader.ink_width * scale / 2.0).max(0.5);
                         let pts = std::mem::take(&mut self.pts_scratch);
                         self.draw_polyline_gpu(
                             &pts,
@@ -704,14 +740,30 @@ impl Gpu {
                         );
                         self.pts_scratch = pts;
 
-                        // Remate M_last -> posición actual
-                        if let (Some(m_last), Some(&last)) = (g.prev_mid, g.points.last())
-                            && m_last != last
+                        // Cabezal wet curvo: sustituye los 2 segmentos rectos de la punta
+                        // por una cuadrática de 3 pasos M_last -> P_last -> P_pred
+                        // (si no hay predicado Kalman válido, degrada a recta como antes).
+                        let m_last_opt = g.prev_mid.or_else(|| g.ink_pts.last().copied());
+                        let p_last_opt = g.points.last().copied();
+
+                        if let (Some(m_last), Some(p_last), Some((px, py))) =
+                            (m_last_opt, p_last_opt, g.predicted_pt)
                         {
-                            let a = (m_last.0 * scale + dx, m_last.1 * scale + dy);
-                            let b = (last.0 * scale + dx, last.1 * scale + dy);
+                            // Cuadrática de 3 pasos: M_last -> P_last -> P_pred
+                            let m = (m_last.0 * scale + dx, m_last.1 * scale + dy);
+                            let p = (p_last.0 * scale + dx, p_last.1 * scale + dy);
+                            let pred = (px * scale + dx, py * scale + dy);
+                            let mut quad_pts = [m; 4];
+                            for (i, slot) in quad_pts.iter_mut().enumerate().skip(1) {
+                                let t = i as f32 / 3.0;
+                                let om = 1.0 - t;
+                                *slot = (
+                                    om * om * m.0 + 2.0 * om * t * p.0 + t * t * pred.0,
+                                    om * om * m.1 + 2.0 * om * t * p.1 + t * t * pred.1,
+                                );
+                            }
                             self.draw_polyline_gpu(
-                                &[a, b],
+                                &quad_pts,
                                 hw,
                                 [
                                     reader.ink_color.r,
@@ -720,17 +772,13 @@ impl Gpu {
                                     reader.ink_color.a,
                                 ],
                             );
-                        }
-
-                        // Proyección Kalman
-                        if let Some((px, py)) = g.predicted_pt {
-                            let start_pt = g
-                                .prev_mid
-                                .or_else(|| g.points.last().copied())
-                                .unwrap_or(g.anchor);
-                            if start_pt != (px, py) {
-                                let a = (start_pt.0 * scale + dx, start_pt.1 * scale + dy);
-                                let b = (px * scale + dx, py * scale + dy);
+                        } else {
+                            // Fallback: degradación a rectas como antes si no hay Kalman
+                            if let (Some(m_last), Some(&last)) = (g.prev_mid, g.points.last())
+                                && m_last != last
+                            {
+                                let a = (m_last.0 * scale + dx, m_last.1 * scale + dy);
+                                let b = (last.0 * scale + dx, last.1 * scale + dy);
                                 self.draw_polyline_gpu(
                                     &[a, b],
                                     hw,
@@ -741,6 +789,27 @@ impl Gpu {
                                         reader.ink_color.a,
                                     ],
                                 );
+                            }
+
+                            if let Some((px, py)) = g.predicted_pt {
+                                let start_pt = g
+                                    .prev_mid
+                                    .or_else(|| g.points.last().copied())
+                                    .unwrap_or(g.anchor);
+                                if start_pt != (px, py) {
+                                    let a = (start_pt.0 * scale + dx, start_pt.1 * scale + dy);
+                                    let b = (px * scale + dx, py * scale + dy);
+                                    self.draw_polyline_gpu(
+                                        &[a, b],
+                                        hw,
+                                        [
+                                            reader.ink_color.r,
+                                            reader.ink_color.g,
+                                            reader.ink_color.b,
+                                            reader.ink_color.a,
+                                        ],
+                                    );
+                                }
                             }
                         }
                     }

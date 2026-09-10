@@ -10,7 +10,7 @@
 //! (`GestureState`/`GestureKind`) vive en `gestos`; el re-escalado de
 //! timestamps del stylus (`gesture_ms`), en `stylus`.
 
-use super::gestos::{GestureKind, LONG_PRESS_MS, fire_tap_action};
+use super::gestos::{GestureKind, LONG_PRESS_MS, TwoFingerMode, fire_tap_action};
 use super::stylus::gesture_ms;
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
 use crate::draw::{SettingsMenuItem, ViewMenuItem, settings_menu_geometry, view_menu_geometry};
@@ -91,9 +91,15 @@ fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {
     // El long-press muere al pasar al pinch (un dedo solo no entra en
     // selección si un segundo dedo cae durante la espera).
     reader.gesture.press_at = None;
+    let mid = ((ax + bx) / 2.0, (ay + by) / 2.0);
     reader.gesture.kind = GestureKind::Pinch {
         start_dist: d.max(1.0),
         start_zoom: reader.zoom,
+        start_mid: mid,
+        prev_mid: mid,
+        prev_a: (ax, ay),
+        prev_b: (bx, by),
+        mode: TwoFingerMode::Undecided,
     };
 }
 
@@ -320,34 +326,89 @@ pub(crate) fn handle_motion(
                     reader.drag_sheet(cy - start_y);
                 }
                 GestureKind::Pinch {
-                    start_dist,
-                    start_zoom,
+                    mut start_dist,
+                    mut start_zoom,
+                    start_mid,
+                    prev_mid,
+                    prev_a,
+                    prev_b,
+                    mut mode,
                 } if reader.gesture.pointers.len() >= 2 => {
                     let (_, ax, ay) = reader.gesture.pointers[0];
                     let (_, bx, by) = reader.gesture.pointers[1];
                     let d = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
                     if d > 1.0 {
-                        // Re-anclar el pinch al centro ACTUAL de los dedos
-                        // ANTES de aplicar el zoom. BUG arreglado: el ancla
-                        // solo se fijaba al caer el segundo dedo, así que si
-                        // el gesto incluía traslación (el pinch real: un dedo
-                        // quieto y el otro que se mueve, o ambos desplazándose)
-                        // el contenido quedaba anclado al centro INICIAL y se
-                        // DERIVABA bajo los dedos (el punto bajo los dedos no
-                        // se quedaba fijo). `begin_pinch` re-captura z0/pan0
-                        // del estado actual, por lo que el pan es continuo (a
-                        // zoom == z0 el pan no cambia) y el factor de zoom
-                        // sigue siendo RELATIVO a la distancia inicial del
-                        // gesto (`start_dist`/`start_zoom` no se tocan).
-                        reader.begin_pinch((ax + bx) / 2.0, (ay + by) / 2.0);
-                        // Factor RELATIVO a la distancia inicial del gesto
-                        // (no incremental por evento): pinch-out/in sin mover
-                        // los dedos devuelve exactamente el zoom de partida.
-                        let zoom = (start_zoom * d / start_dist).clamp(PINCH_MIN, PINCH_MAX);
-                        // Fast: solo actualiza `zoom` y el pan de anclaje y
-                        // blitea el bitmap cacheado con `blit_fast`; el
-                        // re-render nítido llega al soltar.
-                        reader.set_zoom_fast(zoom);
+                        let mid = ((ax + bx) / 2.0, (ay + by) / 2.0);
+                        let d_mid_x = mid.0 - prev_mid.0;
+                        let d_mid_y = mid.1 - prev_mid.1;
+                        let mid_disp = (d_mid_x.powi(2) + d_mid_y.powi(2)).sqrt();
+
+                        let cum_mid_x = mid.0 - start_mid.0;
+                        let cum_mid_y = mid.1 - start_mid.1;
+                        let cum_mid_disp = (cum_mid_x.powi(2) + cum_mid_y.powi(2)).sqrt();
+
+                        let va_x = ax - prev_a.0;
+                        let va_y = ay - prev_a.1;
+                        let va_len = (va_x.powi(2) + va_y.powi(2)).sqrt();
+
+                        let vb_x = bx - prev_b.0;
+                        let vb_y = by - prev_b.1;
+                        let vb_len = (vb_x.powi(2) + vb_y.powi(2)).sqrt();
+
+                        let dot = va_x * vb_x + va_y * vb_y;
+
+                        let prev_d = ((prev_a.0 - prev_b.0).powi(2)
+                            + (prev_a.1 - prev_b.1).powi(2))
+                        .sqrt()
+                        .max(1.0);
+                        let frame_delta_d = (d - prev_d).abs();
+
+                        let cum_delta_d = (d - start_dist).abs();
+                        let rel_cum_delta = cum_delta_d / start_dist.max(1.0);
+
+                        let kin = TwoFingerKinematics {
+                            dot,
+                            mid_disp,
+                            cum_mid_disp,
+                            cum_delta_d,
+                            rel_cum_delta,
+                            frame_delta_d,
+                            va_len,
+                            vb_len,
+                        };
+                        let new_mode = discriminate_two_finger_mode(mode, &kin);
+
+                        if mode == TwoFingerMode::Pan && new_mode == TwoFingerMode::Zoom {
+                            // Al pasar de Pan a Zoom (usuario frenó la traslación y abrió/cerró dedos),
+                            // re-anclamos la distancia de partida al estado actual para que el zoom
+                            // arranque suavemente desde 1.0x sin salto brusco.
+                            start_dist = d;
+                            start_zoom = reader.zoom;
+                        }
+                        mode = new_mode;
+                        match mode {
+                            TwoFingerMode::Undecided | TwoFingerMode::Pan => {
+                                // Traslación pura con dos dedos (zoom congelado).
+                                reader.pan_by(d_mid_x, d_mid_y);
+                            }
+                            TwoFingerMode::Zoom => {
+                                // Zoom activo y fluido (1:1 relativo a la distancia de partida).
+                                reader.begin_pinch(mid.0, mid.1);
+                                let zoom =
+                                    (start_zoom * d / start_dist).clamp(PINCH_MIN, PINCH_MAX);
+                                reader.set_zoom_fast(zoom);
+                            }
+                        }
+
+                        reader.gesture.kind = GestureKind::Pinch {
+                            start_dist,
+                            start_zoom,
+                            start_mid,
+                            prev_mid: mid,
+                            prev_a: (ax, ay),
+                            prev_b: (bx, by),
+                            mode,
+                        };
                     }
                 }
                 GestureKind::Selecting { anchor } if reader.gesture.pointers.len() == 1 => {
@@ -1204,5 +1265,152 @@ fn handle_picker_motion(
         }
         // PointerUp: se ignora un segundo dedo (el picker no tiene pinch).
         _ => {}
+    }
+}
+
+/// Métricas cinemáticas de dos dedos usadas para clasificar el gesto.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TwoFingerKinematics {
+    pub(crate) dot: f32,
+    pub(crate) mid_disp: f32,
+    pub(crate) cum_mid_disp: f32,
+    pub(crate) cum_delta_d: f32,
+    pub(crate) rel_cum_delta: f32,
+    pub(crate) frame_delta_d: f32,
+    pub(crate) va_len: f32,
+    pub(crate) vb_len: f32,
+}
+
+/// Clasifica y actualiza el modo del gesto de dos dedos (discriminación Pan vs Zoom).
+pub(crate) fn discriminate_two_finger_mode(
+    current_mode: TwoFingerMode,
+    k: &TwoFingerKinematics,
+) -> TwoFingerMode {
+    match current_mode {
+        TwoFingerMode::Undecided => {
+            // Confirmar Pan: coherencia direccional (ambos dedos se desplazan en el
+            // mismo semiespacio dot >= 0 o traslación domina claramente la distancia),
+            // desplazamiento acumulado del centro supera el umbral y cambio relativo bajo.
+            if (k.dot >= 0.0 || k.cum_mid_disp > 2.0 * k.cum_delta_d)
+                && k.cum_mid_disp > crate::TWO_FINGER_PAN_MIN_DISP_PX
+                && k.cum_mid_disp > 1.5 * k.cum_delta_d
+                && k.rel_cum_delta < crate::TWO_FINGER_ZOOM_REL_THRESHOLD
+            {
+                TwoFingerMode::Pan
+            } else if (k.dot < 0.0 && (k.va_len > 2.0 || k.vb_len > 2.0))
+                || (k.cum_delta_d >= crate::TWO_FINGER_ZOOM_MIN_PX
+                    && k.rel_cum_delta >= crate::TWO_FINGER_ZOOM_REL_THRESHOLD)
+                || (k.cum_delta_d >= 1.8 * k.cum_mid_disp && k.cum_delta_d >= 4.0)
+                || ((k.va_len < 1.0 && k.vb_len >= 3.0 || k.vb_len < 1.0 && k.va_len >= 3.0)
+                    && k.frame_delta_d >= 2.5)
+            {
+                TwoFingerMode::Zoom
+            } else {
+                TwoFingerMode::Undecided
+            }
+        }
+        TwoFingerMode::Pan => {
+            // En modo Pan el zoom está 100% congelado (cero zoom parásito por rodadura).
+            // Transición Pan -> Zoom: solo si el usuario detiene la traslación
+            // (mid_disp bajo) y realiza un cambio de distancia deliberado.
+            if k.mid_disp < 4.0
+                && k.frame_delta_d > 2.5
+                && (k.cum_delta_d > crate::TWO_FINGER_PAN_TO_ZOOM_MIN_PX
+                    || k.rel_cum_delta > crate::TWO_FINGER_PAN_TO_ZOOM_REL)
+            {
+                TwoFingerMode::Zoom
+            } else {
+                TwoFingerMode::Pan
+            }
+        }
+        TwoFingerMode::Zoom => {
+            // Ya confirmado en Zoom: se mantiene aquí hasta levantar dedos.
+            TwoFingerMode::Zoom
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pan_discrimination_parallel_drift() {
+        let k = TwoFingerKinematics {
+            dot: 12.0 * 12.2 + 0.5 * 0.4,
+            mid_disp: 12.1,
+            cum_mid_disp: 12.1,
+            cum_delta_d: 0.5,
+            rel_cum_delta: 0.5 / 300.0,
+            frame_delta_d: 0.5,
+            va_len: 12.1,
+            vb_len: 12.2,
+        };
+        let next = discriminate_two_finger_mode(TwoFingerMode::Undecided, &k);
+        assert_eq!(next, TwoFingerMode::Pan);
+    }
+
+    #[test]
+    fn test_pan_mode_freezes_zoom_despite_drift() {
+        let k = TwoFingerKinematics {
+            dot: 15.0 * 15.0,
+            mid_disp: 15.0,
+            cum_mid_disp: 400.0,
+            cum_delta_d: 25.0,
+            rel_cum_delta: 25.0 / 300.0,
+            frame_delta_d: 0.8,
+            va_len: 15.0,
+            vb_len: 15.0,
+        };
+        let next = discriminate_two_finger_mode(TwoFingerMode::Pan, &k);
+        assert_eq!(next, TwoFingerMode::Pan);
+    }
+
+    #[test]
+    fn test_pinch_out_symmetric_triggers_zoom() {
+        let k = TwoFingerKinematics {
+            dot: (-3.0) * 3.0,
+            mid_disp: 0.0,
+            cum_mid_disp: 0.0,
+            cum_delta_d: 6.0,
+            rel_cum_delta: 6.0 / 200.0,
+            frame_delta_d: 6.0,
+            va_len: 3.0,
+            vb_len: 3.0,
+        };
+        let next = discriminate_two_finger_mode(TwoFingerMode::Undecided, &k);
+        assert_eq!(next, TwoFingerMode::Zoom);
+    }
+
+    #[test]
+    fn test_pinch_asymmetric_one_finger_still() {
+        let k = TwoFingerKinematics {
+            dot: 0.0,
+            mid_disp: 2.0,
+            cum_mid_disp: 2.0,
+            cum_delta_d: 4.0,
+            rel_cum_delta: 4.0 / 200.0,
+            frame_delta_d: 4.0,
+            va_len: 0.0,
+            vb_len: 4.0,
+        };
+        let next = discriminate_two_finger_mode(TwoFingerMode::Undecided, &k);
+        assert_eq!(next, TwoFingerMode::Zoom);
+    }
+
+    #[test]
+    fn test_pan_to_zoom_transition_after_stop() {
+        let k = TwoFingerKinematics {
+            dot: (-2.0) * 2.0,
+            mid_disp: 0.5,
+            cum_mid_disp: 300.0,
+            cum_delta_d: 15.0,
+            rel_cum_delta: 15.0 / 200.0,
+            frame_delta_d: 3.5,
+            va_len: 2.0,
+            vb_len: 2.0,
+        };
+        let next = discriminate_two_finger_mode(TwoFingerMode::Pan, &k);
+        assert_eq!(next, TwoFingerMode::Zoom);
     }
 }
