@@ -100,7 +100,7 @@ impl BookProgress {
     }
 
     /// ¿Terminado? Se alcanzó la última página (`page+1 >= page_count`): el
-    /// libro pasa a `Finished` y deja de aparecer en "Continue Reading".
+    /// libro pasa a `Finished`.
     pub(crate) fn is_finished(&self) -> bool {
         self.page_count > 0 && self.page + 1 >= self.page_count
     }
@@ -258,9 +258,6 @@ pub(crate) struct ViewerState {
     /// ¿Ocultar portadas (solo títulos)? (menú Settings "☰").
     #[serde(default)]
     pub(crate) hide_covers: bool,
-    /// ¿Estantería de recientes visible? (menú Settings "☰").
-    #[serde(default = "default_recent_shelf")]
-    pub(crate) recent_shelf_enabled: bool,
     /// Tamaño de portadas (0: Pequeño, 1: Mediano, 2: Grande; menú Settings "☰").
     #[serde(default = "default_cover_size")]
     pub(crate) cover_size: u8,
@@ -272,11 +269,6 @@ pub(crate) struct ViewerState {
 /// Default de `ViewerState::columns` (3, como arranca la app).
 fn default_columns() -> u32 {
     3
-}
-
-/// Default de `ViewerState::recent_shelf_enabled` (true, como arranca).
-fn default_recent_shelf() -> bool {
-    true
 }
 
 /// Default de `ViewerState::cover_size` (1 = Mediano).

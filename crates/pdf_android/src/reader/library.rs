@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Biblioteca, picker y selector de añadir (extraído de `reader.rs`, 2026-09-06): entrada/salida (`enter_library`, `open_picker`, `exit_picker`, `reload_curated_library`, `clear_library`, `rescan`), listas y filtros (`picker_*`, `grid_*`, `entry_*`, `refresh_lib_filtered`, `apply_filter`, `lib_set_*`, `lib_recents`/`lib_folders`/`lib_continue_reading`, scrolls `lib_*_max_*`, `touch_recent`) y el flujo "＋ Añadir" con IME (`add_book`, `rescan_select`, `cancel_add`, `add_selected`, `lib_open_keyboard`/`lib_clear_search`/`lib_close_ime`, `poll_ime_query`).
+//! Biblioteca, picker y selector de añadir (extraído de `reader.rs`, 2026-09-06): entrada/salida (`enter_library`, `open_picker`, `exit_picker`, `reload_curated_library`, `clear_library`, `rescan`), listas y filtros (`picker_*`, `grid_*`, `entry_*`, `refresh_lib_filtered`, `apply_filter`, `lib_set_*`, `lib_folders`, scrolls `lib_*_max_*`, `touch_recent`) y el flujo "＋ Añadir" con IME (`add_book`, `rescan_select`, `cancel_add`, `add_selected`, `lib_open_keyboard`/`lib_clear_search`/`lib_close_ime`, `poll_ime_query`).
 
 use super::BookStatus;
-use super::ContinueBook;
 use super::LibSort;
 use super::LibraryEntry;
 use super::LibraryGroupBy;
@@ -17,10 +16,7 @@ use super::book_status;
 use super::entry_author;
 use super::geometry::grid_cell_h;
 use super::geometry::grid_gap;
-use super::geometry::grid_pad;
 use super::geometry::lib_chips_row_w;
-use super::geometry::lib_cont_card_w;
-use super::geometry::lib_cont_card_x;
 use super::geometry::lib_content_y0;
 use super::geometry::lib_grid_y0;
 use super::geometry::lib_org_row_w;
@@ -33,7 +29,6 @@ use crate::jni::query_media_store;
 use crate::jni::read_content_uri_bytes;
 use crate::jni::sanitize_pdf_name;
 use crate::persist::BookProgress;
-use crate::persist::RecentEntry;
 use crate::persist::{self};
 use android_activity::AndroidApp;
 use log::error;
@@ -74,7 +69,7 @@ impl Reader {
         self.cache.clear();
         // Re-cargar los registros persistidos (recents + progreso): la
         // biblioteca debe reflejar cualquier lectura hecha en otra sesión o
-        // proceso (Continue Reading / barras de progreso / sort-filtros).
+        // proceso (barras de progreso / sort-filtros).
         self.recents = persist::load_recents(self.internal_dir.as_deref());
         self.library.lib_books = persist::load_progress(self.internal_dir.as_deref());
         self.sheet_hide_now(); // fuera del visor: el sheet no pinta en biblioteca
@@ -171,7 +166,6 @@ impl Reader {
         // filtrada recalculada; el sort activo ordena por added/read.
         self.list_scroll = 0;
         self.library.lib_scroll = 0.0;
-        self.library.lib_carousel_x = 0.0;
         self.library.lib_folders_x = 0.0;
         self.library.lib_letters_x = 0.0;
         self.library.lib_sort_x = 0.0;
@@ -569,37 +563,12 @@ impl Reader {
     }
 
     /// Fija el filtro de ESTADO de "My Library" (None = All; chips de
-    /// filter: Reading / Finished / Unread). También decide si "Continue
-    /// Reading" se muestra (solo All/Reading, ver `lib_continue_reading`).
+    /// filter: Reading / Finished / Unread).
     pub(crate) fn lib_set_status(&mut self, status: Option<BookStatus>) {
         if self.library.lib_status != status {
             self.library.lib_status = status;
             self.apply_filter();
         }
-    }
-
-    /// Recientes que pasan el filtro de LETRA (la carpeta no aplica a los
-    /// recientes: son rutas locales, sin RELATIVE_PATH).
-    pub(crate) fn lib_recents(&self) -> Vec<&RecentEntry> {
-        let Some(l) = self.library.lib_letter else {
-            return self.recents.iter().collect();
-        };
-        self.recents
-            .iter()
-            .filter(|r| {
-                let first = r
-                    .name
-                    .chars()
-                    .next()
-                    .map(|c| c.to_ascii_uppercase())
-                    .unwrap_or('#');
-                if l == '#' {
-                    !first.is_ascii_alphabetic()
-                } else {
-                    first == l
-                }
-            })
-            .collect()
     }
 
     /// Carpetas distintas de la biblioteca (orden de MediaStore, dedup
@@ -618,89 +587,16 @@ impl Reader {
         out
     }
 
-    /// Libros de "Continue Reading" (carousel destacado): los RECIENTES
-    /// abiertos no terminados, con su progreso persistido (page, page_count,
-    /// %). Respeta el filtro de letra (búsqueda) y el de estado de forma
-    /// trivial: con All o Reading la sección se muestra (los libros ya son
-    /// Reading por construcción); con Finished/Unread se oculta entera (el
-    /// filtro de estado solo tiene sentido para la rejilla). Orden:
-    /// recencia (recents.json, más reciente primero).
-    pub(crate) fn lib_continue_reading(&self) -> Vec<ContinueBook> {
-        if let Some(s) = self.library.lib_status
-            && s != BookStatus::Reading
-        {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        for r in self.lib_recents() {
-            let Some(p) = persist::progress_for(&self.library.lib_books, &r.path) else {
-                continue; // abierto antes de existir el registro: sin datos
-            };
-            if p.is_finished() {
-                continue;
-            }
-            out.push(ContinueBook {
-                path: r.path.clone(),
-                name: r.name.clone(),
-                author: self.author_for_name(&r.name),
-                page: p.page,
-                page_count: p.page_count,
-                pct: p.pct(),
-            });
-        }
-        out
-    }
-
-    /// ¿Hay libros de "Continue Reading"? (la sección se OCULTA si no).
-    /// Versión BARATA sin construir la lista (la llaman las funciones de
-    /// geometría por celda, p. ej. `lib_grid_cell_rect`): con `any` suele
-    /// parar en el primer reciente (el más reciente es Reading casi siempre),
-    /// sin alocar ni mirar el autor.
-    ///
-    /// Biblioteca MINIMALISTA (estilo Readest): la sección "Continue
-    /// Reading"/Recientes está OCULTA por diseño — la biblioteca es solo
-    /// rejilla + buscador. Devuelve SIEMPRE `false`; el resto del código
-    /// (geometría, tap, drag, pump de portadas) sigue referenciándola, así
-    /// que todo colapsa a alto 0 / sin datos sin tocar nada más.
-    pub(crate) fn lib_has_cont(&self) -> bool {
-        if !self.recent_shelf_enabled {
-            return false;
-        }
-        if let Some(s) = self.library.lib_status
-            && s != BookStatus::Reading
-        {
-            return false;
-        }
-        self.recents.iter().any(|r| {
-            persist::progress_for(&self.library.lib_books, &r.path)
-                .map(|p| !p.is_finished())
-                .unwrap_or(true)
-        })
-    }
-
     /// ¿La biblioteca se muestra en REJILLA (vs lista)?
     pub(crate) fn is_grid(&self) -> bool {
         self.view_mode == LibraryViewMode::Grid
-    }
-
-    /// Autor de un libro por NOMBRE de fichero: busca la entrada de
-    /// MediaStore con el mismo nombre (la copia en `internal/pdfs/` conserva
-    /// el DISPLAY_NAME) y deriva el autor de su carpeta; si no está en
-    /// MediaStore (picker / "abrir con") → "PDF".
-    fn author_for_name(&self, name: &str) -> String {
-        self.library_list
-            .iter()
-            .find(|e| e.name.eq_ignore_ascii_case(name))
-            .map(entry_author)
-            .unwrap_or_else(|| "PDF".to_string())
     }
 
     /// Alto total (px) del contenido scrolleable de la biblioteca.
     pub(crate) fn lib_content_h(&self) -> f32 {
         let win_w = self.win_w;
         let win_h = self.win_h;
-        let has_cont = self.lib_has_cont();
-        let grid_y0 = lib_grid_y0(win_w, win_h, has_cont);
+        let grid_y0 = lib_grid_y0(win_w, win_h);
         let count = self.library.lib_filtered.len();
         if self.is_grid() {
             let cols = self.effective_grid_cols();
@@ -722,17 +618,6 @@ impl Reader {
                 self.status.is_some(),
             )) as f32;
         (self.lib_content_h() - viewport).max(0.0)
-    }
-
-    /// Scroll horizontal máximo (px) del carousel de "Continue Reading".
-    pub(crate) fn lib_cont_max_x(&self) -> f32 {
-        let n = self.lib_continue_reading().len();
-        if n == 0 {
-            return 0.0;
-        }
-        let last_right = lib_cont_card_x(self.win_w, self.win_h, n - 1)
-            + lib_cont_card_w(self.win_w, self.win_h);
-        (last_right + grid_pad(self.win_w) - self.win_w as f32).max(0.0)
     }
 
     /// Scroll horizontal máximo (px) de la fila de chips `row` del panel de

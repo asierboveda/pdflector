@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Tick del bucle de eventos (extraído de `reader.rs`, 2026-09-06): `tick` y su predicado `needs_tick`, visibilidad de filas/carousel (`lib_cont_visible`, `lib_visible_grid_rows`/`lib_visible_list_rows`), pump de portadas (`thumbs_pending`, `ensure_thumb_worker`, `pump_thumbs`), la evicción diferida del pagecache en ticks idle (`trim_to_budget`, fix p95 — ver `crate::cache`) y accesores de frame del bucle (`take_repaint`, `needs_repaint`, `has_window`).
+//! Tick del bucle de eventos (extraído de `reader.rs`, 2026-09-06): `tick` y su predicado `needs_tick`, visibilidad de filas (`lib_visible_grid_rows`/`lib_visible_list_rows`), pump de portadas (`thumbs_pending`, `ensure_thumb_worker`, `pump_thumbs`), la evicción diferida del pagecache en ticks idle (`trim_to_budget`, fix p95 — ver `crate::cache`) y accesores de frame del bucle (`take_repaint`, `needs_repaint`, `has_window`).
 
 use super::AiPhase;
 use super::Reader;
 use super::UiMode;
 use super::geometry::grid_cell_h;
-use super::geometry::lib_cont_block_h;
 use super::geometry::lib_content_y0;
 use super::geometry::lib_grid_y0;
 use super::geometry::list_row_gap;
@@ -188,28 +187,11 @@ impl Reader {
     // Portadas de la biblioteca (perezosas, bajo demanda — ver `thumbs`)
     // ---------------------------------------------------------------------
     /// ¿Hay portadas pendientes entre las celdas VISIBLES de la biblioteca
-    /// (carousel de "Continue Reading" + rejilla)? El bucle de eventos la
-    /// usa para mantener el poll con timeout mientras `pump_thumbs` tiene
-    /// trabajo.
+    /// (rejilla / lista)? El bucle de eventos la usa para mantener el poll
+    /// con timeout mientras `pump_thumbs` tiene trabajo.
     pub(crate) fn thumbs_pending(&mut self) -> bool {
         if self.mode != UiMode::Library || self.win_w <= 0 || self.win_h <= 0 {
             return false;
-        }
-        // Carousel de Continue Reading (clave = ruta local), solo si está
-        // visible.
-        if self.lib_cont_visible() {
-            // Clonar las rutas: `thumbs.get` (mutable) no convive con el
-            // préstamo de `lib_continue_reading()` (inmutable).
-            let paths: Vec<String> = self
-                .lib_continue_reading()
-                .iter()
-                .map(|b| b.path.clone())
-                .collect();
-            for path in paths {
-                if self.thumbs.get(&path).is_none() && !self.thumb_failed.contains(&path) {
-                    return true;
-                }
-            }
         }
         // Portadas de la rejilla / lista (clave = content:// URI), solo filas visibles.
         if !self.hide_covers {
@@ -241,24 +223,6 @@ impl Reader {
         false
     }
 
-    /// ¿La fila del carousel de "Continue Reading" está dentro de la ventana
-    /// (con el scroll vertical actual)? Solo entonces se renderizan sus
-    /// portadas.
-    fn lib_cont_visible(&self) -> bool {
-        if !self.lib_has_cont() {
-            return false;
-        }
-        let content_y0 = lib_content_y0(
-            self.win_h,
-            self.library.lib_search_open,
-            self.status.is_some(),
-        ) as f32;
-        let block_h = lib_cont_block_h(self.win_w, self.win_h, true);
-        let top = content_y0 - self.library.lib_scroll;
-        let bottom = top + block_h;
-        bottom > content_y0 && top < self.win_h as f32
-    }
-
     /// Rango de filas de la rejilla VISIBLES (o a punto de serlo) con el
     /// scroll vertical actual: (primera fila, nº de filas con 1 de margen de
     /// prefetch por abajo). Coords compartidas con el render y el tap.
@@ -268,8 +232,8 @@ impl Reader {
             self.library.lib_search_open,
             self.status.is_some(),
         ) as f32;
-        let grid_y0_screen = content_y0 + lib_grid_y0(self.win_w, self.win_h, self.lib_has_cont())
-            - self.library.lib_scroll;
+        let grid_y0_screen =
+            content_y0 + lib_grid_y0(self.win_w, self.win_h) - self.library.lib_scroll;
         if grid_y0_screen >= self.win_h as f32 {
             return (0, 0); // la rejilla está por debajo de la ventana
         }
@@ -287,8 +251,8 @@ impl Reader {
             self.library.lib_search_open,
             self.status.is_some(),
         ) as f32;
-        let grid_y0_screen = content_y0 + lib_grid_y0(self.win_w, self.win_h, self.lib_has_cont())
-            - self.library.lib_scroll;
+        let grid_y0_screen =
+            content_y0 + lib_grid_y0(self.win_w, self.win_h) - self.library.lib_scroll;
         if grid_y0_screen >= self.win_h as f32 {
             return (0, 0);
         }
@@ -336,22 +300,6 @@ impl Reader {
 
         // 2. Recolectar celdas visibles que aún no están en caché ni fallaron
         let mut needed = Vec::new();
-
-        if self.lib_cont_visible() {
-            let cont_paths: Vec<String> = self
-                .lib_continue_reading()
-                .iter()
-                .map(|b| b.path.clone())
-                .collect();
-            for path in cont_paths {
-                if self.thumbs.peek(&path).is_none()
-                    && !self.thumb_failed.contains(&path)
-                    && !needed.contains(&path)
-                {
-                    needed.push(path);
-                }
-            }
-        }
 
         if !self.hide_covers {
             if self.is_grid() {

@@ -243,9 +243,7 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
 /// Estructura FIJA (no scrollea): cabecera editorial (título "Library"
 /// grande + botón "＋ Add book") + campo de búsqueda (+ panel de chips de
 /// letra/carpeta si está abierto) + franja de estado (si la hay). Contenido
-/// SCROLLABLE (desplazado `reader.library.lib_scroll` px): [Continue Reading:
-/// carousel horizontal de tarjetas con portada 2:3 grande, título, autor,
-/// barra de progreso, "Page X of Y · Z%" y botón Read] + [título "My
+/// SCROLLABLE (desplazado `reader.library.lib_scroll` px): [título "My
 /// Library" + chips de organización (sort/filter) + rejilla 3×3 de portadas
 /// con título, autor y barra fina de progreso] + EMPTY STATE si no hay PDFs.
 ///
@@ -253,8 +251,8 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
 /// textos, barras de progreso, SOMBRAS y placeholders) se dibuja con
 /// Canvas+JNI (`jni_text_bitmap`); las portadas CACHEADAS se pegan después
 /// directamente sobre sus bytes RGBA (Canvas no pinta bitmaps): center-crop
-/// vecino-más-cercano al área 2:3 (`grid_cover_w`×`grid_cover_h` /
-/// `lib_cont_cover_*`), sin pasar por un lock de ventana.
+/// vecino-más-cercano al área 2:3 (`grid_cover_w`×`grid_cover_h`),
+/// sin pasar por un lock de ventana.
 /// Items interactivos del menú View "⋯" (Readest ViewMenu).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ViewMenuItem {
@@ -266,7 +264,6 @@ pub(crate) enum ViewMenuItem {
     CoverCrop,
     CoverFit,
     CoverHide,
-    RecentShelf,
     GroupNone,
     GroupAuthor,
     SortTitle,
@@ -359,13 +356,6 @@ pub(crate) fn view_menu_geometry(
     y += item_h;
     items.push((
         ViewMenuItem::CoverHide,
-        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
-    ));
-    y += item_h + hr_h;
-
-    // 4. DESTACADOS
-    items.push((
-        ViewMenuItem::RecentShelf,
         (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
     ));
     y += item_h + hr_h;
@@ -658,49 +648,6 @@ pub(crate) fn draw_view_menu(
     ));
     y += hr_h;
 
-    // 4. DESTACADOS
-    {
-        let active = reader.recent_shelf_enabled;
-        if active {
-            rects.push(CanvasRect::rounded(
-                ml + pad_x - 4.0,
-                y + 2.0,
-                mr - pad_x + 4.0,
-                y + item_h - 2.0,
-                8.0,
-                p.base_200,
-            ));
-            texts.push(CanvasText::new(
-                mr - pad_x - 4.0,
-                y + item_h * 0.68,
-                body_ts,
-                p.primary,
-                TextAlign::Right,
-                true,
-                "✓".to_string(),
-            ));
-        }
-        let fg = if active { p.primary } else { p.base_content };
-        texts.push(CanvasText::new(
-            ml + pad_x,
-            y + item_h * 0.68,
-            body_ts,
-            fg,
-            TextAlign::Left,
-            active,
-            "Mostrar lectura reciente".to_string(),
-        ));
-        y += item_h;
-    }
-    rects.push(CanvasRect::sharp(
-        ml + pad_x,
-        y + 3.0,
-        mr - pad_x,
-        y + 4.0,
-        p.base_300,
-    ));
-    y += hr_h;
-
     // 5. AGRUPAR POR
     texts.push(CanvasText::new(
         ml + pad_x,
@@ -842,7 +789,6 @@ pub(crate) fn render_view_menu(reader: &Reader) -> Option<Bitmap> {
 /// Items interactivos del menú Settings "☰" (Readest SettingsMenu).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsMenuItem {
-    RecentShelf,
     CoverSizeSmall,
     CoverSizeMedium,
     CoverSizeLarge,
@@ -871,14 +817,6 @@ pub(crate) fn settings_menu_geometry(
     let sec_h = 24.0f32;
     let hr_h = 8.0f32;
     let pad_x = 16.0f32;
-
-    // 1. RECENTLY READ
-    y += sec_h;
-    items.push((
-        SettingsMenuItem::RecentShelf,
-        (menu_l + pad_x, y, menu_r - pad_x, y + item_h),
-    ));
-    y += item_h + hr_h;
 
     // 2. COVER SIZE
     y += sec_h;
@@ -955,59 +893,6 @@ pub(crate) fn draw_settings_menu(
     let item_h = 38.0f32;
     let sec_h = 24.0f32;
     let hr_h = 8.0f32;
-
-    // 1. RECENTLY READ
-    texts.push(CanvasText::new(
-        ml + pad_x,
-        y + sec_ts * 0.85,
-        sec_ts,
-        p.neutral_content,
-        TextAlign::Left,
-        true,
-        "LECTURA RECIENTE".to_string(),
-    ));
-    y += sec_h;
-    {
-        let active = reader.recent_shelf_enabled;
-        if active {
-            rects.push(CanvasRect::rounded(
-                ml + pad_x - 4.0,
-                y + 2.0,
-                mr - pad_x + 4.0,
-                y + item_h - 2.0,
-                8.0,
-                p.base_200,
-            ));
-            texts.push(CanvasText::new(
-                mr - pad_x - 4.0,
-                y + item_h * 0.68,
-                body_ts,
-                p.primary,
-                TextAlign::Right,
-                true,
-                "✓".to_string(),
-            ));
-        }
-        let fg = if active { p.primary } else { p.base_content };
-        texts.push(CanvasText::new(
-            ml + pad_x,
-            y + item_h * 0.68,
-            body_ts,
-            fg,
-            TextAlign::Left,
-            active,
-            "Mostrar lectura reciente".to_string(),
-        ));
-        y += item_h;
-    }
-    rects.push(CanvasRect::sharp(
-        ml + pad_x,
-        y + 3.0,
-        mr - pad_x,
-        y + 4.0,
-        p.base_300,
-    ));
-    y += hr_h;
 
     // 2. COVER SIZE
     texts.push(CanvasText::new(

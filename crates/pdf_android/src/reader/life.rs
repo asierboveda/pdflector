@@ -81,7 +81,6 @@ impl Reader {
             view_menu_open: false,
             settings_menu_open: false,
             hide_covers: false,
-            recent_shelf_enabled: true,
             cover_size: 1,
             cover_progress: false,
             clear_confirm_until: None,
@@ -264,7 +263,6 @@ impl Reader {
                         reader.cover_fit = state.cover_fit;
                         reader.columns = state.columns;
                         reader.hide_covers = state.hide_covers;
-                        reader.recent_shelf_enabled = state.recent_shelf_enabled;
                         reader.cover_size = state.cover_size;
                         reader.cover_progress = state.cover_progress;
                         // Solo restaurar si el PDF sigue accesible: `open_pdf`

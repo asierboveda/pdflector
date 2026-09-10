@@ -8,11 +8,10 @@ use crate::persist;
 use crate::reader::{
     GRID_CELL_PAD, LibraryCoverFit, Reader, cover_size_multiplier, entry_author, entry_title,
     grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad,
-    header_menu_btn_d, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_card_h, lib_cont_card_w,
-    lib_cont_card_x, lib_cont_cover_h, lib_cont_cover_w, lib_content_y0, lib_empty_state_geom,
+    header_menu_btn_d, lib_add_btn_w, lib_chip_h, lib_chips, lib_content_y0, lib_empty_state_geom,
     lib_grid_y0, lib_header_h, lib_org_chip_h, lib_org_chips, lib_search_h, list_row_gap,
-    list_row_h, list_row_rect, picker_row_h, settings_menu_button_rect, title_from_name,
-    truncate_name, view_menu_button_rect,
+    list_row_h, list_row_rect, picker_row_h, settings_menu_button_rect, truncate_name,
+    view_menu_button_rect,
 };
 use crate::theme;
 use android_activity::ndk::native_window::NativeWindow;
@@ -239,7 +238,7 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
 }
 
 /// Render de la BANDA de contenido de la biblioteca (la zona scrolleable:
-/// Continue Reading + My Library + rejilla o lista o empty state)
+/// My Library + rejilla o lista o empty state)
 pub(crate) fn render_library_zone(
     reader: &Reader,
     band_origin: i32,
@@ -251,7 +250,6 @@ pub(crate) fn render_library_zone(
     }
     let yof = -band_origin as f32; // contenido − origen de banda
     let p = reader.theme.palette();
-    let pad = grid_pad(w);
 
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
@@ -265,145 +263,7 @@ pub(crate) fn render_library_zone(
         let shift = -(content_y0 as f32 + band_origin as f32);
         draw_empty_state(reader, &mut rects, &mut texts, shift);
     } else {
-        // Continue reading carousel (si está habilitado y hay libros)
-        if reader.lib_has_cont() {
-            let section_y = yof + 8.0;
-            texts.push(CanvasText::new(
-                pad,
-                section_y + theme::FONT_TITLE * 0.85,
-                theme::FONT_TITLE,
-                p.base_content,
-                TextAlign::Left,
-                true,
-                "Seguir leyendo".to_string(),
-            ));
-            let cont_y0 = section_y + theme::FONT_TITLE + 12.0;
-            let books = reader.lib_continue_reading();
-            for (i, book) in books.iter().enumerate() {
-                let card_w = lib_cont_card_w(w, reader.win_h);
-                let card_h = lib_cont_card_h(reader.win_h);
-                let cx = lib_cont_card_x(w, reader.win_h, i) - reader.library.lib_carousel_x;
-                if cx + card_w < 0.0 || cx > w as f32 {
-                    continue;
-                }
-                let cy = cont_y0;
-                let cw = lib_cont_cover_w(reader.win_h);
-                let chh = lib_cont_cover_h(reader.win_h);
-                let cover_r = 12.0f32;
-
-                draw_card_shadow(
-                    &mut rects,
-                    cx,
-                    cy,
-                    cx + card_w,
-                    cy + card_h,
-                    16.0,
-                    p.is_dark,
-                );
-                rects.push(CanvasRect::rounded(
-                    cx,
-                    cy,
-                    cx + card_w,
-                    cy + card_h,
-                    16.0,
-                    p.base_300,
-                ));
-                rects.push(CanvasRect::rounded(
-                    cx + 1.0,
-                    cy + 1.0,
-                    cx + card_w - 1.0,
-                    cy + card_h - 1.0,
-                    15.0,
-                    p.base_100,
-                ));
-
-                let cover_x = cx + 16.0;
-                let cover_y = cy + 16.0;
-                draw_card_shadow(
-                    &mut rects,
-                    cover_x,
-                    cover_y,
-                    cover_x + cw,
-                    cover_y + chh,
-                    cover_r,
-                    p.is_dark,
-                );
-                rects.push(CanvasRect::rounded(
-                    cover_x,
-                    cover_y,
-                    cover_x + cw,
-                    cover_y + chh,
-                    cover_r,
-                    p.base_300,
-                ));
-                rects.push(CanvasRect::rounded(
-                    cover_x + 1.0,
-                    cover_y + 1.0,
-                    cover_x + cw - 1.0,
-                    cover_y + chh - 1.0,
-                    (cover_r - 1.0).max(0.0),
-                    p.base_200,
-                ));
-
-                let tx = cover_x + cw + 16.0;
-                let title_ts = theme::FONT_TITLE;
-                texts.push(CanvasText::new(
-                    tx,
-                    cy + 34.0,
-                    title_ts,
-                    p.base_content,
-                    TextAlign::Left,
-                    true,
-                    truncate_name(&book.name, 18),
-                ));
-                texts.push(CanvasText::new(
-                    tx,
-                    cy + 60.0,
-                    theme::FONT_CAPTION,
-                    p.neutral_content,
-                    TextAlign::Left,
-                    false,
-                    truncate_name(&book.author, 18),
-                ));
-                let bar_w = card_w - (tx - cx) - 20.0;
-                let bar_y = cy + 86.0;
-                rects.push(CanvasRect::rounded(
-                    tx,
-                    bar_y,
-                    tx + bar_w,
-                    bar_y + 4.0,
-                    2.0,
-                    p.base_300,
-                ));
-                if book.pct > 0.0 {
-                    rects.push(CanvasRect::rounded(
-                        tx,
-                        bar_y,
-                        tx + (bar_w * book.pct).clamp(4.0, bar_w),
-                        bar_y + 4.0,
-                        2.0,
-                        p.primary,
-                    ));
-                }
-                let page_info = format!(
-                    "Pág. {} de {} · {:.0}%",
-                    book.page + 1,
-                    book.page_count.max(1),
-                    book.pct * 100.0
-                );
-                texts.push(CanvasText::new(
-                    tx,
-                    bar_y + 20.0,
-                    theme::FONT_CAPTION * 0.9,
-                    p.neutral_content,
-                    TextAlign::Left,
-                    false,
-                    page_info,
-                ));
-            }
-        }
-
-        let grid_y0 = lib_grid_y0(w, reader.win_h, reader.lib_has_cont());
+        let grid_y0 = lib_grid_y0(w, reader.win_h);
         if reader.is_grid() {
             let cols = reader.effective_grid_cols();
             let cell_h = grid_cell_h(w, cols, reader.cover_size);
@@ -808,192 +668,6 @@ pub(crate) fn render_library_zone(
     jni_text_bitmap(w, band_h, p.base_200, &rects, &texts)
 }
 
-/// Render de la fila horizontal del carousel de "Continue Reading". Desde la
-/// biblioteca minimalista (2026-08-25: rejilla + buscador, sección oculta)
-/// ya no se splices; se conserva por si se reintroduce.
-#[allow(dead_code)] // sección "Continue Reading" oculta por diseño
-pub(crate) fn render_carousel_row(reader: &Reader) -> Option<Bitmap> {
-    let w = reader.win_w;
-    let books = reader.lib_continue_reading();
-    let n = books.len();
-    if n == 0 {
-        return None;
-    }
-    let cw = lib_cont_cover_w(reader.win_h);
-    let chh = lib_cont_cover_h(reader.win_h);
-    let card_w = lib_cont_card_w(w, reader.win_h);
-    let card_h = lib_cont_card_h(reader.win_h);
-    let cover_r = 12.0f32;
-    let row_w = (lib_cont_card_x(w, reader.win_h, n - 1) + card_w + grid_pad(w)).ceil() as i32;
-    let row_h = card_h.ceil() as i32;
-    if row_w <= 0 || row_h <= 0 {
-        return None;
-    }
-    let p = reader.theme.palette();
-
-    let mut rects: Vec<CanvasRect> = Vec::new();
-    let mut texts: Vec<CanvasText> = Vec::new();
-    for (i, book) in books.iter().enumerate() {
-        let cx = lib_cont_card_x(w, reader.win_h, i);
-        // Sombra visible de la tarjeta horizontal (B4, G1)
-        draw_card_shadow(&mut rects, cx, 0.0, cx + card_w, card_h, 16.0, p.is_dark);
-        // Tarjeta: borde 1px base_300 + fondo base_100 (radio 16 px, B1, B4)
-        rects.push(CanvasRect::rounded(
-            cx,
-            0.0,
-            cx + card_w,
-            card_h,
-            16.0,
-            p.base_300,
-        ));
-        rects.push(CanvasRect::rounded(
-            cx + 1.0,
-            1.0,
-            cx + card_w - 1.0,
-            card_h - 1.0,
-            15.0,
-            p.base_100,
-        ));
-        // Portada 2:3 a la izquierda (B4)
-        let cover_x = cx + 16.0;
-        let cover_y = 16.0;
-        draw_card_shadow(
-            &mut rects,
-            cover_x,
-            cover_y,
-            cover_x + cw,
-            cover_y + chh,
-            cover_r,
-            p.is_dark,
-        );
-        rects.push(CanvasRect::rounded(
-            cover_x,
-            cover_y,
-            cover_x + cw,
-            cover_y + chh,
-            cover_r,
-            p.base_300,
-        ));
-        rects.push(CanvasRect::rounded(
-            cover_x + 1.0,
-            cover_y + 1.0,
-            cover_x + cw - 1.0,
-            cover_y + chh - 1.0,
-            (cover_r - 1.0).max(0.0),
-            p.base_200,
-        ));
-        if reader.thumbs.peek(&book.path).is_none() {
-            texts.push(CanvasText::new(
-                cover_x + cw / 2.0,
-                cover_y + chh / 2.0 + 7.0,
-                theme::FONT_BODY,
-                p.neutral_content,
-                TextAlign::Center,
-                true,
-                truncate_name(&title_from_name(&book.name), 12),
-            ));
-        }
-        // Textos a la derecha de la portada (B4)
-        let tx = cover_x + cw + 20.0;
-        let tw = card_w - (cw + 52.0);
-        let max_chars = ((tw / 9.0) as usize).max(8);
-        // Título (17sp negrita base-content)
-        texts.push(CanvasText::new(
-            tx,
-            cover_y + 22.0,
-            theme::FONT_TITLE,
-            p.base_content,
-            TextAlign::Left,
-            true,
-            truncate_name(&title_from_name(&book.name), max_chars),
-        ));
-        // Autor / carpeta (12sp neutral-content)
-        texts.push(CanvasText::new(
-            tx,
-            cover_y + 46.0,
-            theme::FONT_CAPTION,
-            p.neutral_content,
-            TextAlign::Left,
-            false,
-            truncate_name(&book.author, max_chars),
-        ));
-        // Barra de progreso (track 4px base-300, fill primary) con separación >= 10px del autor (B1)
-        let bar_y = cover_y + 70.0;
-        rects.push(CanvasRect::rounded(
-            tx,
-            bar_y,
-            tx + tw,
-            bar_y + 4.0,
-            2.0,
-            p.base_300,
-        ));
-        let fill_w = (tw * book.pct).clamp(4.0, tw);
-        if book.pct > 0.0 {
-            rects.push(CanvasRect::rounded(
-                tx,
-                bar_y,
-                tx + fill_w,
-                bar_y + 4.0,
-                2.0,
-                p.primary,
-            ));
-        }
-        // Meta: "Pág. X de Y · Z%"
-        let meta = format!(
-            "Pág. {} de {} · {:.0}%",
-            book.page + 1,
-            book.page_count,
-            book.pct * 100.0
-        );
-        texts.push(CanvasText::new(
-            tx,
-            bar_y + 20.0,
-            theme::FONT_CAPTION,
-            p.neutral_content,
-            TextAlign::Left,
-            false,
-            meta,
-        ));
-        // Botón "Continuar" como PÍLDORA RELLENA primary con texto contraste (B4)
-        let btn_w = tw.clamp(100.0, 140.0);
-        let btn_h = 40.0;
-        let btn_y = (card_h - 16.0 - btn_h).max(bar_y + 34.0);
-        draw_button(
-            &mut rects,
-            &mut texts,
-            tx,
-            btn_y,
-            tx + btn_w,
-            btn_y + btn_h,
-            p.primary,
-            p.primary,
-            p.primary_content,
-            theme::FONT_BODY,
-            true,
-            "Continuar",
-        );
-    }
-
-    let mut out = jni_text_bitmap(row_w, row_h, p.base_200, &rects, &texts)?;
-    for (i, book) in books.iter().enumerate() {
-        let Some(thumb) = reader.thumbs.peek(&book.path) else {
-            continue;
-        };
-        let cover_x = (lib_cont_card_x(w, reader.win_h, i) + 16.0).round() as i32;
-        paste_thumb(
-            &mut out.data,
-            out.width as usize,
-            thumb,
-            cover_x,
-            16,
-            cw as i32,
-            chh as i32,
-            reader.cover_fit,
-        );
-    }
-    Some(out)
-}
-
 /// Render de la fila HORIZONTAL de chips del panel de BÚSQUEDA `row`.
 pub(crate) fn render_search_chip_row(reader: &Reader, row: usize) -> Option<Bitmap> {
     let chips = lib_chips(reader, row);
@@ -1166,8 +840,7 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
     if w <= 0 || band.width == 0 || band.height == 0 || reader.hide_covers {
         return;
     }
-    let has_cont = reader.lib_has_cont();
-    let grid_y0 = lib_grid_y0(w, reader.win_h, has_cont);
+    let grid_y0 = lib_grid_y0(w, reader.win_h);
 
     if reader.is_grid() {
         let cols = reader.effective_grid_cols();

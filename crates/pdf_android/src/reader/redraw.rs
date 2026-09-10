@@ -268,16 +268,13 @@ impl Reader {
             UiMode::Library => {
                 // Clamp del scroll VERTICAL (px) si el contenido menguó
                 // (filtro, rescan, ventana): cabecera + campo de búsqueda +
-                // franja de estado son fijas; el contenido (Continue Reading
-                // + My Library) scrollea bajo ellas. Los scrolls
-                // HORIZONTALES (carousel, panel de búsqueda y organización)
-                // se clampean igual contra su ancho total.
+                // franja de estado son fijas; el contenido (My Library)
+                // scrollea bajo ellas. Los scrolls HORIZONTALES (panel de
+                // búsqueda y organización) se clampean igual contra su ancho total.
                 let max_v = self.lib_max_scroll();
                 if self.library.lib_scroll > max_v {
                     self.library.lib_scroll = max_v;
                 }
-                self.library.lib_carousel_x =
-                    self.library.lib_carousel_x.min(self.lib_cont_max_x());
                 self.library.lib_letters_x =
                     self.library.lib_letters_x.min(self.lib_chips_max_x(0));
                 self.library.lib_folders_x =

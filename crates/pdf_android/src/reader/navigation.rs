@@ -214,7 +214,6 @@ impl Reader {
             cover_fit: self.cover_fit,
             columns: self.columns,
             hide_covers: self.hide_covers,
-            recent_shelf_enabled: self.recent_shelf_enabled,
             cover_size: self.cover_size,
             cover_progress: self.cover_progress,
         };
@@ -276,7 +275,7 @@ impl Reader {
     }
 
     /// Abre un PDF por ruta y pasa al visor; si `start_page` es Some, salta
-    /// a esa página (la posición guardada de "Continue Reading"/la rejilla),
+    /// a esa página (la posición guardada de la rejilla),
     /// si no a la página 1. Devuelve false (y deja el estado intacto) si no
     /// se pudo abrir.
     pub(crate) fn open_pdf_at(&mut self, path: &str, start_page: Option<u32>) -> bool {

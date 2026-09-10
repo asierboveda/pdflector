@@ -175,12 +175,10 @@ pub(crate) fn list_row_rect(
 // La biblioteca ya NO es un file manager: es una biblioteca personal de
 // libros (estilo Apple Books/Kindle pero propio). Las PORTADAS mandan;
 // el header es editorial (título grande + "＋ Add book" + campo de
-// búsqueda); "Continue Reading" (carousel horizontal de tarjetas con
-// portada grande, título, autor, barra de progreso, "Page X of Y" y acción
-// "Read") es el punto de entrada; y "My Library" es la rejilla principal
-// de portadas con título/autor/progreso y sus chips discretos de
-// organización (sort/filter). Toda la geometría de abajo es COMPARTIDA
-// por el render (`draw::render_library_zone` + `render_library_header`), el tap y el arrastre
+// búsqueda); y "My Library" es la rejilla principal de portadas con
+// título/autor/progreso y sus chips discretos de organización (sort/filter).
+// Toda la geometría de abajo es COMPARTIDA por el render
+// (`draw::render_library_zone` + `render_library_header`), el tap y el arrastre
 // (`input`) y el pump de portadas (`Reader::pump_thumbs`).
 /// Alto (px) de la CABECERA de la biblioteca: título "Library" grande y
 /// negrita + botón "＋ Add book" a la derecha.
@@ -281,54 +279,6 @@ pub(crate) fn lib_content_y0(win_h: i32, search_open: bool, has_status: bool) ->
         + status_h
 }
 
-/// Alto (px) de un título de sección ("CONTINUE READING"/"My Library").
-pub(crate) fn lib_section_title_h(win_h: i32) -> f32 {
-    (win_h as f32 / 64.0).clamp(24.0, 32.0)
-}
-
-/// Ancho (px) de la portada de una tarjeta de "Continue Reading" (2:3).
-// sección "Continue Reading" oculta por diseño (2026-08-25)
-pub(crate) fn lib_cont_cover_w(win_h: i32) -> f32 {
-    lib_cont_cover_h(win_h) / 1.5
-}
-
-/// Alto (px) de la portada de una tarjeta (proporción 2:3).
-// sección "Continue Reading" oculta por diseño (2026-08-25)
-pub(crate) fn lib_cont_cover_h(win_h: i32) -> f32 {
-    lib_cont_card_h(win_h) - 32.0
-}
-
-/// Alto (px) de la tarjeta horizontal (~15% de win_h).
-pub(crate) fn lib_cont_card_h(win_h: i32) -> f32 {
-    (win_h as f32 * 0.15).clamp(240.0, 330.0)
-}
-
-/// Ancho (px) de la tarjeta horizontal.
-pub(crate) fn lib_cont_card_w(win_w: i32, _win_h: i32) -> f32 {
-    (win_w as f32 * 0.52).clamp(440.0, 640.0)
-}
-
-/// Separación horizontal entre tarjetas del carousel (px).
-pub(crate) fn lib_cont_gap() -> f32 {
-    18.0
-}
-
-/// X (px) en coords de CONTENIDO de la tarjeta `i` del carousel (sin el
-/// scroll horizontal aplicado).
-pub(crate) fn lib_cont_card_x(win_w: i32, win_h: i32, i: usize) -> f32 {
-    grid_pad(win_w) + i as f32 * (lib_cont_card_w(win_w, win_h) + lib_cont_gap())
-}
-
-/// Alto (px) del bloque de "Continue Reading" (título de sección + fila de
-/// tarjetas) en coords de contenido; 0 si no hay libros en curso.
-pub(crate) fn lib_cont_block_h(_win_w: i32, win_h: i32, has_cont: bool) -> f32 {
-    if !has_cont {
-        0.0
-    } else {
-        lib_section_title_h(win_h) + lib_cont_card_h(win_h) + 16.0
-    }
-}
-
 /// --- Organización de "My Library" (sort + filter, chips discretos) ---
 /// Alto (px) de un chip de organización (>= 40 px).
 pub(crate) fn lib_org_chip_h(win_h: i32) -> f32 {
@@ -353,20 +303,14 @@ pub(crate) fn lib_org_label_w() -> f32 {
 
 /// Y (px) del borde superior de la fila de organización `row` (0 = sort,
 /// 1 = filter) en coords de CONTENIDO (bajo el título de "My Library").
-pub(crate) fn lib_org_y(win_w: i32, win_h: i32, has_cont: bool, row: usize) -> f32 {
-    lib_grid_y0(win_w, win_h, has_cont) - lib_org_block_h(win_h)
+pub(crate) fn lib_org_y(win_w: i32, win_h: i32, row: usize) -> f32 {
+    lib_grid_y0(win_w, win_h) - lib_org_block_h(win_h)
         + row as f32 * (lib_org_chip_h(win_h) + lib_org_gap())
 }
 
 /// Y (px) del borde superior de la REJILLA o LISTA en coords de CONTENIDO.
-/// Si `has_cont` es true (estantería de recientes activa con libros),
-/// deja espacio para el carousel Continue Reading.
-pub(crate) fn lib_grid_y0(win_w: i32, win_h: i32, has_cont: bool) -> f32 {
-    if has_cont {
-        lib_cont_block_h(win_w, win_h, true) + 16.0
-    } else {
-        8.0
-    }
+pub(crate) fn lib_grid_y0(_win_w: i32, _win_h: i32) -> f32 {
+    8.0
 }
 
 /// Ancho (px) de un chip del panel de búsqueda según el nº de caracteres de
@@ -483,8 +427,7 @@ pub(crate) fn lib_org_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonR
         reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
-    let y0 = content_y0 - reader.library.lib_scroll
-        + lib_org_y(win_w, reader.win_h, reader.lib_has_cont(), row);
+    let y0 = content_y0 - reader.library.lib_scroll + lib_org_y(win_w, reader.win_h, row);
     let chip_h = lib_org_chip_h(reader.win_h);
     let mut out = Vec::new();
     let mut x = x0;

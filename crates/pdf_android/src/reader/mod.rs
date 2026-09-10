@@ -66,18 +66,17 @@ use redraw::{RenderWorker, WorkerMsg};
 // `draw`/`input`; el resto de la geometría sigue siendo `reader::geometry`).
 pub(crate) use geometry::{
     GRID_CELL_PAD, cover_size_multiplier, disc_card_action_rect, disc_card_gap, disc_card_h,
-    disc_card_pad, disc_card_rect, disc_card_w, disc_cat_row_h, disc_cat_row_rect, disc_content_y0,
+    disc_card_pad, disc_card_rect, disc_cat_row_h, disc_cat_row_rect, disc_content_y0,
     disc_detail_back_rect, disc_detail_layout, disc_more_btn_rect, disc_search_rect,
     disc_subtabs_rect, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w,
     grid_gap, grid_pad, header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h, lib_chips,
-    lib_cont_block_h, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h,
-    lib_cont_cover_w, lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0,
-    lib_header_h, lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0,
-    lib_search_h, lib_search_panel_h, lib_section_title_h, lib_tabs_rect, list_row_gap, list_row_h,
-    list_row_rect, page_badge_rect, page_badge_size, picker_btn_h, picker_btn_w, picker_header_h,
-    picker_row_h, settings_menu_button_rect, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h,
-    sheet_nav_y, sheet_pad, sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect,
-    viewer_bottom_chrome_h, viewer_top_chrome_h, wrap_text_chars,
+    lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
+    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
+    lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect, page_badge_size,
+    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect,
+    sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad, sheet_theme_btn_w,
+    sheet_theme_y, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
+    viewer_top_chrome_h, wrap_text_chars,
 };
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
@@ -183,8 +182,7 @@ pub(crate) struct LibraryScan {
 /// Estado de lectura de un libro, DERIVADO del registro de progreso
 /// (`persist::BookProgress`): Unread (nunca abierto: sin registro), Reading
 /// (abierto, no terminado) o Finished (última página alcanzada). Es el
-/// filtro de estado de "My Library" y el que decide qué entra en
-/// "Continue Reading".
+/// filtro de estado de "My Library".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BookStatus {
     Unread,
@@ -238,30 +236,6 @@ pub(crate) enum LibraryGroupBy {
     None,
     /// Agrupar por autor.
     Author,
-}
-
-/// Un libro del carousel destacado "Continue Reading": un reciente abierto
-/// no terminado, con su progreso persistido (página, total, %). Construido
-/// en `Reader::lib_continue_reading` a partir de `recents.json` +
-/// `library.json`; lo consumen el render (`draw`), el tap (`input`) y el
-/// pump de portadas (`Reader::pump_thumbs`). Desde la biblioteca minimalista
-/// (2026-08-25, rejilla + buscador sin sección Continue Reading), solo el
-/// pump lee `path`/`name`; el resto de campos y el draw se conservan por si
-/// se reintroduce la sección.
-// sección "Continue Reading" oculta por diseño
-pub(crate) struct ContinueBook {
-    /// Ruta local absoluta (clave del documento; abre con `open_pdf_at`).
-    pub(crate) path: String,
-    /// Nombre de fichero (se muestra bajo la portada de la tarjeta).
-    pub(crate) name: String,
-    /// Autor derivado (primer segmento de carpeta de MediaStore o "PDF").
-    pub(crate) author: String,
-    /// Página guardada, 0-based (donde se reanuda).
-    pub(crate) page: u32,
-    /// Total de páginas del documento.
-    pub(crate) page_count: u32,
-    /// Porcentaje leído (0.0-1.0) para la barra de progreso.
-    pub(crate) pct: f32,
 }
 
 /// Título de un libro a partir del NOMBRE de fichero (sin extensión).
@@ -590,8 +564,6 @@ pub(crate) struct Reader {
     pub(crate) settings_menu_open: bool,
     /// ¿Ocultar portadas (solo títulos)? menú Settings "☰"; persistido.
     pub(crate) hide_covers: bool,
-    /// ¿Mostrar la estantería de recientes? menú Settings "☰"; persistido.
-    pub(crate) recent_shelf_enabled: bool,
     /// Tamaño de portadas (0: Pequeño, 1: Mediano, 2: Grande); menú Settings "☰"; persistido.
     pub(crate) cover_size: u8,
     /// ¿Mostrar badge de porcentaje leído sobre las portadas? menú Settings "☰"; persistido.

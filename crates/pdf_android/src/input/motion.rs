@@ -22,11 +22,10 @@ use crate::reader::{
     PickerKind, Reader, UiMode, disc_card_action_rect, disc_card_gap, disc_card_h, disc_card_rect,
     disc_cat_row_rect, disc_content_y0, disc_detail_back_rect, disc_detail_layout,
     disc_more_btn_rect, disc_search_rect, disc_subtabs_rect, grid_cell_h, grid_cell_w, grid_gap,
-    grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_cont_block_h, lib_cont_card_w,
-    lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
-    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
-    lib_section_title_h, lib_tabs_rect, list_row_gap, list_row_h, picker_btn_w, picker_header_h,
-    picker_row_h, settings_menu_button_rect, view_menu_button_rect,
+    grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_content_y0, lib_empty_state_geom,
+    lib_grid_y0, lib_header_h, lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0,
+    lib_search_h, lib_search_panel_h, lib_tabs_rect, list_row_gap, list_row_h, picker_btn_w,
+    picker_header_h, picker_row_h, settings_menu_button_rect, view_menu_button_rect,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 use android_activity::AndroidApp;
@@ -595,11 +594,10 @@ fn list_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 /// Tap de la biblioteca (biblioteca personal premium): botón "＋ Add book"
 /// de la cabecera, campo de búsqueda (toggle del panel de chips + "✕"),
 /// chips del panel de búsqueda (fila 0 = letras A-Z/#, fila 1 = carpetas),
-/// tarjeta del carousel de Continue Reading (abre el libro en su página
-/// guardada), chips de organización (sort/filter) o celda de la rejilla
-/// (abre el libro). La geometría DEBE reflejar exactamente la de
-/// `render_library_zone` (mismas fórmulas: `lib_chips`, `lib_content_y0`,
-/// `lib_cont_block_h`, `lib_grid_cell_rect`, `lib_org_chips`).
+/// chips de organización (sort/filter) o celda de la rejilla (abre el libro).
+/// La geometría DEBE reflejar exactamente la de `render_library_zone`
+/// (mismas fórmulas: `lib_chips`, `lib_content_y0`, `lib_grid_cell_rect`,
+/// `lib_org_chips`).
 fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // Pestaña Descubrir en la cabecera
     let (_tab_lib, tab_disc) = lib_tabs_rect(reader.win_w, reader.win_h);
@@ -663,11 +661,6 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                     }
                     ViewMenuItem::CoverHide => {
                         reader.hide_covers = !reader.hide_covers;
-                        reader.save_state();
-                        reader.view_menu_open = false;
-                    }
-                    ViewMenuItem::RecentShelf => {
-                        reader.recent_shelf_enabled = !reader.recent_shelf_enabled;
                         reader.save_state();
                         reader.view_menu_open = false;
                     }
@@ -742,11 +735,6 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         for (item, rect) in items {
             if x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3 {
                 match item {
-                    SettingsMenuItem::RecentShelf => {
-                        reader.recent_shelf_enabled = !reader.recent_shelf_enabled;
-                        reader.save_state();
-                        reader.settings_menu_open = false;
-                    }
                     SettingsMenuItem::CoverSizeSmall => {
                         reader.cover_size = 0;
                         reader.save_state();
@@ -896,9 +884,6 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     // scroll vertical).
     let yc = y - content_y0 + reader.library.lib_scroll;
     let win_w = reader.win_w;
-    // Biblioteca minimalista: la sección Continue Reading está oculta (siempre
-    // `false`); el bloque de organización tampoco existe (rejilla directa).
-    let has_cont = reader.lib_has_cont();
 
     // EMPTY STATE: botón "Add PDF"/"Grant access" (misma geometría que el
     // render).
@@ -917,35 +902,9 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         return;
     }
 
-    // CONTINUE READING: tap en cualquier punto de la tarjeta (portada o
-    // texto, incluido el botón "Read") abre el libro en su página guardada.
-    let cont_block_h = lib_cont_block_h(win_w, reader.win_h, has_cont);
-    if yc < cont_block_h {
-        if has_cont && yc >= lib_section_title_h(reader.win_h) {
-            let cw = lib_cont_card_w(win_w, reader.win_h);
-            let i = ((x - grid_pad(win_w) + reader.library.lib_carousel_x) / (cw + lib_cont_gap()))
-                .floor();
-            if i >= 0.0
-                && let Some(book) = reader.lib_continue_reading().get(i as usize)
-            {
-                // Clonar ruta+nombre: `open_pdf_at` necesita &mut self.
-                let path = book.path.clone();
-                let name = book.name.clone();
-                let start =
-                    crate::persist::progress_for(&reader.library.lib_books, &path).map(|p| p.page);
-                if !reader.open_pdf_at(&path, start) {
-                    reader.status = Some(format!("Cannot open {name}"));
-                    reader.list_dirty = true;
-                    reader.redraw();
-                }
-            }
-        }
-        return;
-    }
-
     // Título de "My Library": no seleccionable. Tras él, el bloque de
     // ORGANIZACIÓN (chips de sort/filter) antes de la rejilla.
-    let grid_y0 = lib_grid_y0(win_w, reader.win_h, has_cont);
+    let grid_y0 = lib_grid_y0(win_w, reader.win_h);
     if yc < grid_y0 {
         let org_top = grid_y0 - lib_org_block_h(reader.win_h);
         if yc >= org_top {
@@ -1095,9 +1054,9 @@ fn picker_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 }
 
 /// Zona de la biblioteca donde cayó el Down (qué arrastra en HORIZONTAL):
-/// 0 = contenido (scroll vertical), 1 = carousel de Continue Reading, 2 =
-/// fila de chips de LETRAS (búsqueda), 3 = fila de chips de CARPETAS
-/// (búsqueda), 4 = fila de chips de SORT, 5 = fila de chips de FILTER.
+/// 0 = contenido (scroll vertical), 2 = fila de chips de LETRAS (búsqueda),
+/// 3 = fila de chips de CARPETAS (búsqueda), 4 = fila de chips de SORT,
+/// 5 = fila de chips de FILTER.
 /// Misma geometría que `library_tap` y `render_library_zone`.
 fn library_down_zone(reader: &Reader, y: f32) -> u8 {
     let header_h = lib_header_h(reader.win_h);
@@ -1119,20 +1078,15 @@ fn library_down_zone(reader: &Reader, y: f32) -> u8 {
             };
         }
     }
-    // Contenido: ¿la fila del carousel de Continue Reading (bajo su título)?
+    // Contenido
     let content_y0 = lib_content_y0(
         reader.win_h,
         reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
     let yc = y - content_y0 + reader.library.lib_scroll;
-    let has_cont = reader.lib_has_cont();
-    let cont_h = lib_cont_block_h(reader.win_w, reader.win_h, has_cont);
-    if yc >= lib_section_title_h(reader.win_h) && yc < cont_h {
-        return 1;
-    }
     // Organización: fila SORT (4) / FILTER (5).
-    let grid_y0 = lib_grid_y0(reader.win_w, reader.win_h, has_cont);
+    let grid_y0 = lib_grid_y0(reader.win_w, reader.win_h);
     let org_top = grid_y0 - lib_org_block_h(reader.win_h);
     if yc >= org_top && yc < grid_y0 {
         return if yc < org_top + lib_org_chip_h(reader.win_h) {
@@ -1164,7 +1118,6 @@ fn handle_picker_motion(
                 } else if reader.mode == UiMode::Library {
                     let z = library_down_zone(reader, y);
                     let h = match z {
-                        1 => reader.library.lib_carousel_x,
                         2 => reader.library.lib_letters_x,
                         3 => reader.library.lib_folders_x,
                         4 => reader.library.lib_sort_x,
@@ -1203,7 +1156,6 @@ fn handle_picker_motion(
                     // partida se guardó en `h0` según la zona del Down.
                     if reader.mode == UiMode::Library {
                         let max = match drag.zone {
-                            1 => reader.lib_cont_max_x(),
                             2 => reader.lib_chips_max_x(0),
                             3 => reader.lib_chips_max_x(1),
                             4 => reader.lib_org_max_x(0),
@@ -1212,7 +1164,6 @@ fn handle_picker_motion(
                         };
                         let s = (drag.h0 - dx).clamp(0.0, max);
                         let changed = match drag.zone {
-                            1 => reader.library.lib_carousel_x != s,
                             2 => reader.library.lib_letters_x != s,
                             3 => reader.library.lib_folders_x != s,
                             4 => reader.library.lib_sort_x != s,
@@ -1221,7 +1172,6 @@ fn handle_picker_motion(
                         };
                         if changed {
                             match drag.zone {
-                                1 => reader.library.lib_carousel_x = s,
                                 2 => reader.library.lib_letters_x = s,
                                 3 => reader.library.lib_folders_x = s,
                                 4 => reader.library.lib_sort_x = s,

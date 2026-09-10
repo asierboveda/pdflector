@@ -313,8 +313,6 @@ pub(crate) fn render_viewer_bottom_chrome(reader: &Reader) -> Option<Bitmap> {
     jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts)
 }
 
-/// Render de la fila HORIZONTAL del carousel de "Continue Reading" a un
-/// bitmap (ancho = extensión total de las tarjetas, alto = tarjeta).
 /// Tamaño y posición del indicador de MODO del boli (overlay abajo a la
 /// derecha del visor, simétrico al indicador de página): pill pequeña con el
 /// icono minimalista del modo (✏️ / 🖍️).
