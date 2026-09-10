@@ -2847,6 +2847,7 @@ dependencies = [
  "lru",
  "mupdf",
  "notify",
+ "quick-xml",
  "reqwest",
  "rusqlite",
  "serde",

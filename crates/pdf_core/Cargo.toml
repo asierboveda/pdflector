@@ -44,3 +44,6 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 # by Syncthing on another device). notify is MIT/Apache-2.0, std-ish, no unsafe
 # in our usage; only local FS events, no network.
 notify = "8"
+# Fast streaming XML parser for arXiv Atom feeds (Fase B). default-features=false
+# keeps the binary small (only memchr, no encoding-rs, pure UTF-8). MIT license.
+quick-xml = { version = "0.41", default-features = false }
