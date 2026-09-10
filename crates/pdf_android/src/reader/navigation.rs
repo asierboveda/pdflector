@@ -214,7 +214,6 @@ impl Reader {
             cover_fit: self.cover_fit,
             columns: self.columns,
             hide_covers: self.hide_covers,
-            recent_shelf_enabled: self.recent_shelf_enabled,
             cover_size: self.cover_size,
             cover_progress: self.cover_progress,
         };
@@ -276,7 +275,7 @@ impl Reader {
     }
 
     /// Abre un PDF por ruta y pasa al visor; si `start_page` es Some, salta
-    /// a esa página (la posición guardada de "Continue Reading"/la rejilla),
+    /// a esa página (la posición guardada de la rejilla),
     /// si no a la página 1. Devuelve false (y deja el estado intacto) si no
     /// se pudo abrir.
     pub(crate) fn open_pdf_at(&mut self, path: &str, start_page: Option<u32>) -> bool {
@@ -318,8 +317,8 @@ impl Reader {
                 // funde sobre la página los primeros `LIB_FADE_MS`.
                 let snapshot = match self.mode {
                     UiMode::Library => compose_library_snapshot(self),
+                    UiMode::Discover | UiMode::Viewer => None,
                     UiMode::Picker => self.bitmap.clone(),
-                    UiMode::Viewer => None,
                 };
                 if let Some(s) = snapshot {
                     self.library.lib_fade = Some((Instant::now(), s));
@@ -329,6 +328,11 @@ impl Reader {
                 self.library.lib_band = None;
                 self.library.lib_row_dirty = None;
                 self.cache.clear(); // otro documento: nada reutilizable
+                self.fallback_page = None;
+                if let Some(g) = self.gpu.as_mut() {
+                    let bg = self.theme.palette().rgba_bg();
+                    g.reset_document(bg);
+                }
                 self.mode = UiMode::Viewer;
                 // EGL (Tarea 2.7, productor único): la surface ya NO se suelta
                 // al entrar en Library/Picker, así que al volver al visor

@@ -5,6 +5,8 @@
 
 use super::Reader;
 use super::UiMode;
+use super::geometry::disc_card_h;
+use super::geometry::disc_content_y0;
 use super::geometry::grid_cell_h;
 use super::geometry::lib_content_y0;
 use super::geometry::lib_search_chips_y0;
@@ -12,6 +14,8 @@ use super::geometry::lib_search_chips_y1;
 use super::geometry::list_row_h;
 use crate::draw::blit_library;
 use crate::draw::paste_lib_thumbs;
+use crate::draw::render_discover_header;
+use crate::draw::render_discover_zone;
 use crate::draw::render_eraser_cursor;
 use crate::draw::render_library_header;
 use crate::draw::render_library_zone;
@@ -264,16 +268,13 @@ impl Reader {
             UiMode::Library => {
                 // Clamp del scroll VERTICAL (px) si el contenido menguó
                 // (filtro, rescan, ventana): cabecera + campo de búsqueda +
-                // franja de estado son fijas; el contenido (Continue Reading
-                // + My Library) scrollea bajo ellas. Los scrolls
-                // HORIZONTALES (carousel, panel de búsqueda y organización)
-                // se clampean igual contra su ancho total.
+                // franja de estado son fijas; el contenido (My Library)
+                // scrollea bajo ellas. Los scrolls HORIZONTALES (panel de
+                // búsqueda y organización) se clampean igual contra su ancho total.
                 let max_v = self.lib_max_scroll();
                 if self.library.lib_scroll > max_v {
                     self.library.lib_scroll = max_v;
                 }
-                self.library.lib_carousel_x =
-                    self.library.lib_carousel_x.min(self.lib_cont_max_x());
                 self.library.lib_letters_x =
                     self.library.lib_letters_x.min(self.lib_chips_max_x(0));
                 self.library.lib_folders_x =
@@ -300,9 +301,49 @@ impl Reader {
                     self.rebuild_library_band();
                 }
             }
+            UiMode::Discover => {
+                let max_v = self.discover_max_scroll();
+                if self.discover_scroll() > max_v {
+                    self.set_discover_scroll(max_v);
+                }
+                if self.discover.dirty {
+                    self.rebuild_discover();
+                } else if !self.disc_band_covers() {
+                    self.rebuild_discover_band();
+                }
+            }
         }
         if self.window.is_some() {
             self.blit();
+        }
+    }
+
+    /// Rebuild COMPLETO de Discover (arXiv): cabecera fija + banda de contenido.
+    pub(crate) fn rebuild_discover(&mut self) {
+        self.discover.dirty = false;
+        self.discover.header = render_discover_header(self);
+        self.discover.header_ver += 1;
+        self.rebuild_discover_band();
+    }
+
+    /// Re-renderiza SOLO la banda de contenido de Discover.
+    pub(crate) fn rebuild_discover_band(&mut self) {
+        let content_y0 = disc_content_y0(
+            self.win_h,
+            self.discover.screen,
+            self.status.is_some() || self.discover.status_msg.is_some(),
+        );
+        let viewport = (self.win_h - content_y0).max(0);
+        let content_h = self.discover_content_h() as i32;
+        let margin = disc_card_h() as i32;
+        let band_h = (viewport + 2 * margin).min(content_h.max(viewport));
+        let scroll = self.discover_scroll() as i32;
+        let band_origin = (scroll - margin).max(0).min((content_h - band_h).max(0));
+        if let Some(bmp) = render_discover_zone(self, band_origin, band_h) {
+            self.discover.band = Some((bmp, band_origin));
+            self.discover.band_ver += 1;
+        } else {
+            self.discover.band = None;
         }
     }
 
@@ -723,6 +764,44 @@ impl Reader {
                     );
                 }
             }
+            UiMode::Discover => {
+                let content_y0 = disc_content_y0(
+                    self.win_h,
+                    self.discover.screen,
+                    self.status.is_some() || self.discover.status_msg.is_some(),
+                );
+                if self.toast.is_some() && self.toast_bitmap.is_none() {
+                    self.toast_bitmap = render_toast(self);
+                    self.ovl_seq += 1;
+                    self.toast_id = self.ovl_seq;
+                }
+                if egl_ok {
+                    if let Some(mut g) = self.gpu.take() {
+                        g.present_discover(self, content_y0);
+                        self.gpu = Some(g);
+                    }
+                } else {
+                    sw_blit = true;
+                    let header = self.discover.header.as_ref();
+                    let band = self.discover.band.as_ref().map(|(b, o)| (b, *o));
+                    let toast_ov: Option<(&Bitmap, i32, i32)> =
+                        self.toast_bitmap.as_ref().map(|tb| {
+                            let tx = (self.win_w - tb.width as i32) / 2;
+                            let ty = self.win_h - tb.height as i32 - 16;
+                            (tb, tx, ty)
+                        });
+                    let p = self.theme.palette();
+                    blit_library(
+                        window,
+                        p.rgba_lib_bg(),
+                        header,
+                        band,
+                        self.discover_scroll() as i32,
+                        content_y0,
+                        toast_ov,
+                    );
+                }
+            }
             UiMode::Picker => {
                 if egl_ok {
                     // Ídem: la lista del picker como textura dedicada + swap.
@@ -880,6 +959,8 @@ impl Reader {
                 let _ = handle.join();
             }
         }
+        self.render_rx = None;
+        self.render_seq += 1;
         // Los resultados en vuelo de lotes antiguos caducan solos:
         // `poll_render` ya descarta por `seq != render_seq`.
         self.inflight_target = None;

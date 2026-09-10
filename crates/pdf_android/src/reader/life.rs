@@ -4,12 +4,14 @@
 //! Ciclo de vida del `Reader` (extraído de `reader.rs`, 2026-09-06): construcción (`Reader::new`), apertura de la ventana (`set_window`, `init_window`) y su liberación (`terminate_window`).
 
 use super::AiPhase;
+use super::LaunchRequest;
 use super::LibraryCoverFit;
 use super::LibraryGroupBy;
 use super::LibraryViewMode;
 use super::PickerKind;
 use super::Reader;
 use super::UiMode;
+use super::discover_state::DiscoverState;
 use super::library_state::LibraryState;
 use super::load_pen_mode;
 use super::scan_pdfs;
@@ -22,7 +24,7 @@ use crate::cache::PageCache;
 use crate::gpu::Gpu;
 use crate::input::GestureState;
 use crate::jni::android_sdk_int;
-use crate::jni::launch_intent_pdf;
+use crate::jni::{launch_intent_request, parse_arxiv_target};
 use crate::persist::{self};
 use crate::theme;
 use crate::thumbs::THUMB_BYTE_BUDGET;
@@ -70,6 +72,7 @@ impl Reader {
             grant_pending: false,
             list_scroll: 0,
             library: LibraryState::new(app.internal_data_path().as_deref()),
+            discover: DiscoverState::new(app.internal_data_path().as_deref()),
             ime_active: false,
             view_mode: LibraryViewMode::Grid,
             cover_fit: LibraryCoverFit::Crop,
@@ -78,7 +81,6 @@ impl Reader {
             view_menu_open: false,
             settings_menu_open: false,
             hide_covers: false,
-            recent_shelf_enabled: true,
             cover_size: 1,
             cover_progress: false,
             clear_confirm_until: None,
@@ -161,11 +163,11 @@ impl Reader {
             thumb_worker: None,
             thumb_rx: None,
         };
-        match launch_intent_pdf(app) {
+        match launch_intent_request(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
             // por la biblioteca. Si falla, se cae al picker interno con el
             // motivo como estado (comportamiento previo al spike de biblioteca).
-            Some(lp) => {
+            Some(LaunchRequest::File(lp)) => {
                 info!("open-with intent: {} ({})", lp.name, lp.source);
                 let engine = match MupdfEngine::new() {
                     Ok(e) => e,
@@ -201,6 +203,53 @@ impl Reader {
                     }
                 }
             }
+            // Handoff PaperTok / navegador → PDFLector (ACTION_VIEW pdflector:// o ACTION_SEND)
+            Some(LaunchRequest::Remote(target)) => match parse_arxiv_target(&target) {
+                Some(id) => {
+                    info!("launch_intent_request: Remote arXiv ID: {id}");
+                    reader.refresh_curated_library_data();
+                    let mut found_path = None;
+                    if let Some(entry) = reader.find_arxiv_in_library(&id) {
+                        found_path = Some(if Path::new(&entry.uri).is_file() {
+                            entry.uri.clone()
+                        } else {
+                            reader.entry_path(&entry)
+                        });
+                    } else if let Some(dir) = &reader.internal_dir {
+                        let pdfs_dir = dir.join("pdfs");
+                        if let Ok(entries) = std::fs::read_dir(&pdfs_dir) {
+                            for e in entries.flatten() {
+                                if let Ok(name) = e.file_name().into_string()
+                                    && pdf_core::matches_arxiv_id(&name, &id)
+                                {
+                                    found_path = Some(e.path().display().to_string());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(path_str) = found_path {
+                        info!("launch_intent_request: {id} already present at {path_str}");
+                        if reader.open_pdf(&path_str) {
+                            reader.redraw();
+                        } else {
+                            reader.status = Some(format!("Cannot open {id}"));
+                            reader.reload_curated_library(app);
+                        }
+                    } else {
+                        info!("launch_intent_request: starting download for {id}");
+                        reader.ensure_discover_worker(app);
+                        reader.discover_download(&id, None);
+                        reader.status = Some(format!("Descargando {id}…"));
+                        reader.reload_curated_library(app);
+                    }
+                }
+                None => {
+                    info!("launch_intent_request: target '{target}' is not a valid arXiv paper");
+                    reader.status = Some("Sin PDF de acceso abierto".to_string());
+                    reader.reload_curated_library(app);
+                }
+            },
             // Lanzamiento normal sin intent. Estado persistido (`persist`): si
             // el PDF guardado sigue accesible, se abre directamente en su
             // página/zoom/tema; si ya no existe (o no se puede abrir),
@@ -227,7 +276,6 @@ impl Reader {
                         reader.cover_fit = state.cover_fit;
                         reader.columns = state.columns;
                         reader.hide_covers = state.hide_covers;
-                        reader.recent_shelf_enabled = state.recent_shelf_enabled;
                         reader.cover_size = state.cover_size;
                         reader.cover_progress = state.cover_progress;
                         // Solo restaurar si el PDF sigue accesible: `open_pdf`
@@ -242,6 +290,11 @@ impl Reader {
                             // Modo UNA HOJA: la página restaurada se fija
                             // directamente (no hay scroll que alinear).
                             reader.cache.clear();
+                            reader.fallback_page = None;
+                            if let Some(g) = reader.gpu.as_mut() {
+                                let bg = reader.theme.palette().rgba_bg();
+                                g.reset_document(bg);
+                            }
                             reader.page_badge = None; // indicador de la página restaurada
                             info!(
                                 "restored {} @page {} zoom {:.3} theme {:?}",

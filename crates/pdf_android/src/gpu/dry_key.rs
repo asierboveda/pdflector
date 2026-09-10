@@ -62,4 +62,31 @@ mod tests {
     fn identical_keys_do_not_invalidate() {
         assert!(!base().invalidates(&base()));
     }
+
+    #[test]
+    fn reset_via_none_key_always_invalidates() {
+        let old: Option<DryKey> = None;
+        let new_key = base();
+        assert!(old.is_none_or(|k| new_key.invalidates(&k)));
+    }
+
+    #[test]
+    fn same_page_different_documents_would_not_invalidate_without_reset() {
+        // Documento A en pág 0, zoom 1.0, 0 anns, light:
+        let doc_a_key = DryKey {
+            page: 0,
+            zoom_bits: 1.0f32.to_bits(),
+            ann_count: 0,
+            dark: false,
+        };
+        // Documento B nuevo en pág 0, zoom 1.0, 0 anns, light:
+        let doc_b_key = DryKey {
+            page: 0,
+            zoom_bits: 1.0f32.to_bits(),
+            ann_count: 0,
+            dark: false,
+        };
+        // Sin reset_document (dry_key = None), doc_a_key NO invalida para doc_b_key:
+        assert!(!doc_a_key.invalidates(&doc_b_key));
+    }
 }

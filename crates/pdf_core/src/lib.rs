@@ -7,6 +7,7 @@
 
 pub mod ai;
 pub mod annotations;
+pub mod arxiv;
 pub mod cache;
 pub mod dark;
 pub mod engine;
@@ -27,6 +28,10 @@ pub use ai::{AiError, GeminiClient, GroqClient, OllamaClient, chunk_pages};
 pub use annotations::{
     Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote,
     simplify_polyline, smooth_polyline,
+};
+pub use arxiv::{
+    ArxivError, ArxivId, ArxivQuery, arxiv_filename, matches_arxiv_id, parse_arxiv_id,
+    resolve_unique_filename, sanitize_paper_title, titled_filename,
 };
 pub use cache::{CacheStats, PageKey, RenderCache, RenderedPage, scale_for_level};
 pub use dark::invert_bitmap;

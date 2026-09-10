@@ -7,6 +7,7 @@ use super::BookStatus;
 use super::EmptyStateGeom;
 use super::LibSort;
 use super::Reader;
+use super::discover_state::{DiscoverScreen, DiscoverTab};
 use crate::draw::ButtonRect;
 
 /// Alto (px) de cada fila del picker, proporcional a la ventana.
@@ -174,12 +175,10 @@ pub(crate) fn list_row_rect(
 // La biblioteca ya NO es un file manager: es una biblioteca personal de
 // libros (estilo Apple Books/Kindle pero propio). Las PORTADAS mandan;
 // el header es editorial (título grande + "＋ Add book" + campo de
-// búsqueda); "Continue Reading" (carousel horizontal de tarjetas con
-// portada grande, título, autor, barra de progreso, "Page X of Y" y acción
-// "Read") es el punto de entrada; y "My Library" es la rejilla principal
-// de portadas con título/autor/progreso y sus chips discretos de
-// organización (sort/filter). Toda la geometría de abajo es COMPARTIDA
-// por el render (`draw::render_library_zone` + `render_library_header`), el tap y el arrastre
+// búsqueda); y "My Library" es la rejilla principal de portadas con
+// título/autor/progreso y sus chips discretos de organización (sort/filter).
+// Toda la geometría de abajo es COMPARTIDA por el render
+// (`draw::render_library_zone` + `render_library_header`), el tap y el arrastre
 // (`input`) y el pump de portadas (`Reader::pump_thumbs`).
 /// Alto (px) de la CABECERA de la biblioteca: título "Library" grande y
 /// negrita + botón "＋ Add book" a la derecha.
@@ -280,54 +279,6 @@ pub(crate) fn lib_content_y0(win_h: i32, search_open: bool, has_status: bool) ->
         + status_h
 }
 
-/// Alto (px) de un título de sección ("CONTINUE READING"/"My Library").
-pub(crate) fn lib_section_title_h(win_h: i32) -> f32 {
-    (win_h as f32 / 64.0).clamp(24.0, 32.0)
-}
-
-/// Ancho (px) de la portada de una tarjeta de "Continue Reading" (2:3).
-// sección "Continue Reading" oculta por diseño (2026-08-25)
-pub(crate) fn lib_cont_cover_w(win_h: i32) -> f32 {
-    lib_cont_cover_h(win_h) / 1.5
-}
-
-/// Alto (px) de la portada de una tarjeta (proporción 2:3).
-// sección "Continue Reading" oculta por diseño (2026-08-25)
-pub(crate) fn lib_cont_cover_h(win_h: i32) -> f32 {
-    lib_cont_card_h(win_h) - 32.0
-}
-
-/// Alto (px) de la tarjeta horizontal (~15% de win_h).
-pub(crate) fn lib_cont_card_h(win_h: i32) -> f32 {
-    (win_h as f32 * 0.15).clamp(240.0, 330.0)
-}
-
-/// Ancho (px) de la tarjeta horizontal.
-pub(crate) fn lib_cont_card_w(win_w: i32, _win_h: i32) -> f32 {
-    (win_w as f32 * 0.52).clamp(440.0, 640.0)
-}
-
-/// Separación horizontal entre tarjetas del carousel (px).
-pub(crate) fn lib_cont_gap() -> f32 {
-    18.0
-}
-
-/// X (px) en coords de CONTENIDO de la tarjeta `i` del carousel (sin el
-/// scroll horizontal aplicado).
-pub(crate) fn lib_cont_card_x(win_w: i32, win_h: i32, i: usize) -> f32 {
-    grid_pad(win_w) + i as f32 * (lib_cont_card_w(win_w, win_h) + lib_cont_gap())
-}
-
-/// Alto (px) del bloque de "Continue Reading" (título de sección + fila de
-/// tarjetas) en coords de contenido; 0 si no hay libros en curso.
-pub(crate) fn lib_cont_block_h(_win_w: i32, win_h: i32, has_cont: bool) -> f32 {
-    if !has_cont {
-        0.0
-    } else {
-        lib_section_title_h(win_h) + lib_cont_card_h(win_h) + 16.0
-    }
-}
-
 /// --- Organización de "My Library" (sort + filter, chips discretos) ---
 /// Alto (px) de un chip de organización (>= 40 px).
 pub(crate) fn lib_org_chip_h(win_h: i32) -> f32 {
@@ -352,20 +303,14 @@ pub(crate) fn lib_org_label_w() -> f32 {
 
 /// Y (px) del borde superior de la fila de organización `row` (0 = sort,
 /// 1 = filter) en coords de CONTENIDO (bajo el título de "My Library").
-pub(crate) fn lib_org_y(win_w: i32, win_h: i32, has_cont: bool, row: usize) -> f32 {
-    lib_grid_y0(win_w, win_h, has_cont) - lib_org_block_h(win_h)
+pub(crate) fn lib_org_y(win_w: i32, win_h: i32, row: usize) -> f32 {
+    lib_grid_y0(win_w, win_h) - lib_org_block_h(win_h)
         + row as f32 * (lib_org_chip_h(win_h) + lib_org_gap())
 }
 
 /// Y (px) del borde superior de la REJILLA o LISTA en coords de CONTENIDO.
-/// Si `has_cont` es true (estantería de recientes activa con libros),
-/// deja espacio para el carousel Continue Reading.
-pub(crate) fn lib_grid_y0(win_w: i32, win_h: i32, has_cont: bool) -> f32 {
-    if has_cont {
-        lib_cont_block_h(win_w, win_h, true) + 16.0
-    } else {
-        8.0
-    }
+pub(crate) fn lib_grid_y0(_win_w: i32, _win_h: i32) -> f32 {
+    8.0
 }
 
 /// Ancho (px) de un chip del panel de búsqueda según el nº de caracteres de
@@ -482,8 +427,7 @@ pub(crate) fn lib_org_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonR
         reader.library.lib_search_open,
         reader.status.is_some(),
     ) as f32;
-    let y0 = content_y0 - reader.library.lib_scroll
-        + lib_org_y(win_w, reader.win_h, reader.lib_has_cont(), row);
+    let y0 = content_y0 - reader.library.lib_scroll + lib_org_y(win_w, reader.win_h, row);
     let chip_h = lib_org_chip_h(reader.win_h);
     let mut out = Vec::new();
     let mut x = x0;
@@ -640,4 +584,250 @@ pub(crate) fn truncate_name(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars).collect();
     out.push('…');
     out
+}
+
+/// Rectángulos de las pestañas principales de la cabecera: (Biblioteca, Descubrir).
+/// Cada tupla es (left, top, right, bottom) en píxeles de ventana.
+pub(crate) fn lib_tabs_rect(win_w: i32, win_h: i32) -> (ButtonRect, ButtonRect) {
+    let pad = grid_pad(win_w);
+    let header_h = lib_header_h(win_h);
+    let top_pad = 36.0f32;
+    let tab_h = ((header_h - top_pad) * 0.58).clamp(38.0, 48.0);
+    let tab_y = top_pad + (header_h - top_pad - tab_h) / 2.0;
+    let tab_w = 160.0f32;
+    let gap = 12.0f32;
+    let tab1 = (pad, tab_y, pad + tab_w, tab_y + tab_h);
+    let tab2 = (
+        pad + tab_w + gap,
+        tab_y,
+        pad + 2.0 * tab_w + gap,
+        tab_y + tab_h,
+    );
+    (tab1, tab2)
+}
+
+/// Alto (px) de la cabecera principal de Discover (idéntica a la de la biblioteca).
+pub(crate) fn disc_header_h(win_h: i32) -> f32 {
+    lib_header_h(win_h)
+}
+
+/// Alto (px) de la barra de sub-pestañas de Discover (Feed, Buscar, Áreas).
+pub(crate) fn disc_subtabs_h() -> f32 {
+    48.0
+}
+
+/// Rectángulos de las tres sub-pestañas de Discover: Feed ("Últimos"), Buscar, Áreas.
+pub(crate) fn disc_subtabs_rect(win_w: i32, win_h: i32) -> [(DiscoverTab, ButtonRect); 3] {
+    let pad = grid_pad(win_w);
+    let y0 = disc_header_h(win_h);
+    let tab_h = 36.0f32;
+    let tab_y = y0 + (disc_subtabs_h() - tab_h) / 2.0;
+    let tab_w = 120.0f32;
+    let gap = 10.0f32;
+
+    let r_feed = (pad, tab_y, pad + tab_w, tab_y + tab_h);
+    let r_search = (
+        pad + tab_w + gap,
+        tab_y,
+        pad + 2.0 * tab_w + gap,
+        tab_y + tab_h,
+    );
+    let r_areas = (
+        pad + 2.0 * (tab_w + gap),
+        tab_y,
+        pad + 3.0 * tab_w + 2.0 * gap,
+        tab_y + tab_h,
+    );
+
+    [
+        (DiscoverTab::Feed, r_feed),
+        (DiscoverTab::Search, r_search),
+        (DiscoverTab::Areas, r_areas),
+    ]
+}
+
+/// Alto (px) de la barra de búsqueda de Discover.
+pub(crate) fn disc_search_h() -> f32 {
+    56.0
+}
+
+/// Rectángulos de la barra de búsqueda en Discover: (campo_texto, boton_limpiar_x, boton_buscar).
+pub(crate) fn disc_search_rect(win_w: i32, win_h: i32) -> (ButtonRect, ButtonRect, ButtonRect) {
+    let pad = grid_pad(win_w);
+    let y0 = disc_header_h(win_h) + disc_subtabs_h();
+    let h = 42.0f32;
+    let y = y0 + (disc_search_h() - h) / 2.0;
+    let search_btn_w = 100.0f32;
+    let gap = 10.0f32;
+
+    let search_btn = (
+        win_w as f32 - pad - search_btn_w,
+        y,
+        win_w as f32 - pad,
+        y + h,
+    );
+    let field_r = win_w as f32 - pad - search_btn_w - gap;
+    let input_field = (pad, y, field_r, y + h);
+    let clear_btn = (field_r - 36.0, y + 3.0, field_r - 6.0, y + h - 3.0);
+
+    (input_field, clear_btn, search_btn)
+}
+
+/// Coordenada Y (px de ventana) donde comienza el contenido scrolleable de Discover.
+pub(crate) fn disc_content_y0(win_h: i32, screen: DiscoverScreen, has_status: bool) -> i32 {
+    let status_h = if has_status { 36.0 } else { 0.0 };
+    let base = match screen {
+        DiscoverScreen::Detail => disc_header_h(win_h),
+        DiscoverScreen::Search => disc_header_h(win_h) + disc_subtabs_h() + disc_search_h(),
+        DiscoverScreen::Feed | DiscoverScreen::Areas => disc_header_h(win_h) + disc_subtabs_h(),
+    };
+    (base + status_h).ceil() as i32
+}
+
+/// Margen lateral de las tarjetas de Discover.
+pub(crate) fn disc_card_pad(win_w: i32) -> f32 {
+    grid_pad(win_w)
+}
+
+/// Ancho (px) de una tarjeta de paper en Discover.
+pub(crate) fn disc_card_w(win_w: i32) -> f32 {
+    (win_w as f32 - 2.0 * disc_card_pad(win_w)).max(200.0)
+}
+
+/// Alto (px) de una tarjeta de paper en Discover.
+pub(crate) fn disc_card_h() -> f32 {
+    195.0
+}
+
+/// Separación vertical (px) entre tarjetas de paper en Discover.
+pub(crate) fn disc_card_gap() -> f32 {
+    16.0
+}
+
+/// Rectángulo en coordenadas de contenido de la tarjeta `idx` en Discover.
+pub(crate) fn disc_card_rect(win_w: i32, idx: usize) -> ButtonRect {
+    let pad = disc_card_pad(win_w);
+    let w = disc_card_w(win_w);
+    let h = disc_card_h();
+    let gap = disc_card_gap();
+    let top = 16.0 + idx as f32 * (h + gap);
+    (pad, top, pad + w, top + h)
+}
+
+/// Rectángulo del botón de acción en la esquina inferior derecha de una tarjeta.
+pub(crate) fn disc_card_action_rect(card: ButtonRect) -> ButtonRect {
+    let btn_w = 140.0f32;
+    let btn_h = 38.0f32;
+    let margin = 14.0f32;
+    (
+        card.2 - margin - btn_w,
+        card.3 - margin - btn_h,
+        card.2 - margin,
+        card.3 - margin,
+    )
+}
+
+/// Rectángulo del botón de paginación ("Cargar más").
+pub(crate) fn disc_more_btn_rect(win_w: i32, bottom_y: f32) -> ButtonRect {
+    let btn_w = 220.0f32;
+    let btn_h = 46.0f32;
+    let x = ((win_w as f32 - btn_w) / 2.0).max(disc_card_pad(win_w));
+    let y = bottom_y + 20.0;
+    (x, y, x + btn_w, y + btn_h)
+}
+
+/// Alto (px) de una fila de categoría en la pantalla de Áreas.
+pub(crate) fn disc_cat_row_h() -> f32 {
+    56.0
+}
+
+/// Rectángulo en coords de contenido de una fila de categoría en la pantalla de Áreas.
+pub(crate) fn disc_cat_row_rect(win_w: i32, idx: usize) -> ButtonRect {
+    let pad = disc_card_pad(win_w);
+    let top = 14.0 + idx as f32 * disc_cat_row_h();
+    (pad, top, win_w as f32 - pad, top + disc_cat_row_h() - 6.0)
+}
+
+/// Rectángulo del botón de regreso [← Volver] en la pantalla de Ficha (Detail).
+pub(crate) fn disc_detail_back_rect(win_w: i32, win_h: i32) -> ButtonRect {
+    let pad = grid_pad(win_w);
+    let header_h = disc_header_h(win_h);
+    let top_pad = 36.0f32;
+    let btn_h = 40.0f32;
+    let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
+    (pad, btn_y, pad + 120.0, btn_y + btn_h)
+}
+
+/// Rectángulo del botón principal de acción (Descargar / Leer) en la pantalla de Ficha.
+pub(crate) fn disc_detail_action_rect(win_w: i32, y: f32) -> ButtonRect {
+    let pad = grid_pad(win_w);
+    let inner_pad = 16.0f32;
+    let btn_w = (win_w as f32 * 0.45).clamp(240.0, 360.0);
+    let btn_h = 50.0f32;
+    let x = pad + inner_pad;
+    (x, y, x + btn_w, y + btn_h)
+}
+
+/// Helper para envolver texto en líneas según un ancho máximo aproximado en caracteres.
+pub(crate) fn wrap_text_chars(text: &str, max_chars: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let trimmed = para.trim();
+        if trimmed.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut cur = String::new();
+        for word in trimmed.split_whitespace() {
+            if cur.is_empty() {
+                cur = word.to_string();
+            } else if cur.chars().count() + 1 + word.chars().count() <= max_chars {
+                cur.push(' ');
+                cur.push_str(word);
+            } else {
+                out.push(std::mem::take(&mut cur));
+                cur = word.to_string();
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+    }
+    out
+}
+
+/// Calcula el layout exacto de la pantalla de Ficha (Detail):
+/// devuelve (rectángulo_botón_acción, altura_total_contenido).
+pub(crate) fn disc_detail_layout(
+    win_w: i32,
+    entry: &pdf_core::arxiv::ArxivEntry,
+) -> (ButtonRect, f32) {
+    let pad = grid_pad(win_w);
+    let inner_pad = 16.0f32;
+    let card_w = (win_w as f32 - 2.0 * pad).max(200.0);
+    let inner_w = (card_w - 2.0 * inner_pad).max(180.0);
+    let max_chars = ((inner_w / (crate::theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
+
+    let title_lines = wrap_text_chars(&entry.title, max_chars);
+    let authors_lines = wrap_text_chars(&entry.authors.join(", "), max_chars + 8);
+    let abstract_lines = wrap_text_chars(&entry.summary, max_chars + 10);
+
+    let hero_top = 16.0f32;
+    let badge_y = hero_top + 16.0;
+    let title_y = badge_y + 36.0;
+    let authors_y = title_y + title_lines.len() as f32 * 26.0 + 8.0;
+    let divider_y = authors_y + authors_lines.len() as f32 * 22.0 + 10.0;
+    let meta_y = divider_y + 18.0;
+    let btn_y = meta_y + 22.0;
+    let action_btn = disc_detail_action_rect(win_w, btn_y);
+    let hero_bot = action_btn.3 + 20.0;
+
+    let abstract_top = hero_bot + 16.0;
+    let abstract_header_y = abstract_top + 28.0;
+    let abstract_body_y = abstract_header_y + 24.0;
+    let abstract_bot = abstract_body_y + abstract_lines.len() as f32 * 22.0 + 20.0;
+
+    let total_h = abstract_bot + 60.0;
+
+    (action_btn, total_h)
 }

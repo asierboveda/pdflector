@@ -34,8 +34,6 @@ pub(crate) struct LibraryState {
     /// el modo Library (las secciones tienen alturas distintas, así que el
     /// scroll en filas ya no vale).
     pub(crate) lib_scroll: f32,
-    /// Scroll horizontal (px) del carousel de RECIENTES (Continue Reading).
-    pub(crate) lib_carousel_x: f32,
     /// Scroll horizontal (px) de la fila de chips de carpetas (búsqueda).
     pub(crate) lib_folders_x: f32,
     /// Scroll horizontal (px) de la fila de chips de letras (búsqueda).
@@ -64,12 +62,11 @@ pub(crate) struct LibraryState {
     /// Orden de "My Library" (chips de sort: Recently Added / Recently Read /
     /// Title / Author).
     pub(crate) lib_sort: LibSort,
-    /// Filtro de ESTADO de "My Library" (None = All); también decide si
-    /// "Continue Reading" se muestra (solo All/Reading).
+    /// Filtro de ESTADO de "My Library" (None = All).
     pub(crate) lib_status: Option<BookStatus>,
     /// Registro de PROGRESO por libro (persistido en `internal/library.json`;
     /// ver `persist::BookProgress`): path → {page, page_count, last_read,
-    /// added}. Alimenta "Continue Reading", las barras de progreso de la
+    /// added}. Alimenta las barras de progreso de la
     /// rejilla, el sort y el filtro de estado. Se actualiza al abrir/cambiar
     /// de página (en `save_state`).
     pub(crate) lib_books: Vec<BookProgress>,
@@ -133,7 +130,6 @@ impl LibraryState {
     pub(crate) fn new(internal_dir: Option<&Path>) -> Self {
         Self {
             lib_scroll: 0.0,
-            lib_carousel_x: 0.0,
             lib_folders_x: 0.0,
             lib_letters_x: 0.0,
             lib_sort_x: 0.0,

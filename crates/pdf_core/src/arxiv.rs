@@ -1,0 +1,761 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
+//! Pure logic for arXiv integration: ID parsing, query builder, and types.
+//!
+//! UI-independent and free of `unwrap`/`expect` outside of unit tests.
+
+/// Category of an arXiv identifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArxivId {
+    /// Modern 5-digit identifier (e.g. `2401.12345`).
+    Modern(String),
+    /// Modern 4-digit identifier (e.g. `0706.0001`).
+    Modern4(String),
+    /// Classic identifier with archive/subject (e.g. `hep-th/9901001`).
+    Classic(String),
+}
+
+/// Errors produced by arXiv operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArxivError {
+    InvalidId(String),
+    Network(String),
+    Http { status: u16, body: String },
+    RateLimited,
+    XmlParse(String),
+    Io(String),
+}
+
+impl std::fmt::Display for ArxivError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidId(id) => write!(f, "invalid arXiv identifier: {id}"),
+            Self::Network(msg) => write!(f, "arXiv network error: {msg}"),
+            Self::Http { status, body } => write!(f, "arXiv HTTP error {status}: {body}"),
+            Self::RateLimited => write!(f, "arXiv rate limited"),
+            Self::XmlParse(msg) => write!(f, "arXiv XML parse error: {msg}"),
+            Self::Io(msg) => write!(f, "arXiv I/O error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ArxivError {}
+
+/// Parses a raw string (ID, URL, or prefixed string) into `(base_id, Option<version>)`.
+///
+/// Converts prefixes like `https://arxiv.org/abs/`, `arXiv:`, etc.
+/// Note: `/` is preserved in classic IDs (e.g. `hep-th/9901001`); local filename conversion to `_`
+/// must only happen when writing to disk, never in URLs or API calls.
+pub fn parse_arxiv_id(raw: &str) -> Result<(String, Option<String>), ArxivError> {
+    let mut s = raw.trim().to_owned();
+    for p in [
+        "https://arxiv.org/abs/",
+        "https://arxiv.org/pdf/",
+        "http://arxiv.org/abs/",
+        "http://arxiv.org/pdf/",
+        "arXiv:",
+        "arxiv:",
+    ] {
+        if let Some(r) = s.strip_prefix(p) {
+            s = r.to_owned();
+            break;
+        }
+    }
+    let s = s.strip_suffix(".pdf").unwrap_or(&s).trim().to_owned();
+    if s.contains('_') {
+        return Err(ArxivError::InvalidId(raw.into()));
+    }
+    let (base, ver) = match s.rfind('v') {
+        Some(i) if s[i + 1..].chars().all(|c| c.is_ascii_digit()) && !s[i + 1..].is_empty() => {
+            (s[..i].to_owned(), Some(s[i + 1..].to_owned()))
+        }
+        _ => (s.clone(), None),
+    };
+    let ok = base.contains('/') || (base.contains('.') && base.len() >= 8);
+    if !ok {
+        return Err(ArxivError::InvalidId(raw.into()));
+    }
+    Ok((base, ver))
+}
+
+/// Query builder for the arXiv API.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArxivQuery {
+    pub search_query: Option<String>,
+    pub id_list: Vec<String>,
+    pub start: Option<usize>,
+    pub max_results: Option<usize>,
+    pub sort_by: Option<String>,
+    pub sort_order: Option<String>,
+}
+
+impl ArxivQuery {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_search_query(mut self, query: impl Into<String>) -> Self {
+        self.search_query = Some(query.into());
+        self
+    }
+
+    pub fn with_id_list(mut self, ids: Vec<String>) -> Self {
+        self.id_list = ids;
+        self
+    }
+
+    pub fn with_start(mut self, start: usize) -> Self {
+        self.start = Some(start);
+        self
+    }
+
+    pub fn with_max_results(mut self, max_results: usize) -> Self {
+        self.max_results = Some(max_results);
+        self
+    }
+
+    pub fn with_sort_by(mut self, sort_by: impl Into<String>) -> Self {
+        self.sort_by = Some(sort_by.into());
+        self
+    }
+
+    pub fn with_sort_order(mut self, sort_order: impl Into<String>) -> Self {
+        self.sort_order = Some(sort_order.into());
+        self
+    }
+
+    /// Converts query parameters into key-value pairs for HTTP GET request query string.
+    pub fn to_params(&self) -> Vec<(String, String)> {
+        let mut params = Vec::new();
+        if let Some(sq) = &self.search_query {
+            params.push(("search_query".to_string(), sq.clone()));
+        }
+        if !self.id_list.is_empty() {
+            params.push(("id_list".to_string(), self.id_list.join(",")));
+        }
+        if let Some(start) = self.start {
+            params.push(("start".to_string(), start.to_string()));
+        }
+        if let Some(max_results) = self.max_results {
+            params.push(("max_results".to_string(), max_results.to_string()));
+        }
+        if let Some(sb) = &self.sort_by {
+            params.push(("sortBy".to_string(), sb.clone()));
+        }
+        if let Some(so) = &self.sort_order {
+            params.push(("sortOrder".to_string(), so.clone()));
+        }
+        params
+    }
+}
+
+/// Default User-Agent header identifying the app according to arXiv API policy.
+pub const ARXIV_USER_AGENT: &str =
+    "PDFLector/0.1 (+https://github.com/asierboveda/pdflector; contact@pdflector.app)";
+
+const ARXIV_DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const ARXIV_DEFAULT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Metadata of a single arXiv paper entry.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct ArxivEntry {
+    pub id: String,
+    pub version: Option<String>,
+    pub title: String,
+    pub summary: String,
+    pub authors: Vec<String>,
+    pub primary_category: String,
+    pub categories: Vec<String>,
+    pub published: String,
+    pub updated: String,
+    pub pdf_url: String,
+    pub abs_url: String,
+    pub doi: Option<String>,
+}
+
+/// Result of a successful paper PDF download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadOutcome {
+    pub final_name: String,
+    pub etag: Option<String>,
+    pub bytes: u64,
+}
+
+/// Client for searching and retrieving papers from the arXiv API.
+pub struct ArxivClient {
+    api_base: String,
+    pub pdf_base: String,
+    client: reqwest::blocking::Client,
+    last_request: std::sync::Mutex<Option<std::time::Instant>>,
+    min_interval: std::time::Duration,
+}
+
+impl ArxivClient {
+    /// Creates a new production arXiv client with rate-limiting and default User-Agent.
+    pub fn new() -> Result<Self, ArxivError> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(ARXIV_USER_AGENT)
+            .timeout(ARXIV_DEFAULT_TIMEOUT)
+            .build()
+            .map_err(|e| ArxivError::Network(e.to_string()))?;
+
+        Ok(Self {
+            api_base: "https://export.arxiv.org/api".to_string(),
+            pdf_base: "https://arxiv.org".to_string(),
+            client,
+            last_request: std::sync::Mutex::new(None),
+            min_interval: ARXIV_DEFAULT_INTERVAL,
+        })
+    }
+
+    /// Test constructor allowing redirection to a local HTTP mock server without rate limiting delay.
+    #[doc(hidden)]
+    pub fn for_tests(base_url: &str) -> Self {
+        let trimmed = base_url.trim_end_matches('/');
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(ARXIV_USER_AGENT)
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|e| ArxivError::Network(e.to_string()))
+            .unwrap_or_default();
+
+        Self {
+            api_base: format!("{trimmed}/api"),
+            pdf_base: trimmed.to_string(),
+            client,
+            last_request: std::sync::Mutex::new(None),
+            min_interval: std::time::Duration::ZERO,
+        }
+    }
+
+    /// Throttles requests according to the minimum interval (1 req / 3s by default).
+    pub fn throttle(&self) {
+        let mut last = match self.last_request.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(prev) = *last {
+            let elapsed = prev.elapsed();
+            if elapsed < self.min_interval {
+                std::thread::sleep(self.min_interval - elapsed);
+            }
+        }
+        *last = Some(std::time::Instant::now());
+    }
+
+    fn backoff_delay(
+        &self,
+        attempt: usize,
+        retry_after: Option<std::time::Duration>,
+    ) -> std::time::Duration {
+        if self.min_interval == std::time::Duration::ZERO {
+            return std::time::Duration::ZERO;
+        }
+        if let Some(delay) = retry_after {
+            return delay;
+        }
+        let base_secs = 1u64.max(self.min_interval.as_secs());
+        let factor = 1u64.checked_shl(attempt as u32).unwrap_or(8);
+        let backoff_secs = base_secs.saturating_mul(factor);
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_millis() as u64)
+            .unwrap_or(0);
+        let jitter_ms = 50 + (now_millis % 200);
+        std::time::Duration::from_secs(backoff_secs) + std::time::Duration::from_millis(jitter_ms)
+    }
+
+    /// Performs an arXiv search query and returns the matching entries.
+    pub fn search(&self, q: &ArxivQuery) -> Result<Vec<ArxivEntry>, ArxivError> {
+        let url = format!("{}/query", self.api_base);
+        let params = q.to_params();
+
+        for attempt in 0..=3 {
+            self.throttle();
+            let mut req = self.client.get(&url);
+            for (k, v) in &params {
+                req = req.query(&[(k, v)]);
+            }
+            let resp = req.send().map_err(|e| ArxivError::Network(e.to_string()))?;
+            let status = resp.status().as_u16();
+            if status == 429 || status == 503 {
+                if attempt < 3 {
+                    let retry_after = parse_retry_after(resp.headers());
+                    let delay = self.backoff_delay(attempt, retry_after);
+                    if !delay.is_zero() {
+                        std::thread::sleep(delay);
+                    }
+                    continue;
+                }
+                return Err(ArxivError::RateLimited);
+            }
+            let bytes = resp
+                .bytes()
+                .map_err(|e| ArxivError::Network(e.to_string()))?;
+            let body = String::from_utf8_lossy(&bytes);
+            if status != 200 {
+                return Err(ArxivError::Http {
+                    status,
+                    body: body.into_owned(),
+                });
+            }
+            return parse_atom_body(&body);
+        }
+        Err(ArxivError::RateLimited)
+    }
+
+    /// Fetches papers by a list of arXiv IDs.
+    pub fn fetch_by_ids(&self, ids: &[&str]) -> Result<Vec<ArxivEntry>, ArxivError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut parsed_ids = Vec::with_capacity(ids.len());
+        for raw in ids {
+            let (id, ver) = parse_arxiv_id(raw)?;
+            let id_str = match ver {
+                Some(v) => format!("{id}v{v}"),
+                None => id,
+            };
+            parsed_ids.push(id_str);
+        }
+        let query = ArxivQuery::new()
+            .with_id_list(parsed_ids)
+            .with_max_results(ids.len());
+        self.search(&query)
+    }
+
+    /// Fetches metadata for a single arXiv paper.
+    pub fn fetch_meta(&self, id: &str) -> Result<Option<ArxivEntry>, ArxivError> {
+        let entries = self.fetch_by_ids(&[id])?;
+        Ok(entries.into_iter().next())
+    }
+
+    /// Downloads a paper PDF by arXiv identifier, streaming content to the given writer.
+    ///
+    /// Respects the rate-limiting throttle, verifies `application/pdf` content-type,
+    /// extracts resolved version/filename from `Content-Disposition`, and extracts `ETag` if present.
+    pub fn download_to(
+        &self,
+        id: &str,
+        w: &mut dyn std::io::Write,
+    ) -> Result<DownloadOutcome, ArxivError> {
+        let (base, _) = parse_arxiv_id(id)?;
+        let url = format!("{}/pdf/{}", self.pdf_base, base);
+
+        for attempt in 0..=3 {
+            self.throttle();
+            let mut resp = self
+                .client
+                .get(&url)
+                .send()
+                .map_err(|e| ArxivError::Network(e.to_string()))?;
+            let status = resp.status().as_u16();
+            if status == 429 || status == 503 {
+                if attempt < 3 {
+                    let retry_after = parse_retry_after(resp.headers());
+                    let delay = self.backoff_delay(attempt, retry_after);
+                    if !delay.is_zero() {
+                        std::thread::sleep(delay);
+                    }
+                    continue;
+                }
+                return Err(ArxivError::RateLimited);
+            }
+            if status != 200 {
+                return Err(ArxivError::Http {
+                    status,
+                    body: String::new(),
+                });
+            }
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            if !ct.contains("application/pdf") {
+                return Err(ArxivError::Http {
+                    status,
+                    body: format!("bad content-type {ct}"),
+                });
+            }
+            let etag = resp
+                .headers()
+                .get("etag")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_owned());
+            let final_name = resp
+                .headers()
+                .get("content-disposition")
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_disposition_filename)
+                .unwrap_or_else(|| format!("{base}.pdf"));
+            let bytes = std::io::copy(&mut resp, w).map_err(|e| ArxivError::Io(e.to_string()))?;
+            return Ok(DownloadOutcome {
+                final_name,
+                etag,
+                bytes,
+            });
+        }
+        Err(ArxivError::RateLimited)
+    }
+}
+
+/// Test helper exposing `parse_atom_body`.
+pub fn parse_atom_for_test(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
+    parse_atom_body(body)
+}
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    let val = headers.get("retry-after")?.to_str().ok()?.trim();
+    if let Ok(secs) = val.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    None
+}
+
+fn parse_content_disposition_filename(disposition: &str) -> Option<String> {
+    for part in disposition.split(';') {
+        let part = part.trim();
+        if let Some((k, v)) = part.split_once('=')
+            && k.trim().eq_ignore_ascii_case("filename")
+        {
+            let clean = v.trim().trim_matches(['"', ' ']);
+            if !clean.is_empty() {
+                return Some(clean.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn resolve_entity_ref(raw: &str) -> Option<char> {
+    match raw {
+        "gt" => Some('>'),
+        "lt" => Some('<'),
+        "amp" => Some('&'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ if raw.starts_with("#x") || raw.starts_with("#X") => u32::from_str_radix(&raw[2..], 16)
+            .ok()
+            .and_then(char::from_u32),
+        _ if raw.starts_with('#') => raw[1..].parse::<u32>().ok().and_then(char::from_u32),
+        _ => None,
+    }
+}
+fn handle_element_attributes(e: &quick_xml::events::BytesStart<'_>, cur: &mut Option<ArxivEntry>) {
+    let n = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+    match n.as_str() {
+        "link" => {
+            let mut href = String::new();
+            let mut rel = String::new();
+            let mut title = String::new();
+            for a in e.attributes().flatten() {
+                let key = String::from_utf8_lossy(a.key.as_ref());
+                let val = String::from_utf8_lossy(&a.value).into_owned();
+                match key.as_ref() {
+                    "href" => href = val,
+                    "rel" => rel = val,
+                    "title" => title = val,
+                    _ => {}
+                }
+            }
+            if let Some(c) = cur.as_mut() {
+                if rel == "related" && title == "pdf" {
+                    c.pdf_url = href;
+                } else if rel == "alternate" {
+                    c.abs_url = href;
+                }
+            }
+        }
+        "category" => {
+            if let Some(c) = cur.as_mut() {
+                for a in e.attributes().flatten() {
+                    if a.key.as_ref() == b"term" {
+                        let term = String::from_utf8_lossy(&a.value).into_owned();
+                        c.categories.push(term);
+                    }
+                }
+            }
+        }
+        "primary_category" => {
+            if let Some(c) = cur.as_mut() {
+                for a in e.attributes().flatten() {
+                    if a.key.as_ref() == b"term" {
+                        let term = String::from_utf8_lossy(&a.value).into_owned();
+                        c.primary_category = term;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Parses an Atom XML response body from arXiv into a vector of [`ArxivEntry`].
+pub fn parse_atom_body(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
+    let mut r = quick_xml::Reader::from_str(body);
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+    let mut cur: Option<ArxivEntry> = None;
+    let mut field = String::new();
+    let mut author_name = String::new();
+    let mut doi_buf = String::new();
+
+    loop {
+        match r
+            .read_event_into(&mut buf)
+            .map_err(|e| ArxivError::XmlParse(e.to_string()))?
+        {
+            quick_xml::events::Event::Start(e) => {
+                let n = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                match n.as_str() {
+                    "entry" => cur = Some(ArxivEntry::default()),
+                    "title" | "summary" | "id" | "published" | "updated" | "name" | "doi" => {
+                        field = n.clone();
+                        if n == "name" {
+                            author_name.clear();
+                        } else if n == "doi" {
+                            doi_buf.clear();
+                        }
+                    }
+                    _ => field.clear(),
+                }
+                handle_element_attributes(&e, &mut cur);
+            }
+            quick_xml::events::Event::Empty(e) => {
+                handle_element_attributes(&e, &mut cur);
+            }
+            quick_xml::events::Event::GeneralRef(r) => {
+                let raw = std::str::from_utf8(r.as_ref())
+                    .map_err(|e| ArxivError::XmlParse(e.to_string()))?;
+                if let (Some(ch), Some(c)) = (resolve_entity_ref(raw), cur.as_mut()) {
+                    match field.as_str() {
+                        "title" => c.title.push(ch),
+                        "summary" => c.summary.push(ch),
+                        "name" => author_name.push(ch),
+                        _ => {}
+                    }
+                }
+            }
+            quick_xml::events::Event::Text(t) => {
+                let raw = std::str::from_utf8(t.as_ref())
+                    .map_err(|e| ArxivError::XmlParse(e.to_string()))?;
+                let v = quick_xml::escape::unescape(raw)
+                    .map_err(|e| ArxivError::XmlParse(e.to_string()))?;
+                if let Some(c) = cur.as_mut() {
+                    match field.as_str() {
+                        "title" => c.title.push_str(&v),
+                        "summary" => c.summary.push_str(&v),
+                        "id" => {
+                            c.abs_url = v.trim().to_string();
+                        }
+                        "published" => c.published.push_str(v.trim()),
+                        "updated" => c.updated.push_str(v.trim()),
+                        "name" => author_name.push_str(&v),
+                        "doi" => doi_buf.push_str(v.trim()),
+                        _ => {}
+                    }
+                }
+            }
+            quick_xml::events::Event::End(e) => {
+                let n = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                match n.as_str() {
+                    "entry" => {
+                        if let Some(mut c) = cur.take() {
+                            c.title = collapse_whitespace(&c.title);
+                            c.summary = collapse_whitespace(&c.summary);
+                            let raw_id = if !c.abs_url.is_empty() {
+                                c.abs_url.clone()
+                            } else if !c.id.is_empty() {
+                                c.id.clone()
+                            } else {
+                                String::new()
+                            };
+                            let (id, ver) = parse_arxiv_id(&raw_id)
+                                .or_else(|_| {
+                                    parse_arxiv_id(raw_id.rsplit('/').next().unwrap_or(""))
+                                })
+                                .map_err(|e| {
+                                    ArxivError::XmlParse(format!(
+                                        "invalid arxiv id in entry '{raw_id}': {e}"
+                                    ))
+                                })?;
+                            c.id = id;
+                            c.version = ver;
+                            if c.pdf_url.is_empty() && !c.id.is_empty() {
+                                c.pdf_url = format!("https://arxiv.org/pdf/{}", c.id);
+                            }
+                            if c.primary_category.is_empty() && !c.categories.is_empty() {
+                                c.primary_category = c.categories[0].clone();
+                            }
+                            out.push(c);
+                        }
+                    }
+                    "name" => {
+                        let trimmed = author_name.trim();
+                        if let Some(c) = cur.as_mut().filter(|_| !trimmed.is_empty()) {
+                            c.authors.push(trimmed.to_string());
+                        }
+                        author_name.clear();
+                    }
+                    "doi" => {
+                        let trimmed = doi_buf.trim();
+                        if let Some(c) = cur.as_mut().filter(|_| !trimmed.is_empty()) {
+                            c.doi = Some(trimmed.to_string());
+                        }
+                        doi_buf.clear();
+                    }
+                    _ => {}
+                }
+                field.clear();
+            }
+            quick_xml::events::Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(out)
+}
+
+/// Sanea el título de un paper para su uso como nombre de fichero:
+/// solo caracteres seguros (ASCII alfanumérico, '.', '-', '_', espacios),
+/// colapsa caracteres no válidos (`:/?` etc.) y recorta extremos.
+pub fn sanitize_paper_title(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while s.contains("__") {
+        s = s.replace("__", "_");
+    }
+    s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    s.trim_matches(|c: char| matches!(c, ' ' | '_' | '-' | '.'))
+        .to_string()
+}
+
+/// Genera el nombre de fichero según el esquema `{titulo-sanitizado} [{id}].pdf`.
+/// Si el título está ausente, vacío o solo contiene caracteres no válidos,
+/// cae al fallback `arxiv_{id}.pdf`.
+///
+/// La longitud total está acotada a 80 caracteres (igual que `sanitize_pdf_name`),
+/// recortando el título para garantizar que ` [{id}].pdf` siempre permanezca intacto.
+pub fn titled_filename(title: Option<&str>, id: &str) -> String {
+    let canonical_id = match parse_arxiv_id(id) {
+        Ok((base, _)) => base,
+        Err(_) => id.trim().to_string(),
+    };
+    let sanitized_id = canonical_id.replace('/', "_");
+
+    let clean_title = title.map(sanitize_paper_title).unwrap_or_default();
+    if clean_title.is_empty() {
+        return format!("arxiv_{sanitized_id}.pdf");
+    }
+
+    let suffix = format!(" [{sanitized_id}].pdf");
+    let suffix_len = suffix.chars().count();
+    if suffix_len >= 80 {
+        return format!("arxiv_{sanitized_id}.pdf");
+    }
+
+    let max_title_chars = 80 - suffix_len;
+    if clean_title.chars().count() > max_title_chars {
+        let truncated: String = clean_title.chars().take(max_title_chars).collect();
+        let trimmed_title = truncated.trim_matches(|c: char| matches!(c, ' ' | '_' | '-' | '.'));
+        if trimmed_title.is_empty() {
+            return format!("arxiv_{sanitized_id}.pdf");
+        }
+        format!("{trimmed_title}{suffix}")
+    } else {
+        format!("{clean_title}{suffix}")
+    }
+}
+
+/// Alias de `titled_filename` para compatibilidad.
+pub fn arxiv_filename(title: Option<&str>, id: &str) -> String {
+    titled_filename(title, id)
+}
+
+/// Resuelve unicidad de nombre de fichero para evitar sobreescrituras:
+/// si `base_filename` ya existe según `exists`, añade sufijos ` (2)`, ` (3)`, etc.
+pub fn resolve_unique_filename<F>(base_filename: &str, mut exists: F) -> String
+where
+    F: FnMut(&str) -> bool,
+{
+    if !exists(base_filename) {
+        return base_filename.to_string();
+    }
+    let (stem, ext) = match base_filename.rsplit_once('.') {
+        Some((s, e)) => (s, format!(".{e}")),
+        None => (base_filename, String::new()),
+    };
+    for n in 2..=9999 {
+        let candidate = format!("{stem} ({n}){ext}");
+        if !exists(&candidate) {
+            return candidate;
+        }
+    }
+    format!(
+        "{stem} ({}){ext}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(9999)
+    )
+}
+
+/// Comprueba si un nombre de fichero en la biblioteca corresponde a un ID de arXiv dado.
+/// Maneja el esquema nuevo (`{titulo} [{id}].pdf` y `{titulo} [{id}] (N).pdf`),
+/// así como el esquema previo/fallback (`arxiv_{id}.pdf` y `arxiv_{id} (N).pdf`),
+/// evitando falsos positivos por coincidencia de subcadenas.
+pub fn matches_arxiv_id(filename: &str, arxiv_id: &str) -> bool {
+    let canonical = match parse_arxiv_id(arxiv_id) {
+        Ok((base, _)) => base,
+        Err(_) => arxiv_id.trim().to_string(),
+    };
+    if canonical.is_empty() {
+        return false;
+    }
+    let sanitized_id = canonical.replace('/', "_");
+
+    // 1. Esquema nuevo: `{titulo} [{id}].pdf` o `{titulo} [{id}] (N).pdf`
+    let token = format!("[{sanitized_id}]");
+    if let Some(pos) = filename.find(&token) {
+        let after = &filename[pos + token.len()..];
+        if after == ".pdf" {
+            return true;
+        }
+        if let Some(rest) = after.strip_prefix(" (")
+            && let Some(num_str) = rest.strip_suffix(").pdf")
+            && !num_str.is_empty()
+            && num_str.chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+    }
+
+    // 2. Esquema fallback o legado: `arxiv_{id}.pdf` o `arxiv_{id} (N).pdf`
+    let prefix = format!("arxiv_{sanitized_id}");
+    if filename == format!("{prefix}.pdf") {
+        return true;
+    }
+    if let Some(rest) = filename.strip_prefix(&format!("{prefix} ("))
+        && let Some(num_str) = rest.strip_suffix(").pdf")
+        && !num_str.is_empty()
+        && num_str.chars().all(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+
+    false
+}
