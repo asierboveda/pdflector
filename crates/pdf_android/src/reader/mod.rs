@@ -65,15 +65,18 @@ use redraw::{RenderWorker, WorkerMsg};
 // API geométrica compartida del crate (paths `crate::reader::*` que consumen
 // `draw`/`input`; el resto de la geometría sigue siendo `reader::geometry`).
 pub(crate) use geometry::{
-    GRID_CELL_PAD, cover_size_multiplier, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h,
-    grid_cover_w, grid_gap, grid_pad, header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h,
-    lib_chips, lib_cont_block_h, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x,
-    lib_cont_cover_h, lib_cont_cover_w, lib_cont_gap, lib_content_y0, lib_empty_state_geom,
-    lib_grid_y0, lib_header_h, lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0,
-    lib_search_h, lib_search_panel_h, lib_section_title_h, list_row_gap, list_row_h, list_row_rect,
-    page_badge_rect, page_badge_size, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
-    settings_menu_button_rect, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y,
-    sheet_pad, sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect,
+    GRID_CELL_PAD, cover_size_multiplier, disc_card_action_rect, disc_card_gap, disc_card_h,
+    disc_card_pad, disc_card_rect, disc_card_w, disc_cat_row_h, disc_cat_row_rect, disc_content_y0,
+    disc_detail_action_rect, disc_detail_back_rect, disc_more_btn_rect, disc_search_rect,
+    disc_subtabs_rect, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w,
+    grid_gap, grid_pad, header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h, lib_chips,
+    lib_cont_block_h, lib_cont_card_h, lib_cont_card_w, lib_cont_card_x, lib_cont_cover_h,
+    lib_cont_cover_w, lib_cont_gap, lib_content_y0, lib_empty_state_geom, lib_grid_y0,
+    lib_header_h, lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0,
+    lib_search_h, lib_search_panel_h, lib_section_title_h, lib_tabs_rect, list_row_gap, list_row_h,
+    list_row_rect, page_badge_rect, page_badge_size, picker_btn_h, picker_btn_w, picker_header_h,
+    picker_row_h, settings_menu_button_rect, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h,
+    sheet_nav_y, sheet_pad, sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect,
     viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 
@@ -600,7 +603,7 @@ pub(crate) struct Reader {
     /// hay documento). Se setea en `open_pdf` y en el "abrir con" del arranque.
     pub(crate) doc_path: Option<String>,
     /// Directorio interno de la app (para `state.json`; ver `persist`).
-    internal_dir: Option<PathBuf>,
+    pub(crate) internal_dir: Option<PathBuf>,
     /// Tema activo de la interfaz (DefaultLight, SepiaLight, DefaultDark, SepiaDark).
     pub(crate) theme: theme::AppTheme,
     /// Modo oscuro activo (página invertida + fondo oscuro).

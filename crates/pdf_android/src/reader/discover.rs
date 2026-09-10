@@ -6,19 +6,17 @@
 //! Integra el worker de fondo (`DiscoverWorker`), el procesamiento no bloqueante
 //! en `tick` (`pump_discover`), y la incorporación de papers descargados a la biblioteca curada.
 
-use std::fs;
 use std::path::Path;
-
-use android_activity::AndroidApp;
-use log::{error, info, warn};
-use pdf_core::RenderEngine;
-use pdf_core::arxiv::ArxivEntry;
-use pdf_core::engine::mupdf::MupdfEngine;
 
 use super::discover_state::{DiscoverPhase, DiscoverScreen, DiscoverTab};
 use super::discover_worker::{DiscoverCmd, DiscoverMsg, DiscoverWorker};
 use super::{Reader, UiMode};
 use crate::persist::{self, PaperMeta};
+use android_activity::AndroidApp;
+use log::{error, info, warn};
+use pdf_core::arxiv::ArxivEntry;
+use pdf_core::engine::mupdf::MupdfEngine;
+use pdf_core::{Document, RenderEngine};
 
 impl Reader {
     /// Asegura que el worker Discover esté iniciado con sus rutas de almacenamiento.
@@ -196,8 +194,11 @@ impl Reader {
 
     /// Cambia al modo Discover y asegura la carga inicial del feed.
     pub(crate) fn enter_discover(&mut self, app: &AndroidApp) {
+        self.flush_state();
+        self.lib_close_ime(app);
         self.mode = UiMode::Discover;
         self.ensure_discover_worker(app);
+        self.discover.dirty = true;
 
         if self.discover.feed_entries.is_empty() && self.discover.phase == DiscoverPhase::Idle {
             self.discover_refresh_feed();
@@ -206,12 +207,85 @@ impl Reader {
     }
 
     /// Vuelve al modo Biblioteca desde Discover.
-    pub(crate) fn exit_discover(&mut self) {
+    pub(crate) fn exit_discover(&mut self, app: &AndroidApp) {
+        self.lib_close_ime(app);
         self.mode = UiMode::Library;
+        self.list_dirty = true;
         self.redraw();
     }
 
-    /// Solicita recargar el feed según las categorías seleccionadas.
+    /// Abre el teclado virtual sobre el buscador de Discover.
+    pub(crate) fn discover_open_keyboard(&mut self, app: &AndroidApp) {
+        crate::jni::ime_attach(app, &self.discover.query);
+        self.ime_active = true;
+    }
+
+    /// Desplazamiento de scroll actual de Discover según la pantalla activa.
+    pub(crate) fn discover_scroll(&self) -> f32 {
+        match self.discover.screen {
+            DiscoverScreen::Detail => self.discover.detail_scroll,
+            DiscoverScreen::Areas => self.discover.areas_scroll,
+            DiscoverScreen::Feed | DiscoverScreen::Search => self.discover.scroll,
+        }
+    }
+
+    /// Fija el desplazamiento de scroll de Discover según la pantalla activa.
+    pub(crate) fn set_discover_scroll(&mut self, s: f32) {
+        match self.discover.screen {
+            DiscoverScreen::Detail => self.discover.detail_scroll = s,
+            DiscoverScreen::Areas => self.discover.areas_scroll = s,
+            DiscoverScreen::Feed | DiscoverScreen::Search => self.discover.scroll = s,
+        }
+    }
+
+    /// Alto total del contenido de Discover según la pantalla activa.
+    pub(crate) fn discover_content_h(&self) -> f32 {
+        match self.discover.screen {
+            DiscoverScreen::Detail => 850.0,
+            DiscoverScreen::Areas => {
+                crate::reader::discover_categories::ARXIV_CATEGORIES.len() as f32
+                    * crate::reader::disc_cat_row_h()
+                    + 80.0
+            }
+            DiscoverScreen::Feed => {
+                16.0 + self.discover.feed_entries.len() as f32
+                    * (crate::reader::disc_card_h() + crate::reader::disc_card_gap())
+                    + 120.0
+            }
+            DiscoverScreen::Search => {
+                16.0 + self.discover.search_entries.len() as f32
+                    * (crate::reader::disc_card_h() + crate::reader::disc_card_gap())
+                    + 120.0
+            }
+        }
+    }
+
+    /// Desplazamiento máximo de scroll vertical permitido en Discover.
+    pub(crate) fn discover_max_scroll(&self) -> f32 {
+        let content_y0 = crate::reader::disc_content_y0(
+            self.win_h,
+            self.discover.screen,
+            self.status.is_some() || self.discover.status_msg.is_some(),
+        );
+        let viewport = (self.win_h - content_y0).max(0) as f32;
+        (self.discover_content_h() - viewport).max(0.0)
+    }
+
+    /// ¿La banda cacheada actual de Discover cubre el rango visible de scroll?
+    pub(crate) fn disc_band_covers(&self) -> bool {
+        let Some((_, origin)) = self.discover.band else {
+            return false;
+        };
+        let scroll = self.discover_scroll() as i32;
+        let content_y0 = crate::reader::disc_content_y0(
+            self.win_h,
+            self.discover.screen,
+            self.status.is_some() || self.discover.status_msg.is_some(),
+        );
+        let viewport = (self.win_h - content_y0).max(0);
+        let margin = crate::reader::disc_card_h() as i32;
+        scroll >= origin && (scroll + viewport) <= (origin + viewport + 2 * margin)
+    }
     pub(crate) fn discover_refresh_feed(&mut self) {
         self.discover.phase = DiscoverPhase::Loading;
         let cats = self.discover.selected_cats.clone();

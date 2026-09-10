@@ -1051,7 +1051,16 @@ impl Gpu {
     /// `content_y0` = borde superior del contenido (`lib_content_y0`, el
     /// mismo que usa el blit SW). El orden de dibujo replica a
     /// `blit_library`: fondo → banda → cabecera → toast.
-    pub(crate) fn present_library(&mut self, reader: &Reader, content_y0: i32) {
+    /// Presenta una pantalla de dos planos (zona fija + banda de contenido scrolleable):
+    /// compartida por Biblioteca y Discover (arXiv). Orden: fondo -> banda -> cabecera -> toast.
+    pub(crate) fn present_two_plane(
+        &mut self,
+        reader: &Reader,
+        content_y0: i32,
+        header: Option<(&Bitmap, u64)>,
+        band: Option<(&Bitmap, i32, u64)>,
+        scroll_y: f32,
+    ) {
         let t0 = std::time::Instant::now();
         if !self.has_surface() {
             return;
@@ -1060,31 +1069,22 @@ impl Gpu {
             gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
             gl::glViewport(0, 0, self.win_w, self.win_h);
         }
-        // Fondo del tema (el mismo `p.rgba_lib_bg()` del blit SW).
         self.clear(reader.theme.palette().rgba_lib_bg());
-        // Sin tinta en vuelo en la biblioteca: swap vsync estable.
         self.set_swap_interval(1);
 
-        // Banda de contenido scrolleable. El scroll vertical NO re-sube la
-        // textura: solo mueve el quad (sy = content_y0 − (scroll − origin)),
-        // igual que el camino SW copiaba la banda desde otra fila.
-        if let Some((band, origin)) = &reader.library.lib_band {
-            let tex = self.lib_band_tex(reader.library.lib_band_ver, band);
+        if let Some((b, origin, ver)) = band {
+            let tex = self.lib_band_tex(ver, b);
             if tex != 0 {
-                let sy = content_y0 - (reader.library.lib_scroll as i32 - *origin);
-                self.draw_tex_quad(tex, band, 0, sy, 1.0);
+                let sy = content_y0 - (scroll_y as i32 - origin);
+                self.draw_tex_quad(tex, b, 0, sy, 1.0);
             }
         }
-        // Zona fija (cabecera editorial + estado) SOBRE la banda (mismo orden
-        // que `blit_library`: la cabecera tapa el sangrado de la banda).
-        if let Some(h) = &reader.library.lib_header {
-            let tex = self.lib_header_tex(reader.library.lib_header_ver, h);
+        if let Some((h, ver)) = header {
+            let tex = self.lib_header_tex(ver, h);
             if tex != 0 {
                 self.draw_tex_quad(tex, h, 0, 0, 1.0);
             }
         }
-        // Toast (avisos breves) integrado en el mismo present, abajo-centro
-        // (misma posición que el camino SW).
         if let Some(tb) = &reader.toast_bitmap {
             let tx = (reader.win_w - tb.width as i32) / 2;
             let ty = reader.win_h - tb.height as i32 - 16;
@@ -1095,8 +1095,6 @@ impl Gpu {
         let Some(surf) = self.surf else { return };
         let ok = unsafe { gl::eglSwapBuffers(self.dpy, surf) != 0 };
         let swap_ms = swap_t0.elapsed().as_secs_f64() * 1000.0;
-        // Log equivalente al `blit WxH: X ms (lock+copy+unlock_and_post)`
-        // del camino SW para comparar en la re-medición.
         info!(
             "blit {}x{}: {:.2} ms (swap {:.2} ms, {})",
             self.win_w,
@@ -1105,6 +1103,35 @@ impl Gpu {
             swap_ms,
             if ok { "ok" } else { "FAIL" }
         );
+    }
+
+    pub(crate) fn present_library(&mut self, reader: &Reader, content_y0: i32) {
+        let header = reader
+            .library
+            .lib_header
+            .as_ref()
+            .map(|h| (h, reader.library.lib_header_ver));
+        let band = reader
+            .library
+            .lib_band
+            .as_ref()
+            .map(|(b, orig)| (b, *orig, reader.library.lib_band_ver));
+        self.present_two_plane(reader, content_y0, header, band, reader.library.lib_scroll);
+    }
+
+    pub(crate) fn present_discover(&mut self, reader: &Reader, content_y0: i32) {
+        let header = reader
+            .discover
+            .header
+            .as_ref()
+            .map(|h| (h, reader.discover.header_ver));
+        let band = reader
+            .discover
+            .band
+            .as_ref()
+            .map(|(b, orig)| (b, *orig, reader.discover.band_ver));
+        let scroll = reader.discover_scroll();
+        self.present_two_plane(reader, content_y0, header, band, scroll);
     }
     /// Present del PICKER por GPU (productor único EGL, Tarea 2.7): la lista
     /// (`Reader::bitmap`, render de pantalla completa) se sube como textura

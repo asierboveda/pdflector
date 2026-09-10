@@ -954,7 +954,13 @@ impl Reader {
         let Some(t) = crate::jni::ime_text(app) else {
             return;
         };
-        if t != self.library.lib_query {
+        if self.mode == UiMode::Discover {
+            if t != self.discover.query {
+                self.discover.query = t;
+                self.discover.dirty = true;
+                self.redraw();
+            }
+        } else if t != self.library.lib_query {
             self.library.lib_query = t;
             self.refresh_lib_filtered();
             let max_v = self.lib_max_scroll();

@@ -9,17 +9,16 @@
 //! - FeedCache en disco: límite ≤ 4 MiB, LRU, TTL de 10 minutos.
 //! - El hilo UI nunca bloquea; comunicación por canales `std::sync::mpsc`.
 
-use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{JoinHandle, spawn};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use pdf_core::arxiv::{ArxivClient, ArxivEntry, ArxivError, ArxivQuery, parse_arxiv_id};
+use pdf_core::arxiv::{ArxivClient, ArxivEntry, ArxivQuery, parse_arxiv_id};
 
 /// Límite máximo de la caché en disco de feeds (4 MiB).
 pub const FEED_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024;

@@ -318,8 +318,8 @@ impl Reader {
                 // funde sobre la página los primeros `LIB_FADE_MS`.
                 let snapshot = match self.mode {
                     UiMode::Library => compose_library_snapshot(self),
+                    UiMode::Discover | UiMode::Viewer => None,
                     UiMode::Picker => self.bitmap.clone(),
-                    UiMode::Viewer => None,
                 };
                 if let Some(s) = snapshot {
                     self.library.lib_fade = Some((Instant::now(), s));

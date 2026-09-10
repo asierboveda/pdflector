@@ -9,6 +9,7 @@
 use std::path::Path;
 use std::sync::mpsc::Receiver;
 
+use pdf_core::Bitmap;
 use pdf_core::arxiv::ArxivEntry;
 
 use super::discover_categories::default_categories;
@@ -54,8 +55,6 @@ pub struct DiscoverState {
     pub phase: DiscoverPhase,
     /// Texto de consulta en el buscador.
     pub query: String,
-    /// ¿El teclado virtual está abierto para el buscador?
-    pub ime_active: bool,
     /// Categorías seleccionadas por el usuario para su feed.
     pub selected_cats: Vec<String>,
     /// Entradas cargadas en el feed principal.
@@ -86,6 +85,16 @@ pub struct DiscoverState {
     pub rx: Option<Receiver<DiscoverMsg>>,
     /// ¿Hay una petición o descarga en curso en el worker?
     pub worker_busy: bool,
+    /// Bitmap cacheado de la cabecera fija de Discover (tabs + subtabs + search bar).
+    pub header: Option<Bitmap>,
+    /// Versión de la textura de cabecera para GPU.
+    pub header_ver: u64,
+    /// Bitmap cacheado de la banda de contenido scrolleable de Discover.
+    pub band: Option<(Bitmap, i32)>,
+    /// Versión de la textura de banda para GPU.
+    pub band_ver: u64,
+    /// ¿Se requiere un rebuild completo de la UI de Discover?
+    pub dirty: bool,
 }
 
 impl DiscoverState {
@@ -102,12 +111,11 @@ impl DiscoverState {
             active_tab: DiscoverTab::Feed,
             phase: DiscoverPhase::Idle,
             query: String::new(),
-            ime_active: false,
+            search_has_more: false,
             selected_cats,
             feed_entries: Vec::new(),
             feed_has_more: false,
             search_entries: Vec::new(),
-            search_has_more: false,
             selected_entry: None,
             downloading_id: None,
             download_bytes: 0,
@@ -118,6 +126,11 @@ impl DiscoverState {
             worker: None,
             rx: None,
             worker_busy: false,
+            header: None,
+            header_ver: 0,
+            band: None,
+            band_ver: 0,
+            dirty: true,
         }
     }
 

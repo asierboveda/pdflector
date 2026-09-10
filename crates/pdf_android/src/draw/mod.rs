@@ -24,6 +24,7 @@ use log::error;
 use pdf_core::Bitmap;
 
 mod chrome;
+mod discover;
 mod library;
 mod menus;
 mod overlays;
@@ -38,6 +39,9 @@ pub(crate) use chrome::render_page_badge;
 pub(crate) use chrome::render_viewer_bottom_chrome;
 pub(crate) use chrome::render_viewer_top_chrome;
 pub(crate) use chrome::viewer_top_chrome_buttons;
+pub(crate) use discover::draw_header_tabs;
+pub(crate) use discover::render_discover_header;
+pub(crate) use discover::render_discover_zone;
 pub(crate) use library::blit_library;
 pub(crate) use library::paste_lib_thumbs;
 pub(crate) use library::render_library_header;

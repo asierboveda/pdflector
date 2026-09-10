@@ -10,6 +10,7 @@ use super::LibraryViewMode;
 use super::PickerKind;
 use super::Reader;
 use super::UiMode;
+use super::discover_state::DiscoverState;
 use super::library_state::LibraryState;
 use super::load_pen_mode;
 use super::scan_pdfs;
@@ -70,6 +71,7 @@ impl Reader {
             grant_pending: false,
             list_scroll: 0,
             library: LibraryState::new(app.internal_data_path().as_deref()),
+            discover: DiscoverState::new(app.internal_data_path().as_deref()),
             ime_active: false,
             view_mode: LibraryViewMode::Grid,
             cover_fit: LibraryCoverFit::Crop,

@@ -81,15 +81,14 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let btn_h = ((header_h - top_pad) * 0.52).clamp(38.0, 46.0);
     let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
     let btn_x = w as f32 - pad - btn_w;
-    texts.push(CanvasText::new(
-        pad,
-        top_pad + (header_h - top_pad) * 0.72,
-        theme::FONT_DISPLAY,
-        p.base_content,
-        TextAlign::Left,
-        true,
-        "Biblioteca",
-    ));
+    super::draw_header_tabs(
+        &mut rects,
+        &mut texts,
+        w,
+        reader.win_h,
+        &reader.theme,
+        crate::reader::UiMode::Library,
+    );
     draw_button(
         &mut rects,
         &mut texts,

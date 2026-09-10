@@ -7,6 +7,7 @@ use super::BookStatus;
 use super::EmptyStateGeom;
 use super::LibSort;
 use super::Reader;
+use super::discover_state::{DiscoverScreen, DiscoverTab};
 use crate::draw::ButtonRect;
 
 /// Alto (px) de cada fila del picker, proporcional a la ventana.
@@ -640,4 +641,184 @@ pub(crate) fn truncate_name(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars).collect();
     out.push('…');
     out
+}
+
+/// Rectángulos de las pestañas principales de la cabecera: (Biblioteca, Descubrir).
+/// Cada tupla es (left, top, right, bottom) en píxeles de ventana.
+pub(crate) fn lib_tabs_rect(win_w: i32, win_h: i32) -> (ButtonRect, ButtonRect) {
+    let pad = grid_pad(win_w);
+    let header_h = lib_header_h(win_h);
+    let top_pad = 36.0f32;
+    let tab_h = ((header_h - top_pad) * 0.58).clamp(38.0, 48.0);
+    let tab_y = top_pad + (header_h - top_pad - tab_h) / 2.0;
+    let tab_w = 160.0f32;
+    let gap = 12.0f32;
+    let tab1 = (pad, tab_y, pad + tab_w, tab_y + tab_h);
+    let tab2 = (
+        pad + tab_w + gap,
+        tab_y,
+        pad + 2.0 * tab_w + gap,
+        tab_y + tab_h,
+    );
+    (tab1, tab2)
+}
+
+/// Alto (px) de la cabecera principal de Discover (idéntica a la de la biblioteca).
+pub(crate) fn disc_header_h(win_h: i32) -> f32 {
+    lib_header_h(win_h)
+}
+
+/// Alto (px) de la barra de sub-pestañas de Discover (Feed, Buscar, Áreas).
+pub(crate) fn disc_subtabs_h() -> f32 {
+    48.0
+}
+
+/// Rectángulos de las tres sub-pestañas de Discover: Feed ("Últimos"), Buscar, Áreas.
+pub(crate) fn disc_subtabs_rect(win_w: i32, win_h: i32) -> [(DiscoverTab, ButtonRect); 3] {
+    let pad = grid_pad(win_w);
+    let y0 = disc_header_h(win_h);
+    let tab_h = 36.0f32;
+    let tab_y = y0 + (disc_subtabs_h() - tab_h) / 2.0;
+    let tab_w = 120.0f32;
+    let gap = 10.0f32;
+
+    let r_feed = (pad, tab_y, pad + tab_w, tab_y + tab_h);
+    let r_search = (
+        pad + tab_w + gap,
+        tab_y,
+        pad + 2.0 * tab_w + gap,
+        tab_y + tab_h,
+    );
+    let r_areas = (
+        pad + 2.0 * (tab_w + gap),
+        tab_y,
+        pad + 3.0 * tab_w + 2.0 * gap,
+        tab_y + tab_h,
+    );
+
+    [
+        (DiscoverTab::Feed, r_feed),
+        (DiscoverTab::Search, r_search),
+        (DiscoverTab::Areas, r_areas),
+    ]
+}
+
+/// Alto (px) de la barra de búsqueda de Discover.
+pub(crate) fn disc_search_h() -> f32 {
+    56.0
+}
+
+/// Rectángulos de la barra de búsqueda en Discover: (campo_texto, boton_limpiar_x, boton_buscar).
+pub(crate) fn disc_search_rect(win_w: i32, win_h: i32) -> (ButtonRect, ButtonRect, ButtonRect) {
+    let pad = grid_pad(win_w);
+    let y0 = disc_header_h(win_h) + disc_subtabs_h();
+    let h = 42.0f32;
+    let y = y0 + (disc_search_h() - h) / 2.0;
+    let search_btn_w = 100.0f32;
+    let gap = 10.0f32;
+
+    let search_btn = (
+        win_w as f32 - pad - search_btn_w,
+        y,
+        win_w as f32 - pad,
+        y + h,
+    );
+    let field_r = win_w as f32 - pad - search_btn_w - gap;
+    let input_field = (pad, y, field_r, y + h);
+    let clear_btn = (field_r - 36.0, y + 3.0, field_r - 6.0, y + h - 3.0);
+
+    (input_field, clear_btn, search_btn)
+}
+
+/// Coordenada Y (px de ventana) donde comienza el contenido scrolleable de Discover.
+pub(crate) fn disc_content_y0(win_h: i32, screen: DiscoverScreen, has_status: bool) -> i32 {
+    let status_h = if has_status { 36.0 } else { 0.0 };
+    let base = match screen {
+        DiscoverScreen::Detail => disc_header_h(win_h),
+        DiscoverScreen::Search => disc_header_h(win_h) + disc_subtabs_h() + disc_search_h(),
+        DiscoverScreen::Feed | DiscoverScreen::Areas => disc_header_h(win_h) + disc_subtabs_h(),
+    };
+    (base + status_h).ceil() as i32
+}
+
+/// Margen lateral de las tarjetas de Discover.
+pub(crate) fn disc_card_pad(win_w: i32) -> f32 {
+    grid_pad(win_w)
+}
+
+/// Ancho (px) de una tarjeta de paper en Discover.
+pub(crate) fn disc_card_w(win_w: i32) -> f32 {
+    (win_w as f32 - 2.0 * disc_card_pad(win_w)).max(200.0)
+}
+
+/// Alto (px) de una tarjeta de paper en Discover.
+pub(crate) fn disc_card_h() -> f32 {
+    195.0
+}
+
+/// Separación vertical (px) entre tarjetas de paper en Discover.
+pub(crate) fn disc_card_gap() -> f32 {
+    16.0
+}
+
+/// Rectángulo en coordenadas de contenido de la tarjeta `idx` en Discover.
+pub(crate) fn disc_card_rect(win_w: i32, idx: usize) -> ButtonRect {
+    let pad = disc_card_pad(win_w);
+    let w = disc_card_w(win_w);
+    let h = disc_card_h();
+    let gap = disc_card_gap();
+    let top = 16.0 + idx as f32 * (h + gap);
+    (pad, top, pad + w, top + h)
+}
+
+/// Rectángulo del botón de acción en la esquina inferior derecha de una tarjeta.
+pub(crate) fn disc_card_action_rect(card: ButtonRect) -> ButtonRect {
+    let btn_w = 140.0f32;
+    let btn_h = 38.0f32;
+    let margin = 14.0f32;
+    (
+        card.2 - margin - btn_w,
+        card.3 - margin - btn_h,
+        card.2 - margin,
+        card.3 - margin,
+    )
+}
+
+/// Rectángulo del botón de paginación ("Cargar más").
+pub(crate) fn disc_more_btn_rect(win_w: i32, bottom_y: f32) -> ButtonRect {
+    let btn_w = 220.0f32;
+    let btn_h = 46.0f32;
+    let x = ((win_w as f32 - btn_w) / 2.0).max(disc_card_pad(win_w));
+    let y = bottom_y + 20.0;
+    (x, y, x + btn_w, y + btn_h)
+}
+
+/// Alto (px) de una fila de categoría en la pantalla de Áreas.
+pub(crate) fn disc_cat_row_h() -> f32 {
+    56.0
+}
+
+/// Rectángulo en coords de contenido de una fila de categoría en la pantalla de Áreas.
+pub(crate) fn disc_cat_row_rect(win_w: i32, idx: usize) -> ButtonRect {
+    let pad = disc_card_pad(win_w);
+    let top = 14.0 + idx as f32 * disc_cat_row_h();
+    (pad, top, win_w as f32 - pad, top + disc_cat_row_h() - 6.0)
+}
+
+/// Rectángulo del botón de regreso [← Volver] en la pantalla de Ficha (Detail).
+pub(crate) fn disc_detail_back_rect(win_w: i32, win_h: i32) -> ButtonRect {
+    let pad = grid_pad(win_w);
+    let header_h = disc_header_h(win_h);
+    let top_pad = 36.0f32;
+    let btn_h = 40.0f32;
+    let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
+    (pad, btn_y, pad + 120.0, btn_y + btn_h)
+}
+
+/// Rectángulo del botón principal de acción (Descargar / Leer) en la pantalla de Ficha.
+pub(crate) fn disc_detail_action_rect(win_w: i32, y: f32) -> ButtonRect {
+    let pad = grid_pad(win_w);
+    let btn_w = (win_w as f32 * 0.45).clamp(240.0, 360.0);
+    let btn_h = 50.0f32;
+    (pad, y, pad + btn_w, y + btn_h)
 }
