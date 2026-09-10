@@ -28,7 +28,7 @@ ndk = { version = "0.9", default-features = false }
 jni = "0.22"
 # Log a logcat. MIT.
 log = "0.4"
-android_logger = "0.14"
+android_logger = "0.15"
 # Estado del visor (posicion + modo oscuro) en internal/state.json. serde y
 # serde_json ya estan en el grafo via pdf_core (mismas versiones, ya
 # cross-compiladas a aarch64-linux-android): no anaden unidades de
