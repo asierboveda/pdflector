@@ -174,6 +174,14 @@ pub struct ArxivEntry {
     pub doi: Option<String>,
 }
 
+/// Result of a successful paper PDF download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadOutcome {
+    pub final_name: String,
+    pub etag: Option<String>,
+    pub bytes: u64,
+}
+
 /// Client for searching and retrieving papers from the arXiv API.
 pub struct ArxivClient {
     api_base: String,
@@ -281,11 +289,84 @@ impl ArxivClient {
             .with_max_results(ids.len());
         self.search(&query)
     }
+
+    /// Downloads a paper PDF by arXiv identifier, streaming content to the given writer.
+    ///
+    /// Respects the rate-limiting throttle, verifies `application/pdf` content-type,
+    /// extracts resolved version/filename from `Content-Disposition`, and extracts `ETag` if present.
+    pub fn download_to(
+        &self,
+        id: &str,
+        w: &mut dyn std::io::Write,
+    ) -> Result<DownloadOutcome, ArxivError> {
+        let (base, _) = parse_arxiv_id(id)?;
+        self.throttle();
+        let url = format!("{}/pdf/{}", self.pdf_base, base);
+        let mut resp = self
+            .client
+            .get(&url)
+            .send()
+            .map_err(|e| ArxivError::Network(e.to_string()))?;
+        let status = resp.status().as_u16();
+        if status == 429 || status == 503 {
+            return Err(ArxivError::RateLimited);
+        }
+        if status != 200 {
+            return Err(ArxivError::Http {
+                status,
+                body: String::new(),
+            });
+        }
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
+        if !ct.contains("application/pdf") {
+            return Err(ArxivError::Http {
+                status,
+                body: format!("bad content-type {ct}"),
+            });
+        }
+        let etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let final_name = resp
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_disposition_filename)
+            .unwrap_or_else(|| format!("{base}.pdf"));
+        let bytes = std::io::copy(&mut resp, w).map_err(|e| ArxivError::Io(e.to_string()))?;
+        Ok(DownloadOutcome {
+            final_name,
+            etag,
+            bytes,
+        })
+    }
 }
 
 /// Test helper exposing `parse_atom_body`.
 pub fn parse_atom_for_test(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
     parse_atom_body(body)
+}
+
+fn parse_content_disposition_filename(disposition: &str) -> Option<String> {
+    for part in disposition.split(';') {
+        let part = part.trim();
+        if let Some((k, v)) = part.split_once('=')
+            && k.trim().eq_ignore_ascii_case("filename")
+        {
+            let clean = v.trim().trim_matches(['"', ' ']);
+            if !clean.is_empty() {
+                return Some(clean.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn collapse_whitespace(s: &str) -> String {
