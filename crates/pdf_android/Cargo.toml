@@ -106,6 +106,20 @@ categories = ["android.intent.category.DEFAULT"]
 [[package.metadata.android.application.activity.intent_filter.data]]
 mime_type = "application/pdf"
 
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.VIEW"]
+categories = ["android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"]
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+scheme = "pdflector"
+
+[[package.metadata.android.application.activity.intent_filter]]
+actions = ["android.intent.action.SEND"]
+categories = ["android.intent.category.DEFAULT"]
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+mime_type = "text/plain"
+
 # Firma del APK release con el keystore de debug del host (~/.android/debug.keystore,
 # password por defecto "android"): el mismo certificado con el que se firmó el
 # release anterior (verificado con apksigner, CN=Android Debug). Sin esta sección

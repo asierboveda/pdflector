@@ -4,6 +4,7 @@
 //! Ciclo de vida del `Reader` (extraído de `reader.rs`, 2026-09-06): construcción (`Reader::new`), apertura de la ventana (`set_window`, `init_window`) y su liberación (`terminate_window`).
 
 use super::AiPhase;
+use super::LaunchRequest;
 use super::LibraryCoverFit;
 use super::LibraryGroupBy;
 use super::LibraryViewMode;
@@ -23,7 +24,7 @@ use crate::cache::PageCache;
 use crate::gpu::Gpu;
 use crate::input::GestureState;
 use crate::jni::android_sdk_int;
-use crate::jni::launch_intent_pdf;
+use crate::jni::{launch_intent_request, parse_arxiv_target};
 use crate::persist::{self};
 use crate::theme;
 use crate::thumbs::THUMB_BYTE_BUDGET;
@@ -163,11 +164,11 @@ impl Reader {
             thumb_worker: None,
             thumb_rx: None,
         };
-        match launch_intent_pdf(app) {
+        match launch_intent_request(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
             // por la biblioteca. Si falla, se cae al picker interno con el
             // motivo como estado (comportamiento previo al spike de biblioteca).
-            Some(lp) => {
+            Some(LaunchRequest::File(lp)) => {
                 info!("open-with intent: {} ({})", lp.name, lp.source);
                 let engine = match MupdfEngine::new() {
                     Ok(e) => e,
@@ -203,6 +204,41 @@ impl Reader {
                     }
                 }
             }
+            // Handoff PaperTok / navegador → PDFLector (ACTION_VIEW pdflector:// o ACTION_SEND)
+            Some(LaunchRequest::Remote(target)) => match parse_arxiv_target(&target) {
+                Some(id) => {
+                    info!("launch_intent_request: Remote arXiv ID: {id}");
+                    let safe_filename = format!("arxiv_{}.pdf", id.replace('/', "_"));
+                    let local_path = reader
+                        .internal_dir
+                        .as_ref()
+                        .map(|d| d.join("pdfs").join(&safe_filename));
+                    if let Some(path) = &local_path
+                        && path.exists()
+                    {
+                        let path_str = path.display().to_string();
+                        info!("launch_intent_request: {id} already present at {path_str}");
+                        if reader.open_pdf(&path_str) {
+                            reader.redraw();
+                        } else {
+                            reader.status = Some(format!("Cannot open {id}"));
+                            reader.reload_curated_library(app);
+                        }
+                    } else {
+                        info!("launch_intent_request: starting download for {id}");
+                        reader.ensure_discover_worker(app);
+                        reader.discover_download(&id, None);
+                        reader.status = Some(format!("Descargando {id}…"));
+                        reader.reload_curated_library(app);
+                    }
+                }
+                None => {
+                    info!("launch_intent_request: target '{target}' is not a valid arXiv paper");
+                    reader.status = Some("Sin PDF de acceso abierto".to_string());
+                    persist::clear_state(reader.internal_dir.as_deref());
+                    reader.reload_curated_library(app);
+                }
+            },
             // Lanzamiento normal sin intent. Estado persistido (`persist`): si
             // el PDF guardado sigue accesible, se abre directamente en su
             // página/zoom/tema; si ya no existe (o no se puede abrir),

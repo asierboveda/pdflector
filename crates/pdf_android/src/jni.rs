@@ -18,7 +18,7 @@ use jni::objects::{Global, JClass, JObject, JString, JValue};
 use jni::{JavaVM, jni_sig, jni_str};
 use log::{error, info, warn};
 
-use crate::reader::{LaunchPdf, LibraryEntry, LibraryScan};
+use crate::reader::{LaunchPdf, LaunchRequest, LibraryEntry, LibraryScan};
 
 /// Modo inmersivo del visor: oculta la barra de estado y la de navegación del
 /// sistema (Android 15 edge-to-edge las deja DIBUJADAS sobre la app, pero el
@@ -197,18 +197,18 @@ pub(crate) fn enter_immersive(app: &AndroidApp) {
 ///   ruta normal, sin necesidad de conservar el permiso). El nombre viene de
 ///   `ContentResolver.query` (`OpenableColumns.DISPLAY_NAME`), con fallbacks.
 /// - `file://` ruta → la devuelve directamente (abre el PDF in situ).
-/// - Sin `data` (lanzamiento normal desde el launcher) → `None`: el picker
-///   interno sigue siendo el fallback.
+/// - `pdflector://` URI → petición remota para descargar de arXiv.
+/// - `android.intent.action.SEND` text/plain → petición remota de arXiv desde EXTRA_TEXT.
+/// - Sin intent relevante (lanzamiento normal desde el launcher) → `None`.
 ///
 /// JNI: `AndroidApp::activity_as_ptr()` expone la `Activity` (android-activity
-/// 0.6, global ref unowned) y `JavaVM::singleton()` el VM; se llama a
-/// `Activity.getIntent().getData()` y, según el scheme, al ContentResolver.
-pub(crate) fn launch_intent_pdf(app: &AndroidApp) -> Option<LaunchPdf> {
+/// 0.6, global ref unowned) y `JavaVM::singleton()` el VM.
+pub(crate) fn launch_intent_request(app: &AndroidApp) -> Option<LaunchRequest> {
     let vm = JavaVM::singleton().ok()?;
     let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
     let internal_dir = app.internal_data_path();
 
-    let res: jni::errors::Result<Option<LaunchPdf>> = vm.attach_current_thread(|env| {
+    let res: jni::errors::Result<Option<LaunchRequest>> = vm.attach_current_thread(|env| {
         env.with_local_frame(64, |env| {
             // SAFETY: ref global no owned, válida mientras viva `app` (no se
             // dropea al salir del scope). Mismo patrón que la doc de jni 0.22.
@@ -221,6 +221,54 @@ pub(crate) fn launch_intent_pdf(app: &AndroidApp) -> Option<LaunchPdf> {
                     &[],
                 )?
                 .l()?;
+            if intent.is_null() {
+                return Ok(None);
+            }
+
+            // 1. getAction() y EXTRA_TEXT antes del early-return de data.is_null()
+            let action = match env
+                .call_method(
+                    intent.as_ref(),
+                    jni_str!("getAction"),
+                    jni_sig!(sig = () -> java.lang.String),
+                    &[],
+                )?
+                .l()?
+            {
+                s if s.is_null() => String::new(),
+                s => jni_jstring(env, &s)?,
+            };
+
+            let extra_text = {
+                let key = env.new_string("android.intent.extra.TEXT")?;
+                match env
+                    .call_method(
+                        intent.as_ref(),
+                        jni_str!("getStringExtra"),
+                        jni_sig!(sig = (java.lang.String) -> java.lang.String),
+                        &[JValue::Object(key.as_ref())],
+                    )?
+                    .l()?
+                {
+                    s if s.is_null() => None,
+                    s => Some(jni_jstring(env, &s)?),
+                }
+            };
+
+            // ACTION_SEND: compartir texto / URL a PDFLector (ej. desde PaperTok o navegador)
+            if action == "android.intent.action.SEND" {
+                let text = extra_text.unwrap_or_default();
+                info!("launch_intent_request: ACTION_SEND text='{text}'");
+                return Ok(Some(LaunchRequest::Remote(text)));
+            }
+
+            if let Some(text) = extra_text {
+                if action != "android.intent.action.MAIN" {
+                    info!("launch_intent_request: action={action} extra_text='{text}'");
+                    return Ok(Some(LaunchRequest::Remote(text)));
+                }
+            }
+
             // Intent.getData() → Uri; null en un lanzamiento normal.
             let data = env
                 .call_method(
@@ -258,6 +306,11 @@ pub(crate) fn launch_intent_pdf(app: &AndroidApp) -> Option<LaunchPdf> {
                 s => jni_jstring(env, &s)?,
             };
             match scheme.as_str() {
+                "pdflector" => {
+                    let decoded = percent_decode(&uri_str);
+                    info!("launch_intent_request: pdflector URI '{uri_str}' -> '{decoded}'");
+                    Ok(Some(LaunchRequest::Remote(decoded)))
+                }
                 "content" => {
                     let resolver = env
                         .call_method(
@@ -373,11 +426,11 @@ pub(crate) fn launch_intent_pdf(app: &AndroidApp) -> Option<LaunchPdf> {
                         error!("open-with: write {}: {e}", dest.display());
                         return Ok(None);
                     }
-                    Ok(Some(LaunchPdf {
+                    Ok(Some(LaunchRequest::File(LaunchPdf {
                         name,
                         source: uri_str,
                         path: dest.display().to_string(),
-                    }))
+                    })))
                 }
                 "file" => {
                     // file:// → ruta local directa (abre el PDF in situ).
@@ -398,11 +451,16 @@ pub(crate) fn launch_intent_pdf(app: &AndroidApp) -> Option<LaunchPdf> {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "external.pdf".to_string());
                     info!("open-with file://: {path}");
-                    Ok(Some(LaunchPdf {
+                    Ok(Some(LaunchRequest::File(LaunchPdf {
                         name,
                         source: uri_str,
                         path,
-                    }))
+                    })))
+                }
+                "http" | "https" => {
+                    let decoded = percent_decode(&uri_str);
+                    info!("launch_intent_request: http(s) URI '{uri_str}' -> '{decoded}'");
+                    Ok(Some(LaunchRequest::Remote(decoded)))
                 }
                 other => {
                     warn!("open-with {uri_str}: scheme '{other}' no soportado");
@@ -421,10 +479,196 @@ pub(crate) fn launch_intent_pdf(app: &AndroidApp) -> Option<LaunchPdf> {
                 env.exception_clear();
                 Ok(())
             });
-            error!("launch_intent_pdf: {e}");
+            error!("launch_intent_request: {e}");
             None
         }
     }
+}
+
+/// Helper de compatibilidad: extrae `LaunchPdf` si el intent fue un fichero local.
+#[allow(dead_code)]
+pub(crate) fn launch_intent_pdf(app: &AndroidApp) -> Option<LaunchPdf> {
+    match launch_intent_request(app) {
+        Some(LaunchRequest::File(lp)) => Some(lp),
+        _ => None,
+    }
+}
+
+/// Decodifica caracteres percent-encoded (%XX) a UTF-8.
+pub(crate) fn percent_decode(s: &str) -> String {
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut chars = s.as_bytes().iter().copied().peekable();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                if let (Some(d1), Some(d2)) = (hex_digit(h1), hex_digit(h2)) {
+                    bytes.push((d1 << 4) | d2);
+                    continue;
+                }
+                bytes.push(b'%');
+                bytes.push(h1);
+                bytes.push(h2);
+                continue;
+            }
+            bytes.push(b'%');
+            if let Some(h1) = h1 {
+                bytes.push(h1);
+            }
+            continue;
+        }
+        bytes.push(b);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Parsea un texto o URI recibido por intent para extraer un identificador canónico de arXiv.
+///
+/// Acepta:
+/// - URLs arXiv: `arxiv.org/abs/<id>`, `arxiv.org/pdf/<id>` (con o sin `https://` / `http://` / `.pdf` / versión)
+/// - URLs export.arxiv: `export.arxiv.org/abs/<id>`, `export.arxiv.org/pdf/<id>`
+/// - URLs PaperTok: `papertok.app/#/public/paper/<base64url>` (donde la clave decodifica a `arxiv:<id>`)
+/// - Esquema custom: `pdflector://arxiv/<id>`, `pdflector://<id>` (con o sin percent-encoding de barras)
+/// - Identificador suelto: `2401.12345`, `2401.12345v2`, `0706.0001`, `hep-th/9901001`, `arXiv:2401.12345`
+/// - Texto que contenga cualquiera de las formas anteriores rodeado de espacios/mensaje.
+///
+/// Devuelve `None` si la entrada no representa un paper de arXiv válido (ej. DOI, URL genérica o texto vacío).
+pub(crate) fn parse_arxiv_target(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Si el texto contiene espacios en blanco (ej. texto compartido de navegador o PaperTok
+    // con título + URL), intentar primero si alguna palabra parsea como paper válido.
+    if trimmed.contains(|c: char| c.is_whitespace()) {
+        for word in trimmed.split_whitespace() {
+            if let Some(id) = parse_single_arxiv_target(word) {
+                return Some(id);
+            }
+        }
+    }
+
+    parse_single_arxiv_target(trimmed)
+}
+
+fn parse_single_arxiv_target(input: &str) -> Option<String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+
+    // 1. PaperTok: https://papertok.app/#/public/paper/<base64url> o /public/paper/<base64url>
+    if let Some(idx) = input.find("public/paper/") {
+        let after = &input[idx + "public/paper/".len()..];
+        // Extraer la clave hasta el primer delimitador de query/hash/path/espacio
+        let key = after.split(['?', '#', '&', '/', ' ']).next().unwrap_or("");
+        if !key.is_empty() {
+            use base64::Engine;
+            let key_trimmed = key.trim_end_matches('=');
+            if let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(key_trimmed)
+            {
+                if let Ok(decoded_str) = String::from_utf8(bytes) {
+                    let lower = decoded_str.to_lowercase();
+                    if let Some(rest) = lower.strip_prefix("arxiv:") {
+                        if let Ok((canonical, _)) = pdf_core::parse_arxiv_id(rest) {
+                            return Some(canonical);
+                        }
+                    }
+                }
+            }
+        }
+        // Si era una URL de PaperTok pero no contenía 'arxiv:' (ej. 'doi:...'), es no-arXiv.
+        return None;
+    }
+
+    // 2. pdflector:// scheme
+    let s = if let Some(idx) = input.find("pdflector://") {
+        let after = &input[idx + "pdflector://".len()..];
+        let after = after.strip_prefix("arxiv/").unwrap_or(after);
+        after.strip_prefix("arxiv:").unwrap_or(after)
+    } else {
+        input
+    };
+
+    // 3. Percent-decode (ej. hep-th%2F9901001 -> hep-th/9901001)
+    let decoded = percent_decode(s);
+    let mut s = decoded.trim();
+
+    // Eliminar fragmentos '#' o queries '?' residuales
+    if let Some(q) = s.find('?') {
+        s = &s[..q];
+    }
+    if let Some(h) = s.find('#') {
+        s = &s[..h];
+    }
+
+    // 4. Prefijos de export.arxiv.org y arxiv.org sin https/http
+    for prefix in [
+        "https://export.arxiv.org/abs/",
+        "https://export.arxiv.org/pdf/",
+        "http://export.arxiv.org/abs/",
+        "http://export.arxiv.org/pdf/",
+        "export.arxiv.org/abs/",
+        "export.arxiv.org/pdf/",
+        "https://arxiv.org/abs/",
+        "https://arxiv.org/pdf/",
+        "http://arxiv.org/abs/",
+        "http://arxiv.org/pdf/",
+        "arxiv.org/abs/",
+        "arxiv.org/pdf/",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
+        }
+    }
+
+    // Quitar extensión .pdf si está presente
+    if let Some(rest) = s.strip_suffix(".pdf") {
+        s = rest;
+    }
+
+    // 5. Validación canónica y rechazo estricto de esquemas ajenos (ej. DOIs, URLs no-arXiv)
+    let (canonical, _) = match pdf_core::parse_arxiv_id(s) {
+        Ok(pair) => pair,
+        Err(_) => return None,
+    };
+
+    if canonical.starts_with("http://") || canonical.starts_with("https://") {
+        return None;
+    }
+
+    if let Some((cat, num)) = canonical.split_once('/') {
+        let cat_ok = !cat.is_empty()
+            && cat
+                .chars()
+                .all(|c| c.is_ascii_alphabetic() || c == '-' || c == '.');
+        let num_ok = num.len() == 7 && num.chars().all(|c| c.is_ascii_digit());
+        if !cat_ok || !num_ok {
+            return None;
+        }
+    } else if let Some((yymm, num)) = canonical.split_once('.') {
+        let yymm_ok = yymm.len() == 4 && yymm.chars().all(|c| c.is_ascii_digit());
+        let num_ok = (num.len() == 4 || num.len() == 5) && num.chars().all(|c| c.is_ascii_digit());
+        if !yymm_ok || !num_ok {
+            return None;
+        }
+    } else {
+        return None;
+    }
+
+    Some(canonical)
 }
 
 /// Convierte un `JObject` que es un `java.lang.String` a `String` Rust (copia).
@@ -1341,4 +1585,139 @@ pub(crate) fn ime_set_text(app: &AndroidApp, text: &str) {
             Ok(())
         })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_percent_decode() {
+        assert_eq!(percent_decode("hep-th%2F9901001"), "hep-th/9901001");
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("2401.12345"), "2401.12345");
+        assert_eq!(
+            percent_decode("pdflector%3A%2F%2Farxiv%2F2401.12345"),
+            "pdflector://arxiv/2401.12345"
+        );
+    }
+
+    #[test]
+    fn test_parse_arxiv_target_variants() {
+        // Modern IDs
+        assert_eq!(
+            parse_arxiv_target("2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("2401.12345v2").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("0706.0001").as_deref(),
+            Some("0706.0001")
+        );
+
+        // Classic IDs with subject/archive
+        assert_eq!(
+            parse_arxiv_target("hep-th/9901001").as_deref(),
+            Some("hep-th/9901001")
+        );
+        assert_eq!(
+            parse_arxiv_target("hep-th/9901001v3").as_deref(),
+            Some("hep-th/9901001")
+        );
+
+        // Direct arXiv URLs (abs and pdf)
+        assert_eq!(
+            parse_arxiv_target("https://arxiv.org/abs/2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("https://arxiv.org/pdf/2401.12345.pdf").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("http://arxiv.org/abs/hep-th/9901001").as_deref(),
+            Some("hep-th/9901001")
+        );
+        assert_eq!(
+            parse_arxiv_target("arxiv.org/abs/2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("arxiv.org/pdf/2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+
+        // Export arXiv URLs
+        assert_eq!(
+            parse_arxiv_target("https://export.arxiv.org/abs/2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("https://export.arxiv.org/pdf/2401.12345.pdf").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("export.arxiv.org/abs/2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+
+        // Custom scheme pdflector://
+        assert_eq!(
+            parse_arxiv_target("pdflector://arxiv/2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("pdflector://arxiv/hep-th%2F9901001").as_deref(),
+            Some("hep-th/9901001")
+        );
+        assert_eq!(
+            parse_arxiv_target("pdflector://arxiv/hep-th/9901001").as_deref(),
+            Some("hep-th/9901001")
+        );
+        assert_eq!(
+            parse_arxiv_target("pdflector://2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+
+        // PaperTok base64url keys
+        // "arxiv:2401.12345" base64url = "YXJ4aXY6MjQwMS4xMjM0NQ"
+        assert_eq!(
+            parse_arxiv_target("https://papertok.app/#/public/paper/YXJ4aXY6MjQwMS4xMjM0NQ")
+                .as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target("https://papertok.app/public/paper/YXJ4aXY6MjQwMS4xMjM0NQ")
+                .as_deref(),
+            Some("2401.12345")
+        );
+
+        // Non-arXiv PaperTok keys (e.g. "doi:10.1000/182" base64url = "ZG9pOjEwLjEwMDAvMTgy")
+        assert_eq!(
+            parse_arxiv_target("https://papertok.app/#/public/paper/ZG9pOjEwLjEwMDAvMTgy"),
+            None
+        );
+
+        // Plain non-arXiv URLs and arbitrary text
+        assert_eq!(parse_arxiv_target("https://doi.org/10.1000/182"), None);
+        assert_eq!(parse_arxiv_target("https://example.com/paper.pdf"), None);
+        assert_eq!(parse_arxiv_target("hello world"), None);
+        assert_eq!(parse_arxiv_target(""), None);
+
+        // Mixed shared text (e.g. from PaperTok or browser share dialog)
+        assert_eq!(
+            parse_arxiv_target("Check out this paper: https://arxiv.org/abs/2401.12345").as_deref(),
+            Some("2401.12345")
+        );
+        assert_eq!(
+            parse_arxiv_target(
+                "Title of Paper\nhttps://papertok.app/#/public/paper/YXJ4aXY6MjQwMS4xMjM0NQ"
+            )
+            .as_deref(),
+            Some("2401.12345")
+        );
+    }
 }

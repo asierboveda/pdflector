@@ -91,6 +91,14 @@ pub(crate) struct LaunchPdf {
     pub(crate) path: String,
 }
 
+/// Petición de apertura recibida al lanzar la app (intent).
+/// Puede ser un fichero local (ACTION_VIEW content:// o file://)
+/// o una petición remota de arXiv (ACTION_VIEW pdflector:// o ACTION_SEND text/plain).
+pub(crate) enum LaunchRequest {
+    File(LaunchPdf),
+    Remote(String),
+}
+
 /// Modo de UI actual de la app.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum UiMode {
