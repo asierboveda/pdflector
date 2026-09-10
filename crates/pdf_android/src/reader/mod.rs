@@ -40,6 +40,11 @@ use crate::thumbs::ThumbCache;
 // Partición de `reader.rs` (2026-09-06, Tarea 4.4): submódulos por
 // responsabilidad — ver el doc de cada uno para su contenido.
 mod anotaciones;
+mod discover;
+pub(crate) mod discover_categories;
+pub(crate) mod discover_state;
+#[path = "../discover.rs"]
+pub(crate) mod discover_worker;
 mod geometry;
 mod library;
 mod library_state;
@@ -95,6 +100,8 @@ pub(crate) enum UiMode {
     /// `internal/library.json` (`persist::load_progress`); SIN escaneo de
     /// MediaStore. Altas vía el selector de `add_book`.
     Library,
+    /// Descubrir papers en arXiv: feed por categorías, búsqueda, ficha y descarga.
+    Discover,
 }
 
 /// Qué lista muestra el modo `UiMode::Picker`.
@@ -548,6 +555,9 @@ pub(crate) struct Reader {
     /// `library_state.rs`; aquí se poseen como un único campo y los accesos
     /// usan `self.library.lib_x`.
     pub(crate) library: library_state::LibraryState,
+    /// Estado de DESCUBRIR (arXiv Discover): navegación de pantallas,
+    /// categorías seleccionadas, feed, búsqueda y descargas en curso.
+    pub(crate) discover: discover_state::DiscoverState,
     /// ¿El teclado del buscador está abierto? true → `tick` hace polling del
     /// texto del EditText invisible (`jni::ime_text`) y re-filtra la rejilla.
     pub(crate) ime_active: bool,

@@ -50,6 +50,9 @@ impl Reader {
             // Debounce del pinch (F3.2): los dedos llevan quietos < 350 ms
             // o el render nítido aún no llegó — `tick` decide el disparo.
             || self.last_pinch_move.is_some()
+            // Operación de Discover en curso (feed, búsqueda o descarga de paper):
+            // sondear canal del DiscoverWorker sin bloquear.
+            || self.discover_busy()
     }
 
     /// Tick del bucle de eventos (timeout ~16 ms): avanza la animación del
@@ -176,6 +179,9 @@ impl Reader {
                 self.redraw();
             }
         }
+        // Worker de Discover (arXiv): sondea respuestas del feed, búsquedas
+        // y progreso/finalización de descargas de papers sin bloquear.
+        self.pump_discover(app);
     }
 
     // ---------------------------------------------------------------------
