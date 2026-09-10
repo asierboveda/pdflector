@@ -325,6 +325,12 @@ impl ArxivClient {
         self.search(&query)
     }
 
+    /// Fetches metadata for a single arXiv paper.
+    pub fn fetch_meta(&self, id: &str) -> Result<Option<ArxivEntry>, ArxivError> {
+        let entries = self.fetch_by_ids(&[id])?;
+        Ok(entries.into_iter().next())
+    }
+
     /// Downloads a paper PDF by arXiv identifier, streaming content to the given writer.
     ///
     /// Respects the rate-limiting throttle, verifies `application/pdf` content-type,
@@ -614,4 +620,137 @@ pub fn parse_atom_body(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
         buf.clear();
     }
     Ok(out)
+}
+
+/// Sanea el título de un paper para su uso como nombre de fichero:
+/// solo caracteres seguros (ASCII alfanumérico, '.', '-', '_', espacios),
+/// colapsa caracteres no válidos (`:/?` etc.) y recorta extremos.
+pub fn sanitize_paper_title(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while s.contains("__") {
+        s = s.replace("__", "_");
+    }
+    s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    s.trim_matches(|c: char| matches!(c, ' ' | '_' | '-' | '.'))
+        .to_string()
+}
+
+/// Genera el nombre de fichero según el esquema `{titulo-sanitizado} [{id}].pdf`.
+/// Si el título está ausente, vacío o solo contiene caracteres no válidos,
+/// cae al fallback `arxiv_{id}.pdf`.
+///
+/// La longitud total está acotada a 80 caracteres (igual que `sanitize_pdf_name`),
+/// recortando el título para garantizar que ` [{id}].pdf` siempre permanezca intacto.
+pub fn arxiv_filename(title: Option<&str>, id: &str) -> String {
+    let canonical_id = match parse_arxiv_id(id) {
+        Ok((base, _)) => base,
+        Err(_) => id.trim().to_string(),
+    };
+    let sanitized_id = canonical_id.replace('/', "_");
+
+    let clean_title = title.map(sanitize_paper_title).unwrap_or_default();
+    if clean_title.is_empty() {
+        return format!("arxiv_{sanitized_id}.pdf");
+    }
+
+    let suffix = format!(" [{sanitized_id}].pdf");
+    let suffix_len = suffix.chars().count();
+    if suffix_len >= 80 {
+        return format!("arxiv_{sanitized_id}.pdf");
+    }
+
+    let max_title_chars = 80 - suffix_len;
+    if clean_title.chars().count() > max_title_chars {
+        let truncated: String = clean_title.chars().take(max_title_chars).collect();
+        let trimmed_title = truncated.trim_matches(|c: char| matches!(c, ' ' | '_' | '-' | '.'));
+        if trimmed_title.is_empty() {
+            return format!("arxiv_{sanitized_id}.pdf");
+        }
+        format!("{trimmed_title}{suffix}")
+    } else {
+        format!("{clean_title}{suffix}")
+    }
+}
+
+/// Resuelve unicidad de nombre de fichero para evitar sobreescrituras:
+/// si `base_filename` ya existe según `exists`, añade sufijos ` (2)`, ` (3)`, etc.
+pub fn resolve_unique_filename<F>(base_filename: &str, mut exists: F) -> String
+where
+    F: FnMut(&str) -> bool,
+{
+    if !exists(base_filename) {
+        return base_filename.to_string();
+    }
+    let (stem, ext) = match base_filename.rsplit_once('.') {
+        Some((s, e)) => (s, format!(".{e}")),
+        None => (base_filename, String::new()),
+    };
+    for n in 2..=9999 {
+        let candidate = format!("{stem} ({n}){ext}");
+        if !exists(&candidate) {
+            return candidate;
+        }
+    }
+    format!(
+        "{stem} ({}){ext}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(9999)
+    )
+}
+
+/// Comprueba si un nombre de fichero en la biblioteca corresponde a un ID de arXiv dado.
+/// Maneja el esquema nuevo (`{titulo} [{id}].pdf` y `{titulo} [{id}] (N).pdf`),
+/// así como el esquema previo/fallback (`arxiv_{id}.pdf` y `arxiv_{id} (N).pdf`),
+/// evitando falsos positivos por coincidencia de subcadenas.
+pub fn matches_arxiv_id(filename: &str, arxiv_id: &str) -> bool {
+    let canonical = match parse_arxiv_id(arxiv_id) {
+        Ok((base, _)) => base,
+        Err(_) => arxiv_id.trim().to_string(),
+    };
+    if canonical.is_empty() {
+        return false;
+    }
+    let sanitized_id = canonical.replace('/', "_");
+
+    // 1. Esquema nuevo: `{titulo} [{id}].pdf` o `{titulo} [{id}] (N).pdf`
+    let token = format!("[{sanitized_id}]");
+    if let Some(pos) = filename.find(&token) {
+        let after = &filename[pos + token.len()..];
+        if after == ".pdf" {
+            return true;
+        }
+        if let Some(rest) = after.strip_prefix(" (")
+            && let Some(num_str) = rest.strip_suffix(").pdf")
+            && !num_str.is_empty()
+            && num_str.chars().all(|c| c.is_ascii_digit())
+        {
+            return true;
+        }
+    }
+
+    // 2. Esquema fallback o legado: `arxiv_{id}.pdf` o `arxiv_{id} (N).pdf`
+    let prefix = format!("arxiv_{sanitized_id}");
+    if filename == format!("{prefix}.pdf") {
+        return true;
+    }
+    if let Some(rest) = filename.strip_prefix(&format!("{prefix} ("))
+        && let Some(num_str) = rest.strip_suffix(").pdf")
+        && !num_str.is_empty()
+        && num_str.chars().all(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+
+    false
 }

@@ -207,15 +207,24 @@ impl Reader {
             Some(LaunchRequest::Remote(target)) => match parse_arxiv_target(&target) {
                 Some(id) => {
                     info!("launch_intent_request: Remote arXiv ID: {id}");
-                    let safe_filename = format!("arxiv_{}.pdf", id.replace('/', "_"));
-                    let local_path = reader
-                        .internal_dir
-                        .as_ref()
-                        .map(|d| d.join("pdfs").join(&safe_filename));
-                    if let Some(path) = &local_path
-                        && path.exists()
-                    {
-                        let path_str = path.display().to_string();
+                    reader.refresh_curated_library_data();
+                    let mut found_path = None;
+                    if let Some(entry) = reader.find_arxiv_in_library(&id) {
+                        found_path = Some(reader.entry_path(&entry));
+                    } else if let Some(dir) = &reader.internal_dir {
+                        let pdfs_dir = dir.join("pdfs");
+                        if let Ok(entries) = std::fs::read_dir(&pdfs_dir) {
+                            for e in entries.flatten() {
+                                if let Ok(name) = e.file_name().into_string()
+                                    && pdf_core::matches_arxiv_id(&name, &id)
+                                {
+                                    found_path = Some(e.path().display().to_string());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(path_str) = found_path {
                         info!("launch_intent_request: {id} already present at {path_str}");
                         if reader.open_pdf(&path_str) {
                             reader.redraw();

@@ -36,11 +36,11 @@ pub(crate) fn draw_header_tabs(
     let (tab_lib, tab_disc) = lib_tabs_rect(win_w, win_h);
     let p = theme.palette();
 
-    let mut render_tab = |rects: &mut Vec<CanvasRect>,
-                          texts: &mut Vec<CanvasText>,
-                          rect: ButtonRect,
-                          is_active: bool,
-                          label: &str| {
+    let render_tab = |rects: &mut Vec<CanvasRect>,
+                      texts: &mut Vec<CanvasText>,
+                      rect: ButtonRect,
+                      is_active: bool,
+                      label: &str| {
         let (left, top, right, bottom) = rect;
         let r = ((bottom - top) * 0.5).max(6.0);
         let cy = top + (bottom - top) * 0.5 + theme::FONT_BODY * 0.35;

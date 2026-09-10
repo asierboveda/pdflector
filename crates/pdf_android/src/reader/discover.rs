@@ -13,14 +13,15 @@ use super::discover_worker::{DiscoverCmd, DiscoverMsg, DiscoverWorker, MoreScope
 use super::{LibraryEntry, Reader, UiMode};
 
 /// Busca si un paper de arXiv ya está presente en la biblioteca curada.
-/// Maneja tanto IDs modernos (2401.12345) como clásicos con barra sustituida por guion bajo (hep-th_9901001).
+/// Maneja el esquema nuevo `{titulo} [{id}].pdf` (y variantes con contador ` (2)`),
+/// así como el esquema previo/fallback `arxiv_{id}.pdf`.
 pub(crate) fn find_arxiv_in_library<'a>(
     library_list: &'a [LibraryEntry],
     arxiv_id: &str,
 ) -> Option<&'a LibraryEntry> {
-    let sanitized = arxiv_id.replace('/', "_");
-    let target_name = format!("arxiv_{sanitized}.pdf");
-    library_list.iter().find(|b| b.name == target_name)
+    library_list
+        .iter()
+        .find(|b| pdf_core::matches_arxiv_id(&b.name, arxiv_id))
 }
 use crate::persist::{self, PaperMeta};
 use android_activity::AndroidApp;
@@ -170,7 +171,12 @@ impl Reader {
                         self.discover.worker_busy = false;
                     }
                     self.library_add_entry(app, &path, entry.as_ref());
-                    self.show_toast(&format!("Descargado: {id}"));
+                    let display_name = entry
+                        .as_ref()
+                        .map(|e| e.title.as_str())
+                        .filter(|t| !t.trim().is_empty())
+                        .unwrap_or(&id);
+                    self.show_toast(&format!("Descargado: {display_name}"));
                     self.discover.dirty = true;
                     self.redraw();
                 }

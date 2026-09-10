@@ -1355,9 +1355,9 @@ fn discover_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                         return;
                     }
 
-                    let local_entry = reader.find_arxiv_in_library(&entry.id);
-                    if hit_action && local_entry.is_some() {
-                        reader.open_library_entry(app, &local_entry.unwrap());
+                    if hit_action && let Some(local_entry) = reader.find_arxiv_in_library(&entry.id)
+                    {
+                        reader.open_library_entry(app, &local_entry);
                         return;
                     }
                     // Tocar tarjeta o botón "Ficha": abrir ficha detallada

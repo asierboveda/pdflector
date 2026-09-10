@@ -18,7 +18,9 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{JoinHandle, spawn};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use pdf_core::arxiv::{ArxivClient, ArxivEntry, ArxivQuery, parse_arxiv_id};
+use pdf_core::arxiv::{
+    ArxivClient, ArxivEntry, ArxivQuery, arxiv_filename, parse_arxiv_id, resolve_unique_filename,
+};
 
 /// Límite máximo de la caché en disco de feeds (4 MiB).
 pub const FEED_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024;
@@ -498,7 +500,7 @@ impl DiscoverWorker {
                             }
                         }
                     }
-                    DiscoverCmd::Download { id, entry } => {
+                    DiscoverCmd::Download { id, mut entry } => {
                         cancel_flag_worker.store(false, Ordering::SeqCst);
                         let (canonical_id, _) = match parse_arxiv_id(&id) {
                             Ok(pair) => pair,
@@ -521,9 +523,43 @@ impl DiscoverWorker {
                             continue;
                         }
 
-                        // Convierte / a _ solo para el nombre de fichero en disco
-                        let safe_filename = format!("arxiv_{}.pdf", canonical_id.replace('/', "_"));
-                        let part_filename = format!("{}.part", safe_filename);
+                        // Si no hay metadatos o el título está vacío, pedir metadatos primero (API Atom)
+                        if entry
+                            .as_ref()
+                            .map(|e| e.title.trim().is_empty())
+                            .unwrap_or(true)
+                            && !cancel_flag_worker.load(Ordering::SeqCst)
+                        {
+                            match client.fetch_meta(&canonical_id) {
+                                Ok(Some(fetched)) => {
+                                    if !fetched.title.trim().is_empty() {
+                                        entry = Some(fetched);
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    log::warn!(
+                                        "fetch_meta falló para {canonical_id}: {e}; usando fallback de nombre"
+                                    );
+                                }
+                            }
+                        }
+
+                        if cancel_flag_worker.load(Ordering::SeqCst) {
+                            let _ = msg_tx.send(DiscoverMsg::DownloadFailed {
+                                id: canonical_id,
+                                error: "Descarga cancelada".to_string(),
+                            });
+                            continue;
+                        }
+
+                        // Esquema {titulo-sanitizado} [{id}].pdf con fallback arxiv_{id}.pdf y no-pisado (2)
+                        let title_opt = entry.as_ref().map(|e| e.title.as_str());
+                        let base_filename = arxiv_filename(title_opt, &canonical_id);
+                        let safe_filename = resolve_unique_filename(&base_filename, |name| {
+                            pdfs_dir.join(name).exists()
+                        });
+                        let part_filename = format!("{safe_filename}.part");
                         let final_path = pdfs_dir.join(&safe_filename);
                         let part_path = pdfs_dir.join(&part_filename);
 

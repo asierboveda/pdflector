@@ -29,7 +29,10 @@ pub use annotations::{
     Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote,
     simplify_polyline, smooth_polyline,
 };
-pub use arxiv::{ArxivError, ArxivId, ArxivQuery, parse_arxiv_id};
+pub use arxiv::{
+    ArxivError, ArxivId, ArxivQuery, arxiv_filename, matches_arxiv_id, parse_arxiv_id,
+    resolve_unique_filename, sanitize_paper_title,
+};
 pub use cache::{CacheStats, PageKey, RenderCache, RenderedPage, scale_for_level};
 pub use dark::invert_bitmap;
 pub use engine::{Bitmap, Document, Error, PageText, RenderEngine, Result, TextSpan};

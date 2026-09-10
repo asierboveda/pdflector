@@ -9,7 +9,8 @@ use std::thread;
 
 use pdf_core::arxiv::{
     ARXIV_USER_AGENT, ArxivClient, ArxivEntry, ArxivError, ArxivId, ArxivQuery, DownloadOutcome,
-    parse_arxiv_id, parse_atom_body, parse_atom_for_test,
+    arxiv_filename, matches_arxiv_id, parse_arxiv_id, parse_atom_body, parse_atom_for_test,
+    resolve_unique_filename, sanitize_paper_title,
 };
 
 const ARXIV_ATOM_FIXTURE_WITH_ENTITIES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -548,4 +549,189 @@ fn download_invalid_id_fails_before_network() {
     let err = client.download_to("not_an_arxiv_id", &mut buf).unwrap_err();
     assert!(matches!(err, ArxivError::InvalidId(_)));
     assert!(buf.is_empty());
+}
+
+#[test]
+fn sanitize_paper_title_cleans_and_collapses() {
+    assert_eq!(
+        sanitize_paper_title("Attention Is All You Need"),
+        "Attention Is All You Need"
+    );
+    assert_eq!(
+        sanitize_paper_title("Quantum: A Review / Survey?"),
+        "Quantum_ A Review _ Survey"
+    );
+    assert_eq!(
+        sanitize_paper_title("  1D->2D   Transitions  (Part 1)  \n "),
+        "1D-_2D Transitions _Part 1"
+    );
+    assert_eq!(sanitize_paper_title(":::???///"), "");
+    assert_eq!(sanitize_paper_title("   "), "");
+    assert_eq!(sanitize_paper_title(""), "");
+}
+
+#[test]
+fn arxiv_filename_format_and_fallback() {
+    // Standard with title and modern ID
+    assert_eq!(
+        arxiv_filename(Some("Attention Is All You Need"), "1706.03762"),
+        "Attention Is All You Need [1706.03762].pdf"
+    );
+    // Classic ID with slash replaced
+    assert_eq!(
+        arxiv_filename(Some("String Theory"), "hep-th/9901001"),
+        "String Theory [hep-th_9901001].pdf"
+    );
+    // Fallback: None
+    assert_eq!(arxiv_filename(None, "2401.12345"), "arxiv_2401.12345.pdf");
+    // Fallback: empty title
+    assert_eq!(
+        arxiv_filename(Some(""), "2401.12345"),
+        "arxiv_2401.12345.pdf"
+    );
+    // Fallback: title containing only punctuation/whitespace
+    assert_eq!(
+        arxiv_filename(Some("   :::???///   "), "2401.12345"),
+        "arxiv_2401.12345.pdf"
+    );
+    // Classic ID fallback
+    assert_eq!(
+        arxiv_filename(None, "hep-th/9901001"),
+        "arxiv_hep-th_9901001.pdf"
+    );
+    // URL and versioned ID
+    assert_eq!(
+        arxiv_filename(Some("Sample Paper"), "https://arxiv.org/abs/2401.12345v2"),
+        "Sample Paper [2401.12345].pdf"
+    );
+}
+
+#[test]
+fn arxiv_filename_caps_at_80_chars_preserving_id() {
+    let long_title = "This Is An Extremely Long Paper Title Designed To Exceed Eighty Characters In Length By A Substantial Amount";
+    let filename = arxiv_filename(Some(long_title), "2401.12345");
+    assert!(
+        filename.chars().count() <= 80,
+        "length was {}",
+        filename.chars().count()
+    );
+    assert!(filename.ends_with(" [2401.12345].pdf"));
+    assert!(!filename.starts_with('_'));
+    assert!(!filename.contains(".."));
+}
+
+#[test]
+fn resolve_unique_filename_avoids_collisions() {
+    use std::collections::HashSet;
+
+    let mut existing = HashSet::new();
+    let base = "Paper [2401.12345].pdf";
+
+    // When file does not exist, uses base name
+    assert_eq!(
+        resolve_unique_filename(base, |name| existing.contains(name)),
+        "Paper [2401.12345].pdf"
+    );
+
+    // When base exists, appends (2)
+    existing.insert(base.to_string());
+    assert_eq!(
+        resolve_unique_filename(base, |name| existing.contains(name)),
+        "Paper [2401.12345] (2).pdf"
+    );
+
+    // When (2) also exists, appends (3)
+    existing.insert("Paper [2401.12345] (2).pdf".to_string());
+    assert_eq!(
+        resolve_unique_filename(base, |name| existing.contains(name)),
+        "Paper [2401.12345] (3).pdf"
+    );
+
+    // Works with fallback name too
+    let fallback = "arxiv_2401.12345.pdf";
+    existing.insert(fallback.to_string());
+    assert_eq!(
+        resolve_unique_filename(fallback, |name| existing.contains(name)),
+        "arxiv_2401.12345 (2).pdf"
+    );
+}
+
+#[test]
+fn matches_arxiv_id_exact_and_legacy() {
+    // New format
+    assert!(matches_arxiv_id(
+        "Attention Is All You Need [1706.03762].pdf",
+        "1706.03762"
+    ));
+    assert!(matches_arxiv_id(
+        "Attention Is All You Need [1706.03762] (2).pdf",
+        "1706.03762"
+    ));
+    assert!(matches_arxiv_id(
+        "Attention Is All You Need [1706.03762] (10).pdf",
+        "1706.03762"
+    ));
+
+    // Legacy / fallback format
+    assert!(matches_arxiv_id("arxiv_1706.03762.pdf", "1706.03762"));
+    assert!(matches_arxiv_id("arxiv_1706.03762 (2).pdf", "1706.03762"));
+
+    // Classic ID
+    assert!(matches_arxiv_id(
+        "String Theory [hep-th_9901001].pdf",
+        "hep-th/9901001"
+    ));
+    assert!(matches_arxiv_id(
+        "arxiv_hep-th_9901001.pdf",
+        "hep-th/9901001"
+    ));
+
+    // URL and versioned target
+    assert!(matches_arxiv_id(
+        "Attention [1706.03762].pdf",
+        "https://arxiv.org/abs/1706.03762v2"
+    ));
+
+    // Must NOT match substring IDs (prevent collisions)
+    assert!(!matches_arxiv_id(
+        "Other Paper [1706.037629].pdf",
+        "1706.03762"
+    ));
+    assert!(!matches_arxiv_id("arxiv_1706.037629.pdf", "1706.03762"));
+    assert!(!matches_arxiv_id("Paper [0706.00015].pdf", "0706.0001"));
+    assert!(!matches_arxiv_id("arxiv_0706.00015.pdf", "0706.0001"));
+
+    // Must NOT match arbitrary files
+    assert!(!matches_arxiv_id("1706.03762.pdf", "1706.03762"));
+    assert!(!matches_arxiv_id("random_book.pdf", "1706.03762"));
+    assert!(!matches_arxiv_id("", "1706.03762"));
+}
+
+#[test]
+fn arxiv_client_fetch_meta_returns_single_entry() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(
+        listener,
+        200,
+        "application/atom+xml",
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.12345v2</id>
+    <title>Sample Paper Title</title>
+    <summary>Sample summary.</summary>
+    <author><name>Alice</name></author>
+    <link href="http://arxiv.org/abs/2401.12345v2" rel="alternate"/>
+    <link title="pdf" href="http://arxiv.org/pdf/2401.12345v2" rel="related"/>
+  </entry>
+</feed>"#,
+    );
+    let client = ArxivClient::for_tests(&format!("http://127.0.0.1:{port}"));
+    let entry = client.fetch_meta("2401.12345").unwrap().expect("has entry");
+    assert_eq!(entry.id, "2401.12345");
+    assert_eq!(entry.title, "Sample Paper Title");
+
+    let req = server.join().expect("join server");
+    assert!(req.contains("id_list=2401.12345"));
 }
