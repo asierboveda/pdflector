@@ -235,7 +235,6 @@ impl Reader {
                 None => {
                     info!("launch_intent_request: target '{target}' is not a valid arXiv paper");
                     reader.status = Some("Sin PDF de acceso abierto".to_string());
-                    persist::clear_state(reader.internal_dir.as_deref());
                     reader.reload_curated_library(app);
                 }
             },
