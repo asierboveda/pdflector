@@ -420,6 +420,7 @@ impl Gpu {
     /// visible para siempre.
     pub(crate) fn invalidate_dry(&mut self) {
         self.dry_dirty = true;
+        self.dry_key = None;
     }
     /// Dibuja una textura a pantalla completa en el framebuffer actualmente
     /// vinculado. `offset` (px de ventana, f32) traslada el quad de vértices:
@@ -525,10 +526,15 @@ impl Gpu {
             // 1. Dibujar página PDF y, sobre ella, las anotaciones
             // consolidadas: la dry hornea ambas juntas porque el quad de la
             // composición las desplaza como una sola capa (el pan).
-            if let Some(page) = reader
+            if let Some((page_idx, page)) = reader
                 .cache
                 .peek(reader.page)
-                .or_else(|| reader.fallback_page.and_then(|pg| reader.cache.peek(pg)))
+                .map(|p| (reader.page, p))
+                .or_else(|| {
+                    reader
+                        .fallback_page
+                        .and_then(|pg| reader.cache.peek(pg).map(|p| (pg, p)))
+                })
             {
                 let bmp = &page.bitmap;
                 // Blit EFECTIVO del bitmap residente (fix salto-pinch): deriva
@@ -557,7 +563,7 @@ impl Gpu {
                 // pueden mostrar smear transitorio hasta que aterriza el
                 // render sharp (`poll_render` → `invalidate_dry`).
                 let pw = bmp.width as f32 * blit_zoom;
-                self.upload_page_if_needed(reader.page, reader.rendered_zoom, bmp);
+                self.upload_page_if_needed(page_idx, reader.rendered_zoom, bmp);
                 // Pan horneado en el quad de la página: la dry FBO es la ventana
                 // visible y dibuja la región del documento correspondiente a
                 // (pan_x, pan_y); la composición a fb0 va con offset (0,0).
@@ -628,13 +634,13 @@ impl Gpu {
                 // pan las desplaza juntas). Ancladas a la caja FULL
                 // (`ann_dx/ann_dy`), no al quad del crop.
                 let mut scale = 1.0f32;
-                if let Some((pw, ph)) = reader.page_size_pt(reader.page) {
+                if let Some((pw, ph)) = reader.page_size_pt(page_idx) {
                     scale = crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h)
                         * reader.zoom;
                 }
                 let dx = ann_dx;
                 let dy = ann_dy;
-                let anns = reader.annotations.for_page(reader.page as usize);
+                let anns = reader.annotations.for_page(page_idx as usize);
                 for a in &anns {
                     if let pdf_core::Annotation::Highlight(h) = &a.kind {
                         for r in &h.rects {
@@ -917,7 +923,11 @@ impl Gpu {
         if self.dry_dirty || self.dry_key.is_none_or(|old| key.invalidates(&old)) {
             let has_page = self.render_dry(reader);
             self.dry_dirty = false;
-            self.dry_key = if has_page { Some(key) } else { None };
+            self.dry_key = if has_page && reader.fallback_page.is_none() {
+                Some(key)
+            } else {
+                None
+            };
         }
 
         // 2. Renderizar capa Wet si hay capa transitoria que pintar: trazo de

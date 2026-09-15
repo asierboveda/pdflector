@@ -76,6 +76,8 @@ mod tests {
         let doc_a_key = DryKey {
             page: 0,
             zoom_bits: 1.0f32.to_bits(),
+            pan_x: 0,
+            pan_y: 0,
             ann_count: 0,
             dark: false,
         };
@@ -83,6 +85,8 @@ mod tests {
         let doc_b_key = DryKey {
             page: 0,
             zoom_bits: 1.0f32.to_bits(),
+            pan_x: 0,
+            pan_y: 0,
             ann_count: 0,
             dark: false,
         };

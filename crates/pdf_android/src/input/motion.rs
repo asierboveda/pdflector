@@ -232,6 +232,8 @@ pub(crate) fn handle_motion(
                     // Palm rejection por tiempo: tras escribir con stylus, se
                     // ignora el táctil un margen (evita pans/zooms de la palma).
                     if reader.should_ignore_touch() {
+                        reader.gesture.kind = GestureKind::None;
+                        reader.gesture.press_at = None;
                         return;
                     }
                     reader.gesture.kind = GestureKind::Pan {
@@ -261,6 +263,8 @@ pub(crate) fn handle_motion(
             // Palm rejection por tiempo: tras escribir con stylus, se ignora
             // el táctil un margen (evita pinch/pan de la palma).
             if reader.should_ignore_touch() {
+                reader.gesture.kind = GestureKind::None;
+                reader.gesture.press_at = None;
                 return;
             }
             // PALM REJECTION mientras se dibuja/borra con el STYLUS: si la
@@ -310,6 +314,7 @@ pub(crate) fn handle_motion(
                     if moved > TAP_SLOP {
                         // El dedo se movió: el long-press muere (se exige un
                         // dedo quieto) y el gesto pasa a arrastre del sheet
+                        reader.gesture.press_at = None;
                         let (dx, dy) = (cx - start_x, cy - start_y);
                         let sheet_visible = reader.sheet_progress > 0.0;
                         // ¿Arrastre del sheet? Solo con el sheet YA visible:
@@ -540,6 +545,11 @@ pub(crate) fn handle_motion(
             {
                 reader.gesture.kind = GestureKind::None;
                 reader.set_zoom_sharp(reader.zoom);
+            } else if matches!(reader.gesture.kind, GestureKind::Tap { .. }) {
+                // Si había un tap armado y se levanta un puntero secundario,
+                // era un toque multitáctil, no un tap limpio de un solo dedo.
+                reader.gesture.kind = GestureKind::None;
+                reader.gesture.press_at = None;
             }
         }
         MotionAction::Cancel => {
