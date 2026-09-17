@@ -50,16 +50,16 @@
 //! consume esos taps); tocar fuera del menú lo cierra y descarta la
 //! selección. El long-press solo aplica con el sheet cerrado.
 
-use std::time::Instant;
-
 use android_activity::input::{Button, ButtonState, InputEvent, MotionAction, MotionEvent};
 use android_activity::{AndroidApp, InputStatus};
 use log::warn;
+use pdf_core::Document;
+use std::time::Instant;
 
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
 use crate::draw::{
-    SettingsMenuItem, ViewMenuItem, settings_menu_geometry, sheet_buttons, view_menu_geometry,
-    viewer_top_chrome_buttons,
+    SettingsMenuItem, ViewMenuItem, scrubber_card_geometry, settings_menu_geometry, sheet_buttons,
+    smart_dock_buttons, view_menu_geometry, viewer_top_chrome_buttons,
 };
 use crate::jni::launch_all_files_settings;
 use crate::reader::{
@@ -87,7 +87,8 @@ pub(crate) const LONG_PRESS_MS: std::time::Duration = std::time::Duration::from_
 #[derive(Clone, Copy, Debug)]
 enum GestureKind {
     None,
-    /// Un dedo: posible tap (página anterior/siguiente, indicador de página,
+    /// Arrastre del slider táctil inferior (scrubber de páginas).
+    Scrubbing,
     /// sheet abierto: botón o cerrar). El gesto se CANCELA si el dedo se
     /// mueve más de `TAP_SLOP` (un pequeño deslizamiento no cambia de
     /// página — sin scroll por arrastre en el modo página a página); al
@@ -223,12 +224,59 @@ fn viewer_chrome_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) -> b
         reader.touch_chrome();
         return true;
     }
-
     if y > win_h - bot_h {
+        let local_y = y - (win_h - bot_h);
+
+        // 1. Taps en el Smart Dock inferior
+        let dock_btns = smart_dock_buttons(win_w);
+        for (tag, (l, t, r, b)) in dock_btns {
+            if x >= l && x < r && local_y >= t && local_y < b {
+                match tag {
+                    "Ink" => {
+                        reader.pen_mode = PenMode::Ink;
+                        reader.persist_pen_mode();
+                        reader.show_toast("✏️ Modo Bolígrafo");
+                    }
+                    "Highlight" => {
+                        reader.pen_mode = PenMode::Highlight;
+                        reader.persist_pen_mode();
+                        reader.show_toast("🖍️ Modo Resaltador");
+                    }
+                    "Erase" => {
+                        reader.show_toast("⌫ Goma: mantén pulsado el botón del lápiz");
+                    }
+                    _ => {}
+                }
+                reader.chrome_bottom_bitmap = None;
+                reader.mark_repaint();
+                reader.touch_chrome();
+                return true;
+            }
+        }
+
+        // 2. Tap directo sobre el Scrubber de páginas
+        let (sl, st, sr, sb) = scrubber_card_geometry(win_w);
+        if x >= sl && x < sr && local_y >= st && local_y < sb {
+            let track_pad = 28.0f32;
+            let track_x0 = sl + track_pad;
+            let track_x1 = sr - track_pad;
+            let track_w = (track_x1 - track_x0).max(1.0);
+            let pct = ((x - track_x0) / track_w).clamp(0.0, 1.0);
+            let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
+            if pages > 0 {
+                let target = (pct * (pages - 1) as f32).round() as u32;
+                reader.goto_page(target);
+                reader.save_state();
+                reader.chrome_bottom_bitmap = None;
+                reader.mark_repaint();
+            }
+            reader.touch_chrome();
+            return true;
+        }
+
         reader.touch_chrome();
         return true;
     }
-
     false
 }
 
@@ -512,9 +560,15 @@ fn handle_motion(
                 // SEPARACIÓN DEDO/STYLUS: solo el lápiz dibuja/borra; los
                 // dedos (y la palma) navegan (pan/pinch).
                 if stylus {
-                    // El modo ERASE nunca coexiste con un gesto de tinta en
-                    // curso: si hay trazo, este Down no hace nada (el trazo
-                    // actual termina como estaba).
+                    // Palm Rejection estricta: si el chrome está visible al apoyar el stylus,
+                    // ocultar inmediatamente el Smart Dock y el chrome superior/inferior
+                    // para despejar el 100% del área de apoyo de la mano.
+                    if reader.chrome_visible {
+                        reader.chrome_visible = false;
+                        reader.chrome_bottom_bitmap = None;
+                        reader.chrome_top_bitmap = None;
+                        reader.mark_repaint();
+                    }
                     if reader.tool_gesture.is_some() {
                         return;
                     }
@@ -554,6 +608,32 @@ fn handle_motion(
                         pan0: reader.begin_pan(),
                     };
                     return;
+                }
+                // Dedo sobre el Scrubber mientras el chrome está visible
+                if !stylus && reader.chrome_visible {
+                    let bot_h = viewer_bottom_chrome_h(reader.win_h);
+                    let win_h = reader.win_h as f32;
+                    let win_w = reader.win_w as f32;
+                    if y > win_h - bot_h {
+                        let local_y = y - (win_h - bot_h);
+                        let (sl, st, sr, sb) = scrubber_card_geometry(win_w);
+                        if x >= sl && x < sr && local_y >= st && local_y < sb {
+                            let track_pad = 28.0f32;
+                            let track_x0 = sl + track_pad;
+                            let track_x1 = sr - track_pad;
+                            let track_w = (track_x1 - track_x0).max(1.0);
+                            let pct = ((x - track_x0) / track_w).clamp(0.0, 1.0);
+                            let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
+                            if pages > 0 {
+                                let target = (pct * (pages - 1) as f32).round() as u32;
+                                reader.scrubbing_page = Some(target);
+                                reader.chrome_bottom_bitmap = None;
+                                reader.mark_repaint();
+                                reader.gesture.kind = GestureKind::Scrubbing;
+                                return;
+                            }
+                        }
+                    }
                 }
             }
             // Defensa: si los DOS dedos llegan en un único ACTION_DOWN
@@ -646,6 +726,25 @@ fn handle_motion(
                     let (_, _, cy) = reader.gesture.pointers[0];
                     reader.drag_sheet(cy - start_y);
                 }
+                GestureKind::Scrubbing if reader.gesture.pointers.len() == 1 => {
+                    let (_, cx, _) = reader.gesture.pointers[0];
+                    let win_w = reader.win_w as f32;
+                    let (sl, _, sr, _) = scrubber_card_geometry(win_w);
+                    let track_pad = 28.0f32;
+                    let track_x0 = sl + track_pad;
+                    let track_x1 = sr - track_pad;
+                    let track_w = (track_x1 - track_x0).max(1.0);
+                    let pct = ((cx - track_x0) / track_w).clamp(0.0, 1.0);
+                    let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
+                    if pages > 0 {
+                        let target = (pct * (pages - 1) as f32).round() as u32;
+                        if reader.scrubbing_page != Some(target) {
+                            reader.scrubbing_page = Some(target);
+                            reader.chrome_bottom_bitmap = None;
+                            reader.mark_repaint();
+                        }
+                    }
+                }
                 GestureKind::Pinch {
                     start_dist,
                     start_zoom,
@@ -730,6 +829,16 @@ fn handle_motion(
             // (si el long-press ya disparó, `press_at` ya es None).
             reader.gesture.press_at = None;
             match kind {
+                GestureKind::Scrubbing => {
+                    if let Some(target) = reader.scrubbing_page.take()
+                        && target != reader.page
+                    {
+                        reader.goto_page(target);
+                        reader.save_state();
+                    }
+                    reader.chrome_bottom_bitmap = None;
+                    reader.mark_repaint();
+                }
                 GestureKind::Tap { start_x, start_y } => {
                     // Sin movimiento relevante y SIN long-press (el dedo se
                     // levantó antes de LONG_PRESS_MS) → TAP INMEDIATO: la
@@ -969,6 +1078,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                 break;
             }
         }
+        reader.menu_bitmap = None;
         if handled {
             reader.list_dirty = true;
             reader.redraw();
@@ -1037,6 +1147,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                 break;
             }
         }
+        reader.menu_bitmap = None;
         if handled {
             reader.list_dirty = true;
             reader.redraw();
@@ -1058,7 +1169,8 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         if hit_view {
             reader.view_menu_open = !reader.view_menu_open;
             reader.settings_menu_open = false;
-            reader.list_dirty = true; // re-render de la cabecera (highlight)
+            reader.menu_bitmap = None;
+            reader.list_dirty = true;
             reader.redraw();
             return;
         }
@@ -1066,6 +1178,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         if hit_settings {
             reader.settings_menu_open = !reader.settings_menu_open;
             reader.view_menu_open = false;
+            reader.menu_bitmap = None;
             reader.list_dirty = true;
             reader.redraw();
             return;

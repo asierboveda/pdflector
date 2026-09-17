@@ -78,30 +78,27 @@ pub struct DesignTokens {
 }
 
 impl DesignTokens {
-    /// Modo Papel: Inspiración Notion / Lovable.
-    /// Emula tinta sobre papel, blanco cálido, sin fatiga.
+    /// Modo Papel: True Paper (Inspiración Apple Books / Readest).
+    /// Emula tinta carbón sobre celulosa mate, sin fatiga visual.
     pub const PAPER: Self = Self {
-        canvas: ThemeColor::from_hex(0xF6F5F4),
+        canvas: ThemeColor::from_hex(0xF7F5F0),
         surface: ThemeColor::from_hex(0xFFFFFF),
-        border: ThemeColor::from_hex(0xE5E5E6),
-        ink: ThemeColor::from_hex(0x1C1C1C),
-        accent: ThemeColor::from_hex(0x0075DE),
+        border: ThemeColor::from_hex(0xE6E2D8),
+        ink: ThemeColor::from_hex(0x1A1A1A),
+        accent: ThemeColor::from_hex(0xB85D3B), // Terracota artesanal
         highlight_yellow: ThemeColor::from_hex(0xFDECC8),
         highlight_green: ThemeColor::from_hex(0xDBEDDB),
         highlight_blue: ThemeColor::from_hex(0xD3E5EF),
     };
 
-    /// Modo Noche: Inspiración Vercel Dark.
-    /// Lectura a oscuras y paneles OLED.
+    /// Modo Noche: Night Paper.
+    /// Pizarra mate nocturna sin deslumbramiento (evita el negro OLED agresivo).
     pub const NIGHT: Self = Self {
-        canvas: ThemeColor::from_hex(0x000000),
-        surface: ThemeColor::from_hex(0x0A0A0A),
-        border: ThemeColor::from_hex(0x1A1A1A),
-        ink: ThemeColor::from_hex(0xEDEDED),
-        accent: ThemeColor::from_hex(0x0070F3),
-        // Las notas del plan actual no especifican colores de subrayado oscuros,
-        // usamos los de papel por ahora, o bien en el renderizado oscuro se
-        // invierten o filtran (ej. usando un blend mode distinto).
+        canvas: ThemeColor::from_hex(0x18191A),
+        surface: ThemeColor::from_hex(0x222426),
+        border: ThemeColor::from_hex(0x2E3033),
+        ink: ThemeColor::from_hex(0xE3E2DE),
+        accent: ThemeColor::from_hex(0xD47A55), // Ascua cálida
         highlight_yellow: ThemeColor::from_hex(0xFDECC8),
         highlight_green: ThemeColor::from_hex(0xDBEDDB),
         highlight_blue: ThemeColor::from_hex(0xD3E5EF),

@@ -433,11 +433,10 @@ pub(crate) mod theme {
     /// Fondo de error cuando no se pudo abrir el PDF (rojo oscuro opaco).
     pub(crate) const ERROR_BG_RGBA: [u8; 4] = [0x5A, 0x12, 0x12, 0xFF];
 
-    /// Color del relleno del rect de selección (azul accent, alfa ~30 %: 77/255).
-    pub(crate) const SEL_FILL_RGBA: [u8; 4] = [0x4D, 0xA3, 0xFF, 0x4D];
+    /// Color del relleno del rect de selección (acento terracota, alfa ~30 %: 77/255).
+    pub(crate) const SEL_FILL_RGBA: [u8; 4] = [0xB8, 0x5D, 0x3B, 0x4D];
     /// Color del borde del rect de selección (1-2 px, alfa completo).
-    pub(crate) const SEL_BORDER_RGBA: [u8; 4] = [0x4D, 0xA3, 0xFF, 0xFF];
-
+    pub(crate) const SEL_BORDER_RGBA: [u8; 4] = [0xB8, 0x5D, 0x3B, 0xFF];
     /// Jerarquía tipográfica única (Readest Design System).
     pub(crate) const FONT_DISPLAY: f32 = 24.0;
     pub(crate) const FONT_TITLE: f32 = 17.0;
@@ -475,54 +474,52 @@ pub(crate) mod theme {
         pub(crate) fn palette(self) -> ThemePalette {
             match self {
                 Self::DefaultLight => ThemePalette {
-                    name: "Default-Light",
+                    name: "Day-Paper",
                     is_dark: false,
-                    base_100: 0xFFFFFFFF,
-                    base_200: 0xFFF2F2F2,
-                    base_300: 0xFFE0E0E0,
-                    base_content: 0xFF171717,
-                    neutral: 0xFFD9D9D9,
-                    neutral_content: 0xFF737373,
-                    primary: 0xFF0066CC,
+                    base_100: 0xFFFFFFFF,     // Superficies y tarjetas
+                    base_200: 0xFFF7F5F0,     // Canvas marfil cálido mate
+                    base_300: 0xFFE6E2D8,     // Bordes / hairlines sutiles
+                    base_content: 0xFF1A1A1A, // Tinta carbón suave
+                    neutral: 0xFFD9D4C7,
+                    neutral_content: 0xFF524E46, // Grafito mate con contraste
+                    primary: 0xFFB85D3B,         // Terracota artesanal de encuadernación
                     primary_content: 0xFFFFFFFF,
                 },
                 Self::SepiaLight => ThemePalette {
-                    name: "Sepia-Light",
+                    name: "Sepia-Warm",
                     is_dark: false,
-                    base_100: 0xFFF1E8D0,
-                    base_200: 0xFFE6DCBF,
-                    base_300: 0xFFD4C8A5,
-                    base_content: 0xFF5B4636,
-                    neutral: 0xFFC9BC96,
-                    neutral_content: 0xFF8A705B,
-                    primary: 0xFF008B8B,
+                    base_100: 0xFFF6F0E4,     // Papel envejecido limpio
+                    base_200: 0xFFEFE6D5,     // Papiro natural mate
+                    base_300: 0xFFDDD2BE,     // Sepia tenue
+                    base_content: 0xFF3D3126, // Tinta nogalina
+                    neutral: 0xFFCFC2AA,
+                    neutral_content: 0xFF7F6E5E, // Cacao suave
+                    primary: 0xFF8C4825,         // Ámbar tostado
                     primary_content: 0xFFFFFFFF,
                 },
                 Self::DefaultDark => ThemePalette {
-                    name: "Default-Dark",
+                    name: "Night-Paper",
                     is_dark: true,
-                    base_100: 0xFF242424,
-                    // Fondo de biblioteca (delta de luminosidad +10% más profundo en dark para contraste de tarjetas)
-                    base_200: 0xFF141414,
-                    base_300: 0xFF3D3D3D,
-                    base_content: 0xFFE0E0E0,
-                    neutral: 0xFF474747,
-                    neutral_content: 0xFF9E9E9E,
-                    primary: 0xFF77BBEE,
-                    primary_content: 0xFF111111,
+                    base_100: 0xFF222426,     // Gris basalto
+                    base_200: 0xFF18191A,     // Pizarra mate nocturna
+                    base_300: 0xFF2E3033,     // Ceniza oscuro
+                    base_content: 0xFFE3E2DE, // Tiza suave
+                    neutral: 0xFF3A3D42,
+                    neutral_content: 0xFF8C8E94, // Humo neutro
+                    primary: 0xFFD47A55,         // Ascua cálida
+                    primary_content: 0xFF18191A,
                 },
                 Self::SepiaDark => ThemePalette {
                     name: "Sepia-Dark",
                     is_dark: true,
-                    base_100: 0xFF342E25,
-                    // Fondo de biblioteca (delta de luminosidad +10% más profundo en dark para contraste de tarjetas)
-                    base_200: 0xFF201B15,
-                    base_300: 0xFF4D4437,
-                    base_content: 0xFFFFD595,
-                    neutral: 0xFF615747,
-                    neutral_content: 0xFFC4A572,
-                    primary: 0xFF48D1CC,
-                    primary_content: 0xFF1A1610,
+                    base_100: 0xFF2A241D,     // Piel oscura
+                    base_200: 0xFF1E1914,     // Papiro oscuro
+                    base_300: 0xFF3D342A,     // Roble oscuro
+                    base_content: 0xFFE8D5B5, // Pergamino cálido
+                    neutral: 0xFF4D4235,
+                    neutral_content: 0xFFB09B82, // Trigo tostado
+                    primary: 0xFFD98A5B,         // Cobre cálido
+                    primary_content: 0xFF1E1914,
                 },
             }
         }

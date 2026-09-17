@@ -225,11 +225,27 @@ pub(crate) struct ContinueBook {
 
 /// Título de un libro a partir del NOMBRE de fichero (sin extensión).
 pub(crate) fn title_from_name(name: &str) -> String {
-    Path::new(name)
+    let stem = Path::new(name)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| name.to_string())
+        .unwrap_or_else(|| name.to_string());
+    let cleaned = stem.replace(['_', '-'], " ");
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    if words.is_empty() {
+        return stem;
+    }
+    let formatted: Vec<String> = words
+        .into_iter()
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect();
+    formatted.join(" ")
 }
 
 /// Título de un libro de la biblioteca: nombre del fichero sin extensión.
@@ -318,10 +334,13 @@ pub(crate) fn picker_header_h(win_h: i32) -> i32 {
 pub(crate) fn picker_btn_w(win_w: i32) -> i32 {
     win_w / 4
 }
-
-/// Alto (px) de los botones de la cabecera del picker.
 pub(crate) fn picker_btn_h(win_h: i32) -> i32 {
     picker_row_h(win_h) * 4 / 5
+}
+
+/// Alto (px) del área de la barra inferior flotante de chrome del visor (Smart Dock + Scrubber).
+pub(crate) fn viewer_bottom_chrome_h(_win_h: i32) -> f32 {
+    152.0
 }
 
 /// Nº de filas visibles en el picker (depende de si hay mensaje de estado).
@@ -333,11 +352,6 @@ pub(crate) fn picker_visible_rows(win_h: i32, has_status: bool) -> usize {
 /// Alto (px) del área de la barra superior flotante de chrome del visor.
 pub(crate) fn viewer_top_chrome_h(win_h: i32) -> f32 {
     (win_h as f32 * 0.02).clamp(28.0, 48.0) + 68.0 + 12.0
-}
-
-/// Alto (px) del área de la barra inferior flotante de chrome del visor.
-pub(crate) fn viewer_bottom_chrome_h(win_h: i32) -> f32 {
-    (win_h as f32 * 0.025).clamp(28.0, 48.0) + 76.0 + 16.0
 }
 
 /// Alto (px) del sheet de ajustes (B2: ajustado al contenido real ~42% de win_h).
@@ -1424,6 +1438,8 @@ pub(crate) struct Reader {
     last_stylus_time: Option<std::time::Instant>,
     /// Render ASÍNCRONO en vuelo (zoom sharp y cambio de página sin congelar
     /// el hilo UI): worker con su PROPIO documento (MuPDF no es Send — patrón
+    /// Página objetivo mientras se arrastra el scrubber inferior (Fase visual sin I/O).
+    pub(crate) scrubbing_page: Option<u32>,
     /// de `prefetch.rs`). Cada lote lleva un `render_seq`; al recibir, si el
     /// seq no es el actual (el usuario hizo otro zoom/página), se descarta.
     render_rx: Option<std::sync::mpsc::Receiver<WorkerMsg>>,
@@ -1440,8 +1456,9 @@ pub(crate) struct Reader {
     /// Worker actor para render de portadas en segundo plano (Fase E1).
     thumb_worker: Option<crate::thumbs::ThumbWorker>,
     thumb_rx: Option<std::sync::mpsc::Receiver<crate::thumbs::ThumbMsg>>,
+    /// Dropdown flotante activo (ViewMenu / SettingsMenu): (bitmap, x, y)
+    pub(crate) menu_bitmap: Option<(Bitmap, i32, i32)>,
 }
-/// Mensaje del worker de render asíncrono: un bitmap listo a la escala
 /// pedida (`target_zoom` = factor de zoom con el que se renderizó, la "escala
 /// efectiva" = cover × target_zoom).
 struct WorkerMsg {
@@ -1638,6 +1655,7 @@ impl Reader {
                 ts.ink_width
             },
             pen_mode: load_pen_mode(app.internal_data_path().as_deref()),
+            scrubbing_page: None,
             tool_gesture: None,
             session_ids: Vec::new(),
             repaint: false,
@@ -1654,6 +1672,7 @@ impl Reader {
             fallback_page: None,
             thumb_worker: None,
             thumb_rx: None,
+            menu_bitmap: None,
         };
         match launch_intent_pdf(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
@@ -2348,6 +2367,32 @@ impl Reader {
                     let ty = self.win_h - tb.height as i32 - 16;
                     (tb, tx, ty)
                 });
+                if self.view_menu_open && self.menu_bitmap.is_none() {
+                    if let Some(bmp) = crate::draw::render_view_menu(self) {
+                        let (card_rect, _) =
+                            crate::draw::view_menu_geometry(self.win_w, self.win_h);
+                        let pad = 16.0f32;
+                        self.menu_bitmap = Some((
+                            bmp,
+                            (card_rect.0 - pad).round() as i32,
+                            (card_rect.1 - pad).round() as i32,
+                        ));
+                    }
+                } else if self.settings_menu_open && self.menu_bitmap.is_none() {
+                    if let Some(bmp) = crate::draw::render_settings_menu(self) {
+                        let (card_rect, _) =
+                            crate::draw::settings_menu_geometry(self.win_w, self.win_h);
+                        let pad = 16.0f32;
+                        self.menu_bitmap = Some((
+                            bmp,
+                            (card_rect.0 - pad).round() as i32,
+                            (card_rect.1 - pad).round() as i32,
+                        ));
+                    }
+                } else if !self.view_menu_open && !self.settings_menu_open {
+                    self.menu_bitmap = None;
+                }
+                let menu_ov = self.menu_bitmap.as_ref().map(|(b, mx, my)| (b, *mx, *my));
                 blit_library(
                     window,
                     p.rgba_lib_bg(),
@@ -2355,6 +2400,7 @@ impl Reader {
                     band,
                     self.lib_scroll as i32,
                     content_y0,
+                    menu_ov,
                     toast_ov,
                 );
             }
@@ -2416,7 +2462,7 @@ impl Reader {
     /// tap derecho/izquierdo. No hay salto con re-render: las páginas vecinas
     /// salen de la caché (paso instantáneo). Invalida los overlays cacheados
     /// (indicador, sheet, frame de la animación).
-    fn goto_page(&mut self, page: u32) {
+    pub(crate) fn goto_page(&mut self, page: u32) {
         let prev = self.page;
         if prev == page {
             return;
@@ -3781,7 +3827,7 @@ impl Reader {
     /// toca `persist.rs` (fuera de alcance de esta tarea): lee el JSON
     /// completo como `Value` (respetando lo que escribe `persist` —
     /// ink_color/ink_width) y solo conserva/añade "mode".
-    fn persist_pen_mode(&self) {
+    pub(crate) fn persist_pen_mode(&self) {
         let Some(dir) = self.internal_dir.as_deref() else {
             return;
         };
@@ -3802,7 +3848,7 @@ impl Reader {
     }
 
     /// Marca repintado pendiente (coalescing por vsync).
-    fn mark_repaint(&mut self) {
+    pub(crate) fn mark_repaint(&mut self) {
         self.repaint = true;
     }
 
@@ -4591,6 +4637,9 @@ impl Reader {
         self.clear_selection(); // selección del visor: fuera (no pinta en biblioteca)
         self.close_ai_panel(); // panel de IA del visor: fuera
         self.list_drag = None;
+        self.view_menu_open = false;
+        self.settings_menu_open = false;
+        self.menu_bitmap = None;
         // Herramientas del visor: fuera (no pinta en biblioteca).
         self.tool = ToolKind::Navigate;
         self.tool_gesture = None;
