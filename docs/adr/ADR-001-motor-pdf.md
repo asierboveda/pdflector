@@ -1,6 +1,7 @@
 # ADR-001: Motor de renderizado PDF — MuPDF
 
-**Estado**: Aceptado — 2026-08-05
+**Estado**: Aceptado (2026-08-05; justificación disputada por medición posterior, decisión mantenida por el dueño)
+**Fecha**: 2026-08-05
 **Fase**: 0.5 (benchmark)
 
 ## Contexto
@@ -65,3 +66,7 @@ Ambos cross-compilan; fricción baja en ambos casos.
   obsoletos: los scripts se eliminaron con el backend (commit `e56a818`,
   2026-08-12) y `/vendor` está gitignored (ausente en el repo).
 - Decisiones pendientes (§6 AGENTS.md) actualizadas: motor y licencia resueltas.
+
+## Nota posterior (disputa de justificación y decisión mantenida)
+
+El shootout de escritorio (`docs/benchmark-results.md`, entrada "2026-08-05 — Comparativa de motores en escritorio (PDFium vs MuPDF) y discrepancia metodológica") dio a PDFium ganador en 14/16 pruebas y dejó la discrepancia sin explicar; la comparación no es homogénea. A pesar de esta discrepancia, **la decisión se MANTIENE por decisión del dueño** (MuPDF como motor único).

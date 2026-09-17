@@ -1,7 +1,8 @@
 # ADR-005 — UI Android final: stack nativo propio (`pdf_android`), en lugar de Slint
 
-> **Supercede a**: ADR-004 (2026-08-13), que quedó **Superseded**.
+> **Estado**: Aceptado (2026-08-23) — sustituye a ADR-004
 > **Fecha**: 2026-08-23
+> **Supercede a**: ADR-004 (2026-08-13), que quedó **Superseded**.
 > **Origen**: test de decisión pedido por el autor (2026-08-23): medir el stack
 > nativo en hardware real y decidir con datos si consolidar `pdf_android` o
 > portar a Slint. Prioridades del proyecto: 1) fluidez, 2) RAM (AGENTS.md §2).
@@ -80,7 +81,7 @@ proyecto (cambio mínimo, aprender, no rehacer lo que funciona).
 - **AGENTS.md**: eliminar "Slint vs Tauri" de decisiones pendientes (§6);
   `pdf_android` entra en la arquitectura (§4) y el stack (§5); definir "hecho"
   con paso Android y métrica **PSS** (§8).
-- **PLAN.md Fase 6**: redefinir como "consolidación + validación del stack
+- **Plan (Fase 6 / docs/plan/NEXT-PLAN.md)**: redefinir como "consolidación + validación del stack
   nativo" (lápiz físico, frame time p95 en scroll, test de estrés 200 trazos,
   semana de uso), no como spike Slint/Tauri.
 - **minSdk 24 → 26**: NO aplica (solo lo exigía el backend de Slint). Se queda
@@ -91,12 +92,12 @@ proyecto (cambio mínimo, aprender, no rehacer lo que funciona).
      `dumpsys meminfo` PSS antes/después, mismo flujo (biblioteca con 4 PDFs).
   2. Frame time p95 del visor real en scroll (overlay de debug en pdf_android).
   3. Verificar metric objetivo: expresar el objetivo de RAM como **PSS**
-     (métrica de coste real del sistema), renumerado en AGENTS.md §8 / PLAN §4.
-- Registrar en `memory.md` (2026-08-23).
+     (métrica de coste real del sistema), renumerado en AGENTS.md §8.
+- Registrar en `CHANGELOG.md` (2026-08-23).
 
 ## 5. Referencias
 
 - ADR-004 (Superseded), ADR-001 (MuPDF), ADR-002/003 (patrones Evince).
 - `docs/benchmark-results.md` (auditoría 2026-08-22: blit 1,29 ms/frame;
   sweep tablet 2026-08-23 de esta decisión).
-- `memory.md` (2026-08-18 biblioteca premium; 2026-08-22 Fase 3.5).
+- `CHANGELOG.md` y `docs/plan/NEXT-PLAN.md` (2026-08-18 biblioteca premium; 2026-08-22 Fase 3.5).

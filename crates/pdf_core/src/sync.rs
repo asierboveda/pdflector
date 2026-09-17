@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Syncthing-friendly library layout and local change detection (Fase 4,
-//! docs/PLAN.md §3.5).
+//! Syncthing-friendly library layout and local change detection
+//! (docs/plan/NEXT-PLAN.md; sync decision in AGENTS.md: Syncthing, frozen until
+//! after v1).
 //!
-//! # Layout convention (PLAN §3.5)
+//! # Layout convention
 //!
 //! The library folder is the one Syncthing replicates between devices. The
 //! app implements **no network code**: Syncthing does the copying, this
@@ -66,7 +67,8 @@ const DEBOUNCE: Duration = Duration::from_millis(150);
 /// changes cannot starve `on_change` forever.
 const MAX_COALESCED: usize = 64;
 
-/// `annotations/` directory next to `pdf_path`, per PLAN §3.5.
+/// `annotations/` directory next to `pdf_path`, following the sidecar
+/// convention.
 ///
 /// Derived from [`store::sidecar_path`] so both stay coherent by
 /// construction: the sidecar always lives inside this directory.
@@ -77,8 +79,8 @@ pub fn annotations_dir(pdf_path: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-/// `library.db` at the root of the Syncthing-replicated library folder
-/// (PLAN §3.5): library index and reading progress. `library_root` is the
+/// `library.db` at the root of the Syncthing-replicated library folder:
+/// library index and reading progress. `library_root` is the
 /// folder that Syncthing shares between devices.
 pub fn library_index_path(library_root: &Path) -> PathBuf {
     library_root.join("library.db")

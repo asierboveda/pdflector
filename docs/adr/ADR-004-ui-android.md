@@ -3,6 +3,9 @@
 > **Estado: SUPERSEDED by ADR-005 (2026-08-23). No vigente.**
 > Ver `ADR-005-ui-android-nativa.md` (plataforma final: `pdf_android` nativa).
 > Se conserva como contexto histórico; no usar como instrucción activa.
+> Las citas a `PLAN.md` que aparecen en el cuerpo apuntan al plan histórico de fases 1-6,
+> borrado en la auditoría documental de 2026-09-18 (recuperable con `git log -- docs/PLAN.md`).
+> El roadmap vigente es `docs/plan/NEXT-PLAN.md`.
 
 > **Origen**: spike de decisión histórico (Slint vs Tauri v2), time-boxed.
 > **Fecha**: 2026-08-13

@@ -141,9 +141,9 @@ impl Document for MupdfDocument {
         // F3.3: rasterize from the page's display list. The list is built
         // once per page (the expensive parse + command-tree walk) and every
         // later zoom only replays it into a fresh pixmap through
-        // `fz_run_display_list` — the 2-4× path measured in the F0 spike
-        // (`docs/research/gpu-rendering-pipeline.md`). First render of a
-        // page pays the list build; subsequent renders at any scale reuse it.
+        // `fz_run_display_list` — 1.6-1.8× faster at pinch scale 2×
+        // (`docs/benchmark-results.md`, 2026-08-30). First render of a page
+        // pays the list build; subsequent renders at any scale reuse it.
         let list = self.display_list_for(page)?;
         let pixmap = list
             .to_pixmap(

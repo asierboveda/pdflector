@@ -4,7 +4,7 @@
 # Copyright (C) 2026 Asier Bóveda
 """Generate the PDFLector test corpus.
 
-Cases (per PLAN.md 2.2):
+Cases (los cuatro escenarios del corpus de pruebas):
   1. dense_textbook.pdf  -> libro de texto denso (mucho texto)
   2. scanned_pages.pdf   -> PDF escaneado (páginas a imagen)
   3. scientific_paper.pdf-> paper científico (gráficos vectoriales)

@@ -1,40 +1,31 @@
 # Plan — PDFLector
 
-> Índice maestro de docs: ver `docs/README.md`.
-> **Plan vigente:** `NEXT-PLAN.md` (A-E, visor ultra-óptimo, aprobado 2026-08-24). Los ficheros `01-06` son histórico del plan waterfall obsoleto.
-> **Fuente de verdad:** `NEXT-PLAN.md` + `A/B/C/D/E-*.md`. Edita esos ficheros para cambiar el objetivo.
+Índice y mapa del plan de desarrollo de PDFLector.
 
-## Vigente (editable ahora)
+## Fuente de verdad híbrida
 
-Un Issue de GitHub = una tarea con criterio de aceptación medible: al editar un
-fichero de fase cambias su criterio y el Issue se sincroniza después (NEXT-PLAN:28).
+1. **Repositorio (`docs/plan/`)**: Fuente de verdad de diseño, arquitectura, prioridades y roadmap general.
+2. **GitHub Issues**: Cola operativa de trabajo. Cada issue representa una tarea concreta, acotada y cerrable con criterios de aceptación medibles.
 
-| Fase | Fichero | Issue | Objetivo |
-|------|---------|-------|----------|
-| A | `A-latencia.md` | — | Harness `adb` + p95 |
-| B | `B-subrayado.md` | — | Subrayado 0-latencia |
-| C | `C-pintado.md` | — | Pintado 200 trazos 60fps |
-| D | `D-ia-contexto.md` | — | IA con RAG BM25 + visión |
-| E | `E-library.md` | — | Library fluida (secundaria) |
+## Mapa del plan
 
-## Histórico (no editar, solo referencia)
+El plan consta de 10 documentos canónicos:
 
-| Fase | Fichero | Estado |
-|------|---------|--------|
-| 1-6 | `01-lectura-fluida.md` ... `06-android.md` | Waterfall 17 semanas, descartado 2026-08-24 |
+| Fichero | Rol | Estado |
+|---|---|---|
+| `00-objetivo.md` | Visión, prioridades innegociables y DoD por escenario | Vigente |
+| `NEXT-PLAN.md` | Roadmap consolidado (fases A–F y síntesis de deuda) | Vigente |
+| `A-latencia.md` | Fase A: Instrumentación, harness de medición y baselines | Parcial (A1–A3 hechos, A4–A5 pendientes) |
+| `B-subrayado.md` | Fase B: Subrayador sin latencia en orden de lectura | Cerrada (2026-09-05) |
+| `C-pintado.md` | Fase C: Lápiz y trazo fluido (pipeline GPU Dry/Wet) | Activa (pipeline funcional, cierre en tablet pendiente) |
+| `D-ia-contexto.md` | Fase D: IA con contexto global del PDF (RAG BM25 + visión) | Pendiente de inicio |
+| `E-library.md` | Fase E: Biblioteca fluida (rejilla, portadas en fondo) | Activa (E1/E2/E4 hechos, E3 parcial) |
+| `F-arxiv.md` | Fase F: Catálogo arXiv y pestaña Discover integrada | En vigor (módulos core y UI funcionales) |
+| `DEUDA.md` | Inventario consolidado de deuda técnica y backlog técnico | Vigente (items medidos e ideas sin medir) |
 
-## Bug abierto (próxima sesión)
+## Cómo modificar el plan
 
-| Bug | Fichero | Síntoma |
-|-----|---------|---------|
-| Pantalla se apaga/parpadea al escribir | `BUG-pantalla-apagada.md` | Trazo que cruza tinta + soltar → flash (abierto) |
-
-## Cómo modificar el plan vigente
-
-1. Edita `NEXT-PLAN.md` (tabla de fases) o el fichero `A/B/C/D/E-*.md` (criterio/tareas).
-2. Si cambias arquitectura → crea `docs/adr/ADR-00X-*.md`.
-3. Harness TCL en `.opencode/skills/pdflector-rendimiento/SKILL.md`.
-
-## Competencia
-
-Ver `COMPETENCIA.md` (Xodo ~12ms, MuPDF ~10ms, prime-pdf-viewer Rust+Slint).
+1. **Cambio de prioridades o requisitos globales**: Edita `00-objetivo.md`.
+2. **Evolución del roadmap**: Actualiza `NEXT-PLAN.md` y el fichero específico de la fase (`A`–`F`).
+3. **Registro de deuda o mejoras técnicas transversales**: Añade o actualiza la entrada en `DEUDA.md` indicando claramente si está `medido` o es una `idea sin medir`.
+4. **Cambios arquitectónicos**: Cuando un cambio altera el diseño estructural o descarta componentes, documenta la decisión formal en `docs/adr/ADR-00X-*.md`.

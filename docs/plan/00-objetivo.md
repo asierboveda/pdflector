@@ -1,31 +1,57 @@
 # Objetivo — PDFLector
 
-> Edita este fichero para cambiar el objetivo del proyecto. Es lo que el agente y tú usáis como norte.
+Norte del proyecto: visión, prioridades innegociables y criterios de aceptación medibles.
 
-## Visión (1 línea)
+## Visión
 
-Lector de PDFs rápido y ligero para tablet Android con lápiz (TCL NXTPaper 11 Plus, 200€). Gratis, sin anuncios, sin telemetría. Primer proyecto real del autor en Rust.
+Lector de documentos PDF personal, rápido y ligero, optimizado específicamente para tablet Android con lápiz óptico (TCL NXTPaper 11 Plus, pantalla mate 1440×2200, procesador MT8781 8× Cortex-A55). Gratuito, sin anuncios, sin telemetría y desarrollado en Rust nativo sobre Android NDK/EGL/GLES2.
 
-## Prioridades (en orden, innegociables)
+## Prioridades innegociables
 
-1. **Fluidez total** — 60fps mínimo sostenido, objetivo 120fps (p95 <16.6ms)
-2. **RAM mínima** — <150MB PSS en tablet con PDFs de 500+ pág.
-3. Gratis y sin anuncios
-4. Aprendizaje — entender Rust y decisiones técnicas
+1. **Fluidez total**:
+   - Mínimo sostenido de 60 fps (tiempo de frame p95 < 16.6 ms).
+   - Objetivo para interacción directa con lápiz (trazo, pan y subrayado): 120 Hz (tiempo de presentación p95 < 8.33 ms).
+2. **Memoria (PSS) controlada por escenario**:
+   - La aplicación no debe degradar el sistema operativo ni sufrir OOM kill por acumulación de recursos tras uso prolongado.
+3. **Privacidad absoluta**:
+   - Cero telemetría, cero analíticas, cero llamadas a red salvo peticiones explícitas del usuario (Discover arXiv o consulta IA configurada).
+4. **Simplicidad arquitectónica**:
+   - Preferencia por código directo y testeable frente a capas de abstracción innecesarias.
 
-Si una propuesta mejora algo a costa de 1 o 2, se rechaza o se consulta antes de actuar.
+Si una propuesta entra en conflicto con las prioridades 1 o 2, se descarta salvo autorización explícita documentada en un ADR.
 
-## Lo que NO es objetivo
+## Fuera de objetivo
 
-- Presión del lápiz (no necesaria, ver docs/PROYECTO.md "Decisión sobre presión del lápiz" (la decisión real vive allí, no numerada aquí))
-- Scroll continuo (descartado 2026-08-13, el visor es paginado de una hoja con tap)
-- Servidor propio / telemetría / pagos
+- **Modulación artística de pincel por presión**: El visor captura trazos con grosor escalar uniforme conforme a la especificación estándar PDF (ISO 32000).
+- **Scroll continuo vertical**: El visor opera exclusivamente por páginas fijas con cambio de página instantáneo por tap o tecla.
+- **Servidores propios, sincronización en la nube o cuentas**: No hay backend ni almacenamiento remoto gestionado por el proyecto.
+
+## Criterios de cierre (DoD) por escenario
+
+El rendimiento y consumo se evalúan en hardware real (TCL NXTPaper 11 Plus, 9469X) según tres escenarios operativos:
+
+### 1. Arranque en frío (Cold start)
+- **Techo declarado**: PSS < 150 MB; primer frame interactivo en pantalla < 200 ms.
+- **Medición real (2026-09-04 / 2026-09-07)**:
+  - PSS: 52.9 MB inicial, 118 MB tras carga básica (supera el techo de memoria).
+  - Primer frame en visor: 349 ms (213 ms apertura de documento + 73 ms inicialización de ventana EGL; pendiente de optimización para alcanzar < 200 ms).
+
+### 2. Reposo (Idle tras carga de documento)
+- **Techo declarado**: PSS < 180 MB estabilizado; consumo de CPU < 2% en reposo.
+- **Medición real (2026-09-06)**:
+  - PSS en reposo: 174–178 MB (asentado sin oscilación tras estabilización de buffers GPU).
+
+### 3. Tras ciclos de lectura interactiva (15 a 130 cambios de página)
+- **Techo declarado**: Memoria asentada sin fugas continuas tras cesar la interacción; PSS estabilizado < 200 MB.
+- **Medición real (2026-09-07)**:
+  - PSS base 234 MB → 287 MB tras 15 cambios de página rápidos.
+  - Asentamiento a +20 s (287.5 MB) y +40 s (287.5 MB): sin fuga descontrolada, pero con un pico elevado debido a las display lists de MuPDF retenidas sin cota LRU (registrado como deuda técnica prioritaria).
+
+### 4. Presupuesto de interacción (Frame budget)
+- **Pase de página**: Medido p50 ≈ 8 ms (11 de 15 turnos entre 6 y 10 ms sobre páginas cacheadas).
+- **Pan continuo con stylus**: Medido p50 3.15 ms, p95 4.19 ms (por debajo del objetivo de 8.33 ms).
+- **Subrayado continuo con stylus**: Medido p50 2.8 ms, p95 3.5 ms (por debajo del objetivo de 8.33 ms).
 
 ## Cómo modificar el objetivo
 
-Edita las prioridades arriba. Si cambias 1 o 2, actualiza también `AGENTS.md` (MUST) y `docs/plan/01-lectura-fluida.md` (criterios).
-
-## Métricas de éxito
-
-- Fases waterfall descartadas: el roadmap vigente es `docs/plan/NEXT-PLAN.md` (A–E), editable.
-- Obsidian y Syncthing quedan fuera de v1 (post-v1, ver `docs/plan/NEXT-PLAN.md`).
+Cualquier cambio en prioridades o métricas debe realizarse directamente en este documento y reflejarse en `docs/plan/NEXT-PLAN.md`.

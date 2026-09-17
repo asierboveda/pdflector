@@ -1,27 +1,41 @@
-# Fase A — Instrumentación y harness TCL (1-2 días, bloqueante)
+# Fase A — Instrumentación y harness TCL
 
-> Sin esto todo lo demás es humo. Competencia mide p95; tú aún no.
+Instrumentación de métricas de rendimiento, tiempos de frame (p95), perfiles de memoria PSS y automatización de mediciones vía `adb` sobre hardware real.
 
-## Auditoría (código real 2026-08-24)
+## Auditoría
 
-- `metrics.rs` FrameTimer existe pero solo en `pdf_app`, no en `pdf_android`.
-- `pdf_bench` mide `render1x 11-15ms` desktop/TCL, pero no mide `highlight_under_gesture` ni `composite_annotations`.
-- `adb` no está conectado (hoy 0 devices). `dumpsys` y `screencap` son manuales.
+- `FrameTimer` integrado en `crates/pdf_android/src/gpu/surface.rs:108` con anillo circular prealocado y cálculo de percentiles sin asignación dinámica de memoria.
+- `pdf_bench` mide tiempos de rasterización (`render1x`), resolución espacial de resaltado (`benches/highlight.rs`) y composición de trazos a resolución nativa 1440×2200 (`benches/composite.rs`).
+- `tools/adb-bench.sh` automatiza la captura de métricas directamente desde el dispositivo conectado.
 
 ## Objetivo
 
-Harness reproducible: `cargo run -p pdf_bench` + `cargo apk run` + `adb` que mida p95 y PSS sin tocar la tablet a mano.
+Disponer de un arnés reproducible (`cargo run -p pdf_bench` + `tools/adb-bench.sh`) que reporte percentiles p95 y consumo PSS en hardware real sin manipulación manual.
 
-## Tareas (editar aquí)
+## Tareas
 
-- [x] A1. `FrameTimer` en `pdf_android` (gpu.rs `present_viewer`: anillo + `frame p95=` cada 120 presents). Verificado 2026-09-04 en TCL 9469X (195 presents por page-turn por tap; logcat `frame p95=497.0ms (240 frames)` — intervalo de tap, no frame rate; p95 real con gesto continuo en B/C).
-- [x] A2. Bench `crates/pdf_bench/benches/highlight.rs` (pts×líneas + 2 columnas + marquee) + `benches/composite.rs` (10/50/200 trazos a 1440×2200). Corren en host (`--quick` OK); composite 200 trazos ≈5.36ms host x86 (TCL pendiente de bench cruzado en A4).
-- [x] A3. Script `tools/adb-bench.sh`: 1 comando (sweep×5 + dumpsys + screencap + logcat p95 + JSON). Verificado 2026-09-04 en TCL (genera `bench-results-TCL-*.json` con sweep+PSS+p95). Robusto a app sin proceso (`trap` + `|| true`).
-- [ ] A4. CI: `cargo test -p pdf_core` + `cargo bench -- --quick` con threshold `composite <5ms` (fail si regresa). Pendiente: fijar threshold tras medir composite en TCL.
-- [ ] A5. Baseline TCL: sweep 5 runs ✅ (2026-09-04, tabla en `docs/benchmark-results.md`); pendiente 200 trazos + highlight 100 gestos en TCL (harness B/C) y PSS bajo interacción (208MB tras 130 page-turns, ver nota). Medido PSS 2026-09-07: 234713→287565 KB en 15 turnos (asentado +20/+40 s; ver benchmark); 200 trazos + highlight BLOCKED (requieren lápiz físico).
+- [x] A1. **`FrameTimer` en `pdf_android`**: Integrado en `crates/pdf_android/src/gpu/surface.rs:108` y emitido en `gpu/pipeline.rs:1022-1038` (`frame p95=` a logcat cada 120 presents con overhead nanosegundo). Verificado en TCL 9469X el 2026-09-04.
+- [x] A2. **Benches de micro-rendimiento en host**:
+  - `crates/pdf_bench/benches/highlight.rs`: búsqueda indexada vs. lineal en documentos a 2 columnas y selección marquee.
+  - `crates/pdf_bench/benches/composite.rs`: composición de 10, 50 y 200 trazos a 1440×2200. Medido en host x86_64: 200 trazos directo 6.8 ms (`benchmark-results.md:365`), optimizado a 4.39–4.55 ms y 2.39 ms con `StrokeCache` (`benchmark-results.md:572`).
+- [x] A3. **Script de automatización `tools/adb-bench.sh`**: Ejecución en un comando de sweep de páginas, volcado PSS con dumpsys, captura de pantalla y extracción de percentiles desde logcat (verificado 2026-09-04 en TCL 9469X).
+- [ ] A4. **Gate de benchmark en CI**: Integrar en `.github/workflows/ci.yml` la ejecución de `cargo test -p pdf_core` y `cargo bench -- --quick` con umbral de fallo si `composite` excede 5 ms. Estado: PENDIENTE (no existe en CI actual).
+- [ ] A5. **Baseline completo de interacción en tablet TCL**:
+  - Sweep sintético de 5 pasadas: superado (2026-09-04).
+  - PSS bajo interacción continua: medido en 234.7 → 287.5 MB tras 15 cambios de página (2026-09-07).
+  - 200 trazos simultáneos y 100 gestos de resaltado interactivo: PENDIENTE / BLOQUEADO por requerir stylus físico en el banco de pruebas (`docs/benchmark-results.md:697`).
+
+## Criterio de cierre
+
+- [x] Harness `tools/adb-bench.sh` funcional con reporte automático de métricas.
+- [ ] Gate de regresión de bench activo en CI.
+- [ ] Medición de 200 trazos y 100 gestos completada en hardware real.
 
 ## Referencias
 
-- `crates/pdf_core/src/metrics.rs`, `overlay.rs`, `selection.rs`
-- `docs/benchmark-results.md` (tu tabla actual)
-- Competencia: `ArtifexSoftware/mupdf-android-viewer` (usa `fz_store` + `fz_cookie` para no bloquear UI)
+- `crates/pdf_core/src/metrics.rs`
+- `crates/pdf_android/src/gpu/surface.rs`
+- `crates/pdf_android/src/gpu/pipeline.rs`
+- `crates/pdf_bench/benches/composite.rs`
+- `crates/pdf_bench/benches/highlight.rs`
+- `docs/benchmark-results.md`

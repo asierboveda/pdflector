@@ -1,11 +1,13 @@
 # ADR-003 — Baseline de rendimiento: Evince/Poppler vs PDFium
 
+> **Estado**: Evidencia (baseline histórico; no es una decisión)
+> **Fecha**: 2026-08-10
 > **Origen**: medición de baseline para ADR-001 (decisión de motor PDF) y
 > validación de los patrones del ADR-002 en hardware real.
-> **Fecha**: 2026-08-10
 > **Hardware**: AMD Ryzen 7 5800H (16 cores), 13 GiB RAM, Omarchy/Arch Linux,
 >   Wayland. Evince 48.4 (poppler 26.07, cairo 1.18.4). PDFium chromium/7988.
-
+>
+> **Nota sobre conflicto de cifras**: este ADR da ~9 ms/página (4742 ms / 500 páginas a 96 dpi en §2.2), mientras que la medición del baseline histórico de Evince (rescatada en `docs/benchmark-results.md`) da 36,72–37,84 s a 72 dpi (~73,6 ms/página) para las mismas 500 páginas — una discrepancia de factor 8 en el mismo host y corpus. Por la regla de la casa (medición → `docs/benchmark-results.md`), estos datos deberían vivir ahí y se han rescatado en ese fichero.
 ---
 
 ## 1. Metodología
@@ -174,7 +176,7 @@ scroll normal. Solo el primer render de cada página es MISS.
 
 - Script de medición: `tools/bench-evince/bench_evince.sh`
 - Resultados raw: **pendiente** — `tools/evince_baseline_results.txt` no está
-  versionado en el repo; solo quedan los datos agregados de este ADR y de
-  `docs/investigacion/evince-baseline.md`
+  versionado en el repo; solo quedan los datos agregados de este ADR y del
+  baseline histórico de Evince (rescatados en `docs/benchmark-results.md`).
 - Hardware: AMD Ryzen 7 5800H, 13 GiB RAM, Arch Linux (kernel 7.1.4)
 - Software: Evince 48.4, Poppler 26.07, Cairo 1.18.4, PDFium chromium/7988

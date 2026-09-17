@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Byte-bounded LRU cache of rendered pages (docs/PLAN.md §3.3 `cache`, Fase 1).
+//! Byte-bounded LRU cache of rendered pages (docs/plan/NEXT-PLAN.md; see
+//! AGENTS.md, MUST 3).
 //!
 //! `RenderCache` wraps a `RenderEngine` document and keeps a least-recently-used
 //! map keyed by `(page, scale_level)`, evicting entries until the total bytes of
@@ -31,7 +32,7 @@ pub struct RenderedPage {
     pub byte_size: usize,
 }
 
-/// Cumulative cache counters, exposed for the debug overlay (docs/PLAN.md §3.5).
+/// Cumulative cache counters, exposed for the debug overlay (docs/plan/NEXT-PLAN.md, Fase A).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CacheStats {
     pub hits: u64,

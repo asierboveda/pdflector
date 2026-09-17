@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! pdf_app — egui desktop prototype (docs/PLAN.md: final Android UI decided in
-//! Phase 6; this app never holds logic, it only asks pdf_core and paints).
+//! pdf_app — egui desktop prototype (final Android UI decided in
+//! docs/adr/ADR-005-ui-android-nativa.md: native `pdf_android` stack; this app
+//! never holds logic, it only asks pdf_core and paints).
 //!
 //! Fase 1 "fluent reading": continuous virtualized scroll of the whole
 //! document. The UI thread never renders (AGENTS.md §4.6): all caching and
@@ -172,7 +173,7 @@ const RECENTS_MAX: usize = 5;
 /// `App::new` / `save`).
 const KEY_RECENTS: &str = "recent_pdfs";
 
-// Fase 5 — AI chat panel (docs/PLAN.md §5). The chat is best-effort and
+// Fase D — AI chat panel (docs/plan/NEXT-PLAN.md). The chat is best-effort and
 // optional: it only needs Ollama reachable on the local network; when it is
 // not, the app keeps working and the panel shows a clear error.
 

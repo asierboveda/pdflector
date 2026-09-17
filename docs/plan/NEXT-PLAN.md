@@ -1,58 +1,101 @@
-# NEXT PLAN — Visor ultra-óptimo TCL (no UI/UX)
+# NEXT PLAN — Roadmap Consolidado de PDFLector (Fases A–F)
 
-> **Objetivo nuevo (2026-08-24, auditar código real):** visor personal que pinte sin latencia, subraye sin latencia detectando texto, e IA con contexto completo del PDF + selección. Library fluida pero secundaria. Solo TCL. Sync congelado.
-> **Primera versión útil (v1, decidida):** APK para la TCL con biblioteca local, lectura fluida, zoom, lápiz y subrayador persistentes. IA y sincronización quedan explícitamente después de v1.
-> **Principio:** medir en hardware real (TCL NXTPaper 11 Plus, 1440×2200, A55×8) con `adb` en cada paso. Sin medición no hay cierre.
-> **Competencia:** ver `docs/plan/COMPETENCIA.md` (Xodo ~12ms render, Adobe ~18ms, MuPDF viewer ~10ms, prime-pdf-viewer Rust+Slint ~11ms). Tu baseline TCL actual: `render1x 11-15ms, PSS 26-66MB` — ya competitivo, la latencia está en overlay/selección, no en MuPDF.
+> **Estado auditado a 2026-09-15 (HEAD `4906161`).**  
+> **Fuente de verdad:** Este documento y los ficheros de fase (`A-latencia.md` a `F-arxiv.md`) junto a `DEUDA.md` representan el estado real y las prioridades de desarrollo del proyecto. La cola operativa vive en GitHub Issues.  
+> **Principio de ingeniería:** Toda afirmación de rendimiento exige fecha, hardware, flujo medido y métrica. Sin medición en hardware real (TCL NXTPaper 11 Plus, 1440×2200, 8× Cortex-A55) no se declara cerrado ningún criterio.
 
-## Primera versión útil (v1): A → B → C → E
+---
 
-| Fase | Fichero | Qué se entrega | Criterio de cierre (TCL) |
-|------|---------|----------------|--------------------------|
-| A | `A-latencia.md` | Instrumentación + harness `adb` + baseline reproducible | `cargo bench` + `dumpsys` + `screencap` automatizados, p95 medido, sin `unwrap` en hot path |
-| B | `B-subrayado.md` | Subrayador 0-latencia con detección de texto, persistente | Gesto → `Highlight` <16ms, sin extraer texto en el frame del gesto |
-| C | `C-pintado.md` | Lápiz/stroke 0-latencia (fast path GPU), persistente | `composite_annotations` <5ms para 200 trazos, 60fps con 200 trazos |
-| E | `E-library.md` | Library/biblioteca local fluida (añadir PDFs; nunca borrado automático) | Scroll rejilla 3×3 <16ms p95, portadas lazy sin bloquear render |
+## 1. Tabla de Fases del Roadmap
 
-**Orden v1:** A → B → C → E. B y C pueden paralelizarse tras A.
+| Fase | Fichero | Qué se entrega | Estado auditado (2026-09-15) | Criterio de cierre medible |
+|---|---|---|---|---|
+| **A** | `A-latencia.md` | Instrumentación, harness `adb` y baseline reproducible | A1–A3 HECHOS · A4–A5 PENDIENTES | `FrameTimer` en logcat, sweep automatizado, gate en CI y baseline de interacción en tablet |
+| **B** | `B-subrayado.md` | Subrayador sin latencia en orden de lectura sobre texto detectado | CERRADA (2026-09-05) | Gesto → `Highlight` < 16 ms p95, sin I/O en frame de gesto; p95 3.5 ms medido en TCL |
+| **C** | `C-pintado.md` | Lápiz a mano alzada fluido (pipeline GPU Dry/Wet FBO) | Pipeline funcional · Cierre en TCL PENDIENTE | 200 trazos en página con pintado vivo < 8 ms p95 en tablet TCL (`SIN MEDIR` en tablet) |
+| **D** | `D-ia-contexto.md` | IA con contexto global del PDF (RAG BM25 local + visión) | NO INICIADA (clientes base listos) | 4/5 respuestas citan páginas reales, latencia p50 < 15 s vía API externa |
+| **E** | `E-library.md` | Biblioteca fluida en rejilla (portadas asíncronas) | E1/E2/E4 HECHOS · E3 PARCIAL | Scroll p95 < 16 ms (10 ms con 11 libros; 256 libros `SIN MEDIR`); cold-start < 200 ms (medido 349 ms) |
+| **F** | `F-arxiv.md` | Catálogo Discover arXiv y apertura directa por Intent | Core + UI HECHOS · Cierre PENDIENTE | Scroll de feed < 16 ms p95 en TCL (`SIN MEDIR`), handoff verificado por adb |
 
-## Después de v1 (explícitamente fuera)
+---
 
-| Tema | Fichero | Qué se entrega | Nota |
-|------|---------|----------------|------|
-| D | `D-ia-contexto.md` | IA con contexto completo + selección (RAG local) | Post-v1. Pregunta sobre selección responde citando `págs N-M` reales, latencia <30s, sin alucinar. Config de claves posterior; ninguna clave en Git ni en APK distribuible |
-| Sync | `04-sync.md` (histórico) | Sincronización entre dispositivos | Post-v1, congelada |
+## 2. Detalle y Estado Real por Fase
 
-## Reglas para ti (editar el plan)
+### Fase A: Instrumentación y Harness de Rendimiento
+- **Implementado**:
+  - **A1**: `FrameTimer` integrado en `crates/pdf_android/src/gpu/surface.rs:108` e impresión periódica en `gpu/pipeline.rs:1022-1038` (`frame p95=X.Xms (N frames)` cada 120 presents con overhead nanosegundo).
+  - **A2**: Suites de benchmarking en host: `crates/pdf_bench/benches/highlight.rs` (búsqueda y ordenación espacial) y `crates/pdf_bench/benches/composite.rs` (composición a resolución nativa 1440×2200).
+  - **A3**: Arnés de automatización `tools/adb-bench.sh` (ejecución de sweeps de páginas, captura de PSS vía dumpsys, screencap y recolección de métricas de logcat).
+- **Pendiente**:
+  - **A4**: Gate de rendimiento en CI (no existe en `.github/workflows/ci.yml`). Debe ejecutar los benches y fallar si hay regresión.
+  - **A5**: Medición de interacción masiva en tablet (200 trazos simultáneos y 100 gestos de subrayado interactivo): bloqueado para automatización sintética por falta de lápiz físico en el banco de pruebas (`docs/benchmark-results.md:697`). PSS bajo interacción medido: 234.7 → 287.5 MB en 15 turnos rápidos (2026-09-07).
 
-- Edita el fichero de la fase (cambia criterio). El Issue de GitHub se sincroniza después.
-- Si cambias prioridad (ej: quieres lápiz antes que IA), reordena la tabla y mueve el fichero.
-- UI/UX (temas, animaciones, Slint) queda fuera hasta que A-C+E estén verdes.
-- Biblioteca: nunca borrado automático (solo el usuario borra). E4 ejecutado (2026-09-05): sin tope de nº de libros.
-- Ninguna afirmación de rendimiento sin fecha + flujo medido + hardware + métrica.
+### Fase B: Subrayado sin Latencia (CERRADA)
+- **Implementación**:
+  - Cero extracción de texto en el frame del gesto: `PageTextCache` pre-extrae páginas vecinas (±2); en `Down` se ordenan los spans una sola vez (`sort_spans_by_y`); durante `Move` únicamente se actualiza el punto actual (`reader/tools.rs:201-205` `g.set_cur(pt)` sin I/O en `:84-92`).
+  - Evolución a orden de lectura: El algoritmo evolucionó de un recorrido lineal a búsqueda indexada por banda Y (`sort_spans_by_y` + `highlight_under_gesture_sorted`), garantizando selección precisa en documentos a 2 columnas.
+  - Al soltar (`Up`), la anotación `Highlight` se persiste en SQLite/sidecar sin bloquear la renderización.
+- **Evidencia en hardware (2026-09-05, TCL 9469X con stylus USI físico)**:
+  - Tiempo de frame sostenido durante el trazo continuo: 1.08–5.33 ms (p50 ~2.8 ms, p95 ~3.5 ms), manteniendo entre 60 y 120 fps estables.
 
-## Estado actual auditado (2026-09-06)
+### Fase C: Pintado con Lápiz a Mano Alzada
+- **Implementación real**:
+  - La arquitectura de pintado superó el esquema de superposición de mapas de bits en CPU (`tool_overlay`/`raster_tool_layer`/`copy_region_blend`) y adoptó el pipeline Dual FBO Wet/Dry sobre GLES2 (ADR-007).
+  - **Capa base (Dry)**: Almacenada en un FBO estático gestionado por `DryKey` (`crates/pdf_android/src/gpu/dry_key.rs`, `gpu/pipeline.rs:914`). Solo se re-renderiza cuando cambia la página, el zoom, las anotaciones o el modo oscuro.
+  - **Trazo en vuelo (Wet)**: Gestionado por `render_wet` (`pipeline.rs:686`), renderiza la geometría activa por frame directamente en GPU con blending alpha nativo.
+  - **Simplificación geométrica**: Al soltar el trazo se aplica Douglas-Peucker iterativo con tolerancia fina de ε = 0,20 pt (`reader/tools.rs:328`), preservando la caligrafía natural sin retrasos.
+  - **Estado de APIs en `pdf_core`**: `StrokeCache`, `composite_annotations_alpha` y `blit_stroke_layer` existen en `pdf_core` como API pública para pruebas unitarias y benchmarks (`pdf_bench`), pero no intervienen en el flujo de renderizado en producción de Android.
+- **Mediciones**:
+  - En host x86_64: 4.39 ms directo y 2.39 ms con `StrokeCache` a resolución TCL.
+  - En hardware real TCL: El cierre formal (200 trazos concurrentes en página con pintado vivo < 8 ms p95) permanece `SIN MEDIR`.
 
-- Presupuesto de memoria: PSS producto <150MB. Medido: 52.9MB arranque (2026-08-28), 105MB en lectura (2026-09-03), 208MB tras 130 page-turns (2026-09-04, `docs/benchmark-results.md`) — deuda de fuga en investigación (Fase A5).
-- A1-A3 [x] (2026-09-04) · A4/A5 [ ].
-- B cerrada (2026-09-05).
-- C1-C4 [x] · cierre [ ] (4.39/2.39ms medidos).
-- D pendiente.
-- E1/E2/E4 [x] (E2: sheet sin re-blit verificado 2026-09-07) · E3 [ ] (scroll p95 10 ms con 11 libros; variante 256 pendiente).
-- Tras la Fase 4 ya no hay megaficheros: `reader/` 14 ficheros (mod.rs + 13 submódulos, `library_state` incluido) · `draw/` 8 · `gpu/` 8 · `input/` 5; fichero mayor: `draw/library.rs` con 1615 líneas (ninguno ≥ 2000).
-- v0.1.0 publicada (tag + release + APK; PR #31): reestructuración fases 1-4 + CI Android.
-- Speed 2026-09-07 (PR #32): pase de página p50 ≈ 8 ms (11/15 turnos 6-10 ms), residency ≥3, nitidez 1:1.
+### Fase D: IA con Contexto Global del PDF (NO INICIADA)
+- **Componentes existentes**:
+  - Segmentación de documentos: `chunk_pages` en `crates/pdf_core/src/ai.rs:155` con word-packing y prefijos `[págs N-M]`.
+  - Clientes API: `OllamaClient`, `GroqClient` y `GeminiClient` en `pdf_core::ai`.
+  - Panel de IA en Android: Interfaz UI en `crates/pdf_android/src/reader/toast_ia.rs` y `draw/ai_panel.rs`.
+  - Visión con contexto: `explain_image` en `reader/toast_ia.rs:99-101` SÍ anexa el texto extraído de la página seleccionada al prompt para enriquecer la imagen PNG enviada a Gemini.
+- **Pendiente para ejecución**:
+  - D1: Índice local BM25 puro en Rust (sin dependencias pesadas) para recuperar las páginas más relevantes ante una consulta.
+  - D2: Construcción de prompt con contexto global estructurado y directiva estricta de citar números de página reales.
+  - D3: Estudio de tamaño de ventana de contexto en la tablet con corpus de prueba.
+  - D4: Script de validación automatizada `tools/ai-bench.sh`.
 
-Ver cada fase para detalle auditado y tareas.
+### Fase E: Biblioteca y Gestión de Catálogo Local
+- **Implementado**:
+  - **E1**: `ThumbWorker` en segundo plano (`crates/pdf_android/src/thumbs.rs:197-267`) con actor MPSC e instancia dedicada de `MupdfEngine`. Medido en TCL: blit fluido de 5.56–6.36 ms (p95 6.1 ms) sin congelar la UI.
+  - **E2**: Hoja de menú (sheet) animada sin re-renderizar la página PDF de fondo (verificado 2026-09-07 en TCL: apertura y cierre en 13 presents con 0 evicciones de caché).
+  - **E4**: Eliminación total de borrado automático de libros; no existen cuotas artificiales de almacenamiento.
+  - **Evolución**: Eliminado el carrusel redundante "Continue Reading" (commit `3b726a1`) en favor de una rejilla uniforme y directa.
+- **Pendiente**:
+  - **E3**: Medición de scroll con 256 libros: En TCL se midió scroll p95 de 10.0 ms con 11 libros (2026-09-07), pero el ensayo a escala con 256 libros está `SIN MEDIR`.
+  - Cierre de arranque en frío: Primer frame del visor tras cold-start medido en 349 ms (abrir PDF 213 ms + InitWindow 73 ms), pendiente de optimización frente al objetivo de < 200 ms.
 
-## Deuda transversal
+### Fase F: Integración con arXiv y Discover (PRODUCTO EN VIGOR)
+- **Implementado**:
+  - Módulo core `crates/pdf_core/src/arxiv.rs`: Extracción y normalización de identificadores (`parse_arxiv_id`, :50), serialización de consultas (`ArxivQuery`, :84), cliente de red (`ArxivClient`, :186) y limitador de tasa de 3.0 s (`MIN_QUERY_INTERVAL`, :158).
+  - Gestor de descargas `crates/pdf_android/src/discover.rs`: `DiscoverWorker` (:238), caché LRU en disco de feeds (`FeedCache`, 4 MiB, TTL 10 min, :118) y descarga transaccional con renombrado atómico desde `.part` (:638).
+  - Interfaz gráfica: Rejilla en GPU `crates/pdf_android/src/draw/discover.rs` y catálogo con ~45 categorías temáticas (`reader/discover_categories.rs`).
+  - Integración nativa Android: Recepción de intents en `crates/pdf_android/src/jni.rs:574` (`parse_arxiv_target`) para abrir enlaces compartidos.
+- **Pendiente**:
+  - Medición de fluidez en tablet (scroll p95 < 16.6 ms). Estado: `SIN MEDIR`.
+  - Validación formal de handoff por `adb shell am start`.
 
-| Deuda | Estado | Dónde se cierra |
-|---|---|---|
-| EGL_BAD_ALLOC 0x3003 Library→Viewer | ✅ Cerrada 2026-09-06 (10 ciclos Library→Viewer, 0 errores; `benchmark-results.md` §Fase 2 GPU) | — |
-| Verificación ADR-007 §8.4 (PSS<150MB, p95<8.33ms) | ✅ Verificada 2026-09-06 (p95 present 4.19ms < 8.33ms; PSS 174-178 reposo; pico 232 como deuda nueva abajo) | — |
-| Bug pantalla apagada | Abierta, hipótesis H1-H3 | Medición TCL pendiente (BUG-pantalla-apagada.md) |
-| 419 unwrap/expect en tests/benches | Deuda registrada (ADR-008:37) | Limpieza continua |
-| Display lists sin cota en `MupdfDocument` | Abierta, medida 2026-09-07 (+6-7 MB/página nueva, PSS 190→330) | Propuesta: LRU o soltar lejanas (tarea futura) |
-| PSS pico 232 MB tras ciclos rápidos | Abierta, medida 2026-09-06 (reposo 174-178) | Vigilar tras LRU de display lists |
-| Primer frame cold-start viewer 349 ms (objetivo E <200 ms) | Medido 2026-09-07 (open 213 ms + InitWindow 73 ms dominan) | Tarea futura: open más rápido o arranque diferido |
+---
+
+## 3. Síntesis de Deuda Transversal
+
+La deuda técnica detallada y el backlog de propuestas se gestionan en `docs/plan/DEUDA.md`. Los elementos de mayor criticidad para la estabilidad del producto son:
+
+1. **Display lists sin límite en MuPDF**: Cada página visitada retiene +6–7 MB en memoria nativa, elevando el PSS de 190 a 330 MB. Requiere política LRU.
+2. **PSS pico en ráfagas de lectura**: Medido incremento de 234 a 287 MB tras 15 cambios rápidos de página en la TCL 9469X.
+3. **Validación en hardware real**: Cierre formal de latencia con 200 trazos (Fase C) y scroll a 256 libros (Fase E).
+4. **Decisión arquitectónica de persistencia**: Sidecar JSON lateral frente a guardado incremental directo en el fichero PDF.
+
+---
+
+## 4. Reglas de Mantenimiento del Plan
+
+- Toda modificación en el roadmap debe actualizar este fichero y el documento de fase correspondiente.
+- Las tareas individuales acotadas se crean y rastrean en GitHub Issues.
+- Cambios en el diseño global o decisiones tecnológicas deben quedar documentados formalmente en `docs/adr/`.

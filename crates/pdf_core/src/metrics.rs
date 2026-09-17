@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Frame timing and memory metrics for the debug overlay (docs/PLAN.md §3.5).
+//! Frame timing and memory metrics for the debug overlay (docs/plan/NEXT-PLAN.md, Fase A).
 //!
 //! `FrameTimer` keeps a ring buffer of the last frame durations and answers
 //! percentile queries (the p95 frame time target is < 16.6 ms at 60 fps,
-//! docs/PLAN.md §8); `read_rss_kb` reads the process's resident set size from
-//! `/proc` for the RSS budget (< 150 MB on tablet).
+//! AGENTS.md MUST 1); `read_rss_kb` reads the process's resident set size from
+//! `/proc` for the memory budget (AGENTS.md, "Definición de hecho").
 
 use std::time::Duration;
 

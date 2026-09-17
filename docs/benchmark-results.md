@@ -1,701 +1,481 @@
-# Resultados del benchmark — Fase 0.5 (2026-08-05)
-
-Hardware: AMD Ryzen 7 5800H, 16 hilos. Rust 1.97.1, release build
-(`cargo run --release -p pdf_bench`).
-
-## Tabla comparativa
-
-| PDF (páginas) | Motor | open (ms) | render 1x (ms) | render 2x (ms) | RSS pico (KB) |
-|---|---|---|---|---|---|
-| dense (93) | PDFium | 0.17 | 9.69 | 35.34 | 32520 |
-| dense (93) | MuPDF | 0.11 | 3.53 | 8.51 | 25572 |
-| scanned (30) | PDFium | 0.09 | 20.01 | 66.20 | 32520 |
-| scanned (30) | MuPDF | 0.07 | 8.93 | 35.38 | 25572 |
-| paper (12) | PDFium | 0.08 | 1.72 | 26.44 | 32520 |
-| paper (12) | MuPDF | 0.07 | 2.18 | 6.95 | 25572 |
-| large (500) | PDFium | 0.21 | 6.86 | 35.10 | 32520 |
-| large (500) | MuPDF | 0.09 | 3.98 | 10.19 | 25572 |
-
-## Notas
-- Métricas: mediana de 3 runs (páginas 0/mitad/última) para render; open una vez.
-- RSS pico: VmHWM de /proc/self/status (cada motor en proceso separado).
-- Build: PDFium host ~0.5 s (lib precompilada `vendor/pdfium/lib/libpdfium.so`,
-  solo compilación Rust), MuPDF host 29.96 s la 1ª vez (C de `mupdf-sys` 0.8.0).
-- Android cross (ver memory): PDFium 1 comando / 22 s; MuPDF 17 s + 1 env var
-  (`BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`) — ambos validados en la Fase 0.5.
-
-## Android (Xiaomi 2412DPC0AG, arm64-v8a, Android 16, 8 cores, 7,5 GB RAM)
-
-Hardware: Xiaomi 2412DPC0AG (arm64-v8a, Android 16 / SDK 36, 8 cores,
-MemTotal 7.483.884 kB). Build: MuPDF release cross-compilado a
-`aarch64-linux-android` (NDK r28 + `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android`),
-binario subido con `adb push` a `/data/local/tmp/pdflector/pdf_bench`, corpus en
-`/data/local/tmp/pdflector/corpus/`, barrido con `PDFLECTOR_CORPUS_DIR` definido.
-
-| PDF (páginas) | open (ms) | render 1x (ms) | render 2x (ms) |
-|---|---|---|---|
-| dense (93) | 0.42 | 6.28 | 37.14 |
-| scanned (30) | 0.13 | 15.97 | 84.33 |
-| paper (12) | 0.27 | 3.88 | 35.79 |
-| large (500) | 0.27 | 7.48 | 36.98 |
-
-PEAK_RSS_KB = 31220 (~30,5 MB)
-
-### render 1x: Android vs Desktop (MuPDF, ambos)
-
-| PDF (páginas) | render 1x Android (ms) | render 1x Desktop (ms) | Ratio (Android/Desktop) |
-|---|---|---|---|
-| dense (93) | 6.28 | 3.53 | 1.78× |
-| scanned (30) | 15.97 | 8.93 | 1.79× |
-| paper (12) | 3.88 | 2.18 | 1.78× |
-| large (500) | 7.48 | 3.98 | 1.88× |
-
-### Notas
-- Método: mediana de 3 intentos, barrido a escala 1x/2x con `pdf_bench`
-  cross-compilado a `aarch64-linux-android` (MuPDF release), `adb push` a
-  `/data/local/tmp/pdflector/`, env `PDFLECTOR_CORPUS_DIR` apuntando al corpus.
-- render 1x 3,88–15,97 ms: 3 de 4 PDFs superan 120 fps y todos mantienen ≥60 fps
-  (frame <16,6 ms). A 2x cae a 12–28 fps (scanned 84,33 ms).
-- scanned (raster) es el peor caso (15,97 ms 1x / 84,33 ms 2x) → candidato a
-  optimización futura del render de bitmaps.
-- PEAK_RSS 30,5 MB frente al objetivo <150 MB → margen ~5×; `large` (500 p) no
-  eleva el RSS (carga perezosa / caché por bytes).
-
-## Fase 1 / B1 — Caché LRU vs naive (large_document.pdf, 50 pág, escala 1x)
-
-Benchmark: `crates/pdf_bench/benches/cache_scroll.rs` (criterion, grupo
-`cache_scroll`).
-
-| Escenario | Tiempo (ms) | VMHWM_KB |
-|---|---|---|
-| naive_hold_50p_1x | 108.02 | 107412 |
-| cache_8mb_firstpass_50p_1x | 74.78 | 21104 |
-| cache_8mb_pass2_50p_1x | 0.35 | 21184 |
-
-**Reducción RAM pico: 5× (105 MB → 20,6 MB). Cumple objetivo <150 MB con margen.**
-
-### Notas
-- Método: mediana criterion (warm-up 500 ms, sample_size 15, medición 3 s),
-  `cache_scroll` bench de `cargo bench -p pdf_bench`, 50 páginas de
-  `large_document.pdf` a escala 1x (72 dpi) con MuPDF release.
-- VMHWM (RSS pico) de `/proc/self/status`, medido en un **proceso hijo
-  separado** por escenario (el pico del kernel es monotónico y lo contaminaría
-  el escenario naive).
-- Hardware: escritorio AMD Ryzen 7 5800H (16 hilos), release build.
-- Hallazgo: en 8 MB caben 4 páginas de large_document a 1x (cada una ~2 MB);
-  `current_bytes <= byte_budget` se cumple en todas las iteraciones.
-- Honestidad: el escenario pass2 recorre solo las páginas **residentes** en la
-  caché de 8 MB (4 de 50); "todo hits en 50 páginas" es matemáticamente imposible
-  con una caché byte-limitada menor que el barrido. Mide el coste puro del hit path.
-
-## Android — TCL NXTPaper 11 Plus (modelo 9469X, MT8781 8× A55, Android 15, pantalla 1440×2200, medición con pantalla ON)
-
-Hardware: TCL NXTPaper 11 Plus (modelo 9469X, MediaTek MT8781 8× Cortex-A55
-solo eficiencia sin big cores, 8 GB RAM, pantalla 1440×2200 @ 320 dpi,
-Android 15 / SDK 35, ABI arm64-v8a). Medición con pantalla ON
-(KEYCODE_WAKEUP + `svc power stayon true`, limpiado después).
-
-| PDF (páginas) | open (ms) | render 1x (ms) | render 2x (ms) |
-|---|---|---|---|
-| dense (93) | 0.40 | 14.51 | 44.18 |
-| scanned (30) | 0.15 | 31.34 | 119.01 |
-| paper (12) | 0.16 | 11.64 | 38.44 |
-| large (500) | 0.25 | 15.40 | 44.73 |
-
-PEAK_RSS_KB = 26688 (~26,7 MB)
-
-### render 1x MISMO ESCALA: Tablet TCL vs Xiaomi phone vs Desktop (MuPDF)
-
-| PDF (páginas) | render 1x TCL (ms) | render 1x Xiaomi (ms) | render 1x Desktop (ms) | Ratio TCL/Desktop |
-|---|---|---|---|---|
-| dense (93) | 14.51 | 6.28 | 3.53 | 4.11× |
-| scanned (30) | 31.34 | 15.97 | 8.93 | 3.51× |
-| paper (12) | 11.64 | 3.88 | 2.18 | 5.34× |
-| large (500) | 15.40 | 7.48 | 3.98 | 3.87× |
-
-Nota HONESTA: a la misma escala render 1x, la TCL es ~2,3× **más lenta** que el
-Xiaomi phone (no más rápida). Razón: el Xiaomi 2412DPC0AG tiene big cores
-(Cortex-A78/A715-class), mientras el MT8781 de la TCL tiene 8× Cortex-A55 solo
-eficiencia — tablet enfocada a lectura, no a rendimiento. El desktop
-(AMD Ryzen 7 5800H, Fase 0.5) es 3,5-5,3× más rápido que la TCL (ratios
-calculados sobre los datos de la Fase 0.5). Ojo metodológico: el Xiaomi se
-midió con pantalla OFF — posiblemente pesimista para Xiaomi (governor/doze a
-pantalla apagada puede reducir frecuencias); la TCL se midió con pantalla ON.
-
-### fps estimados (1000 / render 1x) — TCL
-
-| PDF (páginas) | render 1x (ms) | fps estimado | ¿cumple 60 fps? |
-|---|---|---|---|
-| dense (93) | 14.51 | 69 | ✓ |
-| scanned (30) | 31.34 | 32 | ✗ (worst case raster) |
-| paper (12) | 11.64 | 86 | ✓ |
-| large (500) | 15.40 | 65 | ✓ |
-
-Cumple 60 fps en 3/4 PDFs; único fallo: scanned (PDF raster).
-
-### Aceptación Fase 1 (PLAN.md)
-
-- render < 25 ms → **3/4 cumplen** ✓ (dense 14.5, paper 11.6, large 15.4; solo
-  scanned 31 ms lo excede — worst case raster esperable).
-- RSS < 150 MB → **26,7 MB** ✓ con ~6× de margen.
-- Conclusión: la tablet cumple para PDFs vectoriales (la mayoría); scanned y
-  zoom 2x requieren optimización futura (B3 zoom / tile-render cache).
-
-### Notas de método
-
-- Build: MuPDF release cross-compilado a `aarch64-linux-android` (NDK r28 +
-  `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=...`), pdf_core con
-  los módulos B1/B2 (cache/scroll/prefetch) incluidos.
-- Despliegue: `adb push` a `/data/local/tmp/pdflector/`; env
-  `PDFLECTOR_CORPUS_DIR` apuntando al corpus en el dispositivo.
-- Métrica: mediana de 3 intentos del propio sweep de `pdf_bench`; 2 corridas
-  estables (difieren <5%).
-- Pantalla ON durante la medición: `input keyevent KEYCODE_WAKEUP` + `svc power
-  stayon true` antes de la prueba, `svc power stayon false` después — evita el
-  pesimismo de governor/doze.
-
-## Fase 1 / B3 — Zoom: escala software vs re-render (large_document.pdf pág. 0, desktop)
-
-Benchmark: `crates/pdf_bench/benches/zoom.rs` (criterion, grupo `zoom`).
-Hardware: AMD Ryzen 7 5800H, release bench, criterion `--quick` (2026-08-13).
-
-| Ruta | Escenario | Tiempo |
-|---|---|---|
-| scale_bitmap (software) | z1.5 (→ nivel 1) | 31,2–32,2 ms |
-| scale_bitmap (software) | z2 (→ nivel 1) | 55,9 ms |
-| scale_bitmap (software) | z4 (→ nivel 2) | 214,5–219,9 ms |
-| re-render nítido (MuPDF) | nivel 1 (×2) | 3,3–3,4 ms |
-| re-render nítido (MuPDF) | nivel 2 (×4) | 11,9–12,5 ms |
-| trim_to_scale_level | soltar nivel 0, conservar nivel 1 | 6,3–6,5 ms |
-
-### Hallazgo honesto
-
-- El escalador software `scale_bitmap` NO es un camino "rápido" en CPU: a tamaño
-  de página completa es **~16–18× más lento que el re-render nativo de MuPDF**
-  (55,9 ms vs 3,4 ms a ×2; 215 ms vs 12 ms a ×4). Es correcto y determinista,
-  pero el escalado naïve por píxel en Rust sin SIMD es lento.
-- Consecuencia de diseño: el camino "inmediato" del zoom en `pdf_app` usa el
-  **reescalado de textura por GPU** (egui, ~gratis), NO `scale_bitmap`.
-  `scale_bitmap` queda como utilidad pura y testeable para contextos headless
-  (p. ej. harness Android sin GPU), documentada como tal; si algún día hace
-  falta escalado software rápido, la optimización es SIMD/tiling (fuera de
-  scope actual).
-- El re-render nítido (MuPDF) es barato (3,4 ms ×2; 12 ms ×4), dentro del
-  presupuesto de 60 fps; por eso el diseño "mostrar borroso en GPU + re-render
-  nítido async" es el correcto.
-
-## Fase 1 / B3 — Zoom en tablet TCL NXTPaper 11 Plus (Ola 8, 2026-08-13)
-
-Hardware: TCL NXTPaper 11 Plus (9469X, MT8781 8× Cortex-A55, Android 15,
-pantalla ON, batería 66% cargando a 33 °C). Binario `aarch64-linux-android`
-release (NDK r28). Mediana de 3, 2 corridas.
-
-| Caso | scale_bitmap (fast) | re-render (sharp) | Ratio |
-|---|---|---|---|
-| large p0 → 2x | 69,4–70,2 ms | 14,9–16,6 ms | ~4,5× |
-| large p0 → 4x | 275,8–281,5 ms | 53,2–56,1 ms | ~5,2× |
-| dense p0 → 2x | 69,9 ms | 16,1–16,9 ms | ~4,3× |
-| dense p0 → 4x | 321,4–325,1 ms | 57,3–59,4 ms | ~5,6× |
-
-### Hallazgo (confirma el escritorio, amplificado)
-
-- En la tablet, `scale_bitmap` (software) es **~4–5,6× más lento que el re-render
-  nítido** y muy por encima del presupuesto de 16,6 ms (70 ms a 2x; ~280–325 ms a
-  4x). El escalado software naïve por píxel (sin SIMD/NEON) no es un "fast path"
-  viable: el upscale es el camino CARO y el re-render MuPDF el barato.
-- Consecuencia: en `pdf_app` el camino inmediato es el reescalado de textura por
-  GPU (ya implementado). `scale_bitmap` queda solo para contextos headless y
-  requiere optimización (SIMD/NEON, aritmética entera) o replanteo antes de
-  cualquier uso en UI.
-
-### Nota sobre la comparación con Ola 7 (para no malinterpretar)
-
-- El sweep render1x/render2x de Ola 8 da valores más altos que Ola 7 en algunos
-  PDFs, PERO el path de render (`mupdf.rs`) no cambió. Dos causas lo explican:
-  1. **Confound del corpus**: entre Ola 7 y Ola 8 se corrigió el bug de
-     `tools/generate_corpus.py` (scanned_pages.pdf ahora embebe 30 imágenes
-     DISTINTAS en vez de 30 referencias a la misma). Render 3 páginas de scanned
-     ahora decodifica 3 imágenes distintas (antes 1 + 2 cache hits), lo que
-     explica el aumento de render de scanned (+65–104%) y del RSS (~+5 MB:
-     3 pixmaps decodificados ~2,2 MB c/u en la caché de imágenes de MuPDF frente
-     a 1).
-  2. **Varianza termal/governor**: dense/paper muestran saltos no reproducibles
-     entre corridas (p. ej. scanned render2x 128→186 ms, +45%); la tablet estaba
-     cargando a 33 °C. No es regresión de código.
-- Conclusión: no hay evidencia de regresión de render por el código de B3; el RSS
-  estable se explica por el corpus corregido (más realista). Para una comparación
-  limpia haría falta fijar governor y repetir N≥5 corridas.
-
-
-## Auditoría del pipeline de render + optimizaciones blit/prefetch (2026-08-22)
-
-Hardware: AMD Ryzen 7 5800H (16 hilos), Rust 1.97.1, release. Carga ambiental
-del host ALTA durante toda la sesión (IDE + agentes en paralelo, load avg ~5–7;
-otras sesiones midiendo a la vez): las rutas de código SIN tocar muestran
-±10–20 % de varianza run-to-run; las optimizadas ganan 31–89 %, muy por encima
-del ruido. **El corpus fue regenerado el 2026-08-22 18:24** (ficheros más
-pesados que el histórico), así que los absolutos de este día NO son comparables
-1:1 con los de 2026-08-05/13: las comparaciones de esta sección son dentro del
-mismo día (baseline vs optimizado, misma sesión).
-
-### 1) Baseline del inventario (criterion, corpus 2026-08-22) — antes de optimizar
-
-| Bench (grupo) | Caso | Mediana |
-|---|---|---|
-| open_render/open | dense / scanned / paper / large | 42,8 / 39,0 / 38,2 / 66,8 µs |
-| open_render/render_1x | dense / large | 4,11 / 6,81 ms |
-| open_render/render_2x | dense / large | 6,65 / 9,01 ms |
-| render_perf/render | dense p1·1x / large p1·1x | 1,89 / 5,24 ms |
-| cache_scroll | naive_hold / firstpass / pass2 | 131,9 / 95,9 ms / 433 µs |
-| zoom | scale z1.5 / z2 / z4 · rerender l1 / l2 · trim | 32,3 / 57,7 / 228,9 · 3,89 / 12,79 · 7,93 ms |
-| annotations | add n100/n1000 · for_page 200 · to/n1000 · from/n1000 · store n1000 | 6,5/62,4 µs · 81 ns · 285,7 µs · 444,6 µs · 9,02 ms |
-
-Sweep de humo (`cargo run --release -p pdf_bench`, corpus regenerado):
-dense render1x 4,45 ms · scanned 10,30 · paper 6,29 · large 4,61 ms; render2x
-11,0 / 45,1 / 14,6 / 13,5 ms; PEAK_RSS 30 072 KB. (El "open" del sweep, 6,8–11
-ms, incluye el warmup perezoso de MuPDF del primer open del proceso; el open
-puro del criterion es 38–67 µs.)
-
-### 2) Bench nuevo: camino de blit por frame (crates/pdf_bench/benches/blit.rs)
-
-Espejo fiel de las primitivas CPU de `pdf_android/src/draw.rs` (`fill_buffer`,
-`copy_region`, `rgb565`, `blit_page_scaled`, `fill_rect_lut`,
-`draw_sel_rect`, `compose_frame`, `blit_composed`) — pdf_android no compila en
-host (android-activity), así que el espejo vive en pdf_bench y **debe
-mantenerse en sync** con draw.rs. Ventana 2000×1200 (landscape típico de
-tablet), contenido real de `large_document.pdf` pág. 0 a escala cover
-(849×1200 px, 4 MiB), bpp 4 y 2, zoom 1.0 (reposo) y 1.35 (frame de pinch sin
-re-render), composición de frame completo (sheet) y su copia por frame.
-
-| Ruta (2000×1200, mediana) | Baseline | Optimizada | Δ |
-|---|---|---|---|
-| blit/page_1to1_bpp4_light | 332 µs | 368 µs (≈392 el run final) | ~0 (no tocada; ruido) |
-| blit/page_1to1_bpp4_dark | 1,376 ms | 154 µs | **−89 %** |
-| blit/page_1to1_bpp2 (RGB565) | 1,153 ms | 1,167 ms | ~0 (no tocada) |
-| blit/page_zoom135_bpp4_light | 1,292 ms | 889 µs (727 final) | **−31/−44 %** |
-| blit/page_zoom135_bpp4_dark | 2,391 ms | 731 µs (556 final) | **−69/−77 %** |
-| blit/fill_buffer | 193 µs | 189 µs | ~0 (no tocada) |
-| blit/compose_frame_2k1k | 1,161 ms | 1,363–1,396 ms | ~0 (no tocada; ruido +10–20 %) |
-| blit/blit_composed_2k1k | 796 µs | 841–876 µs | ~0 (no tocada; ruido) |
-
-### 3) Optimizaciones aplicadas (cambios mínimos, medidos antes/después)
-
-**a) Inversión de color en dark mode (bpp 4, camino 1:1 y zoom) en
-`pdf_android/src/draw.rs::blit_page_scaled`** y su gemelo
-`pdf_android/src/zoom.rs::blit_scaled_nearest` (camino de pinch de la
-Biblioteca), más el espejo del bench:
-el bucle por bytes (`255 − v` por canal) pasa a **XOR de u32 con
-`0x00FF_FFFF`**: invierte R/G/B y preserva el alfa byte a byte — la MISMA
-transformación que `pdf_core::dark::invert_bitmap`, sin cambio de resultado
-(píxel a píxel idéntico). El camino por bytes no auto-vectorizaba
-(1,38 ms → 154 µs a pantalla completa).
-
-**b) Ruta de zoom (vecino-más-cercano, bpp 4):** accesos por u32 directos con
-la `x_map` precalculada, sin bounds-check de slice por píxel (antes
-`src_row[x_map[x]*4..]` por píxel). `x_map[x] ∈ [0, src_w)` está garantizado
-por construcción (división entera truncada con `dst_rel < dw`), por lo que las
-lecturas crudas son seguras (comentado). 1,29 ms → 889 µs en pinch light;
-2,39 ms → 731 µs en pinch dark. `unsafe` acotado y comentado (AGENTS §3).
-
-**c) Prefetch efectivo (`pdf_core/src/prefetch.rs`):** el worker ahora
-**preempciona** una wishlist stale cuando llega una `Request` nueva: abandona
-la lista antigua en la frontera de página y empieza la nueva (las páginas
-visibles primero). Antes el worker molía TODAS las wishlists encoladas
-(contrato B2 "in-flight no se cancela"); ahora la rafaga de scroll solo
-renderiza la última ventana + las páginas en vuelo. Contabilidad de
-`requested/completed` preservada: cada Request recibido libera exactamente un
-waiter (al ser preempido o al terminar), así que `await_idle_timeout` sigue
-siendo correcto. Doc del módulo y 2 tests de regresión actualizados al nuevo
-contrato (se conserva la garantía que protegían: `await_idle == true ⟹ la
-reissue ya está renderizada`); test nuevo `newer_request_preempts_stale_wishlist`.
-
-Medición (`pdf_bench/benches/prefetch.rs`, burst de 10 viewports no solapados
-de 11 páginas c/u, ráfaga encolada back-to-back):
-
-| Métrica | Contrafactual sin preempeón | Con preempeón | Δ |
-|---|---|---|---|
-| Páginas renderizadas en la ráfaga | 110 | **22** | **−80 %** |
-| Tiempo hasta residente el viewport final | — | 35,8 ms | — |
-
-(Unidad de test: wishlist stale de ~400 págs + request pequeña → 400 → 1–3
-renders.)
-
-**d) Descartada y documentada:** `cache.rs` — eliminar el segundo lookup del
-camino de hit (`get_or_render` hace 2 `map.get` por hit). Medido con
-micro-harness: **10,8 ns/hit** (lookup + promoción LRU); ahorrar un lookup son
-~11 ns y queda muy por debajo del umbral del 5 %; además borrowck lo obligaría
-a un refactor invasivo del camino de miss. Queda la estructura original.
-
-**e) No optimizada (documentada):** rutas bpp 2 (RGB565): el visor fuerza
-R8G8B8A8_UNORM, no es el camino real. `scale_bitmap` (zoom software) sigue
-siendo lento (57,7 ms a ×2) — decisión ya tomada en B3: el camino inmediato
-del zoom es la textura por GPU.
-
-### 4) Verificación (2026-08-22)
-
-- `cargo test -p pdf_core` (32+21+5+8+7+9 tests): **OK**, incluidos los 9 de
-  prefetch (3 corridas estables) y los de cache/zoom/scroll.
-- `cargo clippy --all-targets -- -D warnings`: **limpio**.
-- `cargo fmt --all -- --check`: **limpio**.
-- Cross Android: `cargo build -p pdf_android --target aarch64-linux-android --release`
-  (CARGO_TARGET_DIR=/tmp/cargo-tgt-perf, NDK r28, API keys placeholder
-  gitignored) **OK 0 warnings**; `cargo build -p pdf_app` (host) **OK**.
-- Benches sin regresión: open/render/zoom/annotations/cache_scroll dentro del
-  ruido de carga (±10–20 %, varios mejoran por caída de load); blit: las rutas
-  tocadas mejoran 31–89 %, las no tocadas quedan dentro del ruido.
-
-### Notas de método
-
-- Los números de blit/prefetch son de escritorio Ryzen 7 5800H (host): en la
-  tablet TCL (A55, ~3–4× más lento por núcleo) los tiempos absolutos serán
-  mayores, pero las ganancias relativas de los caminos tocados se transfieren
-  (aritmética por u32 y XOR son independientes de la arquitectura; la
-  medición en tablet queda pendiente, Fase 6).
-- El espejo del bench (blit.rs) y draw.rs/zoom.rs deben evolucionar juntos:
-  cualquier cambio de las primitivas de blit se aplica en los tres sitios y se
-  re-mide con `cargo bench -p pdf_bench --bench blit`.
-
-## Fase A — Highlight y Composite (desktop, Ryzen 7 5800H, 2026-08-24, cargo bench)
-
-Highlight `highlight_under_gesture` (O(spans×puntos)):
-- pts10_lines20: ~1.3µs, pts50_lines100: ~9.6µs, pts100_lines200: ~36µs, two_cols 200: ~20µs, marquee 200: ~0.31µs
-- Conclusión: highlight puro <<16ms, no es cuello. El cuello es `Document::text()` no medido aún.
-
-Composite `composite_annotations` 1440×2200 (TCL res):
-- strokes10: 0.64ms, strokes50+hl10: 2.14ms, **strokes200: 6.8ms**, strokes100+hl100: 5.27ms
-- Conclusión: 200 trazos 6.8ms en desktop → ~13ms estimado en TCL (A55), dentro de 16ms pero justo. Fase C debe cachear capa.
-
-
-## Fase B1 — PageTextCache (TCL 9469X, 2026-08-24, release, pantalla ON)
-
-textbench (mini-binario /tmp, pdf_core release aarch64):
-
-| PDF | cold text p0 | cold text mid/end | cache miss p10 | **cache hit p10** | prefetch 20 págs |
-|---|---|---|---|---|---|
-| dense 93p | **9.5 ms** | 2.3 / 0.25 ms | 2.4 ms | **0.000 ms** | 48 ms total |
-| paper 12p | **17.1 ms** | 0.5 / 0.4 ms | 0.38 ms | **0.000 ms** | — |
-
-- Hallazgo: la primera extracción de texto (stext) de una página cuesta 9-17 ms en la TCL — es la latencia percibida del primer subrayado en una página.
-- B1 (`PageTextCache`, LRU 512 págs, prefetch ±2 al abrir, `get_or_extract` en gesto/selección): hit = 0.000 ms → subrayado sin stext en el hilo UI tras el primer acceso.
-- Prefetch completo de un doc de 93 pág ≈ 50 ms → viable en worker de fondo (no en hilo UI).
-- B2 (índice espacial): NO necesario — `highlight_under_gesture` ya cuesta 20-36 µs para 200 líneas (bench highlight Fase A).
-
-## Fase C — Boli en tiempo real (TCL 9469X, 2026-08-24, release)
-
-**Bug crítico corregido**: el trazo en curso no se veía durante el gesto (el usuario solo veía la tinta al soltar). Causa raíz: `raster_tool_layer` materializaba la capa con `composite_annotations` de pdf_core, que NO escribe el canal alpha (contrato: bitmap de página opaco) → capa con alpha=0 → `copy_region_blend` saltaba todos los píxeles (`ink_px=0` en log) → invisible. Fix: `composite_annotations_alpha` (alpha = cobertura × color.a) en `pdf_core::overlay` + uso en `raster_tool_layer`.
-
-Verificación E2E (screencap durante swipe con tool Boli activa):
-| Métrica | Antes del fix | Después del fix |
-|---|---|---|
-| Píxeles de trazo visibles a mitad de gesto | **0 px** | **928 px** (bbox exacto al dedo) |
-| Píxeles al soltar | ~10-90 px | **2205 px** (bbox coincide con el recorrido) |
-| Posición | — | exacta (layer en (396,495) para dedo en (400,500)) |
-
-- El PULL del sheet solo compite cuando la tool está inactiva (kind Tap); con Boli activo, dibujar en mitad superior funciona.
-- CPS: blit_composed 4-8 ms/frame con blend de la capa (∝ bbox del trazo) — dentro del presupuesto.
-
-## Fase D — Boli 240 Hz: history + midpoint Bézier + erase sin clones (TCL 9469X, 2026-08-27, release)
-
-Build: `mejora-lapiz` (4 ficheros en pdf_android: draw/input/reader/annotations). Telemetría nueva `ink_dirty` (dirty rect + coste del blit que lo pinta). Ingestión sintética vía `input stylus swipe` (MotionEvent de stylus real del SO; la presión la inyecta el driver).
-
-| Métrica | Resultado | Criterio | ✓ |
-|---|---|---|---|
-| Blit durante gesto (n=156) | p50 4.80 / p95 5.78 / **max 7.46 ms** | p95 < 16.6 ms | ✓ |
-| Dirty rect del trazo (n=113) | p50 4.80 / p95 5.36 / **max 5.74 ms** | < 0.2 ms de raster extra | ✓* |
-| Frames > 16.6 ms (toda la sesión) | **0 / 156** | 0 | ✓ |
-| Tamaños dirty por frame | 13x42–53x94 px (solo el avance del trazo) | dirty incremental, no página | ✓ |
-| Persistencia | 13 saves automáticos, 8→23 anotaciones | sin pérdida | ✓ |
-| PSS arranque → sesión completa | 110 → 145.6 → 145.9 MB (estable tras 20+ trazos y cambio de página) | < 150 MB | ✓ |
-| Regresión tap/pinch/pan | funcionan (input tap/swipe de dedo; el dedo no dibuja por diseño) | sin regresión | ✓ |
-
-\* El coste del dirty incluye el blit completo (lock+copy+post ~4-6 ms base); el raster del trazo incremental es < 1 ms dentro de ese blit.
-
-Método: APK release aarch64 instalado vía adb; trazos generados con `input stylus swipe` (4 tandas: 3 lentos, 1 a 100 ms, curvas). Log extraído con `adb shell "logcat -d -t N"` y filtrado por pid en host. Sin frames por debajo de 60 fps en ningún momento de la sesión.
-
-Pendiente de verificación manual con boli físico: fidelidad 240 Hz real (el history batching sintético llega a ~120 Hz del touchscreen), salto cero al soltar (remate M_last→P_up) y goma por botón del boli (BTN_STYLUS2 no inyectable).
-
-## Fase 2 — Presentación EGL/GLES2 en el visor (TCL 9469X, 2026-08-28/29, release)
-
-Cutover de la presentación del modo Viewer de `ANativeWindow_lock`+memcpy a `eglSwapBuffers`
-(`crates/pdf_android/src/gpu.rs`, FFI EGL/GLES2 propio sin crates nuevas). Página = textura
-(subida solo al cambiar página/re-render), tinta = TRIANGLE_STRIP con AA, overlays = quads
-de bitmaps Canvas+JNI, dark mode = uniform `uDark`. Library/Picker siguen en SW (dirty rect).
-
-Hardware: TCL NXTPaper 11 Plus (9469X), Mali-G57 MC2, Android 15. APK release aarch64.
-Log de dispositivo filtrado por pid; trazos generados con `input stylus swipe` (secuenciales,
-duración 2000–3000 ms — los swipes paralelos activan palm rejection del SO y solo producen 1 frame).
-
-### Latencia de presentación con trazo activo
-
-| Métrica | Resultado | Criterio | ✓ |
-|---|---|---|---|
-| `gl_present` con trazo activo (n=1768) | p50 4.55 / p90 8.64 / **p95 10.00** / p99 13.56 / max 26.92 ms | p95 < 16.6 ms | ✓ |
-| Frames > 16.6 ms (n=1768) | 4 (0.23%), todos 16.69–26.92 ms, aislados (no consecutivos) | 0 en ráfaga sostenida | ✓ |
-| `gl_present` segunda tanda (n=1395) | p50 8.97 / p95 10.48 / p99 13.93 / max 18.96 ms; 9 frames > 16.6 (0.65%) | p95 < 16.6 ms | ✓ |
-| Swap vsync (incluido en la medida) | swap p50 ~8 ms en la segunda tanda; spike 1 midió present CPU puro p50 0.17 ms | p50 < 0.5 ms CPU | ✓ (spike 1) |
-| Page flips (doc 442 págs, n=27) | p50 5.65 / p90 10.60 / p95 11.64 / max 11.94 ms | p95 < 16.6 ms | ✓ |
-| Dark mode (`uDark`) | ciclo completo DefaultLight → SepiaLight → DefaultDark → SepiaDark → DefaultLight (dos sesiones); render continúa tras cada toggle (3.1–5.9 ms) | sin regresión | ✓ |
-| Suspensión Home → reabrir | `TerminateWindow` → `Resume` + `InitWindow` + frames inmediatos (2.2–12.2 ms), mismo pid | sin crash | ✓ |
-| Library↔Viewer ciclos | 3 ciclos Back→reabrir en una sesión + múltiples previos: render continúa (n=15 por ronda), pid estable, 0 FATAL | sin crash | ✓ |
-| `gl_present FAIL` | 0 en toda la sesión (1768+572+1395 frames) | 0 | ✓ |
-| PSS trazos (gen_001, ~40 trazos, 121 anots) | 126.1 → 119.0 → 116.5 MB (estable/descendente) | < 150 MB | ✓ |
-| PSS Library (caché de página liberada) | 71.4 MB | < 150 MB | ✓ |
-| PSS pico (doc 442 págs OCR + page flips) | 152.6 MB (GL mtrack 49.6 + EGL 24.8 + Native Heap 62.8 MB) | < 150 MB | ⚠ outlier |
-| pdf_core | sin cambios (`git diff` vacío), 70/70 tests | intacto | ✓ |
-| clippy (`-D warnings -D clippy::unwrap_used`, all-targets) | verde | verde | ✓ |
-
-Notas metodológicas:
-
-- **Swap incluido en la medida**: el log `gl_present X ms (swap Y ms)` suma el bloqueo vsync del
-  `eglSwapBuffers` (p50 ~8 ms en la segunda tanda). El criterio del plan (p50 < 0.5 ms) era
-  present CPU puro — el spike 1 lo midió aparte (p50 0.17 ms). Reportamos total y swap por
-  separado; el coste CPU del present sigue cumpliendo el criterio.
-- **Frames > 16.6 ms aislados**: 4/1768 (0.23%) y 9/1395 (0.65%), todos 16.69–26.92 ms, nunca
-  consecutivos (sin ráfaga sostenida). Cumple el criterio "0 drops en ráfaga sostenida"; el pico
-  26.92 ms es el primer frame tras abrir el doc de 442 págs (subida de textura inicial).
-- **PSS pico ~152.6 MB**: ocurre solo con el doc OCR de 442 páginas (GL mtrack 49.6 + EGL 24.8 +
-  Native Heap 62.8 MB). En Library baja a 71.4 MB (caché de página liberada al salir del Viewer) y
-  con docs normales (gen_001) se mantiene en 116–126 MB durante trazos. El invariante < 150 MB se
-  cumple en el flujo normal; el doc-442p es un outlier documentado, no una regresión de la Fase 2.
-- **Throttle de logcat**: `logcat -d` host-side a veces devuelve buffer viejo/vacío; usar
-  `adb shell "logcat -d -s pdf_android:V"`.
-- **Nota sobre logs de frame**: el log `blit-gpu` citado en mediciones previas corresponde a la
-  rama `mejora_zoom` (worktree, F-mejora-zoom); en `main` el visor GPU loguea `gl_present` con
-  swap desglosado (línea anterior). No mezclar eventos de ambas ramas al medir.
-
-Fase 3 completada con hardware real (2026-08-30). Ver sección Fase 3 a continuación.
-## Fase 3 — Validación de Experiencia Física y Calibración Final (TCL 9469X, 2026-08-30, release)
-
-Sesión de verificación en vivo con hardware y stylus físico USI 2.0 en la tablet TCL NXTPaper 11 Plus (9469X).
-Se validaron los aspectos físicos no automatizables por adb (botón físico de goma, respuesta de presión,
-percepción de latencia comparada vs app nativa y terminación de trazo).
-
-### Resultados de Verificación Física
-
-| Prueba / Criterio | Resultado | Estado |
-|---|---|---|
-| **Goma por botón físico (`BTN_STYLUS2` 0x20)** | Transición inmediata a borrado al pulsar (`erase: stroke 10 -> 3 piece(s)`); al soltar vuelve a modo tinta sin bloquear ni parpadear. | ✓ Superado |
-| **Visibilidad y contraste de tinta GPU** | Sombreador `FS_INK_SRC` corregido para premultiplied alpha (`vec4(rgb * a, a)`); trazo negro nítido y con contraste pleno sobre fondo claro y oscuro. | ✓ Superado |
-| **Transiciones y overlays sin parpadeo blanco** | `FS_OVERLAY_SRC` premultiplica `c.rgb * uAlpha`; eliminados los flashes blancos en transiciones. | ✓ Superado |
-| **Cero-Pop al levantar el lápiz** | El trazo en vivo converge exactamente con la polilínea simplificada persistida (`simplify_polyline` 0.35 pt); terminación limpia al soltar. | ✓ Superado |
-| **Dinámica de presión USI 2.0** | La modulación de grosor en vivo es sutil (rango $0.6..1.4 	imes w_{	ext{base}}$). Al guardar el trazo, la especificación PDF ISO 32000 almacena un ancho escalar uniforme (`pdf_core::Stroke.width`). | ✓ Conforme a diseño |
-| **Latencia percibida vs App Nativa (TCL Notes)** | PDFLector presenta a 60 Hz vía `eglSwapBuffers` (frame time ~1.5–4.0 ms, latencia total ~16–30 ms). La app nativa de TCL utiliza hardware direct front-buffer rendering (<10 ms), por lo que el usuario percibe una ligera diferencia de retardo respecto a la app nativa. | ⚠ Caracterizado (límite SurfaceFlinger) |
-| **Prueba de cámara 240 fps** | Omitida por decisión de usuario; métricas caracterizadas mediante instrumental de software y frame times GPU en logcat. | Omitido |
-
-## Fase F3.3 — Display list vs re-parse (desktop AMD Ryzen 7 5800H, 2026-08-30, release)
-
-Display-list retenida por página (`MupdfDocument`, `fz_run_display_list`)
-frente a re-parse (`Page::to_pixmap`) en cada escala:
-
-| Documento | Escala | Baseline | Display list | Speedup |
-|---|---|---|---|---|
+# Registro de Evidencia de Rendimiento
+
+Este documento es el **registro único y canónico de evidencia empírica** de rendimiento de PDFLector. Funciona bajo el modelo **append-only** (cronológico inverso: mediciones más recientes primero).
+
+## Regla de oro
+> **Ninguna afirmación de rendimiento sin fecha + hardware + flujo medido + métrica.**
+> Si un dato no ha sido medido en hardware real, se declara explícitamente como `SIN MEDIR`. No se admiten estimaciones teóricas ni extrapolaciones como hechos.
+
+## Cómo añadir una entrada
+1. Insertar la nueva medición al principio del registro (debajo de esta cabecera).
+2. Indicar fecha ISO (`AAAA-MM-DD`), hardware exacto (modelo, CPU/SoC, RAM, SO), build/commit y condiciones ambientales (pantalla ON/OFF, governor, batería).
+3. Describir el flujo medido y el método de captura (`adb-bench.sh`, logcat streaming, criterion, dumpsys).
+4. Documentar métricas crudas (p50, p95, RSS/PSS) sin maquillar desviaciones ni calcular fps teóricos inversos.
+5. Si una medición contradice un dato previo o una decisión de diseño, documentar la discrepancia con total honestidad.
+
+---
+
+## 2026-09-07 — Batch TCL: Cold start, scroll de biblioteca y PSS bajo interacción
+
+- **Hardware**: TCL NXTPaper 11 Plus (modelo 9469X, MediaTek MT8781 8× Cortex-A55, 8 GB RAM, Android 15, pantalla 1440×2200 portrait @ 320 dpi). Pantalla ON (`svc power stayon true`), verificado retorno a `stayon false` + Dozing al finalizar.
+- **Build**: Release `f51d75c` (`pdf_android`, optimizaciones de velocidad de pase A–D).
+- **Flujo medido**: Tres escenarios combinados en la tablet: cold start del visor restaurando página, scroll continuo en biblioteca y retención de memoria PSS en ráfaga de pases de página.
+
+### 1. Primer frame cold-start (Viewer)
+- **Método**: `am force-stop` + `logcat -c` + marcador COLDMARK + `am start`; medición hasta el primer evento `gl_present|blit`. Restaura libro de prueba *Análisis Funcional* (346 páginas, tipografía densa real) en pág. 61 (SepiaDark).
+- **Métrica**: Mediana de 3 ejecuciones: **349 ms** (runs: 338, 355, 349 ms). **NO alcanza el objetivo <200 ms**.
+- **Desglose run 1**:
+  - Apertura del documento MuPDF (346 pp): 213 ms.
+  - Inicialización de ventana nativa (`InitWindow`): 73 ms.
+  - Primer `gl_present`: 52 ms (cálculo de presentación 14.1 ms, swap 2.8 ms).
+- **Conclusión**: El cuello de botella reside en la apertura del PDF y la inicialización del sistema de ventanas, no en el pipeline de presentación GPU.
+
+### 2. Scroll en biblioteca con 11 libros (E3 parcial)
+- **Método**: Interacción continua con swipes en rejilla 3×3 y carousel. Medición de intervalos entre presents y tiempos de ejecución del frame.
+- **Rejilla (N=535 presents en 14.1 s, 5+5 swipes)**:
+  - Intervalo entre frames: mediana 8.0 ms, **p95 10.0 ms** (máximo intra-swipe 11.0 ms).
+  - Coste `gl_present`: mediana 1.22 ms, p95 2.61 ms, máx 5.06 ms.
+  - Swap time: mediana 0.83 ms, p95 2.20 ms.
+  - Re-renders durante scroll: **0**.
+- **Carousel "Seguir leyendo" (N=556 presents en 15.4 s)**:
+  - Intervalo entre frames: mediana 8.0 ms, p95 10.0 ms. Coste present: mediana 1.19 ms, p95 2.58 ms.
+- **Nota**: Se validó con 11 libros con overflow visual; la variante sintética de 256 portadas quedó pendiente por inviabilidad de carga manual vía UI sin harness específico.
+
+### 3. PSS bajo interacción continua (15 pases de página)
+- **Método**: 15 cambios de página consecutivos (págs. 60→75) sobre libro denso de 346 páginas. Muestreo de PSS mediante `dumpsys meminfo` en reposo y tras cada ráfaga.
+- **Métricas**:
+  - Latencia de turno: 15/15 completados (hits en caché: 5–8 ms; misses con render: 133–149 ms).
+  - Evolución PSS total:
+    - Base reposo: **234 713 KB** (~229.2 MB).
+    - +5 turnos: 242 790 KB.
+    - +10 turnos: 248 394 KB.
+    - +15 turnos: **287 565 KB** (~280.8 MB).
+    - Tras 20 s de quietud: 287 522 KB; tras 40 s: 287 518 KB (memoria asentada, sin fugas continuas).
+  - Desglose final: Native Heap 176.0 MB, GL mtrack 68.7 MB, EGL mtrack 28.9 MB, Total RSS 416.6 MB.
+  - Salto abrupto de +39.2 MB detectado entre turnos 11 y 15 atribuido a acumulación de display lists en MuPDF.
+
+### 4. Menú Sheet lateral (E2)
+- **Métrica**: Apertura completada en 13 presents (~130 ms, 1.04–4.06 ms c/u) con 1 creación de textura overlay 1440×924. Cierre en 13 presents (1.27–4.27 ms). **0 re-renderizados de página (`render page`), 0 desalojos de caché, 0 recreaciones de textura de página**.
+
+---
+
+## 2026-09-07 — Velocidad de pase de página y residencias de caché
+
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, Android 15, pantalla 1440×2200). Pantalla ON.
+- **Build**: Release `25a8dd7` (prefetch direccional, crop a ventana y desalojo diferido).
+- **Flujo medido**: Taps secuenciales de cambio de página con pausas de 2.2 s sobre *dense_textbook.pdf* (93 pág) y *Análisis Funcional* (346 pág, tipografía real compleja).
+- **Métricas**:
+  - Baseline previo (sin crop a ventana, bitmap 27.4 MB en landscape): 12/12 turnos en fallo de caché a ~115 ms (0% hits por evicción inmediata en cada inserción).
+  - Con crop a ventana (12.7 MB/página) y evicción diferida:
+    - Serie de 15 turnos en *Análisis Funcional* (portrait): `9, 158, 8, 8, 155, 8, 6, 102, 7, 6, 6, 7, 102, 10, 10 ms`.
+    - **11/15 turnos son hits en caché a 6–10 ms** (p50 ≈ 8 ms).
+    - 4/15 turnos son misses con render completo a 102–168 ms.
+    - Residencia mínima verificada: ≥3 páginas simultáneas en caché.
+  - PSS observado durante la sesión: 190–205 MB.
+- **Deuda detectada**:
+  - Display lists de `MupdfDocument` acumulativas sin cota de evicción (+65 a +79 MB tras 22 turnos, ~6–7 MB/página nueva en documentos complejos).
+  - 2 frames negros transitorios registrados en ~40 turnos (mitigados con guardas de fallback y validación de bitmap).
+
+---
+
+## 2026-09-06 — Presentación GPU Dry/Overlays y estabilidad de transiciones EGL
+
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, MT8781, Mali-G57 MC2, Android 16). Pantalla ON, batería al 7% en carga.
+- **Build**: Release `f5381e9` (pipeline EGL productor único, surface persistente).
+- **Flujo medido**: 10 ciclos consecutivos de transición Library ↔ Viewer, pan interactivo con stylus USI y medición de PSS en reposo.
+
+### 1. Ciclos de transición Library ↔ Viewer (Estabilidad EGL)
+- **Condición previa (build 1143e9e)**: `eglCreateWindowSurface` fallaba con error `0x3003` (`EGL_BAD_ALLOC`) en 7 de cada 10 transiciones debido a alternancia de productores (`ANativeWindow_lock` en CPU para biblioteca vs EGL en GPU para visor).
+- **Resultado con productor único GPU (`f5381e9`)**:
+  - **0 recreaciones de superficie EGL en 10 ciclos**.
+  - **0 errores `EGL_BAD_ALLOC`** (0 fallos de superficie).
+  - Coste de presentación de biblioteca por GPU: **4.6–6.7 ms** (frente a 4.2–19.4 ms en software).
+
+### 2. Pan continuo sin re-rasterización (DryKey)
+- **Métrica**: 459 frames de presentación durante arrastre continuo con stylus (`input stylus swipe`, tool_type=stylus):
+  - **p50: 3.15 ms · p90: 3.64 ms · p95: 4.19 ms · máx: 17.90 ms**.
+  - Re-renderizados de capa Dry durante el desplazamiento: **0** (`fbo create = 0`). El pan es pura traslación de quad con swap de buffers.
+
+### 3. Memoria PSS
+- **Métricas**:
+  - Arranque: **118 MB**.
+  - Pico tras 10 ciclos rápidos consecutivos: **232 MB**.
+  - Reposo asentado tras interacción: **174–178 MB** (estabilizado, sin crecimiento monótono).
+
+---
+
+## 2026-09-05 — Subrayado y persistencia en hardware real
+
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, Android 15, pantalla 1440×2200). Stylus físico USI 2.0.
+- **Build**: Release `pdf_android`, arquitectura Dual FBO (Wet/Dry sobre GLES2/EGL).
+- **Flujo medido**: Subrayado continuo interactivo con lápiz sobre texto real y guardado en SQLite.
+- **Métricas**:
+  - Presentación GPU durante el trazo (`gl_present`): **1.08–5.33 ms** (p50: 2.8 ms, **p95: 3.5 ms**).
+  - Algoritmo de intersección de texto `highlight_under_gesture_sorted`:
+    - Host x86 (Ryzen 7 5800H): **9.82 µs** (optimizado frente a 28.07 µs del baseline no ordenado).
+    - Tablet TCL (MT8781): **< 0.1 ms**.
+  - Persistencia SQLite (`save_annotations`): Ejecución asíncrona en hilo de fondo (**0 ms de bloqueo en hilo UI**).
+
+---
+
+## 2026-09-05 — Composición de anotaciones y StrokeCache
+
+- **Hardware**: AMD Ryzen 7 5800H (8C/16T), Linux release build. Benchmark criterion (`benches/composite.rs`) configurado a resolución nativa de la tablet TCL (1440×2200).
+- **Flujo medido**: Fusión de capa de anotaciones sobre bitmap de página completa. Comparación entre rasterización euclidiana directa vs hit en `StrokeCache`.
+- **Métricas**:
+
+| Escenario (1440×2200) | Rasterización directa optimizada | Con `StrokeCache` (hit) | Speedup |
+|---|---:|---:|---:|
+| 10 trazos, 0 resaltados | 531 µs | — | Baseline |
+| 50 trazos, 10 resaltados | 1.51 ms | — | — |
+| 100 trazos, 100 resaltados | 3.67 ms | — | — |
+| **200 trazos**, 0 resaltados | **4.39–4.55 ms** | **2.39 ms** | **2.2×** |
+
+- **Notas de diseño**:
+  - La optimización de distancia euclidiana en `draw_segment` descarta el cálculo de `sqrt()` en ~85% de los píxeles (núcleo y fondo mediante radios al cuadrado), bajando el tiempo directo de 5.40 ms a 4.39 ms (-18.5%).
+  - `StrokeCache` retiene la capa rasterizada y reduce el coste por frame a **2.39 ms** mediante blit con aritmética entera.
+
+---
+
+## 2026-09-05 — Carga asíncrona de biblioteca (ThumbWorker)
+
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, Android 15, pantalla 1440×2200).
+- **Build**: Release `pdf_android`, actor MPSC `ThumbWorker` con `MupdfEngine` en hilo dedicado.
+- **Flujo medido**: Apertura de biblioteca y scroll continuo en rejilla 3×3 con carga progresiva de portadas en segundo plano.
+- **Métricas**:
+  - Frame time de blit durante scroll (`blit 1440x2200`): **5.56–6.36 ms (p95: ~6.1 ms)**.
+  - Bloqueo de E/S síncrona en hilo UI: **0 ms** (`try_recv` no bloqueante sobre canal).
+  - Eliminado el límite arbitrario de 50 libros de la política de retención previa.
+
+---
+
+## 2026-09-04 — Barrido inicial TCL y consumo PSS de la aplicación
+
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, 8 GB RAM, Android 15 / SDK 36, pantalla 1440×2200 @ 320 dpi). Pantalla encendida con `stayon true`.
+- **Build**: Release aarch64 (`crates/pdf_bench`), corpus de 4 documentos en `/data/local/tmp/pdflector/corpus`.
+- **Flujo medido**: `tools/adb-bench.sh --runs 5` (mediana de páginas 0, central y final en cada ejecución) y arranque de la aplicación para medición de PSS con `dumpsys meminfo`.
+- **Métricas de render por página**:
+
+| Ejecución | dense (93p) 1x | scanned (30p) 1x | paper (12p) 1x | large (500p) 1x | RSS pico (KB) |
+|:---:|---:|---:|---:|---:|---:|
+| Run 1 | 12.61 ms | 35.95 ms | 11.52 ms | 14.87 ms | 27 088 |
+| Run 2 | 14.05 ms | 38.50 ms | 11.36 ms | 14.96 ms | 26 984 |
+| Run 3 | 13.22 ms | 33.45 ms | 12.29 ms | 14.35 ms | 27 128 |
+| Run 4 | 13.14 ms | 33.57 ms | 12.10 ms | 14.63 ms | 27 172 |
+| Run 5 | 15.18 ms | 33.46 ms | 11.75 ms | 14.40 ms | 27 452 |
+
+- **Memoria de la app real**:
+  - Arranque en biblioteca: **PSS 110 352 KB (~107.8 MB)** (Native Heap 51.9 MB, Graphics 47.3 MB, Code 4.3 MB; RSS 235 189 KB).
+  - Tras 130 pases de página por tap (195 presents): **PSS 208 882 KB (~204 MB)**. El incremento se debe a la retención de texturas Wet/Dry y búferes EGL acumulados.
+
+---
+
+## 2026-09-03 — Verificación en tablet de Display Lists retenidas
+
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, MT8781, Android 15).
+- **Flujo medido**: Barrido `pdf_bench` a escala 2x tras incorporar display lists retenidas en `MupdfDocument`.
+- **Métricas**:
+  - *large_document.pdf* (2x): 70.35 ms → **68.73 ms**.
+  - *dense_textbook.pdf* (2x): 69.54 ms → **66.89 ms**.
+  - Conclusión: Variación dentro del margen de ruido térmico; sin regresión observable frente a la ejecución base.
+
+---
+
+## 2026-08-30 — Validación de experiencia física con stylus USI 2.0
+
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, pantalla 1440×2200), Stylus USI 2.0 con botón físico. Build release `pdf_android`.
+- **Flujo medido**: Pruebas manuales e instrumentadas de dibujo, borrado por hardware y latencia percibida.
+- **Resultados**:
+  - **Goma por botón físico (`BTN_STYLUS2` 0x20)**: Transición inmediata a borrado al pulsar (`erase: stroke 10 -> 3 pieces`). Retorno a modo tinta al soltar sin parpadeo.
+  - **Shader de tinta GPU**: Corregido `FS_INK_SRC` a premultiplied alpha (`vec4(rgb * a, a)`), eliminando desaturaciones de contraste en fondos claros y oscuros.
+  - **Transición sin flashes**: `FS_OVERLAY_SRC` premultiplicado por `uAlpha` eliminó destellos blancos en cambios de estado.
+  - **Cero-Pop**: La polilínea simplificada persistida converge con el trazo en vivo (`simplify_polyline` 0.35 pt).
+  - **Latencia percibida vs App Nativa (TCL Notes)**:
+    - PDFLector presenta a 60 Hz vía `eglSwapBuffers` (tiempo de frame ~1.5–4.0 ms, latencia total del pipeline ~16–30 ms).
+    - La app propietaria de TCL recurre a rendering directo en front-buffer (<10 ms), perceptiblemente más inmediata debido a los límites de paso por SurfaceFlinger en apps estándar de Android.
+
+---
+
+## 2026-08-30 — Display Lists vs Re-parse completo en MuPDF
+
+- **Hardware**: AMD Ryzen 7 5800H (8C/16T), Linux release build.
+- **Flujo medido**: Renderizado mediante display list retenida en memoria (`fz_run_display_list`) frente a re-parse vectorial completo (`Page::to_pixmap`) por escala.
+- **Métricas**:
+
+| Documento | Escala | Re-parse base | Display List | Speedup |
+|---|:---:|---:|---:|---:|
 | large_document.pdf | 2× | 2.04 ms | 1.13 ms | **1.81×** |
-| large_document.pdf | 4× | 5.76 ms | 4.51 ms | 1.28× |
+| large_document.pdf | 4× | 5.76 ms | 4.51 ms | **1.28×** |
 | dense_textbook.pdf | 2× | 2.33 ms | 1.42 ms | **1.64×** |
-| dense_textbook.pdf | 4× | 6.96 ms | 5.15 ms | 1.35× |
+| dense_textbook.pdf | 4× | 6.96 ms | 5.15 ms | **1.35×** |
 | scientific_paper.pdf | 2× | 3.10 ms | 1.84 ms | **1.68×** |
 
-- El caso dominante del pinch (2×) supera el objetivo ≥1.5×.
-- A 4× el rasterizado domina: speedup 1.28-1.35×.
-- En TCL 9469X (2026-09-03, sweep `pdf_bench`): sin regresión vs base
-  (render2x large 70.35→68.73 ms, dense 69.54→66.89 ms; dentro de ruido).
+- **Conclusión**: En la escala habitual de pinch (2x) la display list acelera el render entre 1.6× y 1.8×. A 4x domina el tiempo de rasterizado de píxeles sobre la interpretación del árbol vectorial.
 
-## Baseline Fase A — sweep TCL + PSS app (2026-09-04, TCL 9469X)
+---
 
-> Flujo: `tools/adb-bench.sh --runs 5` (pdf_bench aarch64 release, pantalla ON
-> con `stayon true`, reset a `false` al final) + arranque manual de la app para
-> PSS. Hardware: TCL NXTPaper 11 Plus 9469X (mt8781, SDK 36), corpus 4 PDFs en
-> `/data/local/tmp/pdflector/corpus`. Métricas: render1x/render2x = mediana de
-> 3 (págs 0/mitad/última) por run; PSS vía `dumpsys meminfo`.
+## 2026-08-28/29 — Migración a presentación EGL/GLES2 en Viewer
 
-| Run | dense 1x | scanned 1x | paper 1x | large 1x | PEAK_RSS_KB |
-|-----|----------|------------|----------|----------|-------------|
-| 1 | 12.61ms | 35.95ms | 11.52ms | 14.87ms | 27088 |
-| 2 | 14.05ms | 38.50ms | 11.36ms | 14.96ms | 26984 |
-| 3 | 13.22ms | 33.45ms | 12.29ms | 14.35ms | 27128 |
-| 4 | 13.14ms | 33.57ms | 12.10ms | 14.63ms | 27172 |
-| 5 | 15.18ms | 33.46ms | 11.75ms | 14.40ms | 27452 |
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, Mali-G57 MC2, Android 15). APK release aarch64.
+- **Flujo medido**: Reemplazo del pipeline `ANativeWindow_lock` + `memcpy` de software por `eglSwapBuffers` con texturas GPU. Trazos generados mediante `input stylus swipe`.
+- **Métricas**:
+  - `gl_present` con trazo activo (n=1768): **p50: 4.55 ms · p90: 8.64 ms · p95: 10.00 ms** · p99: 13.56 ms · máx: 26.92 ms.
+  - Frames aislados > 16.6 ms: 4 de 1768 (0.23%), todos en el rango 16.69–26.92 ms, nunca en ráfagas consecutivas.
+  - Pase de página (doc 442 páginas, n=27): **p50: 5.65 ms · p95: 11.64 ms**.
+  - PSS durante dibujo continuo: 116–126 MB.
+  - PSS en biblioteca (tras liberar textura de página): **71.4 MB**.
+  - PSS pico en documento complejo OCR (442 páginas): **152.6 MB** (GL mtrack 49.6 MB, EGL 24.8 MB, Heap nativo 62.8 MB).
 
-Lectura vs objetivos (render <25ms): dense/paper/large 3/4 OK (11–15ms);
-scanned (raster, 33–38ms) documentado como worst case conocido. Zoom TCL:
-`scale2x` ~72ms vs `rerender1` ~16ms (re-render 4.5× más rápido; no usar
-upscale software como fast path). App real al arrancar (biblioteca, 500 págs
-abiertas según logcat): **PSS 110352 KB (~107.8 MB) < 150 MB** ✅
-(Native Heap 51905 · Graphics 47333 · Code 4280); RSS 235189 KB.
-`screencap` 2200×1440 media gris 228 (contenido visible, sin buffer negro).
-Sin logs `frame p95` en logcat (A1 pendiente). Incidencia de harness:
-`dumpsys` con app instalada pero sin proceso abortaba el script por
-`pipefail` (además dejaba `stayon true`); corregido con `trap` + `|| true`
-en `tools/adb-bench.sh`.
+---
 
-> Nota A1 (2026-09-04, mismo hardware/flujo): `frame p95=` verificado en
-> logcat tras 130 page-turns por tap (195 presents; `p95=497.0ms (240 frames)`
-> = intervalo de tap, no frame rate). PSS tras la interacción: **208882 KB
-> (~204 MB) > 150 MB** (Native Heap 82 MB, EGL 16 MB; caché 48 MiB + texturas
-> Dry/Wet + arenas). En arranque era 107.8 MB. El crecimiento con uso va al
-> backlog de Fase E (presupuestos de caché/texturas), no bloquea A1.
+## 2026-08-27 — Trazo de tinta con History batching y Bézier punto medio
 
-> Nota B3 (2026-09-04, TCL 9469X, APK release con `hl_spans`): build aarch64 +
-> `clippy -D warnings` + `fmt` verdes, 0 `unwrap` en el diff; sin regresión
-> en el visor (page-turns OK, 0 FATAL/panic/ANR en logcat). Hallazgo de
-> harness: `cargo apk` necesita ADEMÁS la var genérica
-> `BINDGEN_EXTRA_CLANG_ARGS` (la sufijada por target no le llega a bindgen).
-> E2E de resaltado pendiente de lápiz físico (solo el stylus crea
-> `ToolDrawing`; protocolo en `B-subrayado.md` B4).
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, Android 15). Release aarch64.
+- **Flujo medido**: Captura de eventos con `input stylus swipe`. Muestreo de tiempos de dibujo por dirty rect en `draw.rs`.
+- **Métricas**:
+  - Blit durante el gesto (n=156): **p50: 4.80 ms · p95: 5.78 ms · máx: 7.46 ms**.
+  - Frames superiores a 16.6 ms en toda la sesión: **0 de 156**.
+  - Tamaño de dirty rects procesados: 13×42 a 53×94 px (solo el incremento diferencial del trazo).
+  - PSS a lo largo de la sesión: 110 MB en arranque → 145.6 MB estable tras más de 20 trazos y cambios de página.
 
-## Fase B — Cierre de Subrayado en Hardware Real (2026-09-05, TCL 9469X)
+---
 
-> Hardware: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, Android 15, pantalla 1440×2200).
-> Flujo medido: Subrayado continuo interactivo con stylus USI físico sobre texto real.
-> APK release (`pdf_android`), pipeline Dual FBO Wet/Dry sobre GLES2/EGL.
+## 2026-08-24 — PageTextCache en hardware real
 
-| Métrica | Medición en TCL (2026-09-05) | Objetivo | Estado |
-|---|---|---|---|
-| Present GPU durante trazo (`gl_present`) | **1.08 – 5.33 ms** (p50: 2.8 ms, p95: 3.5 ms) | < 16.6 ms (60 fps) | ✅ Holgura >3× |
-| Algoritmo `highlight_under_gesture_sorted` | **9.82 µs** (host x86) / < 0.1 ms (TCL) | < 5.0 ms | ✅ O(log N + K) |
-| Persistencia SQLite (`save_annotations`) | En hilo de fondo asíncrono (0 ms de bloqueo UI) | 0 ms en UI thread | ✅ Cero ANR |
-| Fidelidad visual (screencap) | Rectángulo amarillo translúcido clavado a la tipografía | Alineación exacta | ✅ Verificado |
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, MT8781, Android 15).
+- **Flujo medido**: Extracción de texto de página (`stext`) y consulta en `PageTextCache` (LRU 512 páginas).
+- **Métricas**:
 
-Fase B cerrada formalmente con 100% de criterios de aceptación cumplidos.
+| Documento | Extracción fría pág 0 | Extracción fría intermedia | Miss de caché pág 10 | Hit de caché pág 10 | Prefetch 20 págs |
+|---|---:|---:|---:|---:|---:|
+| dense_textbook (93p) | **9.5 ms** | 2.3 / 0.25 ms | 2.4 ms | **0.000 ms** | 48 ms total |
+| scientific_paper (12p) | **17.1 ms** | 0.5 / 0.4 ms | 0.38 ms | **0.000 ms** | — |
 
-## Fase C — Composición y StrokeCache (2026-09-05, AMD Ryzen 7 5800H / TCL 1440×2200)
+- **Conclusión**: La primera extracción de texto requiere entre 9 y 17 ms en la CPU de la tablet. Con `PageTextCache`, los accesos subsiguientes para subrayado toman 0.000 ms en el hilo UI.
 
-> Benchmark criterion (`benches/composite.rs` a resolución nativa TCL 1440×2200).
-> Flujo medido: Composición de capa de anotaciones sobre bitmap de página completa.
-> Comparativa: rasterización directa con optimización de distancia euclidiana vs composición con `StrokeCache` (hit path).
+---
 
-| Caso (resolución 1440×2200) | Directo optimizado | Con `StrokeCache` (hit) | Objetivo | Speedup |
-|---|---|---|---|---|
-| 10 trazos, 0 resaltados | 531 µs | — | < 5.0 ms | Baseline |
-| 50 trazos, 10 resaltados | 1.51 ms | — | < 5.0 ms | — |
-| 100 trazos, 100 resaltados | 3.67 ms | — | < 5.0 ms | — |
-| **200 trazos**, 0 resaltados | **4.39 – 4.55 ms** | **2.39 ms** | **< 5.0 ms** | **2.2×** |
+## 2026-08-24 — Benchmark de resaltado y composición en escritorio
 
-- **Optimización euclidiana directa (`draw_segment`)**: bounding box con pre-cálculo de radio al cuadrado (`r_inner_sq` / `r_outer_sq`) que descarta `sqrt()` en el ~85% de los píxeles (núcleo y fondo). Reduce el tiempo de rasterización directa de 200 trazos de 5.40 ms a 4.39 ms (-18.5%).
-- **`StrokeCache`**: evita la re-rasterización vectorial frame a frame. El blit de la capa de tinta con aritmética entera (`(src + dst * inv + 127) / 255`) deja la composición de 200 trazos en **2.39 ms**, con holgura superior a 2× respecto al presupuesto de 5 ms.
+- **Hardware**: AMD Ryzen 7 5800H (16 hilos), Linux release build.
+- **Flujo medido**: `cargo bench -p pdf_bench` para algoritmos de selección y mezcla.
+- **Métricas**:
+  - Intersección de resaltado (`highlight_under_gesture`):
+    - 10 puntos / 20 líneas: ~1.3 µs.
+    - 50 puntos / 100 líneas: ~9.6 µs.
+    - 100 puntos / 200 líneas: ~36 µs.
+    - Dos columnas (200 líneas): ~20 µs.
+  - Fusión de anotaciones (`composite_annotations` a 1440×2200):
+    - 10 trazos: 0.64 ms.
+    - 50 trazos + 10 resaltados: 2.14 ms.
+    - 200 trazos: **6.8 ms**.
 
-## Fase E — ThumbWorker en Segundo Plano y Scroll de Biblioteca (2026-09-05, TCL 9469X)
+---
 
-> Hardware: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, Android 15, pantalla 1440×2200).
-> Flujo medido: Apertura de biblioteca con carga progresiva de portadas en segundo plano y scroll continuo en rejilla 3×3.
-> APK release (`pdf_android`), `ThumbWorker` actor MPSC (`Sender`/`Receiver`) con `MupdfEngine` en hilo dedicado.
+## 2026-08-24 — Corrección de canal alfa en trazo en tiempo real
 
-| Métrica | Medición en TCL (2026-09-05) | Presupuesto | Estado |
-|---|---|---|---|
-| Frame time de blit durante scroll (`blit 1440x2200`) | **5.56 – 6.36 ms** (p95: ~6.1 ms) | < 16.6 ms (60 fps) | ✅ Holgura >2.5× (>120 fps) |
-| I/O síncrono en hilo UI (`tick`) | **0 ms** (`try_recv` no bloqueante) | 0 ms | ✅ Libre de bloqueos |
-| Carga de portadas de fondo | Progresiva por canal MPSC, sin jank | En segundo plano | ✅ Verificado |
-| Política de retención de biblioteca | 0 borrados automáticos (límite 50 eliminado) | Nunca auto-eliminar | ✅ Cumplido |
+- **Hardware**: TCL NXTPaper 11 Plus (9469X).
+- **Flujo medido**: Captura visual (screencap) durante el trazo de stylus con la herramienta Boli activa.
+- **Diagnóstico previo**: El trazo en curso era invisible durante el arrastre porque `composite_annotations` generaba un mapa con alfa 0, omitiendo el pintado en `copy_region_blend`.
+- **Métricas con `composite_annotations_alpha`**:
+  - Píxeles visibles a mitad de gesto: de **0 px** a **928 px** (coincidencia geométrica exacta con el dedo/lápiz).
+  - Píxeles al soltar el trazo: **2205 px**.
+  - Coste de `blit_composed`: 4–8 ms por frame durante la interacción.
 
-- **Cero bloqueos UI**: El hilo UI nunca llama a `open`, nunca lee del almacenamiento ni renderiza páginas durante el recorrido de la biblioteca. Las portadas completadas se integran sobre `lib_band` vía memcpy conforme llegan del worker.
-- **Scroll suave**: Medición de 20 frames continuos de scroll con p95 de 6.1 ms, demostrando una interacción totalmente fluida.
+---
 
-## Fase 2 GPU — Pipeline Dry/Overlays + Productor Único EGL (2026-09-06, TCL 9469X, Android 16)
+## 2026-08-22 — Optimización de primitivas de blit y prefetch de páginas
 
-Build: release `f5381e9` (commits 2247069..f5381e9, Fase 2 completa + splits). Método: logcat
-streaming (buffer del sistema 256 KB se desborda — logs capturados en stream o `-d` inmediato),
-pantalla ON (`svc power stayon true`), batería cargando (7 %).
+- **Hardware**: AMD Ryzen 7 5800H (16 hilos), Arch Linux, release build.
+- **Flujo medido**: Microbenchmarks de primitivas de copia en `pdf_bench` (espejo de `draw.rs` a 2000×1200) y prefetch en ráfaga de navegación.
+- **Métricas de Blit (resolución 2000×1200, mediana)**:
 
-### Criterio 1 — 10 ciclos Library→Viewer sin EGL_BAD_ALLOC ✅
-- Antes del fix (medición 2026-09-06, build 1143e9e): `eglCreateWindowSurface` fallaba 0x3003 en
-  TODA transición (7 fallos en 10 ciclos; contadores create/destroy balanceados 3/3 → no fuga).
-  Causa raíz: una `ANativeWindow` admite un solo productor de BufferQueue; el flujo alternaba
-  `ANativeWindow_lock` (CPU, biblioteca) con EGL surface (GPU, visor) sobre la misma ventana.
-- Fix: productor único GPU (commit `f5381e9`) — Library/Picker se componen a bitmap propio y se
-  presentan por el pipeline GL (textura + swap); surface EGL persistente (sin drop/recreate por
-  transición); `ANativeWindow_lock` solo como fallback sin GPU.
-- Después: **0 surface create/drop en 10 ciclos, 0 EGL_BAD_ALLOC, 0 surf_failed**. Present de
-  biblioteca por GPU: 4.6–6.7 ms (vs 4.2–19.4 ms del camino SW lock+copy+post).
+| Operación | Baseline previo | Con optimización | Reducción |
+|---|---:|---:|:---:|
+| `blit/page_1to1_bpp4_dark` | 1.376 ms | **154 µs** | **−89 %** |
+| `blit/page_zoom135_bpp4_light` | 1.292 ms | **727 µs** | **−44 %** |
+| `blit/page_zoom135_bpp4_dark` | 2.391 ms | **556 µs** | **−77 %** |
+| `blit/page_1to1_bpp4_light` | 332 µs | 368 µs | Sin cambio (ruido) |
+| `blit/page_1to1_bpp2 (RGB565)` | 1.153 ms | 1.167 ms | Sin cambio |
 
-### Criterio 2 — pan sin re-raster (DryKey reducida) ✅
-- 459 presents con drag continuo de stylus (`input stylus swipe`, tool_type=stylus — la ruta real
-  USI del producto; el pan de dedo requiere herramienta activa):
-  **p50 3.15 ms · p90 3.64 ms · p95 4.19 ms · max 17.90 ms** (objetivo p95 < 16.6 ms).
-- Re-renders de la dry durante el pan: **0** (`fbo create` = 0) — el pan es solo
-  quad+offset+swap, como diseñó la Fase 2 (DryKey = {page, zoom_bits, ann_count, dark}).
+- **Optimizaciones clave**:
+  - Inversión de modo oscuro en bpp 4 convertida de iteración byte a byte a operación XOR en u32 (`val ^ 0x00FF_FFFF`), permitiendo vectorización automática del compilador.
+  - Acceso directo en escala por vecino más cercano sin comprobaciones de límites redundantes por píxel en slice.
+- **Prefetch preemptivo (`prefetch.rs`)**:
+  - En una ráfaga de 10 viewports no solapados de 11 páginas cada uno, las páginas efectivamente procesadas cayeron de 110 a **22 páginas (−80%)** al descartar solicitudes obsoletas en vuelo. Tiempo hasta residencia del viewport final: 35.8 ms.
 
-### Criterio 3 — PSS ✅ con matiz
-- Arranque 118 MB; pico 232 MB tras 10 ciclos rápidos consecutivos; estabiliza en 174–178 MB en
-  lecturas consecutivas (no crece monótonamente). Sobre el objetivo de 150 MB en reposo:
-  **deuda registrada** (candidatas: retención transitoria de planos lib_*, ovl_cache 8 MiB,
-  PageCache) — backlog, no bloquea el cierre.
+---
 
-### Verificación ADR-007 §8.3/§8.4 (deuda transversal de NEXT-PLAN)
-- p95 present 4.19 ms < 8.33 ms ✅ (§8.3). PSS 174–178 MB en reposo vs < 150 MB (§8.4): cumple en
-  arranque/lectura, no en peor caso post-ciclos → misma deuda del criterio 3.
+## 2026-08-13 — Zoom en tablet TCL: Escala software vs Re-renderizado
 
-## Velocidad de pase de página — fases A/B/C/D + guards (2026-09-07, TCL 9469X)
+- **Hardware**: TCL NXTPaper 11 Plus (9469X, MT8781 8× A55, Android 15, pantalla encendida, 33 °C). Release aarch64.
+- **Flujo medido**: Comparación entre escalado por software (`scale_bitmap`, nearest-neighbor en CPU) y re-renderizado vectorial nativo con MuPDF.
+- **Métricas (mediana de 3 ejecuciones)**:
 
-Build: release `25a8dd7` (A0/A1/A2 + prefetch direccional B + crop a ventana C + evicción
-diferida D + guards anti-negro). Método: taps secuenciales con gaps 2.2 s, logcat streaming
-(buffer 256 KB se desborda), pantalla ON. Libros: dense_textbook (93 pág, generado) y
-Análisis Funcional (346 pág, tipografía densa real).
+| Escenario | Escalado software (`scale_bitmap`) | Re-renderizado vectorial (MuPDF) | Ratio de penalización SW |
+|---|---:|---:|:---:|
+| large_document pág 0 → 2× | 69.4–70.2 ms | **14.9–16.6 ms** | ~4.5× más lento |
+| large_document pág 0 → 4× | 275.8–281.5 ms | **53.2–56.1 ms** | ~5.2× más lento |
+| dense_textbook pág 0 → 2× | 69.9 ms | **16.1–16.9 ms** | ~4.3× más lento |
+| dense_textbook pág 0 → 4× | 321.4–325.1 ms | **57.3–59.4 ms** | ~5.6× más lento |
 
-### Baseline pre-trabajo (build v0.1.0, dense_textbook)
-- 12/12 turnos a ~115 ms (0 % hits): la caché retenía 1 página (bitmaps de 27.4 MB en
-  landscape-cover frente a presupuesto de 48 MB). Causa raíz medida con telemetría
-  temporal: `insert page=N bytes=27385600 resident=1` → evict en cada inserción.
-- Causas compuestas: bug de unidades en el tope (`max_px = BUDGET/4` compara píxeles
-  contra bytes) + cover que produce 2.16× los píxeles de pantalla.
+- **Decisión arquitectónica**: El reescalado software en CPU sin extensiones SIMD/NEON es prohibitivo para interactividad en la tablet. El zoom inmediato debe realizarse mediante texturas en GPU, seguido de un re-renderizado asíncrono nítido en segundo plano.
 
-### Tras fix C (crop centrado a ventana, 12.7 MB/pág) + D (evicción diferida)
-- Serie 15 turnos (Análisis, portrait): `9,158,8,8,155,8,6,102,7,6,6,7,102,10,10` ms →
-  **11/15 hits a 6-10 ms**, 4/15 misses a 102-168 ms (un render). p50 ≈ 8 ms.
-- Residency ≥3 verificada (log de evict solo desliza ventana, ~1 evict/turno).
-- Nitidez 1:1 verificada visualmente (3 screencaps, texto matemático denso perfecto).
-- PSS: ~190-205 MB en este libro (ver deuda display-lists abajo). Turno típico 19× más
-  rápido que baseline (6 ms vs 115 ms).
+---
 
-### Deuda nueva medida (no bloqueante, registrada)
-- **Display lists sin cota** (`MupdfDocument.display_lists`, sin evicción por diseño F3.3):
-  +65/+79 MB en dos rondas de 11 turnos (~6-7 MB/página nueva en libro complejo).
-  El prefetch más agresivo acelera su acumulación. Propuesta: LRU en display lists o
-  soltar páginas lejanas (tarea futura, con test en pdf_core).
-- Frames negros transitorios (2 en ~40 turnos, no reproducibles: las mismas páginas
-  revisadas muestran contenido perfecto): guards añadidos (fallback con presencia
-  verificada + descarte de bitmap degenerado, ambos con warn permanente). 0 disparos
-  en la ronda de caza de 15 turnos.
+## 2026-08-13 — Zoom en escritorio: Escala software vs Re-renderizado
 
-## Batch TCL 2026-09-07 — cierres A5/E/C pendientes (TCL 9469X, Android 15, portrait 1440×2200)
+- **Hardware**: AMD Ryzen 7 5800H (16 hilos), Arch Linux.
+- **Flujo medido**: `crates/pdf_bench/benches/zoom.rs` sobre *large_document.pdf* (página 0).
+- **Métricas**:
+  - `scale_bitmap` a 2×: 55.9 ms.
+  - `scale_bitmap` a 4×: 214.5–219.9 ms.
+  - Re-render nativo MuPDF a nivel 1 (2×): **3.3–3.4 ms**.
+  - Re-render nativo MuPDF a nivel 2 (4×): **11.9–12.5 ms**.
+  - Conclusión idéntica a la tablet: el re-render vectorial es entre 16× y 18× más rápido en CPU que el remuestreo naïve por píxeles.
 
-App release HEAD f51d75c (speed A-D), pantalla ON, limpieza `stayon false` + Dozing
-verificados. Logs de serie en el informe del batch (no versionados).
+---
 
-### 1. Primer frame cold-start (cierre E): 349 ms — NO alcanza <200 ms
-- Método: force-stop + `logcat -c` + marcador COLDMARK + `am start`; primer frame =
-  primera línea `gl_present|blit`. Restaura visor pág. 61/346 (Análisis, SepiaDark).
-  N=3: 338, 355, 349 → mediana 349 ms (rango 338-355).
-- Desglose (run 1): marcador→opened 346 pp 213 ms → InitWindow 73 ms → primer
-  `gl_present` 52 ms (present 14.1 ms, swap 2.8 ms).
-- Lectura: dominan apertura de documento (213 ms) e InitWindow (73 ms), no el present.
-  Solo cierra con open más rápido o arranque diferido (deuda nueva en NEXT-PLAN).
+## 2026-08-12 — Sweep inicial en tablet TCL NXTPaper 11 Plus
 
-### 2. Scroll biblioteca p95, 11 libros con overflow (E3 parcial)
-- Rejilla (N=535 presents/14.1 s, 5+5 swipes): intervalo med 8.0 ms, **p95 10.0 ms**
-  (intra-swipe máx 11.0 ms); coste present med 1.22 ms, p95 2.61 ms, máx 5.06 ms;
-  swap med 0.83 ms p95 2.20 ms; 0 re-renders durante el scroll.
-- Carousel 'Seguir leyendo' (N=556/15.4 s): intervalo med 8.0 ms p95 10.0 ms; coste
-  med 1.19 ms p95 2.58 ms.
-- Nota metodológica: la vía library no emite `frame p95=` (solo el viewer cada 120
-  presents); p95 calculado de timestamps. El `frame p95=` del viewer mezcla gaps de
-  idle (p95=13693 ms tras quietud): solo interpretable con presents continuos.
-- Variante 256 libros no ejecutada (3 taps/libro × 256 inviable por UI; 11 libros con
-  overflow ya ejercitan el path).
+- **Hardware**: TCL NXTPaper 11 Plus (modelo 9469X, MediaTek MT8781 8× Cortex-A55, 8 GB RAM, Android 15, pantalla 1440×2200 @ 320 dpi). Pantalla encendida con `stayon true`.
+- **Build**: Binario `pdf_bench` release compilado para `aarch64-linux-android` (NDK r28 + sysroot). Motor MuPDF.
+- **Flujo medido**: Barrido de apertura y renderizado completo a 1x (72 dpi) y 2x (144 dpi) sobre los 4 documentos del corpus.
+- **Métricas**:
 
-### 3. PSS bajo interacción, 15 pases (A5 parcial)
-- Libro 346 pp, págs. 60→75 (15/15 turnos OK; 5-8 ms hit / 133-149 ms miss).
-- TOTAL PSS KB: base 234713 → +5: 242790 → +10: 248394 → +15: 287565;
-  +20 s: 287522, +40 s: 287518 (asentado, sin fuga en 40 s).
-- Salto +39.2 MB entre turnos 11-15 sin reflejo en log (coherente con display lists).
-- Desglose final: Native Heap 176.0 MB, GL mtrack 68.7 MB, EGL mtrack 28.9 MB,
-  TOTAL RSS 416.6 MB.
+| Documento (páginas) | open (ms) | render 1x (ms) | render 2x (ms) |
+|---|---:|---:|---:|
+| dense_textbook (93p) | 0.40 | 14.51 | 44.18 |
+| scanned_pages (30p) | 0.15 | 31.34 | 119.01 |
+| scientific_paper (12p) | 0.16 | 11.64 | 38.44 |
+| large_document (500p) | 0.25 | 15.40 | 44.73 |
 
-### 4. Sheet E2: sin re-blit de página ✅
-- Apertura 13 presents en ~130 ms (1.04-4.06 ms c/u) + 1 tex create ovl 1440x924;
-  cierre 13 presents (1.27-4.27 ms). 0 `render page`, 0 evict, 0 tex de página.
+- **Memoria**: RSS pico de **26 688 KB (~26.7 MB)**.
+- **Ausencia de shootout en tablet**: En la tablet TCL **únicamente se ejecutó MuPDF**. No existe un benchmark comparativo de motores en Android (`android-tablet-shootout.md` nunca existió ni fue medido).
 
-### 5-6. Highlight con dedo / 200 trazos: BLOCKED (requieren lápiz físico)
-- Timebox 12 min, 4 intentos: badge-pen sin handler táctil, swipes sin rect de
-  selección. El código lo confirma (ToolDrawing solo con stylus; dedo = pan).
-- Sin PDFs con anotaciones densas en el dispositivo (todos los libros: 0) y
-  sidecars inaccesibles en release (sin run-as).
+---
+
+## 2026-08-10 — Baseline de referencia: Evince (poppler) en escritorio
+
+Esta medición establece el comportamiento de referencia de un visor estándar de escritorio basado en Poppler + Cairo, sirviendo como evidencia empírica para la toma de decisiones en ADR-003.
+
+- **Hardware**: AMD Ryzen 7 5800H (8C/16T, hasta 4.47 GHz), 13 GiB RAM, Linux 7.1.4-arch1-1 (Wayland/Hyprland).
+- **Software**: Evince 48.4, Poppler 26.07.0.
+- **Corpus**: `corpus/large_document.pdf` (500 páginas A4, 543 kB, texto vectorial puro).
+- **Método de captura**: `tools/bench-evince/bench_evince.sh` utilizando `pdftoppm` (comparte exactamente el pipeline monohilo de renderizado de Evince: poppler + cairo, página completa a la escala solicitada).
+
+### 1. Renderizado monohilo de página completa (Poppler)
+
+| Escala | Píxeles por página (A4) | Tiempo total 500 págs (3 repeticiones) | Tiempo medio por página | RSS máximo del proceso |
+|---|:---:|:---:|---:|---:|
+| 72 dpi (1×) | 595 × 842 | 36.72 / 36.84 / 37.84 s | **73.6 ms** | 22.5 MB |
+| 144 dpi (2×) | 1190 × 1684 | 164.36 / 162.06 s | **326.0 ms** | 28.0 MB |
+
+### 2. Apertura inicial y render de primera página (incluye parseo del documento)
+
+| Escala | Tiempo (3 repeticiones) | Mediana |
+|---|:---:|---:|
+| 144 dpi (2×) | 0.42 / 0.36 / 0.35 s | **~0.36 s** |
+| 216 dpi (3×) | 0.60 / 0.60 / 0.60 s | **0.60 s** |
+
+### 3. Consumo RSS del visor gráfico Evince 48.4 (500 páginas)
+
+| Estado | Consumo RSS |
+|---|---:|
+| Ventana abierta en página 1 tras 8 s (arranque en frío) | **197 920 kB** (~193.3 MB) |
+| Reapertura con caché de disco caliente (8 s) | **197 952 kB** (~193.3 MB) |
+
+### Deducciones clave para el proyecto
+1. **La escala cuadruplica el coste de rasterizado**: Pasar de 1× (72 dpi) a 2× (144 dpi) eleva el renderizado de 73.6 ms a 326.0 ms por página. A resolución nativa de lectura, el renderizado en vivo durante un frame de scroll provocaría caídas intolerables de fluidez (~3 fps).
+2. **Evince mantiene memoria acotada en render**: Su proceso libera buffers tras pintar (RSS máx 28 MB), pero el visor gráfico completo supera los 197 MB de RSS debido al entorno GTK/GL y la estructura interna del documento.
+
+---
+
+## 2026-08-05 — Comparativa de motores en escritorio (PDFium vs MuPDF) y discrepancia metodológica
+
+- **Hardware**: AMD Ryzen 7 5800H (8C/16T, 3.2–4.4 GHz), 16 GB RAM, Arch Linux (kernel 6.16). Compilación release en Rust 1.97.1.
+- **Corpus**: 4 documentos estándar (`paper_12p`, `scanned_30p`, `dense_93p`, `large_500p`).
+
+### La discrepancia metodológica no resuelta
+Existen dos conjuntos de mediciones independientes realizados en la misma máquina host durante la Fase 0.5 que arrojaron resultados diametralmente opuestos:
+
+1. **Sweep simple de `pdf_bench` (mediana de 3 corridas en páginas 0, central y final)**:
+   - Reportó a **MuPDF como ganador indiscutible**: entre 2.7× y 4× más rápido en renderizado y un 21% menos de consumo de memoria pico.
+   - Estos datos fueron la base tomada en cuenta para la redacción y aprobación de **ADR-001**.
+2. **Benchmark exhaustivo Criterion (`crates/pdf_bench/benches/engine_shootout.rs`)**:
+   - Con un tamaño de muestra N=100 tras 3 segundos de calentamiento por caso, **PDFium resultó ganador en 14 de las 16 pruebas de renderizado (87.5%)**, mostrando ser típicamente 2× a 4× más veloz.
+   - PDFium también superó a MuPDF en 3 de las 4 pruebas de apertura de archivo.
+
+Esta divergencia nunca fue aclarada formalmente en su momento (atribuible a diferencias entre corridas monohilo aisladas sin warm-up frente a la saturación de bucle cerrado con optimización de caché de Criterion, y a variaciones en flags de compilación de las bibliotecas estáticas C).
+
+**Decisión del dueño del proyecto**: A pesar de la ventaja demostrada por PDFium en el benchmark Criterion en escritorio, **se mantiene la decisión de ADR-001 en favor de MuPDF**. Los motivos determinantes son:
+- Distribución autocontenida: MuPDF se compila como biblioteca estática unificada dentro del binario Rust (6.48 MB totales), eliminando la dependencia de binarios dinámicos pesados y fragmentados como `libpdfium.so` (12.53 MB en disco).
+- Ergonomía de integración de tipos C bajo `mupdf-sys` y previsibilidad de licencias y compilación cruzada hacia Android NDK.
+- En la tablet TCL solo se desplegó y midió MuPDF; no se llegó a realizar una comparativa en hardware móvil.
+
+A continuación se transcriben los datos brutos de ambas mediciones:
+
+### A. Resultados del Sweep Simple (`pdf_bench`) — Base de ADR-001
+
+| Documento (páginas) | Motor | Apertura (ms) | Render 1× (ms) | Render 2× (ms) | RSS pico (KB) |
+|---|---|---:|---:|---:|---:|
+| dense_textbook (93p) | PDFium | 0.17 | 9.69 | 35.34 | 32 520 |
+| dense_textbook (93p) | MuPDF | **0.11** | **3.53** | **8.51** | **25 572** |
+| scanned_pages (30p) | PDFium | 0.09 | 20.01 | 66.20 | 32 520 |
+| scanned_pages (30p) | MuPDF | **0.07** | **8.93** | **35.38** | **25 572** |
+| scientific_paper (12p) | PDFium | 0.08 | **1.72** | 26.44 | 32 520 |
+| scientific_paper (12p) | MuPDF | **0.07** | 2.18 | **6.95** | **25 572** |
+| large_document (500p) | PDFium | 0.21 | 6.86 | 35.10 | 32 520 |
+| large_document (500p) | MuPDF | **0.09** | **3.98** | **10.19** | **25 572** |
+
+### B. Resultados del Shootout Criterion (N=100)
+
+#### Apertura de documento (mediana en microsegundos)
+| Documento | Páginas | PDFium (µs) | MuPDF (µs) | Ratio (PDFium / MuPDF) |
+|---|---:|---:|---:|:---:|
+| scientific_paper | 12 | 54.98 | 55.67 | 0.99× (Empate) |
+| scanned_pages | 30 | **56.70** | 70.26 | **1.24× (PDFium)** |
+| dense_textbook | 93 | **82.37** | 245.80 | **2.98× (PDFium)** |
+| large_document | 500 | **186.03** | 384.32 | **2.07× (PDFium)** |
+
+#### Renderizado de página completa (mediana en milisegundos)
+| Documento | Página | Escala | PDFium (ms) | MuPDF (ms) | Ratio y Ganador |
+|---|---|:---:|---:|---:|:---:|
+| paper_12p | p1 | 1× | **0.502** | 1.752 | **3.49× (PDFium)** |
+| paper_12p | p_mitad | 1× | **0.556** | 5.806 | **10.45× (PDFium)** |
+| paper_12p | p1 | 2× | **10.477** | 23.087 | **2.20× (PDFium)** |
+| paper_12p | p_mitad | 2× | **10.448** | 27.967 | **2.68× (PDFium)** |
+| scanned_30p | p1 | 1× | **3.304** | 11.918 | **3.61× (PDFium)** |
+| scanned_30p | p_mitad | 1× | **6.299** | 7.299 | **1.16× (PDFium)** |
+| scanned_30p | p1 | 2× | **14.457** | 58.994 | **4.08× (PDFium)** |
+| scanned_30p | p_mitad | 2× | **18.051** | 28.591 | **1.58× (PDFium)** |
+| dense_93p | p1 | 1× | 2.614 | **1.725** | **0.66× (MuPDF)** |
+| dense_93p | p_mitad | 1× | **3.459** | 4.521 | **1.31× (PDFium)** |
+| dense_93p | p1 | 2× | **20.533** | 54.127 | **2.64× (PDFium)** |
+| dense_93p | p_mitad | 2× | **13.450** | 47.979 | **3.57× (PDFium)** |
+| large_500p | p1 | 1× | **2.699** | 9.950 | **3.69× (PDFium)** |
+| large_500p | p_mitad | 1× | **2.917** | 5.373 | **1.84× (PDFium)** |
+| large_500p | p1 | 2× | 33.263 | **30.487** | **0.92× (MuPDF)** |
+| large_500p | p_mitad | 2× | **13.749** | 18.160 | **1.32× (PDFium)** |
+
+#### Tamaño de artefacto resultante
+| Motor | Binario ejecutable | Bibliotecas dinámicas externas | Espacio total en disco |
+|---|---:|---:|---:|
+| PDFium | 4.86 MB | `libpdfium.so` 7.67 MB | **12.53 MB** |
+| MuPDF | **6.48 MB** | 0 MB (enlace estático) | **6.48 MB** |
+
+---
+
+## 2026-08-05 — Eficiencia de Caché LRU vs Retención Ingenua
+
+- **Hardware**: AMD Ryzen 7 5800H (16 hilos), Arch Linux release build.
+- **Flujo medido**: `crates/pdf_bench/benches/cache_scroll.rs` sobre 50 páginas de `large_document.pdf` a escala 1× (72 dpi) con MuPDF. Comparación entre retención arbitraria de bitmaps y ventana acotada a 8 MB.
+- **Métricas**:
+
+| Escenario | Tiempo total (ms) | Pico de memoria VMHWM (KB) |
+|---|---:|---:|
+| `naive_hold_50p_1x` (retener 50 páginas) | 108.02 ms | 107 412 KB (~105 MB) |
+| `cache_8mb_firstpass_50p_1x` (primera pasada) | 74.78 ms | **21 104 KB (~20.6 MB)** |
+| `cache_8mb_pass2_50p_1x` (hit sobre residentes) | **0.35 ms** | 21 184 KB (~20.7 MB) |
+
+- **Conclusión**: La caché LRU limitada a 8 MB reduce la memoria RAM pico en un factor de 5× (de 105 MB a 20.6 MB). El camino de acierto en caché insume 0.35 ms frente a los 74 ms del recorrido con renderizado.

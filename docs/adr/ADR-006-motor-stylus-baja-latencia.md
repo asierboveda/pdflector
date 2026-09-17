@@ -1,6 +1,8 @@
 # ADR-006 — Motor de stylus de baja latencia: EGL/GLES2 + predicción Hermite
 
-> **Estado:** Aceptado (Fase 0 de PLAN-PARIDAD-STYLUS-NATIVO completada, 2026-08-28).
+> **Estado:** Aceptado (2026-08-28; parcialmente superseded por ADR-007 en presentación; resto vigente)
+> **Fecha:** 2026-08-28
+> **Supersedido parcialmente por:** ADR-007 (2026-08-30). Su mecanismo de presentación (front-buffer auto-refresh / overlay dedicado) quedó superseded por ADR-007 (pipeline wet/dry en FBO); el resto del ADR (elección EGL/GLES2, motor de stylus, predicción Hermite) sigue plenamente vigente.
 > **Nota:** El plan referenciaba "ADR-005" como nombre de entregable; ADR-005 ya
 > existía (UI Android nativa), por lo que esta decisión ocupa el ADR-006.
 

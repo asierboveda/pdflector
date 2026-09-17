@@ -38,7 +38,7 @@
 //! ## Rediseño de UX: pantalla completa, sheet, rejilla (2026-08-XX)
 //!
 //! Cambios ESTRUCTURALES del visor y la biblioteca (el estilo lo hará otro
-//! agente; aquí solo la estructura funcional; ver `docs/ux-rediseño-estructura.md`):
+//! agente; aquí solo la estructura funcional; ver `docs/plan/NEXT-PLAN.md`):
 //!
 //! 1. **Visor a pantalla completa**: la barra superior fija (Open/✏️/●/↶/±10/
 //!    Dark) se ELIMINÓ; el documento ocupa TODA la pantalla. Los ajustes
@@ -183,9 +183,9 @@
 //! La biblioteca pasó de lista de filas a REJILLA de 3 columnas (portada de
 //! la página 1 + título; portadas perezosas y caché en `thumbs.rs` — ver
 //! "Rediseño de UX" arriba). Con la rejilla se ELIMINÓ la tira de letras
-//! A-Z+'#' que filtraba por inicial (decisión documentada en
-//! `docs/ux-rediseño-estructura.md`): sus 27 celdas estaban diseñadas para
-//! la lista de filas y no encajan en la rejilla; la navegación es por scroll.
+//! A-Z+'#' que filtraba por inicial (decisión documentada): sus 27 celdas
+//! estaban diseñadas para la lista de filas y no encajan en la rejilla; la
+//! navegación es por scroll.
 //! Se quitaron `normalize_letter`, `lib_strip_*`, `library_filter(_ed)` y
 //! `set_library_filter`.
 //!

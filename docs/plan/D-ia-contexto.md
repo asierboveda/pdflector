@@ -1,36 +1,53 @@
-# Fase D — IA con contexto completo + selección (5-7 días, must)
+# Fase D — IA con contexto global del documento y selección
 
-> Tu requisito: "yo señalo una parte que no entiendo, debe explicar con contexto de todo el PDF". Actual: `chunk_pages` corta el PDF en trozos de `max_chars` sin índice, y `explain_image` manda solo el crop PNG sin texto.
+Asistente de lectura local con recuperación de contexto global del documento (RAG BM25) para explicar selecciones de texto, ecuaciones o figuras citando páginas reales.
 
 ## Auditoría
 
-- `ai.rs`: `chunk_pages` (word-packing, prefijo `[págs N-M]`) correcto pero sin retrieval: manda 1 chunk al LLM (el de la selección o el primero). No hay RAG.
-- `ai.rs`: `GroqClient::chat` (texto, 70B) ok, `GeminiClient::explain_image` (visión, flash) ok, pero `pdf_android/reader.rs` solo manda `sel_page_rect` + crop PNG (base64) sin texto circundante. El LLM alucina sin contexto.
-- `pdf_core` ya tiene `Document::text()` por página (stext), base para índice TF-IDF/BM25 puro Rust (sin deps).
-- Competencia: ChatPDF y `koreader/koreader` (plugin) usan embeddings locales + rerank; Adobe Acrobat AI usa `page_range` + vision.
+- **Componentes existentes**:
+  - `crates/pdf_core/src/ai.rs`:
+    - `chunk_pages` (:155): empaquetado de texto de páginas en bloques (`[págs N-M]`) con límite configurable de caracteres.
+    - Clientes API: `OllamaClient` (inferencia local), `GroqClient` (Llama 3 70B ultra-rápido) y `GeminiClient` (Gemini Flash multimodal con soporte de imagen).
+  - `crates/pdf_android/src/reader/`:
+    - `toast_ia.rs` (:99-101): `explain_image` SÍ adjunta el texto extraído de la página seleccionada como contexto adicional al prompt multimodal junto a la captura PNG en base64.
+    - `crates/pdf_android/src/draw/ai_panel.rs`: panel deslizante en GPU para visualización de respuestas y estado de consulta.
+- **Limitaciones actuales (qué falta)**:
+  - No existe índice de recuperación (RAG): el visor envía únicamente la página actual o el primer chunk. Si la respuesta requiere conceptos introducidos en capítulos previos, el modelo carece de contexto global.
+  - Falta un índice BM25 puro en Rust en `pdf_core` que indexe el texto de todas las páginas al abrir el documento.
+  - Falta optimización de prompt con instrucción estricta de citar páginas reales (`[págs N]`).
+  - Pendiente estudio empírico de ventana de contexto en la tablet y script de evaluación `tools/ai-bench.sh`.
 
 ## Objetivo
 
-Selección (rect o lápiz) → explicación que cita `págs N-M` reales del documento, con contexto global, sin inventar.
+Al seleccionar un fragmento (rectángulo o trazo), generar una explicación precisa que utilice el contexto de todo el documento y cite explícitamente las páginas fuente (`[págs N-M]`), sin alucinar información ausente.
 
 ## Tareas
 
-- [ ] D1. **Índice BM25 local** (puro Rust, sin deps): al abrir PDF, `build_index(doc, pages)` → `Vec<(page_idx, Vec<String>)>` + posting list. Query = texto de la selección (extraído de `PageText` spans intersectados). Top-k=5 páginas más relevantes (BM25) + 2 páginas vecinas de la selección (localidad).
-- [ ] D2. **Prompt con contexto**: `system: "Eres tutor del PDF, cita [págs N] siempre"` + `user: "Contexto global (k páginas BM25, truncado a 12k chars):\n[ págs 3-5 ]...\n\nSelección que no entiendo (pág X, crop PNG base64):\n[ págs X ] texto...\n\nExplica la selección usando el contexto global, cita páginas."` → `GeminiClient::explain_image` (visión) o `GroqClient::chat` (texto puro). Si selección vacía, manda solo contexto global.
-- [ ] D3. **Estudio de contexto**: medir ventana óptima: ¿12k chars bastan para scientific_paper 12p? Probar 8k/12k/20k + k=3/5/8 en TCL con 5 PDFs del corpus, medir alucinación (cita inventada) y latencia Groq/Gemini (reqwest rustls).
-- [ ] D4. **Harness `adb`**: `tools/ai-bench.sh` (por crear en D4) que abre `corpus/scientific_paper.pdf`, selecciona pág 5, pide explicación, valida que la respuesta contiene `[págs` y no `404`.
+- [ ] D1. **Índice BM25 local (puro Rust, sin dependencias externas)**:
+  - Indexar las páginas del documento a partir de `PageText`.
+  - Ante una selección, consultar el índice con los términos de la selección y recuperar las $k=5$ páginas más relevantes más las 2 páginas contiguas para preservar localidad.
+- [ ] D2. **Prompt con contexto global estructurado**:
+  - Formatear la consulta combinando el contexto recuperado (acotado a ventana de tokens segura) y el fragmento específico seleccionado.
+  - Imponer directiva de tutoría con citas exactas de páginas.
+- [ ] D3. **Estudio empírico de ventana de contexto en hardware real**:
+  - Probar tamaños de ventana (8k, 12k y 20k caracteres) con PDFs del corpus en la tablet TCL 9469X.
+  - Medir latencia de respuesta y tasa de precisión de citas.
+- [ ] D4. **Script de pruebas `tools/ai-bench.sh`**:
+  - Automatizar prueba con documento de prueba para verificar que la respuesta contiene citas válidas y no códigos de error.
 
 ## Criterio de cierre
 
-- [ ] 5 preguntas sobre `large_document.pdf` (500p) → 4/5 respuestas citan `págs` correctas y no inventan (revisión manual)
-- [ ] Latencia p50 <15s en TCL vía Groq/Gemini (reqwest timeout 300s ya existe)
+- [ ] 5 consultas sobre documento largo (> 300 páginas): al menos 4 de 5 respuestas citan correctamente páginas del documento sin inventar datos.
+- [ ] Latencia de respuesta en red p50 < 15 s vía Groq o Gemini Flash.
+- [ ] El hilo de interfaz permanece a 60 fps durante la consulta asíncrona sin jank en el visor.
 
 ## Cómo modificar
 
-- Si quieres embeddings locales (no BM25): añade `fastembed` crate (pero aumenta APK). BM25 ya es 90% del beneficio sin deps.
-- Si quieres RAG por chunks y no por página: cambia `chunk_pages` a `chunk_by_tokens` (usa `max_chars` como ahora).
+- Si se prefiere RAG basado en embeddings vectoriales en lugar de BM25: evaluar coste de tamaño de APK de modelos ONNX embebidos vs. BM25 sin dependencias.
+- Para cambiar de proveedor: configurar claves y endpoints en `pdf_core::ai`.
 
 ## Referencias
 
-- `crates/pdf_core/src/ai.rs`, `engine/mupdf.rs: text()`, `pdf_android/src/reader.rs: sel_page_rect`
-- Competencia: `ByteApps/prime-pdf-viewer` no tiene IA — tu diferenciador.
+- `crates/pdf_core/src/ai.rs`
+- `crates/pdf_android/src/reader/toast_ia.rs`
+- `crates/pdf_android/src/draw/ai_panel.rs`

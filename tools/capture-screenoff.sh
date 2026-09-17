@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Captura EN VIVO del bug "pantalla que se apaga/parpadea al escribir"
-# (docs/plan/BUG-pantalla-apagada.md — Paso 0).
+# Captura EN VIVO del bug "pantalla que se apaga/parpadea al escribir".
 #
 # Uso:
 #   1) conecta la tablet por USB y lanza este script

@@ -1,32 +1,39 @@
-# Fase E — Biblioteca fluida (2-3 días, secundaria)
+# Fase E — Biblioteca fluida en cuadrícula
 
-> Dijiste: "no importa que sea hiper óptima, importa más que sea óptimo el lector". Auditado: library es la más pesada (rejilla 3×3, portadas lazy, continue reading, chips).
+Catálogo local de documentos, generación asíncrona de portadas en segundo plano y transiciones inmediatas hacia el visor.
 
 ## Auditoría
 
-- `pdf_android/src/reader.rs` 4.3k líneas, `draw.rs` 3.7k: library tiene `lib_scroll` en píxeles, `lib_band` cache (banda scrolleable), `thumbs.rs` LRU 36 entradas/9MiB/200px, `ThumbCache`, `lib_cont_*` carousel, `lib_org_*` sort/filter.
-- Ya tiene `compose_library_snapshot` + `blit_lib_fade` para transición lista→visor (bien).
-- Problema: portadas se generan con `openFileDescriptor + /proc/self/fd` en `tick` (≤3/tick) pero bloquean `reader` si hay 256 PDFs (MediaStore scan).
-- No crítico para tu objetivo actual.
+- Arquitectura modular en `crates/pdf_android/`:
+  - `reader/library_state.rs` y `reader/mod.rs`: gestión del catálogo, ordenación, filtrado y posición de scroll en píxeles. El carrusel histórico "Continue Reading" fue eliminado (commit `3b726a1`) en favor de una cuadrícula uniforme y directa.
+  - `draw/library.rs`: composición en GPU de la cuadrícula de portadas con recorte y badges de estado.
+  - `thumbs.rs` (:197-267): `ThumbWorker` como actor en segundo plano con hilo propio y canal MPSC no bloqueante. Las portadas se generan de forma progresiva sin bloquear el hilo principal.
+  - Transición fluida lista→visor: `compose_library_snapshot` y `blit_lib_fade` permiten abrir el documento sin saltos visuales.
 
 ## Objetivo
 
-Scroll rejilla sin jank, portadas sin bloquear apertura de PDF.
+Scroll en cuadrícula sin caídas de frames y carga diferida de portadas sin interferir con la apertura o lectura de PDFs.
 
 ## Tareas
-- [x] E1. **Portadas sin bloquear**: `ThumbWorker` actor en segundo plano (`crates/pdf_android/src/thumbs.rs`) con instancia propia de `MupdfEngine`, canal MPSC (`Sender`/`Receiver`) y preemption de cola. El hilo UI solo hace `try_recv()` no bloqueante en `tick()`. Verificado en hardware TCL: blits fluidos de ~5.5–6.3 ms mientras las portadas cargan progresivamente en segundo plano sin congelar la UI.
-- [x] E2. **Menu/sheet**: `sheet_progress` 0→0.5 con `compose_frame` cacheado ya es 1-2ms (bien). Solo pulir: asegura `sheet_anim` no re-blitea página (ya hace `blit_composed`). Verificado 2026-09-07 en TCL: apertura/cierre 13 presents (~130 ms, 1-4 ms c/u), 0 `render page`, 0 evict.
-- [ ] E3. **Medir**: `adb-bench.sh` library 256 PDFs, p95 scroll <16ms (2026-09-07: p95 10 ms con 11 libros, ver benchmark; variante 256 pendiente por coste de alta).
-- [x] E4. **Eliminar cualquier borrado automático**: eliminada la función `enforce_library_limit`, la constante `LIBRARY_MAX` (límite histórico de 50 libros) y los comandos de borrado de ficheros `fs::remove_file` al añadir libros. La biblioteca nunca borra un PDF automáticamente; solo la acción explícita del usuario desde el menú puede borrar un libro.
+
+- [x] E1. **Portadas desacopladas de la UI**: `ThumbWorker` ejecutado en hilo secundario con instancia dedicada de `MupdfEngine`. El hilo principal solo consulta el canal con `try_recv()` no bloqueante en cada `tick()`. Medido en hardware TCL: blits de 5.56–6.36 ms (p95 6.1 ms) con 0 ms de I/O síncrono en la interfaz.
+- [x] E2. **Menú contextual y hojas sin re-render**: Animación de la hoja de menú con frame cacheado. Verificado el 2026-09-07 en TCL: apertura y cierre en 13 presents sin re-renderizar la página PDF ni desalojar cachés.
+- [ ] E3. **Escala a catálogo de 256 libros**: Medir rendimiento de scroll en cuadrícula con 256 documentos. Medición parcial el 2026-09-07: p95 de 10.0 ms con 11 libros. La variante de 256 libros permanece pendiente.
+- [x] E4. **Eliminación de borrado automático de libros**: Eliminación de `enforce_library_limit`, de la constante `LIBRARY_MAX` (antiguo tope de 50 libros) y de llamadas a `fs::remove_file`. La biblioteca nunca elimina ficheros del usuario automáticamente.
 
 ## Criterio de cierre
 
-- [ ] Abrir biblioteca 256 PDFs → primer frame <200ms, scroll p95 <16ms en TCL (2026-09-07: scroll p95 10 ms ✅ con 11 libros; primer frame viewer cold-start 349 ms ❌; variante 256 pendiente).
+- [ ] Cuadrícula con 256 libros: scroll continuo con p95 < 16.6 ms en la tablet TCL (medido p95 10.0 ms con 11 libros; variante 256 libros `SIN MEDIR`).
+- [ ] Primer frame interactivo del visor en cold-start < 200 ms (mediana actual medida: 349 ms; requiere optimización de apertura).
 
 ## Cómo modificar
 
-- Si quieres simplificar a lista (no rejilla): borra `grid_*` y usa `picker_row_h` (ahorro ~2k líneas).
+- Para alternar entre cuadrícula y lista compacta, ajustar el cálculo de geometría en `crates/pdf_android/src/draw/library.rs`.
+- El tamaño y formato de miniaturas se configura en `crates/pdf_android/src/thumbs.rs`.
 
 ## Referencias
 
-- `crates/pdf_android/src/thumbs.rs`, `reader.rs: lib_*`, `draw.rs: render_library_grid`
+- `crates/pdf_android/src/thumbs.rs`
+- `crates/pdf_android/src/reader/library_state.rs`
+- `crates/pdf_android/src/draw/library.rs`
+- `docs/benchmark-results.md`

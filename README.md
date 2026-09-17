@@ -4,32 +4,49 @@ Fast, lightweight PDF reader for Android tablets with a stylus. Free, no ads,
 no telemetry. Personal learning project (first real Rust project).
 
 Final platform: native Android (`crates/pdf_android`, ADR-005).
-Desktop `egui` app is only a prototype. Active roadmap: phases A–E.
+The desktop `egui` app (`crates/pdf_app`) is a core testbed and prototype,
+not the final product. Active roadmap: phases A–F (`docs/plan/NEXT-PLAN.md`).
+
+## Features
+
+- **Reading & Performance**: Fluid page flipping, pinch-to-zoom, and continuous panning with texture caching. Sustained 60 fps minimum (frame time < 16.6 ms) and target 120 fps (frame time < 8.33 ms) on the TCL NXTPaper 11 Plus 120 Hz display, with low memory footprint (PSS < 150 MB).
+- **Stylus Annotations**:
+  - Text highlighter with automatic text detection aligned to reading order.
+  - Low-latency vector ink drawing with motion prediction (Kalman filter and spring-mass model).
+  - Vector eraser removing entire strokes.
+  - Background asynchronous persistence to SQLite.
+- **Discover / arXiv**: Integrated paper search across arXiv, metadata inspection, background PDF download, and immediate handoff to the reader.
+- **Curated Library**: Folder selection via Android SAF / MediaStore; retains files without automatic deletion.
+- **In-Document Search**: Interactive text search with real Android native IME keyboard support.
+- **Themes**: 4 color schemes (Default Light, Sepia Light, Default Dark, Sepia Dark).
+- **AI Assistant**: Built-in panel powered by Groq (`llama-3.3-70b-versatile`) for text explanations and Google Gemini (`gemini-flash-latest`) for equation and figure crop analysis (requires user API keys).
+- **Export**: Notes export to Markdown and PDF with embedded vector annotations (available in desktop testbed).
 
 ## Docs
 
 - [`docs/PROYECTO.md`](docs/PROYECTO.md) — vision and product scope (Spanish)
-- [`docs/plan/NEXT-PLAN.md`](docs/plan/NEXT-PLAN.md) — active roadmap, phases A–E (Spanish)
-- [`docs/PLAN.md`](docs/PLAN.md) — historic index of phases 1–6, reference only
-- [`AGENTS.md`](AGENTS.md) — rules for AI agents working on this repo
+- [`docs/plan/NEXT-PLAN.md`](docs/plan/NEXT-PLAN.md) — active roadmap, phases A–F (Spanish)
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution guidelines and local verification
+- [`AGENTS.md`](AGENTS.md) — operational rules for AI agents working on this repo
 
 ## Layout
 
 ```
-crates/pdf_core/   core library (no UI): engine, render, cache, annotations
-crates/pdf_android/   final native Android app (ADR-005)
-crates/pdf_app/    egui desktop prototype (not final)
-crates/pdf_bench/  benchmark harness
-corpus/            test PDFs (gitignored; tools/generate_corpus.py)
-docs/              project docs + ADRs (active: NEXT-PLAN A–E; rest historic)
+crates/pdf_core/     core library (no UI): engine, render, cache, annotations, arxiv, ai, export
+crates/pdf_android/  final native Android app (ADR-005, NativeActivity + EGL/GLES)
+crates/pdf_spike/    latency and rendering presentation spike for Android stylus
+crates/pdf_app/      egui desktop testbed and prototype (not product)
+crates/pdf_bench/    benchmark harness and performance sweeps
+corpus/              test PDFs (gitignored; tools/generate_corpus.py)
+docs/                project documentation and ADRs (active roadmap: NEXT-PLAN A–F)
 ```
 
 ## Setup
 
 ```bash
-cargo run -p pdf_app           # launch the desktop app
+cargo run -p pdf_app               # launch the desktop testbed
 cargo run -p pdf_app -- file.pdf   # open a PDF directly
-python3 tools/generate_corpus.py  # generate test PDFs into corpus/ (gitignored); needs pillow + reportlab
+python3 tools/generate_corpus.py   # generate test PDFs into corpus/ (needs pillow + reportlab)
 cargo test -p pdf_core
 ```
 
@@ -43,12 +60,17 @@ fetch script is no longer used.
 export ANDROID_NDK_HOME=$HOME/Android/Sdk/ndk/android-ndk-r28
 export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-cargo check -p pdf_android --target aarch64-linux-android   # verificación rápida
-cargo apk build -p pdf_android --release --target aarch64-linux-android  # APK
+
+# Create placeholder API keys if not present (required by crates/pdf_android/src/lib.rs):
+echo "placeholder" > crates/pdf_android/groq_key.txt
+echo "placeholder" > crates/pdf_android/google_key.txt
+
+cargo check -p pdf_android --target aarch64-linux-android                  # quick check
+cargo apk build -p pdf_android --release --target aarch64-linux-android # build APK
 ```
 
-Ver también: `docs/README.md` (índice de docs), `docs/adr/` (decisiones),
-`docs/benchmark-results.md` (mediciones), `.opencode/skills/` (procedimientos).
+See also: `docs/README.md` (documentation index), `docs/adr/` (architectural decision records),
+`docs/benchmark-results.md` (benchmark measurements), and `.opencode/skills/` (operational skills).
 
 ## License
 

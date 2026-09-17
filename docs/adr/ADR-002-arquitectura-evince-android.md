@@ -1,8 +1,9 @@
 # ADR-002 — Arquitectura de Evince: análisis para Android
 
+> **Estado**: Referencia (análisis de arquitectura; no ejecuta una decisión propia)
+> **Fecha**: 2026-08-10
 > **Origen**: ingeniería inversa de Evince (GNOME PDF viewer).
 > **Objetivo**: extraer patrones de diseño de rendimiento y mapearlos a Android.
-> **Fecha**: 2026-08-10
 >
 > **Nota de motor (2026-08-12)**: este ADR se redactó tomando **PDFium** como
 > implementación de referencia. Desde ADR-001 (Fase 0.5) el motor es **MuPDF**
@@ -144,7 +145,7 @@ Puntos clave:
 **Traducción a Android:**
 | Concepto Evince (C/GTK) | Equivalente Android (Kotlin/Rust) |
 |--------------------------|-----------------------------------|
-| `EvDocument` interface | `trait RenderEngine` (ya definido en PLAN.md) |
+| `EvDocument` interface | `trait RenderEngine` (ya definido en docs/plan/NEXT-PLAN.md) |
 | `EvRenderContext` | `struct RenderRequest { page, rotation, scale, target_size }` |
 | `EvJob` → `GThreadPool` | `coroutine + Dispatchers.Default` o `rayon::ThreadPool` |
 | `EvJobScheduler` con prioridades | `Channel<RenderRequest>` con `select` sobre prioridades |
@@ -156,7 +157,7 @@ Puntos clave:
   el motor elegido (MuPDF, ADR-001) hace lo mismo renderizando a un
   `fz_pixmap`/bitmap. La envoltura es análoga.
 - El render se hace **a resolución de pantalla** (target_width/height), nunca a
-  resolución nativa del PDF. Esto es exactamente lo que ya especifica PLAN.md.
+  resolución nativa del PDF. Esto es exactamente lo que ya especifica docs/plan/NEXT-PLAN.md.
 
 ### 2.2 Gestión de memoria y caching
 
@@ -323,7 +324,7 @@ while ((start_page - i > 0 || end_page + i < n_pages) && preload < MAX) {
 
 | Componente Evince | Responsabilidad | Equivalente en pdf_core | Implementación |
 |-------------------|----------------|------------------------|----------------|
-| `EvDocument` | Abrir PDF, page count, render | `trait RenderEngine` | Ya definido en PLAN.md §3.2 |
+| `EvDocument` | Abrir PDF, page count, render | `trait RenderEngine` | Ya definido en docs/plan/NEXT-PLAN.md §3.2 |
 | `EvRenderContext` | Pagina, rotación, escala, target size | `struct RenderRequest` | A implementar |
 | `EvJob` | Tarea asíncrona | `rayon::spawn` + `std::sync::mpsc::channel` | A implementar en `render` module |
 | `EvJobScheduler` | Cola con prioridades | `rayon::ThreadPool` dedicado + `crossbeam::deque` | O usar `tokio` si se prefiere async |

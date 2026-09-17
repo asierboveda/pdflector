@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! SQLite sidecar persistence for [`AnnotationSet`] (Fase 3, docs/PLAN.md
-//! §3.5): one `.db` file per PDF, stored next to the document under
-//! `annotations/`, designed for Syncthing (a sync conflict is contained to a
-//! single file).
+//! SQLite sidecar persistence for [`AnnotationSet`] (docs/plan/NEXT-PLAN.md;
+//! sync decision in AGENTS.md): one `.db` file per PDF, stored next to the
+//! document under `annotations/`, designed for Syncthing (a sync conflict is
+//! contained to a single file).
 //!
 //! # Sidecar path convention
 //!
 //! [`sidecar_path`] maps `.../library/doc.pdf` to
-//! `.../library/annotations/doc.db` (PLAN §3.5 tree: `annotations/<id>.db` —
+//! `.../library/annotations/doc.db` (tree: `annotations/<id>.db` —
 //! the PDF stem plays the role of `<id>`). The `annotations/` directory is
 //! created on first [`AnnotationStore::open`].
 //!
@@ -41,8 +41,7 @@
 //!   `O(n)` rewrite is far below the frame budget — saves happen on user
 //!   action, never per frame. Upsert-per-id would buy nothing here.
 //! - **No `WAL`**: the rollback journal keeps the sidecar a single file;
-//!   `WAL` would add `-wal`/`-shm` siblings that complicate Syncthing
-//!   (PLAN §3.5).
+//!   `WAL` would add `-wal`/`-shm` siblings that complicate Syncthing.
 //! - **`next_id` floor**: on load, `next_id` is raised to `max(id)+1` when
 //!   rows exist, so a hand-edited or corrupt sidecar can never make
 //!   [`AnnotationSet::add`] reuse a stored id.
@@ -70,13 +69,13 @@ use serde_json::json;
 
 use crate::annotations::{Annotated, Annotation, AnnotationSet};
 
-/// Sidecar path for `pdf_path` following PLAN §3.5:
+/// Sidecar path for `pdf_path` following the sidecar convention:
 /// `<pdf-dir>/annotations/<pdf-stem>.db`.
 ///
 /// The PDF stem (filename without extension) plays the role of the document
-/// `<id>` in the plan's tree. A PDF without an extension maps to its full
+/// `<id>` in the tree above. A PDF without an extension maps to its full
 /// file name; a path without a parent yields a relative `annotations/...`.
-/// Sidecar path for `pdf_path` following PLAN §3.5:
+/// Sidecar path for `pdf_path` following the sidecar convention:
 /// `<pdf-dir>/annotations/<pdf-stem>-<hash8>.db`.
 ///
 /// The suffix is a stable FNV-1a hash of the PDF path, so two PDFs with the
