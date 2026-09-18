@@ -34,7 +34,7 @@ serde_json = "1"
 # native-tls would pull in openssl-sys). `blocking` gives a simple
 # synchronous client for a dedicated background thread. MIT/Apache-2.0,
 # the de-facto standard HTTP crate.
-reqwest = { version = "0.11", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 # SQLite sidecar per PDF (Fase 3): persistence of the annotation set, designed
 # for Syncthing (one small .db per document). rusqlite is MIT; the `bundled`
 # feature compiles SQLite from source (no system lib), so cross-compiling to
