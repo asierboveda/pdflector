@@ -14,12 +14,10 @@ pub mod dark;
 pub mod engine;
 pub mod export;
 pub mod metrics;
-pub mod overlay;
 pub mod prefetch;
 pub mod scroll;
 pub mod selection;
 pub mod store;
-pub mod strokecache;
 pub mod sync;
 pub mod textcache;
 pub mod theme;
@@ -39,14 +37,12 @@ pub use dark::invert_bitmap;
 pub use engine::{Bitmap, Document, Error, PageText, RenderEngine, Result, TextSpan};
 pub use export::{export_markdown, export_markdown_to_file, export_pdf_annotated};
 pub use metrics::{FrameTimer, read_rss_kb};
-pub use overlay::{ViewTransform, composite_annotations, composite_annotations_alpha};
 pub use scroll::{Viewport, visible_and_prefetch_pages};
 pub use selection::{
     Gesture, HIGHLIGHT_COLOR, highlight_under_gesture, highlight_under_gesture_sorted,
     sort_spans_by_y,
 };
 pub use store::{AnnotationStore, StoreError, resolve_sidecar, sidecar_path};
-pub use strokecache::{StrokeCache, StrokeKey};
 pub use sync::{
     AnnotationWatcher, SyncError, annotations_dir, library_index_path, watch_annotations,
 };

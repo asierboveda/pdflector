@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Biblioteca, picker y selector de añadir (extraído de `reader.rs`, 2026-09-06): entrada/salida (`enter_library`, `open_picker`, `exit_picker`, `reload_curated_library`, `clear_library`, `rescan`), listas y filtros (`picker_*`, `grid_*`, `entry_*`, `refresh_lib_filtered`, `apply_filter`, `lib_set_*`, `lib_folders`, scrolls `lib_*_max_*`, `touch_recent`) y el flujo "＋ Añadir" con IME (`add_book`, `rescan_select`, `cancel_add`, `add_selected`, `lib_open_keyboard`/`lib_clear_search`/`lib_close_ime`, `poll_ime_query`).
+//! Biblioteca, picker y selector de añadir: entrada/salida (`enter_library`, `exit_picker`, `reload_curated_library`, `clear_library`, `rescan`), listas y filtros (`picker_*`, `grid_*`, `entry_*`, `refresh_lib_filtered`, `apply_filter`, `lib_set_*`, `lib_folders`, scrolls `lib_*_max_*`, `touch_recent`) y el flujo "＋ Añadir" con IME (`add_book`, `rescan_select`, `cancel_add`, `add_selected`, `lib_open_keyboard`/`lib_clear_search`/`lib_close_ime`, `poll_ime_query`).
 
 use super::BookStatus;
 use super::LibSort;
@@ -88,27 +88,6 @@ impl Reader {
         self.session_ids.clear();
         self.lib_close_ime(app);
         self.reload_curated_library(app);
-    }
-
-    /// Abre el picker interno (PDFs de los directorios de la app; el fallback
-    /// histórico). Con la biblioteca curada no hay ruta de UI hacia él (las
-    /// altas van por `add_book`); se conserva el método por si una fase
-    /// futura reintroduce la entrada.
-    #[allow(dead_code)]
-    pub(crate) fn open_picker(&mut self, app: &AndroidApp) {
-        self.mode = UiMode::Picker;
-        // EGL (Tarea 2.7): igual que en `enter_library` — el picker también
-        // presenta por EGL (sin soltar la surface).
-        self.pdf_list = scan_pdfs(app);
-        self.list_scroll = 0;
-        self.status = None;
-        self.list_dirty = true;
-        self.bitmap = None;
-        self.sheet_hide_now();
-        self.clear_selection(); // selección del visor: fuera (no pinta en el picker)
-        self.close_ai_panel(); // panel de IA del visor: fuera
-        self.list_drag = None;
-        self.redraw();
     }
 
     /// Vuelve del picker al visor sin cambiar el documento (botón Back).
@@ -351,14 +330,6 @@ impl Reader {
         } else {
             self.columns.clamp(1, 4) as usize
         }
-    }
-
-    /// Nº de filas de celdas de la rejilla de la biblioteca con
-    /// el filtro actual aplicado (`lib_filtered`).
-    #[allow(dead_code)]
-    pub(crate) fn grid_total_rows(&self) -> usize {
-        let cols = self.effective_grid_cols();
-        self.library.lib_filtered.len().div_ceil(cols)
     }
 
     /// Entrada de la rejilla en la fila `row` (0-based) y columna `col`
@@ -741,10 +712,8 @@ impl Reader {
 
     /// Confirmación del selector: copia el PDF elegido a `internal/pdfs/`
     /// (nombre saneado), cuenta páginas abriéndolo con MuPDF, crea su
-    /// registro de progreso (`touch_progress`), aplica el TOPE `LIBRARY_MAX`
-    /// con evicción LRU (`enforce_library_limit`: borra fichero + portada
-    /// cacheada de cada expulsado), guarda `library.json` y reconstruye la
-    /// biblioteca curada. Toast si hubo expulsión.
+    /// registro de progreso (`touch_progress`), guarda `library.json`
+    /// (política E4: sin borrado automático) y reconstruye la biblioteca curada.
     pub(crate) fn add_selected(&mut self, app: &AndroidApp, index: usize) {
         let Some(entry) = self.select_list.get(index).cloned() else {
             return;

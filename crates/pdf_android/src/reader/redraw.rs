@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Pipeline de render del visor y la biblioteca (extraído de `reader.rs`, 2026-09-06): `redraw`, `ensure_pages_rendered`, `blit` y los blits de la biblioteca en dos planos (`rebuild_library*`, `splice_*`, `lib_band_covers`), transformaciones página→px (`page_doc_size_px`, `budget_scale`, `centered_base`, `page_size_pt`) y el worker actor de render asíncrono (`WorkerMsg`/`WorkerReq`/`WorkerCmd`/`RenderWorker`, `render_worker_req`, `launch_render`, `start/stop_render_worker`, `poll_render`, `render_in_flight_for`).
+//! Pipeline de render del visor y la biblioteca: `redraw`, `blit` y los blits de la biblioteca en dos planos (`rebuild_library*`, `splice_*`, `lib_band_covers`), transformaciones página→px (`page_doc_size_px`, `centered_base`, `page_size_pt`) y el worker actor de render asíncrono (`WorkerMsg`/`WorkerReq`/`WorkerCmd`/`RenderWorker`, `render_worker_req`, `launch_render`, `start/stop_render_worker`, `poll_render`, `render_in_flight_for`).
 
 use super::Reader;
 use super::UiMode;
@@ -31,7 +31,6 @@ use crate::draw::splice_row;
 use crate::theme;
 use crate::view::initial_scale;
 use crate::zoom::blit_fast;
-use log::error;
 use log::info;
 use log::warn;
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
@@ -67,9 +66,8 @@ pub(crate) struct WorkerMsg {
 }
 
 /// Petición de render al worker actor: páginas a la escala pedida, ventana
-/// congelada del cover y canal de respuesta propio por lote. Port de F3.1
-/// (`mejora_zoom`): el hilo drena comandos entre páginas (preemption por
-/// `seq`) en `render_worker_req`.
+/// congelada del cover y canal de respuesta propio por lote. El hilo drena
+/// comandos entre páginas (preemption por `seq`) en `render_worker_req`.
 struct WorkerReq {
     seq: u64,
     pages: Vec<u32>,
@@ -126,9 +124,8 @@ fn render_worker_req(
         }
         if let Ok((pw, ph)) = doc.page_size(page) {
             let cover = initial_scale(pw, ph, req.win_w, req.win_h);
-            // Presupuesto: el bitmap debe caber en la caché (misma regla que
-            // `Reader::budget_scale` — duplicada aquí porque el worker no
-            // tiene acceso a `self`).
+            // Presupuesto: el bitmap debe caber en la caché. El worker no tiene
+            // acceso a `self`, así que aplica la regla con su propio cálculo.
             let mut scale = cover * target;
             let px_pdf = pw as f64 * ph as f64;
             let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
@@ -523,25 +520,6 @@ impl Reader {
         (pw * cover, ph * cover)
     }
 
-    /// Escala límite por PRESUPUESTO de píxeles: el bitmap de la página
-    /// (`pw×ph` pt) a esa escala no debe superar la caché (~48 MiB). Reduce la
-    /// escala pedida por mitades hasta caber; nunca devuelve 0. Evita el
-    /// render de cientos de MB al abrir con un zoom alto guardado (la
-    /// "pillada") tanto en el worker como en el render síncrono del arranque.
-    #[allow(dead_code)] // regla documentada; el worker la duplica
-    fn budget_scale(&self, pw: f32, ph: f32, scale: f32) -> f32 {
-        let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
-        let mut s = scale.max(0.001);
-        let px_pdf = pw as f64 * ph as f64;
-        while px_pdf * s as f64 * s as f64 > max_px {
-            s *= 0.5;
-            if s <= 0.01 {
-                break;
-            }
-        }
-        s
-    }
-
     /// Esquina superior izquierda del bitmap escalado para centrado
     /// horizontal: `base(z) = (win − doc·z) / 2` (px de zoom 1), la misma
     /// fórmula que `blit` usa para `dx` sin pan. Lineal en `z`; en el
@@ -556,89 +534,13 @@ impl Reader {
         self.doc.as_ref()?.page_size(page).ok()
     }
 
-    /// Garantiza en la caché la página actual + 1 vecina por cada lado
-    /// (prefetch simple para que prev/next sea INSTANTÁNEO): renderiza solo
-    /// los miss, a `cover × rendered_zoom` (la escala de la caché), y
-    /// promueve la recencia LRU de las páginas que toca. El render es
-    /// síncrono en el hilo del bucle (~18-25 ms/página en la tablet); el
-    /// prefetch adelanta la vecina para que el tap de página entre en ella
-    /// sin re-render en el momento de volverse visible. En el modo UNA HOJA
-    /// SOLO se DIBUJA la página actual (`blit`): las vecinas solo se cachean.
-    #[allow(dead_code)] // superado por el render async (worker)
-    fn ensure_pages_rendered(&mut self) {
-        let Some(doc) = self.doc.as_ref() else {
-            return;
-        };
-        let n = doc.page_count();
-        if n == 0 {
-            return;
-        }
-        let lo = self.page.saturating_sub(1);
-        let hi = (self.page + 1).min(n - 1);
-        // Orden: vecinas PRIMERO y la página actual ÚLTIMA. Con zoom alto cada
-        // página (~36 MiB) supera el presupuesto de la caché (48 MiB), de modo
-        // que renderizar la actual en medio hacía que la última vecina la
-        // EVICTARA y el blit no encontrara bitmap → pantalla en blanco (fondo
-        // puro) al soltar el pinch. Renderizarla última garantiza que sobreviva
-        // a la evicción (las vecinas son prefetch best-effort y se re-renderizan
-        // al navegar).
-        let mut order: Vec<u32> = (lo..=hi).filter(|&p| p != self.page).collect();
-        order.push(self.page);
-        for page in order {
-            if self.cache.get(page).is_some() {
-                continue; // hit: sin re-render (volver atrás es instantáneo)
-            }
-            let (pw, ph) = match doc.page_size(page) {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("page_size {page}: {e}");
-                    continue;
-                }
-            };
-            let scale = initial_scale(pw, ph, self.win_w, self.win_h) * self.rendered_zoom;
-            // Presupuesto (mismo límite que el worker): evita el render de
-            // cientos de MB al abrir con zoom alto guardado.
-            let scale = self.budget_scale(pw, ph, scale);
-            let t0 = Instant::now();
-            match doc.render_page(page, scale) {
-                Ok(bmp) => {
-                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                    info!(
-                        "render page {} @scale {scale:.3} -> {}x{} px: {ms:.2} ms (cache: {} pages / {:.1} MiB)",
-                        page + 1,
-                        bmp.width,
-                        bmp.height,
-                        self.cache.len(),
-                        self.cache.resident_bytes() as f64 / (1024.0 * 1024.0)
-                    );
-                    self.cache.insert(
-                        page,
-                        crate::cache::CachedPage {
-                            // Camino SÍNCRONO (legacy, sin crop): el render
-                            // ocupa el full de su cuadrícula (origen 0). El
-                            // worker async es el que recorta a ventana.
-                            full_w: bmp.width,
-                            full_h: bmp.height,
-                            crop_x: 0,
-                            crop_y: 0,
-                            bitmap: bmp,
-                        },
-                    );
-                }
-                Err(e) => {
-                    error!("render page {page}: {e}");
-                }
-            }
-        }
-    }
-
     /// Presenta el frame actual según el modo y el motor disponible.
     ///
     /// - Visor (modo UNA HOJA): present GPU por EGL (`present_viewer`):
     ///   página como textura (subida SOLO al cambiar página/re-render),
     ///   tinta como geometría y overlays como quads por frame; swap por
     ///   `eglSwapBuffers`.
-    /// - Picker/Biblioteca: por GPU (productor único, Tarea 2.7) los planos
+    /// - Picker/Biblioteca: por GPU (productor único) los planos
     ///   cacheados (`lib_header`/`lib_band`; bitmap de la lista) se dibujan
     ///   como texturas dedicadas (re-subidas solo cuando cambian) + swap.
     ///   SIN EGL (`gpu` None o surface sin crear) degradan al camino SW
@@ -1030,7 +932,9 @@ impl Reader {
                         // llegar el render real: misma página/zoom/anns/dark).
                         // Sin esta invalidación la página real no se mostraría
                         // nunca (quedaría el fallback hasta otra invalidación).
-                        self.gpu.as_mut().map(|g| g.invalidate_dry());
+                        if let Some(g) = self.gpu.as_mut() {
+                            g.invalidate_dry();
+                        }
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,

@@ -85,18 +85,16 @@ pub fn export_markdown(doc: &dyn Document, set: &AnnotationSet) -> Result<String
                     out.push_str("\n\n");
                 }
                 Annotation::Highlight(hl) => {
-                    let pt = page_text
-                        .as_ref()
-                        .expect("page text fetched when a highlight exists");
-                    let quote = match highlight_quote(pt, hl) {
+                    let quote = match page_text.as_ref().and_then(|pt| highlight_quote(pt, hl)) {
                         Some(q) => q,
                         None => {
                             // Imprecise mapping or an image-only page: quote
                             // the whole page text, page number marked.
-                            if pt.text.trim().is_empty() {
-                                "(texto no extraíble)".to_string()
-                            } else {
-                                pt.text.trim().to_string()
+                            match page_text.as_ref() {
+                                Some(pt) if !pt.text.trim().is_empty() => {
+                                    pt.text.trim().to_string()
+                                }
+                                _ => "(texto no extraíble)".to_string(),
                             }
                         }
                     };

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Anotaciones y modo del boli (extraído de `reader.rs`, 2026-09-06): carga y guardado del sidecar (`load_annotations`, `save_annotations`) y la persistencia del modo de tinta (`toggle_pen_mode`, `persist_pen_mode`).
+//! Anotaciones y modo del boli: carga y guardado del sidecar (`load_annotations`, `save_annotations`) y la persistencia del modo de tinta (`toggle_pen_mode`, `persist_pen_mode`).
 
 use super::Reader;
 use crate::annotations::PenMode;

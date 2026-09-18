@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Máquina de gestos del visor (extraída de `input.rs`, 2026-09-06): el estado
+//! Máquina de gestos del visor: el estado
 //! de la máquina (`GestureState` + `GestureKind`), el temporizador de
 //! long-press (`LONG_PRESS_MS`) y los TAPS del visor — página, chrome del
 //! visor, sheet de ajustes, menú de selección y panel de IA — resueltos por

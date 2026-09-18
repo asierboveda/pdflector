@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Herramienta activa y borrado (extraído de `reader.rs`, 2026-09-06): pan de la herramienta mano (`begin_pan`, `set_pan`, `should_ignore_touch`), gestos de la herramienta boli/resaltador (`begin/update/end/cancel_tool_gesture`) y de la goma (`begin_erase_gesture`, `eraser_radius_px`, `update/end_erase_gesture`).
+//! Herramienta activa y borrado: pan de la herramienta mano (`begin_pan`, `set_pan`, `should_ignore_touch`), gestos de la herramienta boli/resaltador (`begin/update/end/cancel_tool_gesture`) y de la goma (`begin_erase_gesture`, `eraser_radius_px`, `update/end_erase_gesture`).
 
 use super::Reader;
 use crate::annotations::ERASE_HIT_RADIUS_PT;

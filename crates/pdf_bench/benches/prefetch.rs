@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Prefetch-effectiveness benchmark (Fase 1 B2): how many pages the worker
+//! Prefetch-effectiveness benchmark: how many pages the worker
 //! actually renders during a fast-scroll burst, and how quickly the newest
 //! viewport becomes resident.
 //!

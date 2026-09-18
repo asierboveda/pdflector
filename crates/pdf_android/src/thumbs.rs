@@ -118,42 +118,12 @@ impl ThumbCache {
         self.map.insert(key.clone(), bitmap);
         self.lru.push_back(key);
     }
-
-    /// Elimina la entrada `key` si existe (true si estaba). La usa la
-    /// evicción LRU de la biblioteca curada (`Reader::add_selected`): la
-    /// portada del libro borrado no debe quedar residente. NO altera la
-    /// política de evicción existente (solo retira una entrada puntual).
-    #[allow(dead_code)]
-    pub(crate) fn remove(&mut self, key: &str) -> bool {
-        if let Some(bmp) = self.map.remove(key) {
-            self.bytes -= bitmap_bytes(&bmp);
-            if let Some(pos) = self.lru.iter().position(|k| k == key) {
-                self.lru.remove(pos);
-            }
-            true
-        } else {
-            false
-        }
-    }
-
     /// Descarta todo (cambio de documento o al volver al visor: las portadas
     /// de otra biblioteca ya no se reutilizarían).
     pub(crate) fn clear(&mut self) {
         self.map.clear();
         self.lru.clear();
         self.bytes = 0;
-    }
-
-    /// Nº de portadas residentes (para el log de debug).
-    #[allow(dead_code)]
-    pub(crate) fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// Bytes totales residentes (para el log de debug).
-    #[allow(dead_code)]
-    pub(crate) fn resident_bytes(&self) -> usize {
-        self.bytes
     }
 
     fn promote(&mut self, key: &str) {

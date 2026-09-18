@@ -34,7 +34,6 @@ not the final product. Active roadmap: phases A–F (`docs/plan/NEXT-PLAN.md`).
 ```
 crates/pdf_core/     core library (no UI): engine, render, cache, annotations, arxiv, ai, export
 crates/pdf_android/  final native Android app (ADR-005, NativeActivity + EGL/GLES)
-crates/pdf_spike/    latency and rendering presentation spike for Android stylus
 crates/pdf_app/      egui desktop testbed and prototype (not product)
 crates/pdf_bench/    benchmark harness and performance sweeps
 corpus/              test PDFs (gitignored; tools/generate_corpus.py)

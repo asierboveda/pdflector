@@ -186,11 +186,8 @@ pub fn chunk_pages(doc: &dyn Document, pages: &[u32], max_chars: usize) -> Resul
                 body.len() + 1 + word.len()
             };
             if needed > max_chars && !body.is_empty() {
-                chunks.push(finish_chunk(
-                    range_start.expect("set above"),
-                    range_end,
-                    &body,
-                ));
+                // Invariante: body no está vacío, luego range_start fue fijado al procesar las palabras.
+                chunks.push(finish_chunk(range_start.unwrap_or(page), range_end, &body));
                 body.clear();
                 range_start = Some(page);
                 range_end = page;
@@ -205,8 +202,9 @@ pub fn chunk_pages(doc: &dyn Document, pages: &[u32], max_chars: usize) -> Resul
     }
 
     if !body.is_empty() {
+        // Invariante: body no está vacío, luego range_start fue fijado al procesar las palabras.
         chunks.push(finish_chunk(
-            range_start.expect("set above"),
+            range_start.unwrap_or(range_end),
             range_end,
             &body,
         ));

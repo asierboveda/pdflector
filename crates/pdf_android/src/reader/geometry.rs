@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Geometría y layout de picker/biblioteca/visor (extraído de `reader.rs`, 2026-09-06): funciones libres `lib_*`, `grid_*`, `list_*`, `sheet_*`, `picker_*` y `viewer_*` — altos, rects y posiciones en px compartidos por el render (`draw`), el tap/arrastre (`input`) y el blit (`reader`).
+//! Geometría y layout de picker/biblioteca/visor: funciones libres `lib_*`, `grid_*`, `list_*`, `sheet_*`, `picker_*` y `viewer_*` — altos, rects y posiciones en px compartidos por el render (`draw`), el tap/arrastre (`input`) y el blit (`reader`).
 
 use super::BookStatus;
 use super::EmptyStateGeom;
@@ -90,9 +90,6 @@ pub(crate) fn sheet_theme_btn_w(win_w: i32) -> f32 {
 }
 
 /// --- Rejilla 3×3 de la biblioteca (geometría compartida por render y tap) ---
-/// Columnas de la rejilla de la biblioteca.
-pub(crate) const GRID_COLS: usize = 3;
-
 /// Pad exterior horizontal de la rejilla (px): margen con respiro estilo Apple Books.
 pub(crate) fn grid_pad(win_w: i32) -> f32 {
     (win_w as f32 * 0.04).clamp(24.0, 60.0)
@@ -507,21 +504,6 @@ pub(crate) fn lib_empty_state_geom(reader: &Reader) -> Option<EmptyStateGeom> {
         subtitle_y,
         button: (bx2, by2, bx2 + bw2, by2 + bh2),
     })
-}
-
-/// Nº de filas de celdas visibles en la biblioteca (cabecera + franja de
-/// estado restan de la ventana; mínimo 1 fila para que siempre haya algo).
-#[allow(dead_code)] // geometría pre-rediseño; la biblioteca usa `lib_visible_grid_rows` (px)
-pub(crate) fn grid_visible_rows(win_w: i32, win_h: i32, has_status: bool) -> usize {
-    let status_h = if has_status { picker_row_h(win_h) } else { 0 };
-    let usable = (win_h - picker_header_h(win_h) - status_h) as f32;
-    (usable / grid_cell_h(win_w, GRID_COLS, 1)).floor().max(1.0) as usize
-}
-
-/// Y del borde superior de la zona de rejilla (cabecera + franja de estado).
-#[allow(dead_code)] // geometría pre-rediseño; la biblioteca usa `lib_content_y0` (px)
-pub(crate) fn grid_rows_y0(win_h: i32, has_status: bool) -> i32 {
-    picker_header_h(win_h) + if has_status { picker_row_h(win_h) } else { 0 }
 }
 
 /// Rectángulo (left, top, right, bottom) en px de ventana de la celda

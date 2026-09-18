@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Asier Bóveda
 
 //! Blit benchmark — per-frame drawing path of the Android viewer
-//! (`pdf_android/src/draw.rs`).
+//! (`pdf_android/src/draw/`).
 //!
 //! Why a mirror: `pdf_android` cannot build on host (`android-activity` is
 //! Android-only), so the CPU-only blit primitives below are FAITHFUL COPIES
-//! of `draw.rs` (`fill_buffer`, `rgb565`, `copy_row_rgba_to`, `copy_region`,
-//! `blit_page_scaled`, `fill_rect_lut`, `fill_rect_bordered`,
-//! `draw_sel_rect`, `compose_frame`, `blit_composed`). **Keep them in sync**
-//! when optimizing `draw.rs` and re-run this bench to prove the change.
+//! of `pdf_android/src/draw/` (en particular `primitives.rs`: `fill_buffer`,
+//! `rgb565`, `copy_row_rgba_to`, `copy_region`, y las rutas CPU de
+//! composición). **Keep them in sync** when optimizing `draw/` and re-run
+//! this bench to prove the change.
 //!
 //! What it measures — the per-frame cost in the viewer at a typical tablet
 //! resolution (2000×1200 landscape):
@@ -51,8 +51,9 @@ use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::{Document, RenderEngine, corpus_dir};
 
 // ---------------------------------------------------------------------------
-// MIRROR of pdf_android/src/draw.rs (CPU-only paths). Keep in sync with the
-// real file — every optimization here must be applied there too.
+// MIRROR of pdf_android/src/draw/ (CPU-only paths, en especial
+// primitives.rs). Keep in sync with the real files — every optimization here
+// must be applied there too.
 // ---------------------------------------------------------------------------
 
 fn fill_buffer(dst: *mut u8, w: usize, h: usize, stride: usize, bpp: usize, color: [u8; 4]) {
@@ -199,9 +200,9 @@ fn blit_page_scaled(
             match bpp {
                 4 => {
                     if dark {
-                        // XOR de u32 = inversión RGB (255 − v) sin tocar el
                         // alfa (0x00FF_FFFF excluye el byte 3). Espejo
-                        // exacto de `draw.rs`; ver allí la justificación.
+                        // exacto de las rutas CPU de `draw/`; ver allí la
+                        // justificación.
                         let src32 = unsafe {
                             std::slice::from_raw_parts(src_row.as_ptr() as *const u32, vis_w)
                         };
@@ -258,7 +259,7 @@ fn blit_page_scaled(
         };
         match bpp {
             4 => {
-                // Mapeo x como accesos por u32 (espejo de `draw.rs`):
+                // Mapeo x como accesos por u32 (espejo de `draw/`):
                 // `x_map[x]` ∈ [0, src_w) por construcción (división entera
                 // truncada), lecturas directas sin bounds-check por píxel.
                 let src32 = src_row.as_ptr() as *const u32;
@@ -377,7 +378,7 @@ fn draw_sel_rect(
     r: f32,
     b: f32,
 ) {
-    // fill_rect_bordered with border, bpp 4 only (bench scope; draw.rs also
+    // fill_rect_bordered with border, bpp 4 only (bench scope; `draw/` also
     // handles bpp 2/others via the slow per-pixel path, not hit in practice).
     let ix0 = l.floor().max(0.0) as i32;
     let iy0 = t.floor().max(0.0) as i32;
@@ -442,7 +443,7 @@ fn draw_sel_rect(
     }
 }
 
-// `blit_page`'s PageBlit / blit_composed pieces (see draw.rs for the exact
+// `blit_page`'s PageBlit / blit_composed pieces (see `draw/` for the exact
 // geometry contracts).
 struct PageBlit<'a> {
     bitmap: &'a Bitmap,

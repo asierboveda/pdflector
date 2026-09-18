@@ -4,7 +4,6 @@
 //! Código GLSL de los shaders (página/dark, overlay con alpha y tinta con AA
 //! analítico), structs de programas compilados (`QuadProg`, `InkProg`) y
 //! helpers de compilación/link (`compile`, `link`, `gl_str`, `mat3_scale_translate`).
-//! Extraído de `gpu/mod.rs` (Fase 2, Tarea 4.1).
 use super::ffi as gl;
 
 // ---------------------------------------------------------------- Shaders

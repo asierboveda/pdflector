@@ -47,6 +47,3 @@ harness = false
 name = "highlight"
 harness = false
 
-[[bench]]
-name = "composite"
-harness = false

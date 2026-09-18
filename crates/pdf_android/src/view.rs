@@ -68,14 +68,11 @@ const WHITE_THRESHOLD: u8 = 245;
 /// de render o scroll (60 fps, presupuesto < 16,6 ms/frame). La política
 /// "cover" de `initial_scale` ya recorta por los bordes geométricamente; este
 /// rect permite recortar además los MÁRGENES BLANCOS reales (páginas
-/// escaneadas con margen ancho de editorial) cuando el caller lo integre en
-/// Fase 2/6.
+/// escaneadas con margen ancho de editorial) cuando el caller lo integre.
 ///
-/// `dead_code` intencional (2026-08-13): API pública sin caller todavía — la
-/// pide la tarea "pantalla completa al abrir" para que otro agente/el
-/// coordinador la use luego. En un cdylib rustc la marca dead_code aunque sea
-/// `pub`; se suprime la advertencia para mantener el build sin warnings, y se
-/// elimina el `#[allow]` cuando el primer caller la consuma.
+/// `dead_code` intencional: API pública usada por tests unitarios (sin caller
+/// todavía en la app). En un cdylib rustc la marca dead_code aunque sea `pub`;
+/// se suprime la advertencia para mantener el build sin warnings.
 ///
 /// Auditoría (fix C de speed, 2026-09-07): NINGÚN llamador consume bitmaps de
 /// la `PageCache` por aquí (sus únicos usos son los tests de abajo con bitmaps

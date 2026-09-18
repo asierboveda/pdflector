@@ -195,7 +195,7 @@ fn blit_scaled_nearest(
 
 /// Conversión RGBA8 → RGB565 (formato `R5G6B5_UNORM` de Android, u16
 /// little-endian). Duplicada aquí (misma fórmula que `draw::rgb565`, que es
-/// privada) para no tocar draw.rs.
+/// privada) para no tocar draw/.
 fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3)
 }

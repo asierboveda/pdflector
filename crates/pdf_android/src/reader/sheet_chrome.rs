@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Sheet de ajustes, chrome del visor y temas (extraído de `reader.rs`, 2026-09-06): animación/arrastre del sheet (`sheet_animating`, `begin/drag/end_sheet_drag`, `hide/toggle_sheet`, `sheet_hide_now`), barras de chrome con auto-hide (`show/hide/toggle/touch_chrome`) y el cambio de tema (`set_theme`, `cycle_theme`, `toggle_dark`).
+//! Sheet de ajustes, chrome del visor y temas: animación/arrastre del sheet (`begin/drag/end_sheet_drag`, `hide/toggle_sheet`, `sheet_hide_now`), barras de chrome con auto-hide (`show/hide/toggle/touch_chrome`) y el cambio de tema (`set_theme`, `cycle_theme`).
 
 use super::Reader;
 use super::geometry::sheet_h;
@@ -14,14 +14,6 @@ use std::time::Instant;
 // Sheet de ajustes (panel deslizante desde arriba, 2026-08-XX)
 // ---------------------------------------------------------------------
 impl Reader {
-    /// ¿Animación del sheet en vuelo? La consulta global de trabajo diferido
-    /// es `needs_tick` (incluye esta señal + portadas + long-press + aviso
-    /// breve); `sheet_animating` ya no se usa desde `lib` (2026-08-XX).
-    #[allow(dead_code)]
-    pub(crate) fn sheet_animating(&self) -> bool {
-        self.sheet_anim
-    }
-
     /// Comienza el arrastre del sheet (dedo deslizándose): deja de animar y
     /// deja que el dedo controle `sheet_progress` directamente.
     pub(crate) fn begin_sheet_drag(&mut self) {
@@ -154,11 +146,5 @@ impl Reader {
         info!("theme cycled to {:?} (dark: {})", self.theme, self.dark);
         self.save_state();
         self.redraw();
-    }
-
-    /// Alterna el modo oscuro (cicla al tema siguiente).
-    #[allow(dead_code)]
-    pub(crate) fn toggle_dark(&mut self) {
-        self.cycle_theme();
     }
 }

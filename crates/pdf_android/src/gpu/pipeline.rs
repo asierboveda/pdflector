@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Render y present del visor con arquitectura Dual FBO Wet/Dry (extraído
-//! de `gpu/mod.rs`, Tarea 4.1): `render_dry` (página+anotaciones), `render_wet`
+//! Render y present del visor con arquitectura Dual FBO Wet/Dry: `render_dry`
 //! (trazo en vuelo, goma, selección), `present_viewer` (composición en fb0 +
 //! overlays UI por frame + swap), primitivas de dibujo (quads sólidos,
 //! polylines de tinta, quads texturizados a pantalla completa), el formato de

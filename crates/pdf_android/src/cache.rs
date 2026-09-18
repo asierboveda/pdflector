@@ -186,17 +186,6 @@ impl PageCache {
         }
     }
 
-    /// Lookup que PROMUEVE la entrada (recencia LRU). Lo usa el render
-    /// (`ensure_pages_rendered`): un hit evita el re-render y marca la página
-    /// como recientemente usada.
-    #[allow(dead_code)] // el flujo async usa `peek`; get queda como API
-    pub(crate) fn get(&mut self, page: u32) -> Option<&CachedPage> {
-        if self.map.contains_key(&page) {
-            self.promote(page);
-        }
-        self.map.get(&page)
-    }
-
     /// Lookup SIN promoción: el blit de cada frame lee las páginas visibles
     /// sin reordenar la recencia (el orden lo fija el render/prefetch).
     pub(crate) fn peek(&self, page: u32) -> Option<&CachedPage> {
@@ -262,18 +251,6 @@ impl PageCache {
         }
     }
 
-    /// Nº de páginas residentes (para el log de debug).
-    #[allow(dead_code)] // métrica de debug
-    pub(crate) fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    /// Bytes totales residentes (para el log de debug).
-    #[allow(dead_code)] // métrica de debug
-    pub(crate) fn resident_bytes(&self) -> usize {
-        self.bytes
-    }
-
     /// Nº total de inserciones (`insert_seq`). El tick del bucle lo usa como
     /// snapshot alrededor de `poll_render`: si no cambió, el poll no insertó
     /// nada en este tick → tick idle → `trim_to_budget` (evicción diferida).
@@ -284,14 +261,6 @@ impl PageCache {
     /// Fija la página protegida de evicción (la visible). Ver `protected`.
     pub(crate) fn set_protected(&mut self, page: u32) {
         self.protected = Some(page);
-    }
-
-    #[allow(dead_code)]
-    fn promote(&mut self, page: u32) {
-        if let Some(pos) = self.lru.iter().position(|&p| p == page) {
-            self.lru.remove(pos);
-            self.lru.push_back(page);
-        }
     }
 
     /// Expulsa UNA entrada del frente LRU. La PROTEGIDA nunca sale: rota al

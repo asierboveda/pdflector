@@ -24,7 +24,7 @@
 ### Fase A: Instrumentación y Harness de Rendimiento
 - **Implementado**:
   - **A1**: `FrameTimer` integrado en `crates/pdf_android/src/gpu/surface.rs:108` e impresión periódica en `gpu/pipeline.rs:1022-1038` (`frame p95=X.Xms (N frames)` cada 120 presents con overhead nanosegundo).
-  - **A2**: Suites de benchmarking en host: `crates/pdf_bench/benches/highlight.rs` (búsqueda y ordenación espacial) y `crates/pdf_bench/benches/composite.rs` (composición a resolución nativa 1440×2200).
+  - **A2**: Suites de benchmarking en host: `crates/pdf_bench/benches/highlight.rs` (búsqueda y ordenación espacial).
   - **A3**: Arnés de automatización `tools/adb-bench.sh` (ejecución de sweeps de páginas, captura de PSS vía dumpsys, screencap y recolección de métricas de logcat).
 - **Pendiente**:
   - **A4**: Gate de rendimiento en CI (no existe en `.github/workflows/ci.yml`). Debe ejecutar los benches y fallar si hay regresión.
@@ -44,9 +44,9 @@
   - **Capa base (Dry)**: Almacenada en un FBO estático gestionado por `DryKey` (`crates/pdf_android/src/gpu/dry_key.rs`, `gpu/pipeline.rs:914`). Solo se re-renderiza cuando cambia la página, el zoom, las anotaciones o el modo oscuro.
   - **Trazo en vuelo (Wet)**: Gestionado por `render_wet` (`pipeline.rs:686`), renderiza la geometría activa por frame directamente en GPU con blending alpha nativo.
   - **Simplificación geométrica**: Al soltar el trazo se aplica Douglas-Peucker iterativo con tolerancia fina de ε = 0,20 pt (`reader/tools.rs:328`), preservando la caligrafía natural sin retrasos.
-  - **Estado de APIs en `pdf_core`**: `StrokeCache`, `composite_annotations_alpha` y `blit_stroke_layer` existen en `pdf_core` como API pública para pruebas unitarias y benchmarks (`pdf_bench`), pero no intervienen en el flujo de renderizado en producción de Android.
+  - **Composición y pintado**: El producto Android no utiliza composición por CPU en producción, apoyándose enteramente en la composición por hardware en GPU (ADR-007). El compositor CPU experimental y sus cachés asociadas fueron eliminados de `pdf_core` en la limpieza de 2026-09-18 por carecer de consumidores.
 - **Mediciones**:
-  - En host x86_64: 4.39 ms directo y 2.39 ms con `StrokeCache` a resolución TCL.
+  - En host x86_64: mediciones históricas en host sobre el camino CPU hoy eliminado.
   - En hardware real TCL: El cierre formal (200 trazos concurrentes en página con pintado vivo < 8 ms p95) permanece `SIN MEDIR`.
 
 ### Fase D: IA con Contexto Global del PDF (NO INICIADA)

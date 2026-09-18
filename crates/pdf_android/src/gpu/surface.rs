@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Ciclo de vida EGL/GLES2 del visor (Tarea 4.1): `struct Gpu` (contexto,
+//! Ciclo de vida EGL/GLES2 del visor: `struct Gpu` (contexto,
 //! recursos, cachés y contadores), creación/descarte de surface, context y
 //! programas (`new`, `create_display`, `with_display`, `make_resources`),
 //! recreación por ventana (`recreate_surface`, `drop_surface*`), contadores
-//! del ciclo de vida (Tarea 2.6), `clear`/`view_bg` y los helpers de FBO
+//! del ciclo de vida, `clear`/`view_bg` y los helpers de FBO
 //! (`create/destroy_fbo_with_tex`) y swap interval.
 use android_activity::ndk::hardware_buffer_format::HardwareBufferFormat;
 use android_activity::ndk::native_window::NativeWindow;
@@ -37,8 +37,6 @@ pub(crate) struct Gpu {
     pub(crate) surf: Option<gl::EGLSurface>,
     pub(crate) win_w: i32,
     pub(crate) win_h: i32,
-    #[allow(dead_code)]
-    pub(crate) front_buffer_active: bool,
     pub(crate) prog_tex: QuadProg,
     pub(crate) prog_ovl: QuadProg,
     pub(crate) prog_ink: InkProg,
@@ -289,7 +287,6 @@ impl Gpu {
                 surf: Some(surf),
                 win_w: 0,
                 win_h: 0,
-                front_buffer_active: false,
                 prog_tex,
                 prog_ovl,
                 prog_ink,

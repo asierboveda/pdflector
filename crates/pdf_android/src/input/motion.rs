@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Procesamiento de `MotionEvent`s (extraído de `input.rs`, 2026-09-06):
+//! Procesamiento de `MotionEvent`s:
 //! `tick_gestures` (long-press quieto → modo selección), `handle_motion`
 //! (máquina de gestos del visor: tap/pull/pinch/pan, trazo de herramienta y
 //! borrado con stylus) y el input de las LISTAS — `list_tap`, `library_tap`,

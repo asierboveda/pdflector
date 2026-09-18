@@ -760,32 +760,6 @@ pub(crate) fn draw_view_menu(
     }
 }
 
-/// Renderiza el dropdown ViewMenu (⋯) completo a un bitmap RGBA8.
-#[allow(dead_code)]
-pub(crate) fn render_view_menu(reader: &Reader) -> Option<Bitmap> {
-    let (card_rect, _items) = view_menu_geometry(reader.win_w, reader.win_h);
-    let (ml, mt, mr, mb) = card_rect;
-    let mw = (mr - ml).ceil() as i32;
-    let mh = (mb - mt).ceil() as i32;
-    if mw <= 0 || mh <= 0 {
-        return None;
-    }
-    let mut rects: Vec<CanvasRect> = Vec::new();
-    let mut texts: Vec<CanvasText> = Vec::new();
-    draw_view_menu(reader, &mut rects, &mut texts);
-    for r in &mut rects {
-        r.left -= ml;
-        r.right -= ml;
-        r.top -= mt;
-        r.bottom -= mt;
-    }
-    for t in &mut texts {
-        t.x -= ml;
-        t.y -= mt;
-    }
-    jni_text_bitmap(mw, mh, theme::TRANSPARENT, &rects, &texts)
-}
-
 /// Items interactivos del menú Settings "☰" (Readest SettingsMenu).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsMenuItem {
@@ -1095,30 +1069,4 @@ pub(crate) fn draw_settings_menu(
         false,
         crate::draw::discover::ARXIV_ATTRIBUTION.to_string(),
     ));
-}
-
-/// Renderiza el dropdown SettingsMenu (☰) completo a un bitmap RGBA8.
-#[allow(dead_code)]
-pub(crate) fn render_settings_menu(reader: &Reader) -> Option<Bitmap> {
-    let (card_rect, _items) = settings_menu_geometry(reader.win_w, reader.win_h);
-    let (ml, mt, mr, mb) = card_rect;
-    let mw = (mr - ml).ceil() as i32;
-    let mh = (mb - mt).ceil() as i32;
-    if mw <= 0 || mh <= 0 {
-        return None;
-    }
-    let mut rects: Vec<CanvasRect> = Vec::new();
-    let mut texts: Vec<CanvasText> = Vec::new();
-    draw_settings_menu(reader, &mut rects, &mut texts);
-    for r in &mut rects {
-        r.left -= ml;
-        r.right -= ml;
-        r.top -= mt;
-        r.bottom -= mt;
-    }
-    for t in &mut texts {
-        t.x -= ml;
-        t.y -= mt;
-    }
-    jni_text_bitmap(mw, mh, theme::TRANSPARENT, &rects, &texts)
 }

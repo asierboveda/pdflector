@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Navegación y apertura de documentos (extraído de `reader.rs`, 2026-09-06): cambio de página (`goto_page`, `next_page`, `prev_page`, `jump_page`), persistencia de posición (`save_state` con flush diferido A1: `mark_state_dirty`, `flush_state`, `flush_state_if_due`) y apertura de PDFs (`open_pdf`, `open_pdf_at`).
+//! Navegación y apertura de documentos: cambio de página (`goto_page`, `next_page`, `prev_page`, `jump_page`), persistencia de posición (`save_state` con flush diferido A1: `mark_state_dirty`, `flush_state`, `flush_state_if_due`) y apertura de PDFs (`open_pdf`, `open_pdf_at`).
 
 use super::Reader;
 use super::UiMode;

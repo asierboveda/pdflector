@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Bloque stylus USI 2.0 (extraído de `input.rs`, 2026-09-06): drenado del
+//! Bloque stylus USI 2.0: drenado del
 //! history de 240 Hz del lápiz/borrador (`STYLUS_HISTORY_CAP`,
 //! `feed_stylus_history`/`feed_stylus_sample`), detección de herramienta
 //! stylus/borrador (`is_stylus_tool`), re-escalado de timestamps NDK a ms del
@@ -31,7 +31,7 @@ pub(crate) fn is_stylus_tool(t: android_activity::input::ToolType) -> bool {
 /// activo): los puntos históricos encadenan `update_tool_gesture` (curva
 /// midpoint) o `update_erase_gesture` (`erase_last` barre sin huecos).
 ///
-/// Fase 1 (USI 2.0): cada muestra lleva `t_ms` (timestamp NDK re-escalado al
+/// Cada muestra lleva `t_ms` (timestamp NDK re-escalado al
 /// ancla del gesto) y `pressure` normalizada [0,1] — el predictor y el
 /// grosor dependiente de presión los consumen.
 fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32, t_ms: f32, pressure: f32) {

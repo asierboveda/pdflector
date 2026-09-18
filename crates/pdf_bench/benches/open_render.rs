@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Asier Bóveda
 
 //! Engine benchmark harness (criterion) — MuPDF is the only engine since
-//! ADR-001 (Fase 0.5), so `build_engine` is the sole customization point.
+//! ADR-001, so `build_engine` is the sole customization point.
 //!
 //! Benchmark groups:
 //!   open      — cost of opening each corpus PDF (4 documents).

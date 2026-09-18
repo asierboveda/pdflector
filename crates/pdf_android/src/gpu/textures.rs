@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Subida y caché de texturas (extraído de `gpu/mod.rs`, Tarea 4.1):
+//! Subida y caché de texturas:
 //! textura de página (`upload_page_if_needed`), caché LRU de overlays con
 //! presupuesto por bytes (`OverlayTex`, `overlay_tex`, `delete_ovl_tex` —
 //! wiring de `ovl_budget`), textura dedicada del fade de apertura

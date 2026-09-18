@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Bucle de eventos de input (extraído de `input.rs`, 2026-09-06):
+//! Bucle de eventos de input:
 //! `handle_input` drena `input_events_iter()` y despacha cada `MotionEvent` a
 //! `handle_motion` (visor/listas), drenando antes el history del stylus y
 //! calculando el ancla de tiempo/presión USI (`pending_t0_ns` /
@@ -35,7 +35,7 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
                     .pointers()
                     .map(|p| (p.pointer_id(), p.x(), p.y()))
                     .collect();
-                // Fase 1 USI: timestamp (ns, System.nanoTime) y presión del
+                // USI: timestamp (ns, System.nanoTime) y presión del
                 // PRIMER pointer stylus — el ancla del Down (gesture_t0_ns)
                 // y la presión del evento real salen de aquí. En multitouch
                 // solo el stylus importa (guard pointers.len()==1 aguas

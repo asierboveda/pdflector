@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Toast y panel de IA (extraído de `reader.rs`, 2026-09-06): aviso breve (`show_toast`) y "Preguntar a la IA" — `ask_ai` (hilo de fondo híbrido Gemini/Groq con imagen), `ai_answer`, `rebuild_ai_panel`, `close_ai_panel`, `ai_scroll`.
+//! Toast y panel de IA: aviso breve (`show_toast`) y "Preguntar a la IA" — `ask_ai` (hilo de fondo híbrido Gemini/Groq con imagen), `ai_answer`, `rebuild_ai_panel`, `close_ai_panel`, `ai_scroll`.
 
 use super::AiPanel;
 use super::AiPhase;

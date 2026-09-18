@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Ciclo de vida del `Reader` (extraído de `reader.rs`, 2026-09-06): construcción (`Reader::new`), apertura de la ventana (`set_window`, `init_window`) y su liberación (`terminate_window`).
+//! Ciclo de vida del `Reader`: construcción (`Reader::new`), apertura de la ventana (`set_window`, `init_window`) y su liberación (`terminate_window`).
 
 use super::AiPhase;
 use super::LaunchRequest;

@@ -49,14 +49,6 @@
 //! se dispara nunca mientras hay selección/menú abierto (`sel_menu_tap`
 //! consume esos taps); tocar fuera del menú lo cierra y descarta la
 //! selección. El long-press solo aplica con el sheet cerrado.
-//!
-//! Partición de `input.rs` (2026-09-06, Tarea 4.3 de la reestructuración): el
-//! fichero único se dividió en cuatro submódulos por responsabilidad —
-//! `gestos` (estado de la máquina + taps del visor), `motion` (procesamiento
-//! de `MotionEvent`s del visor y de las listas), `dispatch` (bucle de
-//! eventos, `handle_input`) y `stylus` (bloque USI 2.0 del lápiz/borrador).
-//! `mod input;` en `lib.rs` sigue resolviendo igual: la ruta `crate::input::*`
-//! se conserva con re-exports (ver abajo).
 
 // Máquina de gestos del visor: `GestureState`/`GestureKind`, temporizador de
 // long-press y los taps del visor (página, chrome, sheet, menús).

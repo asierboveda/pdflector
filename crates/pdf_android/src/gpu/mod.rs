@@ -37,7 +37,7 @@ pub(crate) use dry_key::DryKey;
 mod ovl_budget;
 pub(crate) use ovl_budget::{OVL_BYTE_BUDGET, OvlBudget};
 
-// Submódulos del pipeline GPU (Tarea 4.1, extraídos de este mod.rs):
+// Submódulos del pipeline GPU:
 // declaraciones FFI EGL/GLES2, shaders, ciclo de vida de surface/contexto,
 // texturas y render/present. Este fichero queda como cordón de módulos y
 // re-exports para mantener la API pública `crate::gpu::X`.

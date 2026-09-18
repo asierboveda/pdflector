@@ -4,7 +4,7 @@
 //! Página de texto cacheadas: `PageTextCache` — Fase B (subrayado sin
 //! latencia).
 //!
-//! El flujo auditado del resaltador (`pdf_android/input.rs`:
+//! El flujo auditado del resaltador (`pdf_android/src/input/gestos.rs`:
 //! `end_tool_gesture` Highlight) llama a `Document::text(page)` en el hilo
 //! UI justo al soltar el gesto; `text()` ejecuta `load_page` +
 //! `to_text_page` (stext) + `structured()` — parsing no trivial en la TCL
@@ -12,9 +12,9 @@
 //! página se paga (y se puede prefetchear al abrir / en hilo fondo), el
 //! resto es un hit de LRU de coste ~0.
 //!
-//! También es la base de la Fase D (IA con contexto): `ai.rs` necesita el
-//! texto de muchas páginas (BM25 / RAG); con esta caché la extracción se
-//! amortiza entre el subrayado, la selección y la IA.
+//! También es la base prevista para la Fase D (IA con contexto): para cuando `ai.rs`
+//! requiera el texto de muchas páginas (BM25 / RAG, ver `docs/plan/D-ia-contexto.md`);
+//! con esta caché la extracción se amortiza entre el subrayado, la selección y la IA.
 //!
 //! Diseño:
 //! - `LruCache<u32, Arc<PageText>>` (crate `lru`, ya en el workspace):

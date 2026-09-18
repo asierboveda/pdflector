@@ -251,20 +251,20 @@
 //!   tap simple de página es INMEDIATO (sin ventana de doble-tap: un doble-
 //!   tap rápido son dos cambios de página) y NO se dispara nunca mientras
 //!   haya selección/menú abierto.
-//! - **Estado** (`reader.rs`): `Reader::sel` guarda la selección en coords de
+//! - **Estado** (`reader/`): `Reader::sel` guarda la selección en coords de
 //!   PANTALLA (px de ventana, `anchor`/`cur`) — decisión documentada: el
 //!   gesto, el render del rect y el menú viven en pantalla; la conversión a
 //!   página se hace UNA sola vez al extraer texto (`sel_text`) o subrayar
 //!   (`highlight_sel`) con `Reader::screen_to_page`, la INVERSA exacta del
 //!   mapeo del blit (misma `scale = cover × zoom` y `dx/dy` que `PageAnnots`).
-//! - **Render** (`draw.rs`): el rect de selección se dibuja translúcido con
+//! - **Render** (`draw/`): el rect de selección se dibuja translúcido con
 //!   borde sobre la página, RECORTADO a los bordes de la hoja
 //!   (`Reader::sel_screen_rect`); el menú flotante se renderiza con el
 //!   Canvas+JNI como overlay cacheado (`Reader::sel_menu`).
 //! - **Copiar** (`jni.rs`): `ClipboardManager.setPrimaryClip(
 //!   ClipData.newPlainText("text", sel))` con el contexto de la Activity;
 //!   aviso breve "copied" en un toast sobre el indicador (`Reader::toast`).
-//! - **Subrayar** (`reader.rs`): añade un `Annotation::Highlight` con el rect
+//! - **Subrayar** (`reader/`): añade un `Annotation::Highlight` con el rect
 //!   de selección en página (amarillo) al `AnnotationSet` y PERSISTE con
 //!   `AnnotationStore::save` (sidecar SQLite); el render de highlights ya
 //!   existente (`draw::draw_highlight`, relleno translúcido bajo los trazos)
@@ -308,7 +308,7 @@
 //! gesto de dibujo.
 //!
 //! Se MANTIENEN la carga y el render de anotaciones ya guardadas (el usuario
-//! no pierde sus trazos): la capa vectorial sigue en `draw.rs`
+//! no pierde sus trazos): la capa vectorial sigue en `draw/`
 //! (`PageAnnots`/`draw_annotations`) y el sidecar se sigue cargando
 //! (`Reader::load_annotations`). `annotations.rs` queda con
 //! `#![allow(dead_code)]` documentado por si una fase futura reintroduce la
@@ -330,9 +330,9 @@
 //!    "N / total" abajo a la izquierda (`draw::render_page_badge`, tap =
 //!    página siguiente) y el sheet de ajustes deslizante desde arriba
 //!    (`draw::render_sheet`). Renderizados con el mismo Canvas+JNI de
-//!    `draw.rs`; la geometría DEBE coincidir con las zonas de tap de
-//!    `input.rs` (helpers compartidos en `reader.rs`).
-//! 3. **Modo oscuro**: `toggle_dark` invierte el bitmap YA renderizado con
+//!    `draw/`; la geometría DEBE coincidir con las zonas de tap de
+//!    `input/` (helpers compartidos en `reader/geometry.rs`).
+//! 3. **Modo oscuro**: el visor alterna temas (`cycle_theme`), invirtiendo el bitmap YA renderizado con
 //!    `pdf_core::dark::invert_bitmap` (sin re-renderizar MuPDF); los renders
 //!    nuevos se invierten al generarse, en `render_current_page`. El fondo
 //!    letterbox pasa a negro puro (`DARK_BG`). La preferencia se persiste
@@ -349,7 +349,6 @@ pub mod ink;
 mod input;
 mod jni;
 mod persist;
-pub(crate) mod prediction;
 mod reader;
 mod thumbs;
 mod view;
@@ -542,7 +541,7 @@ pub(crate) mod theme {
     }
 
     /// Paleta de color derivada de Readest para renderizado UI.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // tokens Readest completos: no todos los roles están cableados a widgets aún
     #[derive(Copy, Clone, Debug)]
     pub(crate) struct ThemePalette {
         pub(crate) name: &'static str,
@@ -557,7 +556,7 @@ pub(crate) mod theme {
         pub(crate) primary_content: u32,
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Métodos de acceso a tokens Readest; se conservan por completitud del sistema de diseño.
     impl ThemePalette {
         pub(crate) fn bg(&self) -> u32 {
             self.base_100

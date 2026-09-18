@@ -9,6 +9,83 @@
 > changelog no se reescribe; el contenido está en el historial de git (`git log -- <ruta>`).
 > Para el estado vigente, ver `docs/README.md`.
 
+## 2026-09-18 — Limpieza de código: −2.619 líneas, `#[allow(dead_code)]` 44→8, `expect()` en producción 5→0
+
+Limpieza orquestada con 6 agentes en paralelo sobre dominios de ficheros disjuntos.
+Objetivo: quitar lo que no sirve, lo que miente y lo que incumple las reglas del propio
+proyecto. La limpieza **no cambia comportamiento**: 181 tests verdes (antes 193; la
+diferencia son los tests del código eliminado).
+
+- **Compositor CPU de anotaciones eliminado** (−1.028 líneas): `pdf_core/src/overlay.rs` (659 l.)
+  y `strokecache.rs` (135 l.) con su test de integración. El producto pinta por GPU (pipeline
+  dry/wet, ADR-007) y **ni `pdf_android` ni `pdf_app` importaban ese compositor**: solo lo usaban
+  tests y benches. `tests/annotations_pipeline.rs` se adaptó (conserva los dos casos que prueban
+  el pipeline vivo: extracción → subrayado → sidecar).
+- **Crate `pdf_spike` eliminado** (−689 líneas): experimento ya consumido — la predicción vive en
+  `pdf_android`, el present EGL en `gpu/`. Fuera del workspace y del APK.
+- **Predicción duplicada eliminada** (−238 líneas): `pdf_android/src/prediction.rs` (predictor
+  Hermite, ADR-006) quedó superado por `ink/` (Kalman + spring-mass) y estaba bajo
+  `#![allow(dead_code)]` a nivel de módulo entero.
+- **Apertura sin copia eliminada** (−195 líneas): `jni.rs` `ContentFd` + `open_content_fd`
+  (abrir `content://` con fd nativo sin duplicar el fichero). La biblioteca pasó a **curada con
+  copia**, así que ese camino no tenía consumidor.
+- **Código muerto y cascadas**: 13 items con cero usos (`render_view_menu`,
+  `render_settings_menu`, `grid_visible_rows`, `grid_rows_y0`, `grid_total_rows`, `open_picker`,
+  constantes y funciones EGL sin uso…) + los huérfanos que su borrado dejó al descubierto
+  (`GRID_COLS`, import `log::error`, `PageCache::{get,len,resident_bytes,promote}`, `glScissor`).
+  `#[allow(dead_code)]`: **44 → 8**, cada superviviente con justificación escrita y concreta.
+- **Violaciones de regla corregidas**: los 5 `expect()` en producción de `pdf_core`
+  (`ai.rs:190,209`, `export.rs:90`, `sync.rs:78,124`) sustituidos por caminos sin pánico que
+  preservan el comportamiento en el caso normal. `unwrap/expect` en producción de `pdf_core`: **0**.
+- **Comentarios: arqueología eliminada y punteros corregidos** (7 ficheros de `pdf_android`,
+  `pdf_app`, `pdf_core`, `pdf_bench`): fuera las frases «extraído de `reader.rs`, 2026-09-06,
+  Tarea 4.4» y las menciones a fases numeradas muertas (Fase 3.5, Fase 0.5, Fase 1); corregidos
+  los punteros a `draw.rs`/`reader.rs`/`gpu.rs` (hoy directorios) y las citas a símbolos que no
+  existen (`tool_overlay`, `raster_tool_layer`, `LIBRARY_MAX`, `budget_scale`).
+- **CI**: el job `android` gana un paso de `cargo clippy -p pdf_android --target
+  aarch64-linux-android --all-targets -- -D warnings`. El `clippy` del job `check` corre solo los
+  `default-members` del workspace, así que la app real (excluida de ellos) **nunca se linteaba**:
+  un error real (`clippy::option_map_unit_fn` en `reader/redraw.rs`) llevaba tiempo oculto. Ya
+  corregido, y el hueco cerrado.
+- **Documentación coherente**: `docs/api-anotaciones-fase3.md` deja de documentar la API borrada;
+  `docs/plan/{C-pintado,A-latencia,NEXT-PLAN,DEUDA}.md` actualizados (el criterio vivo de C es
+  medir 200 trazos en la tablet, `SIN MEDIR`); `benchmark-results.md` conserva su entrada
+  histórica con nota de que el código medido ya no existe; skill de rendimiento con 8 benches
+  reales (no 9); `ADR-006` anota que su spike fue retirado; nueva deuda `RND-06` (`crop_margins`
+  tiene tests pero no está cableado a la UI).
+- **Verificación** (2026-09-18, host AMD Ryzen 7 5800H + NDK r28): `cargo fmt --all --check`
+  limpio; `cargo clippy --all-targets -- -D warnings` limpio; `cargo clippy -p pdf_android
+  --target aarch64-linux-android --all-targets -- -D warnings` limpio; `cargo test -p pdf_core`
+  181/0; `cargo check -p pdf_android --target aarch64-linux-android --all-targets` OK.
+  Rust total: 41.688 → 39.069 líneas en 96 ficheros (antes 103). **Sin verificación en la tablet**
+  (no conectada): los flujos de UI se prueban en la próxima sesión con hardware.
+
+## 2026-09-18 — Auditoría documental: 63 ficheros a 31, −8.259 líneas
+
+Reconstrucción completa de la documentación, orquestada con 7 agentes de reconocimiento y
+6 de escritura sobre dominios disjuntos. El repositorio tenía cinco planes compitiendo,
+~3.000 líneas de material muerto y contradicciones de integridad graves.
+
+- **Un solo roadmap**: `docs/plan/NEXT-PLAN.md` (fases A–F). Eliminados los competidores,
+  entre ellos `docs/PLAN.md` (el documento **más referenciado del repo**, con 41 menciones y
+  citado por **17 ficheros de código**) y los dos planes «Pro».
+- **Contradicciones registradas, no enterradas**: ADR-001 se apoya en un benchmark que el
+  propio repo contradice (el shootout da PDFium ganador en 14/16 pruebas, discrepancia sin
+  explicar); ADR-003 declaraba 9 ms/página frente a los 73,6 ms/página de su baseline.
+  Ambos conflictos quedan declarados y la decisión del dueño (MuPDF) se mantiene.
+- **Huecos rellenados**: `docs/benchmark-results.md` (la evidencia canónica) no mencionaba
+  Evince ni poppler; el trabajo de arXiv/Discover (~2.500 líneas en producción) no aparecía en
+  ninguna documentación vigente ni en el CHANGELOG.
+- **Reglas corregidas** en `AGENTS.md`: fuera comandos imposibles (`-D clippy::unwrap_used`
+  daba 39 errores reales en tests), afirmaciones falsas («la APK compila sin claves», cuando
+  `include_str!` las exige) y añadida la sección **Trabajo con agentes** (worktrees, fuente de
+  verdad `main`, propiedad de fichero, integración), cuya ausencia ya causó que dos ramas
+  arreglaran el mismo bug por separado.
+- **GitHub**: 6 milestones renombrados del waterfall a las fases A–F; los 6 issues de fases
+  muertas cerrados (por primera vez en la historia del repo) y sustituidos por #33–#40 con
+  criterio de cierre medible.
+- Verificación: cero referencias a ficheros borrados y cero enlaces internos rotos.
+
 ## 2026-09-15 — Fix taps tragados y doble pase de página
 
 - Fix en transiciones de página (`gpu/pipeline.rs`, `gpu/dry_key.rs`): en un fallo de caché

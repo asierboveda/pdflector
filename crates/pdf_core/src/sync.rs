@@ -73,10 +73,12 @@ const MAX_COALESCED: usize = 64;
 /// Derived from [`store::sidecar_path`] so both stay coherent by
 /// construction: the sidecar always lives inside this directory.
 pub fn annotations_dir(pdf_path: &Path) -> PathBuf {
+    // Invariante: sidecar_path siempre genera `<pdf-dir>/annotations/<name>.db`,
+    // por lo que tiene directorio padre. Fallback sin pánico al padre del propio PDF.
     sidecar_path(pdf_path)
         .parent()
-        .expect("sidecar always sits in <pdf-dir>/annotations/")
-        .to_path_buf()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| pdf_path.parent().unwrap_or(pdf_path).to_path_buf())
 }
 
 /// `library.db` at the root of the Syncthing-replicated library folder:
@@ -119,11 +121,12 @@ pub fn watch_annotations(
     // relative inputs would never match the absolute paths in events.
     let pdf = std::path::absolute(pdf_path).unwrap_or_else(|_| pdf_path.to_path_buf());
     let sidecar = sidecar_path(&pdf);
+    // Invariante: sidecar_path siempre genera `<pdf-dir>/annotations/<name>.db`,
+    // por lo que tiene directorio padre. Fallback sin pánico al padre del propio PDF.
     let ann_dir = sidecar
         .parent()
-        .expect("sidecar always sits in <pdf-dir>/annotations/")
-        .to_path_buf();
-
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| pdf.parent().unwrap_or(&pdf).to_path_buf());
     let (tx, rx) = mpsc::channel::<()>();
     // Clones for the 'static handler; the originals are still needed below
     // to register the watches.

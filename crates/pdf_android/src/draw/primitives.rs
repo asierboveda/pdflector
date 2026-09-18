@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Asier Bóveda
 
 //! Primitivas de blit a bajo nivel sobre el buffer de ventana
-//! (`fill_buffer`, `copy_region_rect`, `copy_region`, `copy_region_blend`
+//! (`fill_buffer`, `copy_region`, `copy_region_blend`
 //! con alfa y conversión RGB565). Puntero + dimensión, patrón de `zoom.rs`.
 
 use pdf_core::Bitmap;
@@ -77,58 +77,6 @@ fn copy_row_rgba_to(dst: &mut [u8], src: &[u8], bpp: usize) {
 /// Conversión RGBA8 → RGB565 (formato `R5G6B5_UNORM` de Android, u16 little-endian).
 pub(super) fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3)
-}
-
-/// Copia la intersección de `src` (bitmap RGBA8) con la ventana del buffer
-/// `dst` (formato `bpp` bytes/px), con la esquina superior-izquierda de `src`
-/// en `(sx, sy)` px del buffer. Recorta los bordes fuera del buffer (zoom > 1,
-/// pan o botones en los bordes).
-//
-// 8 parámetros posicionales de un blit (raw pointer + dimensiones): se acepta
-#[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn copy_region_rect(
-    dst: *mut u8,
-    dst_w: usize,
-    dst_h: usize,
-    dst_stride: usize,
-    bpp: usize,
-    src: &Bitmap,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-) {
-    debug_assert_eq!(
-        src.width as usize, dst_w,
-        "dirty rect exige bitmap del mismo tamaño"
-    );
-    let x0 = x0.max(0);
-    let y0 = y0.max(0);
-    let x1 = x1.min(dst_w as i32).min(src.width as i32);
-    let y1 = y1.min(dst_h as i32).min(src.height as i32);
-    if x1 <= x0 || y1 <= y0 {
-        return;
-    }
-    let copy_w = (x1 - x0) as usize;
-    for y in y0..y1 {
-        let row_off = (y as usize * src.width as usize + x0 as usize) * 4;
-        let src_row = &src.data[row_off..row_off + copy_w * 4];
-        let dst_row = unsafe {
-            std::slice::from_raw_parts_mut(
-                dst.add((y as usize * dst_stride + x0 as usize) * bpp),
-                copy_w * bpp,
-            )
-        };
-        if bpp == 4 {
-            dst_row.copy_from_slice(&src_row[..copy_w * 4]);
-        } else {
-            let n = bpp.min(3);
-            for (o, px) in src_row.as_chunks::<4>().0.iter().enumerate() {
-                dst_row[o * bpp..o * bpp + n].copy_from_slice(&px[..n]);
-            }
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

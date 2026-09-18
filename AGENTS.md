@@ -63,7 +63,6 @@ crates/pdf_android   # PRODUCTO: app Android nativa (android-activity + EGL/GLES
                      # gpu/ (pipeline wet/dry), ink/, reader/, draw/, input/, thumbs, discover.
 crates/pdf_app       # banco de pruebas del core en escritorio (egui). No es plataforma destino.
 crates/pdf_bench     # criterion + sweep; corre en host.
-crates/pdf_spike     # experimentos puntuales (predicción de trazo). No entra en el APK.
 docs/adr/            # ADR-001 MuPDF/AGPL · ADR-005 Android nativo (sustituye a 004)
                      # ADR-006 stylus EGL · ADR-007 pipeline wet/dry
 ```

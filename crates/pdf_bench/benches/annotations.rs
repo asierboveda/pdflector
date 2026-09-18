@@ -43,7 +43,7 @@ const N_SMALL: usize = 100;
 const N_LARGE: usize = 1000;
 /// Pages the spread sets are distributed over.
 const PAGES: usize = 50;
-/// The Fase 3 criterion threshold: 200 strokes on one page.
+/// The Fase C criterion threshold: 200 strokes on one page.
 const HOT: usize = 200;
 
 fn color() -> Color {
@@ -111,7 +111,7 @@ fn build_set(total: usize, pages: usize, hot: usize) -> AnnotationSet {
 
 /// Cost per `AnnotationSet::add`: N inserts into one set. Throughput is set
 /// to Elements(N), so the report is the per-add cost. The UI pays this once
-/// per stroke drawn: with the Fase 3 budget of 200+ strokes this path must
+/// per stroke drawn: with the Fase C budget of 200+ strokes this path must
 /// stay cheap (it runs on the UI thread during inking, though off the render
 /// path itself).
 fn bench_add(c: &mut Criterion) {
@@ -140,7 +140,7 @@ fn bench_add(c: &mut Criterion) {
 
 /// Cost of `for_page` on the page holding 200 annotations (1000 in the set
 /// over 50 pages): the lookup the draw path pays every frame, and the direct
-/// check of the Fase 3 criterion (200+ visible strokes without degrading
+/// check of the Fase C criterion (200+ visible strokes without degrading
 /// frame time). The result is a `Vec<&Annotated>` allocated per call — that
 /// allocation is part of what is measured.
 fn bench_for_page(c: &mut Criterion) {
@@ -190,7 +190,7 @@ fn bench_serialize(c: &mut Criterion) {
 
 /// Cost of one full persist+reload cycle on a real SQLite sidecar
 /// (`AnnotationStore::save` + `load` on a temp .db): the persistence path of
-/// Fase 3 §3.5. Saves happen on user action (pen up / close), not per frame;
+/// Fase C. Saves happen on user action (pen up / close), not per frame;
 /// the budget is that hundreds of annotations round-trip without a
 /// perceptible hitch.
 fn bench_store_roundtrip(c: &mut Criterion) {

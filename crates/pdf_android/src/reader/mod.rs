@@ -3,13 +3,11 @@
 
 //! Estado de la app y lógica del visor/picker/biblioteca (`struct Reader`).
 //!
-//! Módulo resultante de la partición de `lib.rs` (2026-08-13) y de la partición de
-//! `reader.rs` (2026-09-06, Tarea 4.4 de la reestructuración): `reader/mod.rs` conserva
-//! el MODELO DE DATOS — tipos de lista (`PdfEntry`, `LibraryEntry`, `LibraryScan`,
-//! `BookStatus`, `LibSort`, `LibraryViewMode`, …), estado de selección/IA (`SelState`,
-//! `SelMenu`, `AiPhase`, `AiPanel`, `ListDrag`, `EmptyStateGeom`), el `struct Reader`
-//! con sus campos (los de la biblioteca, `lib_*`, viven en `LibraryState`
-//! — Tarea 4.5, ver `library_state.rs`), los helpers
+//! `reader/mod.rs` conserva el MODELO DE DATOS — tipos de lista (`PdfEntry`,
+//! `LibraryEntry`, `LibraryScan`, `BookStatus`, `LibSort`, `LibraryViewMode`, …),
+//! estado de selección/IA (`SelState`, `SelMenu`, `AiPhase`, `AiPanel`, `ListDrag`,
+//! `EmptyStateGeom`), el `struct Reader` con sus campos (los de la biblioteca,
+//! `lib_*`, viven en `LibraryState` — ver `library_state.rs`), los helpers
 //! libres del modelo (`title_from_name`, `scan_pdfs`, …), dos métodos transversales
 //! (`next_ovl_id`, `mark_repaint`), `load_pen_mode` y el `Drop`. La LÓGICA vive en 12
 //! submódulos por responsabilidad (ver abajo). El input (gestos) está en `input`, el
@@ -37,8 +35,7 @@ use crate::persist::{BookProgress, RecentEntry};
 use crate::theme;
 use crate::thumbs::ThumbCache;
 
-// Partición de `reader.rs` (2026-09-06, Tarea 4.4): submódulos por
-// responsabilidad — ver el doc de cada uno para su contenido.
+// Submódulos por responsabilidad — ver el doc de cada uno para su contenido:
 mod anotaciones;
 mod discover;
 pub(crate) mod discover_categories;
@@ -534,7 +531,7 @@ pub(crate) struct Reader {
     /// Desplazamiento del picker en filas (scroll; la BIBLIOTECA usa ahora
     /// `library.lib_scroll` en píxeles — ver abajo).
     pub(crate) list_scroll: usize,
-    /// Estado de la BIBLIOTECA (Tarea 4.5 de la reestructuración): los campos
+    /// Estado de la BIBLIOTECA: los campos
     /// `lib_*` (scrolls px, filtros, sort, registro de progreso, planos
     /// cacheados y fade de apertura) viven en `LibraryState` — ver
     /// `library_state.rs`; aquí se poseen como un único campo y los accesos
@@ -682,8 +679,7 @@ pub(crate) struct Reader {
     /// Selección de texto en curso (long-press + arrastre) en px de ventana
     /// (ver `SelState`): Some durante el arrastre Y mientras está fijada con
     /// su menú abierto (`sel_menu`); se descarta al tocar fuera del menú o al
-    /// ejecutar Copiar/Subrayar. None = sin selección activa
-    /// (`has_selection`).
+    /// ejecutar Copiar/Subrayar. None = sin selección activa.
     pub(crate) sel: Option<SelState>,
     /// Menú flotante de la selección fijada (Copiar/Subrayar/IA): bitmap +
     /// posición/geometría en px de ventana (ver `SelMenu`). Some mientras el
@@ -721,7 +717,7 @@ pub(crate) struct Reader {
     pub(crate) toast_bitmap: Option<Bitmap>,
     /// Id de generación de `toast_bitmap` (caché GPU; ver `ovl_seq`).
     pub(crate) toast_id: u64,
-    /// Herramienta de anotación activa en el visor (Fase 3.5): Navegar
+    /// Herramienta de anotación activa en el visor: Navegar
     /// (gestos normales) / Resaltar / Boli. Con una herramienta distinta de
     /// Navegar el arrastre de UN dedo (o el lápiz de la tablet) dibuja en
     /// vez de navegar; el tap simple no cambia de página (`input`), y la
@@ -731,7 +727,7 @@ pub(crate) struct Reader {
     /// Modo del BOLI persistido (`PenMode`): el boli dibuja (Ink) o subraya
     /// (Highlight) SIEMPRE que toca el PDF, sin depender de la barra de
     /// herramientas; el botón UP del boli lo alterna (`toggle_pen_mode`) y se
-    /// guarda en `tool_state.json`. La barra (Fase 3.5) sigue existiendo y
+    /// guarda en `tool_state.json`. La barra de herramientas sigue existiendo y
     /// `set_tool` sincroniza este modo para que ambas entradas coincidan.
     pub(crate) pen_mode: PenMode,
     /// ¿El gesto de BORRADO en curso ha eliminado alguna anotación? Se guarda

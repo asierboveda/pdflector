@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Tick del bucle de eventos (extraído de `reader.rs`, 2026-09-06): `tick` y su predicado `needs_tick`, visibilidad de filas (`lib_visible_grid_rows`/`lib_visible_list_rows`), pump de portadas (`thumbs_pending`, `ensure_thumb_worker`, `pump_thumbs`), la evicción diferida del pagecache en ticks idle (`trim_to_budget`, fix p95 — ver `crate::cache`) y accesores de frame del bucle (`take_repaint`, `needs_repaint`, `has_window`).
+//! Tick del bucle de eventos: `tick` y su predicado `needs_tick`, visibilidad de filas (`lib_visible_grid_rows`/`lib_visible_list_rows`), pump de portadas (`thumbs_pending`, `ensure_thumb_worker`, `pump_thumbs`), la evicción diferida del pagecache en ticks idle (`trim_to_budget`, fix p95 — ver `crate::cache`) y accesores de frame del bucle (`take_repaint`, `has_window`).
 
 use super::AiPhase;
 use super::Reader;
@@ -163,11 +163,11 @@ impl Reader {
         if self.mode == UiMode::Library && self.pump_thumbs(app) {
             if let Some((mut band, origin)) = self.library.lib_band.take() {
                 // Pegar las portadas nuevas sobre la banda EXISTENTE (memcpy
-                // por celda): sin re-render del canvas (antes un rebuild
+                // por celda): sin re-render completo del plano (antes un rebuild
                 // completo de la pantalla por cada lote de portadas).
                 paste_lib_thumbs(self, &mut band, origin);
                 // Banda mutada in-place: nueva generación de su plano (la
-                // textura GPU dedicada se re-subirá — Tarea 2.7).
+                // textura GPU dedicada se re-subirá).
                 self.library.lib_band_ver += 1;
                 self.library.lib_band = Some((band, origin));
                 self.splice_band_rows();
@@ -345,17 +345,6 @@ impl Reader {
         let r = self.repaint;
         self.repaint = false;
         r
-    }
-
-    /// ¿El bucle debe correr con timeout (~16 ms) para redibujar? (gesto en
-    /// curso u otro trabajo diferido).
-    #[allow(dead_code)] // apoyo: el flujo real usa `needs_tick(&mut self)`
-    pub(crate) fn needs_repaint(&self) -> bool {
-        self.repaint
-            || self.tool_gesture.is_some()
-            || self.sheet_anim
-            || self.ai_rx.is_some()
-            || self.library.lib_fade.is_some()
     }
 
     /// ¿Tenemos ventana (ANativeWindow activo)? El bucle principal usa un

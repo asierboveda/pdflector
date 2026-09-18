@@ -5,46 +5,46 @@
 //! docs/adr/ADR-005-ui-android-nativa.md: native `pdf_android` stack; this app
 //! never holds logic, it only asks pdf_core and paints).
 //!
-//! Fase 1 "fluent reading": continuous virtualized scroll of the whole
-//! document. The UI thread never renders (AGENTS.md §4.6): all caching and
+//! Continuous virtualized scroll of the whole document ("fluent reading").
+//! The UI thread never renders (AGENTS.md §4.6): all caching and
 //! rendering live in `pdf_core::prefetch::Prefetcher`'s worker thread; this
 //! app only translates the visible window into a `Viewport`, polls
 //! `Prefetcher::get_page` receivers with `try_recv` and uploads landing
 //! bitmaps to GPU textures.
 //!
-//! Fase 2 additions, both pure presentation concerns (no pdf_core change): a
-//! dark-mode toggle that inverts pages at texture upload (the cache always
-//! keeps the normal bitmaps) and persists in eframe's storage; and a debug
-//! overlay showing frame-time p95, RSS and the prefetcher's cache counters.
+//! Pure presentation features (no pdf_core change): a dark-mode toggle that
+//! inverts pages at texture upload (the cache always keeps the normal bitmaps)
+//! and persists in eframe's storage; and a debug overlay showing frame-time p95,
+//! RSS and the prefetcher's cache counters.
 //!
-//! Fase 3 addition: a vector annotation layer (AGENTS.md §4.3). A draw-mode
-//! toggle turns a primary-button drag over a page into a freehand `Stroke`
-//! stored in `pdf_core::AnnotationSet` (page coordinates) and painted every
-//! frame on top of the page textures with the egui painter. The
-//! cursor→page transform is the exact inverse of the page placement (see
+//! Vector annotation layer (AGENTS.md §4.3): a draw-mode toggle turns a
+//! primary-button drag over a page into a freehand `Stroke` stored in
+//! `pdf_core::AnnotationSet` (page coordinates) and painted every frame on
+//! top of the page textures with the egui painter. The cursor→page
+//! transform is the exact inverse of the page placement (see
 //! `page_rect`/`screen_to_page`).
 //!
-//! Fase 3-4 closure: persistence, export and sync are wired into the same
-//! layer. The set is loaded from the SQLite sidecar at open and saved on
-//! every mutation (`AnnotationStore`, kept alive in `App::store`); the
-//! toolbar exports it to Markdown and to an annotated PDF copy (background
-//! thread, `start_export`); and a `notify` watcher (Fase 4) hot-reloads the
-//! set when the sidecar changes on disk — Syncthing is the one that copies,
-//! this is only the local trigger (`App::sync_rx` / `reload_annotations`).
+//! Persistence, export and sync are wired into the same annotation layer.
+//! The set is loaded from the SQLite sidecar at open and saved on every
+//! mutation (`AnnotationStore`, kept alive in `App::store`); the toolbar
+//! exports it to Markdown and to an annotated PDF copy (background thread,
+//! `start_export`); and a `notify` watcher hot-reloads the set when the
+//! sidecar changes on disk — Syncthing is the one that copies, this is only
+//! the local trigger (`App::sync_rx` / `reload_annotations`).
 //!
-//! Fase 3.5 additions, still pure presentation (no pdf_core change): two more
-//! tools beside Draw (`ToolMode`) and an annotations panel. Highlight turns a
-//! drag into a per-line `Highlight` computed from the page text on a
-//! background thread (`highlight_worker`, the MuPDF context is per-thread TLS
-//! so the prefetcher's document never leaves its worker — same pattern as
-//! `chat_worker`); Note turns a click into a `TextNote` anchored at the
-//! click, typed in a small floating input. Both persist through the existing
-//! sidecar store (`save_annotations`). The toolbar "Annotations" toggle opens
-//! a side panel listing every annotation (page + type + summary); clicking
-//! one jumps and centers it via `ui.scroll_to_rect`. Finally, the last
-//! `RECENTS_MAX` opened PDFs are kept in eframe's storage (`recent_pdfs`,
-//! RON through `eframe::get_value`/`set_value` — the persistence feature
-//! already backs dark mode) and offered in the Open menu and the empty state.
+//! Annotation tools and panels: two more tools beside Draw (`ToolMode`) and
+//! an annotations panel. Highlight turns a drag into a per-line `Highlight`
+//! computed from the page text on a background thread (`highlight_worker`, the
+//! MuPDF context is per-thread TLS so the prefetcher's document never leaves
+//! its worker — same pattern as `chat_worker`); Note turns a click into a
+//! `TextNote` anchored at the click, typed in a small floating input. Both
+//! persist through the existing sidecar store (`save_annotations`). The toolbar
+//! "Annotations" toggle opens a side panel listing every annotation (page +
+//! type + summary); clicking one jumps and centers it via `ui.scroll_to_rect`.
+//! Finally, the last `RECENTS_MAX` opened PDFs are kept in eframe's storage
+//! (`recent_pdfs`, RON through `eframe::get_value`/`set_value` — the
+//! persistence feature already backs dark mode) and offered in the Open menu
+//! and the empty state.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -61,7 +61,7 @@ use pdf_core::{
     Stroke, TextNote, TextSpan, Viewport, invert_bitmap, read_rss_kb, scale_level_for_zoom,
 };
 
-/// Zoom range and per-click step (Fase 1 B3). The continuous `zoom` factor is
+/// Zoom range and per-click step. The continuous `zoom` factor is
 /// clamped to this range; `+`/`−` step by `ZOOM_STEP`, ctrl+wheel and trackpad
 /// pinch follow egui's `zoom_delta` (see `App::update`).
 const ZOOM_MIN: f32 = 0.25;
@@ -90,7 +90,7 @@ const PREFETCH_RADIUS_MAX: usize = 2;
 /// Vertical gap between pages, logical pixels.
 const PAGE_GAP: f32 = 8.0;
 
-/// Default width of a freehand stroke, in PDF points (Fase 3 draw mode). The
+/// Default width of a freehand stroke, in PDF points (draw mode). The
 /// on-screen width is `pt × zoom`, so the pen looks the same at any zoom.
 const STROKE_WIDTH_PT: f32 = 1.5;
 
@@ -137,7 +137,7 @@ const ACTIVE_FRAME_MAX: Duration = Duration::from_millis(250);
 /// stale windows. Slow scrolling (a page per second) is never throttled.
 const REQUEST_INTERVAL: Duration = Duration::from_millis(100);
 
-// Fase 3.5 — highlight / text note / annotations panel / recents.
+// Highlight / text note / annotations panel / recents.
 
 /// Default highlight colour (RGBA): classic marker yellow, semi-transparent
 /// so the underlying text stays readable. Stored in the annotation (so a
@@ -215,7 +215,7 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-/// A stroke currently being drawn (Fase 3 draw mode): the page it belongs to
+/// A stroke currently being drawn (draw mode): the page it belongs to
 /// and the points captured so far, in page coordinates. Lives only while the
 /// primary button is down; `App::commit_stroke` stores it in the annotation
 /// set when the drag ends.
@@ -224,7 +224,7 @@ struct ActiveStroke {
     points: Vec<(f32, f32)>,
 }
 
-/// The active pointer tool (Fase 3.5). `Scroll` is the default: the
+/// The active pointer tool. `Scroll` is the default: the
 /// ScrollArea behaves normally (drag scrolls). The other three take over the
 /// primary-button drag/click over a page and disable the ScrollArea's
 /// drag-to-scroll while active (wheel and pinch still scroll).
@@ -232,16 +232,16 @@ struct ActiveStroke {
 enum ToolMode {
     /// Default: no capture, drag scrolls the document.
     Scroll,
-    /// Fase 3: a drag captures a freehand `Stroke` (`handle_draw_input`).
+    /// A drag captures a freehand `Stroke` (`handle_draw_input`).
     Draw,
-    /// Fase 3.5: a drag captures a text `Highlight` (`handle_highlight_input`).
+    /// A drag captures a text `Highlight` (`handle_highlight_input`).
     Highlight,
-    /// Fase 3.5: a click opens a small input that commits a `TextNote`
+    /// A click opens a small input that commits a `TextNote`
     /// anchored at the click (`handle_note_input`).
     Note,
 }
 
-/// A highlight drag in progress (Fase 3.5): the page it belongs to and the
+/// A highlight drag in progress: the page it belongs to and the
 /// drag's start/end points in page coordinates. Lives only while the primary
 /// button is down; `App::commit_highlight` spawns the text-extraction worker
 /// when the drag ends. The normalized rect is painted live while dragging.
@@ -275,7 +275,7 @@ struct HighlightReply {
     rects: Result<Vec<Rect>, String>,
 }
 
-/// The floating text input for a note being written (Fase 3.5): the page and
+/// The floating text input for a note being written: the page and
 /// anchor (page coordinates) are fixed at click time, `pos` is the screen
 /// position where the input floats (so it appears right at the click),
 /// `text` the draft. Enter or a click elsewhere commits, Escape cancels.
@@ -304,7 +304,7 @@ struct NoteInput {
 /// localhost:11434"). The message is already in Spanish — see `chat_worker`.
 type ChatReply = Result<String, String>;
 
-/// What a background export produces (Fase 3-4 toolbar buttons): a Markdown
+/// What a background export produces (toolbar buttons): a Markdown
 /// sidecar or an annotated PDF copy, both written next to the source PDF.
 #[derive(Clone, Copy)]
 enum ExportKind {
@@ -319,7 +319,7 @@ enum ExportKind {
 /// user-visible Spanish error message (see `export_worker`).
 type ExportResult = Result<PathBuf, String>;
 
-/// One Q/A turn in the chat history (Fase 5): the question, the page its
+/// One Q/A turn in the chat history: the question, the page its
 /// context was extracted from, and the answer — `None` while the background
 /// thread is still talking to Ollama (the "…" state).
 struct ChatEntry {
@@ -370,19 +370,18 @@ struct App {
     page_count: u32,
     /// Continuous zoom factor, 1.0 = 100% (1 PDF point = 1 logical pixel).
     zoom: f32,
-    /// Dark mode (Fase 2): inverts the pages at texture upload and switches
+    /// Dark mode: inverts the pages at texture upload and switches
     /// egui to the dark theme. Persisted in eframe's storage (see
     /// `KEY_DARK_MODE`); pdf_core's cache always keeps the normal bitmaps.
     dark_mode: bool,
-    /// Debug overlay toggle (Fase 1): frame-time p95, RSS and cache counters.
+    /// Debug overlay toggle: frame-time p95, RSS and cache counters.
     show_debug: bool,
-    /// In-memory annotation set (Fase 3): vector annotations in page
+    /// In-memory annotation set: vector annotations in page
     /// coordinates, drawn as an overlay layer over the page textures
-    /// (AGENTS.md §4.3 — never rasterized into the cached bitmap). SQLite
-    /// persistence is a later task; the set lives for the session only and
-    /// resets on open.
+    /// (AGENTS.md §4.3 — never rasterized into the cached bitmap). Resets
+    /// on open; persisted through the sidecar store while open.
     annotations: AnnotationSet,
-    /// Active pointer tool (Fase 3 / 3.5): Draw, Highlight and Note capture
+    /// Active pointer tool: Draw, Highlight and Note capture
     /// the primary-button drag/click over a page; Scroll lets the ScrollArea
     /// drag-scroll normally (drag-to-scroll is disabled while a tool is
     /// active, see `update`).
@@ -401,7 +400,7 @@ struct App {
     highlight_rx: Option<Receiver<HighlightReply>>,
     /// The floating note input, `None` while no note is being written.
     note_input: Option<NoteInput>,
-    /// Fase 3 (Shell): Left sidebar toggle.
+    /// Left sidebar toggle.
     sidebar_open: bool,
     /// Annotations panel toggle (toolbar "Annotations").
     annot_panel_open: bool,
@@ -427,7 +426,7 @@ struct App {
     /// Duration of the last completed active frame, shown as "frame:" in the
     /// overlay next to the p95.
     last_frame: Duration,
-    // Fase 5 — AI chat panel (see `submit_chat`/`chat_worker` for the
+    // AI chat panel (see `submit_chat`/`chat_worker` for the
     // background-thread flow; the UI thread never waits on Ollama).
     /// Toggle for the chat panel (toolbar "💬 Chat" button).
     chat_open: bool,
@@ -449,14 +448,14 @@ struct App {
     /// extract text (MuPDF's context is per-thread TLS, so the prefetcher's
     /// document can never leave its worker thread — see `App::open`).
     doc_path: Option<PathBuf>,
-    // Fase 3-4 closure — persistence, export, sync (see the module docs).
+    // Persistence, export, sync (see the module docs).
     /// SQLite sidecar store for the open document's annotations: opened
     /// from the PDF path at open (`store::sidecar_path`) and kept alive
     /// while the document is open — saves on stroke commit / Clear write
     /// through it (`save_annotations`). Dropped on open; re-opened on sync
     /// reload (see `reload_annotations`).
     store: Option<AnnotationStore>,
-    /// Fase 4 sync: owns the `notify` watch over the sidecar. Kept here so
+    /// Sync: owns the `notify` watch over the sidecar. Kept here so
     /// it stays alive — dropping it stops the OS watch and joins the
     /// debounce thread. Its events only land in `sync_rx`; App state is
     /// never mutated from the watcher's background thread.
@@ -466,8 +465,8 @@ struct App {
     /// runs on a background thread and only sends an empty message here;
     /// the UI thread reloads the sidecar and repaints (`reload_annotations`).
     sync_rx: Option<Receiver<()>>,
-    /// Receiver of the background export thread's result (Fase 3-4
-    /// export), polled with `try_recv` in `update`. `Some` also means an
+    /// Receiver of the background export thread's result (export),
+    /// polled with `try_recv` in `update`. `Some` also means an
     /// export is in flight — the toolbar buttons are disabled meanwhile.
     export_rx: Option<Receiver<ExportResult>>,
     /// User-visible note appended to the toolbar status line: sidecar load
@@ -573,7 +572,7 @@ impl App {
         self.doc_name = None;
         self.page_count = 0;
         self.zoom = 1.0;
-        // Annotations are per-document (Fase 3): opening a new PDF starts
+        // Annotations are per-document: opening a new PDF starts
         // from a clean slate — no stale strokes may survive into the new
         // document (UI state consistency, as above). The new document's
         // sidecar is loaded below (`open_annotation_store`).
@@ -598,7 +597,7 @@ impl App {
         self.chat_rx = None;
         self.current_page = 0;
         self.doc_path = None;
-        // Fase 3-4: the annotation sidecar store and the sync watcher are
+        // The annotation sidecar store and the sync watcher are
         // per-document — a new open drops the old store's connection and
         // joins the old watcher's debounce thread (clean slate, as above).
         self.store = None;
@@ -643,14 +642,14 @@ impl App {
         // the sync watcher (they re-open the PDF / sidecar themselves;
         // `doc_name` is only a display string).
         self.doc_path = Some(path.clone());
-        // Fase 3-4 persistence: load the annotations sidecar next to the PDF
+        // Sidecar persistence: load the annotations sidecar next to the PDF
         // and keep the store open for the whole document lifetime (saves on
         // stroke commit / Clear). A missing sidecar is the normal first run
         // — `AnnotationStore::open` creates the (empty) database; a failing
         // or corrupt file starts with an empty set and warns in the status
         // line instead of panicking (no panic on data errors).
         self.open_annotation_store();
-        // Fase 4 sync: watch the sidecar so annotations changed on another
+        // Sidecar sync: watch the sidecar so annotations changed on another
         // device (Syncthing replaces the file) hot-reload into the UI. The
         // watcher is kept in `self.watcher` to stay alive.
         self.mount_sync_watcher(&path);
@@ -672,7 +671,7 @@ impl App {
     }
 
     /// Applies the current theme to egui and re-uploads the visible textures
-    /// with the new mode (PLAN Fase 2 "instant toggle").
+    /// with the new mode ("instant toggle").
     ///
     /// No document reload and no engine re-render: dropping the textures
     /// makes `issue_gets` re-fetch the same pages from the prefetcher's LRU
@@ -761,7 +760,7 @@ impl App {
         let offset = viewport.min.y;
         let now = Instant::now();
         let (first, last) = self.visible_pages(offset, viewport.height());
-        // Chat context (Fase 5): the panel asks about the first visible page;
+        // Chat context: the panel asks about the first visible page;
         // updated every frame so the question always refers to what the user
         // is looking at.
         self.current_page = first;
@@ -796,7 +795,7 @@ impl App {
         // cache still holds the CPU bitmap for quick re-entry.
         self.prune(first, last);
 
-        // Fase 3/3.5: the annotation overlay. `content_origin` (top-left of
+        // The annotation overlay: `content_origin` (top-left of
         // the scroll content, screen space) is computed once and shared by the
         // pointer capture and both paint passes, so a stroke/highlight lands
         // exactly where the cursor was at any zoom — same rects, same zoom
@@ -917,7 +916,7 @@ impl App {
     /// the GPU rescales — never an upscale of a blurry buffer.
     fn upload_texture(&mut self, ctx: &egui::Context, page: usize, bmp: Bitmap) {
         // Dark mode inverts only the *uploaded* copy: pdf_core's cache always
-        // keeps the normal page bitmaps (PLAN Fase 2 "caché coherente" —
+        // keeps the normal page bitmaps ("caché coherente" —
         // mixing inverted and normal pages in the LRU would poison it on
         // theme toggle). `invert_bitmap` is a pure copy (per-pixel RGBA), so
         // toggling re-uploads the visible textures from the cache without any
@@ -1006,7 +1005,7 @@ impl App {
         })
     }
 
-    /// Draw mode (Fase 3): turns a primary-button drag over a page into a
+    /// Draw mode: turns a primary-button drag over a page into a
     /// freehand `Stroke` in page coordinates.
     ///
     /// Lifecycle: on press the page under the cursor is fixed and the first
@@ -1103,7 +1102,7 @@ impl App {
         if let Some(stroke) = Stroke::new(active.points, STROKE_WIDTH_PT, STROKE_COLOR) {
             self.annotations
                 .add(active.page_idx, Annotation::Stroke(stroke));
-            // Fase 3-4: persist right away (synchronous, on the UI thread —
+            // Persist right away (synchronous, on the UI thread —
             // the save is a small single-transaction rewrite, far below the
             // frame budget, and it runs on user action, never per frame). No
             // debounce: a quick close right after drawing would lose the
@@ -1112,7 +1111,7 @@ impl App {
         }
     }
 
-    /// Highlight tool (Fase 3.5): turns a primary-button drag over a page
+    /// Highlight tool: turns a primary-button drag over a page
     /// into a text `Highlight`. Lifecycle mirrors `handle_draw_input`: the
     /// page is fixed at press, the end point tracks the cursor while down, and
     /// release commits via `commit_highlight`. A fast click yields a
@@ -1246,7 +1245,7 @@ impl App {
         });
     }
 
-    /// Note tool (Fase 3.5): a primary-button *click* over a page opens the
+    /// Note tool: a primary-button *click* over a page opens the
     /// floating note input anchored at the click (`note_input`; rendered as an
     /// `egui::Area` in `update`, where Enter/click-elsewhere commits and
     /// Escape cancels — see `commit_note`). While an input is already open,
@@ -1284,7 +1283,7 @@ impl App {
         }
     }
 
-    /// Opens the floating note input (Fase 3.5): `editing = None` creates a
+    /// Opens the floating note input: `editing = None` creates a
     /// new note at `anchor`; `Some(id)` edits the existing note with that id
     /// (its current text pre-fills the input), keeping the same anchor so the
     /// note stays glued to the page across zoom/scroll. Shared by the Note
@@ -1354,8 +1353,8 @@ impl App {
         self.recents_dirty = true;
     }
 
-    /// Writes the current `AnnotationSet` to the open document's sidecar
-    /// (Fase 3-4). Synchronous on the UI thread: `AnnotationStore::save` is
+    /// Writes the current `AnnotationSet` to the open document's sidecar.
+    /// Synchronous on the UI thread: `AnnotationStore::save` is
     /// a small transaction over at most a few hundred rows, well below the
     /// frame budget (AGENTS.md §8), and it only runs on user actions (stroke
     /// commit, Clear). Failures surface in the status line; the in-memory
@@ -1368,7 +1367,7 @@ impl App {
     }
 
     /// Opens the SQLite sidecar for the current document and loads its
-    /// annotations (Fase 3-4). On any failure the app starts with an empty
+    /// annotations. On any failure the app starts with an empty
     /// set and warns in the status line — never a panic.
     fn open_annotation_store(&mut self) {
         let Some(path) = self.doc_path.clone() else {
@@ -1390,7 +1389,7 @@ impl App {
         }
     }
 
-    /// Fase 4: mounts a filesystem watch on the open document's sidecar.
+    /// Mounts a filesystem watch on the open document's sidecar.
     /// Syncthing is the one that copies the file between devices; this is
     /// only the local trigger — every debounced burst of changes sends a
     /// message to `sync_rx`, and `update` reloads the set on the UI thread
@@ -1416,7 +1415,7 @@ impl App {
         }
     }
 
-    /// Fase 4 sync: reloads the annotation set from the sidecar after the
+    /// Sync: reloads the annotation set from the sidecar after the
     /// watcher reported a change (Syncthing replaced the file, or a previous
     /// local save). The store is re-opened first, on purpose: Syncthing
     /// replaces the sidecar atomically (write temp + rename), which gives
@@ -1443,7 +1442,7 @@ impl App {
         }
     }
 
-    /// Fase 3-4 export: spawns a detached background thread that writes the
+    /// Export: spawns a detached background thread that writes the
     /// export, so the UI thread never waits (AGENTS.md §4.6). The result
     /// lands in `export_rx` (polled in `update`) and shows in the status
     /// line. The buttons are disabled while one export is in flight.
@@ -1471,13 +1470,13 @@ impl App {
     /// (AGENTS.md §4.3: annotations are never rasterized into the cached
     /// bitmap — this is a separate pass, drawn every frame by egui).
     ///
-    /// Only the visible pages are considered (PLAN §3.4: cost proportional to
+    /// Only the visible pages are considered (cost proportional to
     /// visible strokes, never to the whole document) and each page's painter
     /// is clipped to its rect, so an out-of-page annotation segment (the
     /// cursor left the page mid-drag) is cut at the page edge instead of
     /// bleeding over the gaps or the neighbouring pages.
     ///
-    /// Fase 3.5 additions: `Highlight`s paint as semi-transparent rects over
+    /// `Highlight`s paint as semi-transparent rects over
     /// the text, text notes paint a fixed-size marker (constant on-screen
     /// size, like the cursor) with a hover tooltip, and the in-progress
     /// highlight drag / pending highlight paint as a live preview rect. The
@@ -1797,7 +1796,7 @@ impl App {
             }
             None => self.status.clone(),
         };
-        // Fase 3-4: a transient note (sidecar warning, sync reload error,
+        // A transient note (sidecar warning, sync reload error,
         // export result) travels with the status line so it is visible in
         // the toolbar even while a document is open.
         if let Some(note) = &self.status_note {
@@ -1807,7 +1806,7 @@ impl App {
         line
     }
 
-    /// Fase 5: submits the typed question. Appends it to the history as
+    /// Submits the typed question. Appends it to the history as
     /// pending ("…") and spawns a **detached** background thread that does
     /// the whole turn — text extraction + the Ollama HTTP call (generation
     /// can take minutes) — so the UI thread never waits (AGENTS.md §4.6).
@@ -1843,7 +1842,7 @@ impl App {
     }
 }
 
-/// Fase 3.5: one highlight computation on a background thread.
+/// One highlight computation on a background thread.
 ///
 /// Re-opens the PDF on *this* thread (MuPDF's context is per-thread TLS; the
 /// prefetcher's document never leaves its worker thread — same pattern as
@@ -1867,8 +1866,8 @@ fn highlight_worker(path: &Path, id: u64, page: usize, drag: Rect) -> HighlightR
     }
 }
 
-/// Per-line highlight rects for a drag, from the page's text spans (Fase
-/// 3.5 design decision — documented here so it can be revisited with data).
+/// Per-line highlight rects for a drag, from the page's text spans (design
+/// decision — documented here so it can be revisited with data).
 ///
 /// For every span whose bbox intersects the drag rect we emit one rect: the
 /// span's full height, clipped horizontally to the drag's x-range (the
@@ -1905,7 +1904,7 @@ fn highlight_rects_for_drag(spans: &[TextSpan], drag: Rect) -> Vec<Rect> {
     rects
 }
 
-/// One-line summary of an annotation for the annotations panel (Fase 3.5):
+/// One-line summary of an annotation for the annotations panel:
 /// type plus a short content hint. Note text is truncated to 40 chars
 /// (char-boundary safe) so long notes stay one line.
 fn annotation_summary(kind: &Annotation) -> String {
@@ -1919,7 +1918,7 @@ fn annotation_summary(kind: &Annotation) -> String {
     }
 }
 
-/// Fase 5: one full chat turn on a background thread.
+/// One full chat turn on a background thread.
 ///
 /// Re-opens the PDF on *this* thread (MuPDF's context is per-thread TLS; the
 /// prefetcher's document never leaves its worker thread — same pattern as the
@@ -1934,7 +1933,7 @@ fn chat_worker(path: &Path, page: usize, question: &str) -> ChatReply {
     let doc = engine
         .open(path)
         .map_err(|e| format!("No se pudo abrir el documento: {e}"))?;
-    // Text extraction + chunking: only this page is touched (Fase 5 never
+    // Text extraction + chunking: only this page is touched (chat never
     // renders nor preloads); the chunk policy keeps the prompt bounded.
     let chunks = pdf_core::ai::chunk_pages(&doc, &[page as u32], CHAT_MAX_CONTEXT_CHARS)
         .map_err(|e| format!("No se pudo extraer el texto de la página {}: {e}", page + 1))?;
@@ -1962,7 +1961,7 @@ fn export_worker(kind: ExportKind, pdf_path: &Path, set: &AnnotationSet) -> Expo
     match kind {
         ExportKind::Markdown => {
             // `<pdf>.md` next to the PDF: one small text file per document,
-            // Syncthing-friendly (PLAN §3.5).
+            // Syncthing-friendly.
             let md_path = PathBuf::from(format!("{}.md", pdf_path.display()));
             let engine =
                 MupdfEngine::new().map_err(|e| format!("no se pudo iniciar el motor PDF: {e}"))?;
@@ -1999,7 +1998,7 @@ impl eframe::App for App {
         }
         self.frame_start = Some(now);
 
-        // Fase 5 chat: drain the background thread's reply channel with
+        // Chat: drain the background thread's reply channel with
         // `try_recv` (never blocks the UI thread — same pattern as
         // `poll_pending`). The reply lands on the in-flight history entry; a
         // disconnected worker (thread died) is surfaced as an error so the
@@ -2022,7 +2021,7 @@ impl eframe::App for App {
                 }
             }
         }
-        // Fase 3.5 highlight: drain the background thread's reply channel
+        // Highlight: drain the background thread's reply channel
         // with `try_recv` (never blocks the UI thread — same pattern as
         // `chat_rx`/`export_rx`). The reply carries the drag rect and the
         // per-line rects, so it is matched to the pending preview by id and
@@ -2075,7 +2074,7 @@ impl eframe::App for App {
                 }
             }
         }
-        // Fase 3-4 export: drain the background thread's result channel with
+        // Export: drain the background thread's result channel with
         // `try_recv` (never blocks the UI thread — same pattern as `chat_rx`
         // / `poll_pending`). Success shows the written path in the status
         // line; a dead thread is surfaced as an error so the toolbar buttons
@@ -2096,7 +2095,7 @@ impl eframe::App for App {
             }
         }
 
-        // Fase 4 sync: the watcher (background thread) only sends an empty
+        // Sync: the watcher (background thread) only sends an empty
         // message per debounced burst; drain them here and reload the
         // sidecar on the UI thread (`reload_annotations`). A disconnect
         // means the watcher died — stop polling and keep the last set.
@@ -2311,7 +2310,7 @@ impl eframe::App for App {
                 });
             });
 
-        // Fase 3.5 annotations panel: a right side panel listing every
+        // Annotations panel: a right side panel listing every
         // annotation of the document (page + type + summary). Clicking an
         // entry sets `pending_jump`, which `scroll_body` consumes next frame
         // to scroll-and-center that page (`ui.scroll_to_rect`). Shown only
@@ -2520,7 +2519,7 @@ impl eframe::App for App {
                         let mut scroll = egui::ScrollArea::vertical()
                             .id_salt(("pdf-scroll", scroll_id))
                             .auto_shrink([false, false]);
-                        // Fase 3/3.5: while a tool is active a drag must draw /
+                        // While a tool is active a drag must draw /
                         // highlight / a click must note — not scroll — so disable
                         // the ScrollArea's content-drag; it never fights the
                         // capture (wheel/trackpad/scrollbar still scroll;
@@ -2541,7 +2540,7 @@ impl eframe::App for App {
                 self.prefetcher = prefetcher;
             });
 
-        // Fase 3.5 note input: a small floating area at the click position
+        // Note input: a small floating area at the click position
         // (screen space; the *anchor* is fixed in page coordinates at click
         // time, so the note stays glued to the page across zoom/scroll). The
         // TextEdit is focused on the first frame so the user can type
@@ -2591,7 +2590,7 @@ impl eframe::App for App {
             }
         }
 
-        // Fase 5 chat panel: a floating Window (like the debug overlay), so
+        // Chat panel: a floating Window (like the debug overlay), so
         // toggling it never reflows the scroll viewport. All work happens on
         // the background thread; here we only render the history and the
         // one-line input. `open` is a local copy (egui writes the close state
@@ -2666,7 +2665,7 @@ impl eframe::App for App {
             self.chat_open = open;
         }
 
-        // Debug overlay (Fase 1): frame time (current + p95), RSS and cache
+        // Debug overlay: frame time (current + p95), RSS and cache
         // state, refreshed every frame while visible. A floating Window is
         // independent of the panels, so it stays readable while scrolling.
         if self.show_debug {

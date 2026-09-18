@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Estado de la BIBLIOTECA (Tarea 4.5 de la reestructuración): agrupa en
+//! Estado de la BIBLIOTECA: agrupa en
 //! `LibraryState` los campos `lib_*` que vivían en el `struct Reader`
 //! (scrolls en px, filtros y orden de "My Library", registro de progreso,
 //! planos cacheados de la zona fija + banda y la transición al abrir un
 //! libro). `Reader` lo posee como ÚNICO campo `library: LibraryState`, y los
 //! accesos pasan de `self.lib_x` a `self.library.lib_x`.
 //!
-//! Partición de métodos (ver el reporte de la tarea): aquí viven SOLO los
-//! métodos que tocan EXCLUSIVAMENTE campos `lib_*` (`LibraryState::new`,
-//! `book_progress_pct`, `entry_passes`). Los métodos de biblioteca que
+//! Partición de métodos: aquí viven los métodos que tocan EXCLUSIVAMENTE
+//! campos `lib_*` (`LibraryState::new`, `entry_passes`). Los métodos de biblioteca que
 //! mezclan estado del visor/picker (ventana, listas de `Reader`, IME,
 //! persistencia de directorios, `redraw`, …) se quedan en `impl Reader`
 //! (reader/library.rs y demás) accediendo a este estado vía `self.library`.
@@ -150,12 +149,6 @@ impl LibraryState {
             lib_fade: None,
             lib_fade_id: 0,
         }
-    }
-
-    /// Porcentaje leído de un libro (0.0-1.0) según la ruta de su fichero.
-    #[allow(dead_code)]
-    pub(crate) fn book_progress_pct(&self, path: &str) -> Option<f32> {
-        crate::persist::progress_for(&self.lib_books, path).map(|b| b.pct())
     }
 
     /// ¿La entrada pasa el filtro de BÚSQUEDA activo (carpeta + letra inicial)?

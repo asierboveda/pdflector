@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Herramientas de anotación del visor (Fase 3.5): resaltador con detección
+//! Herramientas de anotación del visor: resaltador con detección
 //! de texto y boli (tinta freehand), barra de herramientas discreta.
 //!
 //! El modelo de datos (`AnnotationSet`, `Stroke`, `Highlight`, `Color`), la
@@ -12,7 +12,7 @@
 //! - [`ToolKind`]: herramienta activa en el visor (Navegar / Resaltar /
 //!   Boli). Con una herramienta distinta de Navegar el arrastre con un dedo
 //!   (o el lápiz de la tablet) dibuja en vez de navegar; los gestos de tap/
-//!   pinch/sheet NO se rompen (ver `input.rs`).
+//!   pinch/sheet NO se rompen (ver `input/`).
 //! - [`ToolGesture`]: gesto de herramienta EN CURSO (dedo/lápiz bajado):
 //!   puntos y ancla **en coordenadas de página** (puntos PDF, f32 — el mismo
 //!   espacio que `Document::page_size`), aún NO añadido al `AnnotationSet`.
@@ -86,7 +86,7 @@ impl PenMode {
 }
 
 /// Grosor del trazo nuevo del boli en puntos PDF (PDF points, 1/72"). En
-/// pantalla se dibuja a `width × scale` px (ver `Reader::tool_overlay`), así
+/// pantalla se dibuja a `width × scale` px, así
 /// que a zoom 1 (~2 px/punto en la tablet) un trazo de 2 pt ≈ 4 px — un
 /// rotulador fino. El grosor vive en unidades de página (no de pantalla)
 /// porque la anotación es vectorial: un trazo de 2 pt ocupa el mismo área
@@ -226,8 +226,6 @@ impl ToolGesture {
     /// Presión de la última muestra (grosor del próximo tramo): 0.5 si el
     /// gesto no la reportó (vec vacío — nunca en el boli, pero el Highlight
     /// comparte el tipo).
-    /// Retenido para futuro soporte de ancho variable por vértice en el motor.
-    #[allow(dead_code)]
     pub(crate) fn last_pressure(&self) -> f32 {
         self.pressures.last().copied().unwrap_or(0.5)
     }

@@ -18,7 +18,7 @@ Inventario consolidado de deuda técnica, mediciones pendientes y propuestas arq
 
 ### D-HAR-01: Ausencia de gate de benchmark en CI (A4)
 - **Clasificación**: `medido`
-- **Evidencia**: Inspección de `.github/workflows/ci.yml`. No existe ningún paso que ejecute `cargo bench` ni verifique regresiones en el umbral de `composite < 5ms`.
+- **Evidencia**: Inspección de `.github/workflows/ci.yml`. No existe ningún paso que ejecute `cargo bench` ni verifique regresiones de rendimiento.
 - **Acción requerida**: Añadir job de benchmark en CI con criterio de fallo ante regresión de rendimiento.
 
 ### D-HAR-02: Medición de interacción masiva con stylus en tablet (A5)
@@ -27,8 +27,8 @@ Inventario consolidado de deuda técnica, mediciones pendientes y propuestas arq
 - **Acción requerida**: Diseñar arnés de prueba de inyección compatible con el pipeline de stylus o sesión de validación guiada con hardware.
 
 ### D-DRW-01: Cierre de rendimiento de pintado en hardware real (Cierre Fase C)
-- **Clasificación**: `medido` en host / `idea sin medir` en tablet
-- **Evidencia**: En host x86_64 se midieron 4.39 ms directo y 2.39 ms cacheado con `StrokeCache` a resolución 1440×2200. En la tablet TCL 9469X el objetivo de pintado en vivo < 8 ms p95 con 200 trazos activos permanece `SIN MEDIR`.
+- **Clasificación**: `idea sin medir` en tablet
+- **Evidencia**: La evidencia previa en host x86_64 ya no aplica porque el compositor CPU medido se eliminó por no tener consumidores. Lo que queda es la deuda real: en la tablet TCL 9469X el objetivo de pintado en vivo < 8 ms p95 con 200 trazos activos permanece `SIN MEDIR`.
 - **Acción requerida**: Medir con 200 trazos reales en el FBO wet de la GPU de la tablet.
 
 ### D-LIB-01: Carga en frío del visor y escala a 256 libros (E3 y cierre Fase E)
@@ -113,6 +113,10 @@ Inventario consolidado de deuda técnica, mediciones pendientes y propuestas arq
   - **Descripción**: El manejador en `motion.rs` ignora eventos `HoverMove`. Dibujar indicador visual de la posición del lápiz antes de tocar la pantalla.
 
 ### Renderizado y memoria
+
+- **RND-06: `crop_margins`: detección de márgenes blancos sin cablear a la UI**
+  - **Clasificación**: `idea sin medir`
+  - **Descripción**: `pdf_android/src/view.rs` implementa la detección del rectángulo de contenido (márgenes blancos de la página) con 4 tests, pero **ningún camino de la app la invoca**: la constante `WHITE_THRESHOLD` y la función llevan `#[allow(dead_code)]` con esa justificación escrita. Sirve para un modo "recortar márgenes" (maximizar área de lectura en la pantalla mate); su implementación es la de un futuro `fit-width` real. Decidir: cablearla a un modo de lectura o eliminarla con sus tests.
 
 - **RND-01: Parche de alta resolución para región visible ampliada**
   - **Clasificación**: `idea sin medir`

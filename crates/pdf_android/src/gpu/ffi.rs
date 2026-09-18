@@ -27,12 +27,6 @@ pub const EGL_RENDERABLE_TYPE: i32 = 0x3040;
 pub const EGL_OPENGL_ES2_BIT: i32 = 0x0004;
 pub const EGL_NONE: i32 = 0x3038;
 pub const EGL_CONTEXT_CLIENT_VERSION: i32 = 0x3098;
-#[allow(dead_code)]
-pub const EGL_FRONT_BUFFER_AUTO_REFRESH_ANDROID: i32 = 0x314C;
-#[allow(dead_code)]
-pub const EGL_TRUE: u32 = 1;
-#[allow(dead_code)]
-pub const EGL_FALSE: u32 = 0;
 
 // GLES2 constants (public Khronos values).
 pub const GL_COLOR_BUFFER_BIT: u32 = 0x4000;
@@ -63,8 +57,6 @@ pub const GL_LINK_STATUS: u32 = 0x8B82;
 pub const GL_FRAMEBUFFER: u32 = 0x8D40;
 pub const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
 pub const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
-#[allow(dead_code)]
-pub const GL_SCISSOR_TEST: u32 = 0x0C11;
 #[link(name = "EGL")]
 unsafe extern "C" {
     pub fn glBlendFuncSeparate(sfactor: u32, dfactor: u32, alpha_s: u32, alpha_d: u32);
@@ -129,13 +121,6 @@ unsafe extern "C" {
     pub fn eglSwapBuffers(dpy: EGLDisplay, surface: EGLSurface) -> u32;
     pub fn eglSwapInterval(dpy: EGLDisplay, interval: i32) -> u32;
     pub fn eglGetError() -> u32;
-    #[allow(dead_code)]
-    pub fn eglSurfaceAttrib(
-        dpy: EGLDisplay,
-        surface: EGLSurface,
-        attribute: i32,
-        value: i32,
-    ) -> u32;
     pub fn eglDestroySurface(dpy: EGLDisplay, surface: EGLSurface) -> u32;
     pub fn eglDestroyContext(dpy: EGLDisplay, ctx: EGLContext) -> u32;
 }
@@ -145,8 +130,6 @@ unsafe extern "C" {
     pub fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     pub fn glClear(mask: u32);
     pub fn glViewport(x: i32, y: i32, w: i32, h: i32);
-    #[allow(dead_code)]
-    pub fn glFlush();
     pub fn glUseProgram(p: GLhandle);
     pub fn glGetUniformLocation(p: GLhandle, name: *const u8) -> i32;
     pub fn glGetAttribLocation(p: GLhandle, name: *const u8) -> i32;
@@ -205,6 +188,4 @@ unsafe extern "C" {
         level: i32,
     );
     pub fn glCheckFramebufferStatus(target: u32) -> u32;
-    #[allow(dead_code)]
-    pub fn glScissor(x: i32, y: i32, width: i32, height: i32);
 }

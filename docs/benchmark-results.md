@@ -120,6 +120,8 @@ Este documento es el **registro único y canónico de evidencia empírica** de r
 
 ## 2026-09-05 — Composición de anotaciones y StrokeCache
 
+> **Nota histórica**: Código medido eliminado el 2026-09-18 (limpieza: compositor CPU sin consumidores de producción); la medición se conserva como registro.
+
 - **Hardware**: AMD Ryzen 7 5800H (8C/16T), Linux release build. Benchmark criterion (`benches/composite.rs`) configurado a resolución nativa de la tablet TCL (1440×2200).
 - **Flujo medido**: Fusión de capa de anotaciones sobre bitmap de página completa. Comparación entre rasterización euclidiana directa vs hit en `StrokeCache`.
 - **Métricas**:
@@ -257,6 +259,8 @@ Este documento es el **registro único y canónico de evidencia empírica** de r
 
 ## 2026-08-24 — Benchmark de resaltado y composición en escritorio
 
+> **Nota histórica**: Código medido de composición CPU (`composite_annotations`) eliminado el 2026-09-18 (limpieza: compositor CPU sin consumidores de producción); la medición se conserva como registro.
+
 - **Hardware**: AMD Ryzen 7 5800H (16 hilos), Linux release build.
 - **Flujo medido**: `cargo bench -p pdf_bench` para algoritmos de selección y mezcla.
 - **Métricas**:
@@ -273,6 +277,8 @@ Este documento es el **registro único y canónico de evidencia empírica** de r
 ---
 
 ## 2026-08-24 — Corrección de canal alfa en trazo en tiempo real
+
+> **Nota histórica**: Mecanismo de composición CPU (`composite_annotations`, `composite_annotations_alpha`) sustituido por pipeline GPU (ADR-007) y eliminado el 2026-09-18; la medición se conserva como registro.
 
 - **Hardware**: TCL NXTPaper 11 Plus (9469X).
 - **Flujo medido**: Captura visual (screencap) durante el trazo de stylus con la herramienta Boli activa.

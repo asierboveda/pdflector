@@ -9,9 +9,8 @@ use crate::reader::{
     GRID_CELL_PAD, LibraryCoverFit, Reader, cover_size_multiplier, entry_author, entry_title,
     grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad,
     header_menu_btn_d, lib_add_btn_w, lib_chip_h, lib_chips, lib_content_y0, lib_empty_state_geom,
-    lib_grid_y0, lib_header_h, lib_org_chip_h, lib_org_chips, lib_search_h, list_row_gap,
-    list_row_h, list_row_rect, picker_row_h, settings_menu_button_rect, truncate_name,
-    view_menu_button_rect,
+    lib_grid_y0, lib_header_h, lib_search_h, list_row_gap, list_row_h, list_row_rect, picker_row_h,
+    settings_menu_button_rect, truncate_name, view_menu_button_rect,
 };
 use crate::theme;
 use android_activity::ndk::native_window::NativeWindow;
@@ -706,59 +705,6 @@ pub(crate) fn render_search_chip_row(reader: &Reader, row: usize) -> Option<Bitm
             0.0,
             gr,
             b - t,
-            fill,
-            border,
-            tc,
-            theme::FONT_BODY,
-            *active,
-            label,
-        );
-    }
-    jni_text_bitmap(row_w, row_h, p.base_200, &rects, &texts)
-}
-
-/// Render de la fila HORIZONTAL de chips de ORGANIZACIÓN `row` (0 = SORT, 1 = FILTER).
-/// Render de una fila de chips de ORGANIZACIÓN (sort/filter) de la
-/// biblioteca. Desde la biblioteca minimalista (2026-08-25) ya no se
-/// splices; se conserva por si se reintroduce el bloque de organización.
-#[allow(dead_code)] // organización (sort/filter) oculta por diseño
-pub(crate) fn render_org_chip_row(reader: &Reader, row: usize) -> Option<Bitmap> {
-    let chips = lib_org_chips(reader, row);
-    if chips.is_empty() {
-        return None;
-    }
-    let scroll = if row == 0 {
-        reader.library.lib_sort_x
-    } else {
-        reader.library.lib_filter_x
-    };
-    let row_w = chips
-        .iter()
-        .map(|(_, (_, _, r, _), _)| r + scroll)
-        .fold(grid_pad(reader.win_w), f32::max)
-        .ceil() as i32
-        + grid_pad(reader.win_w) as i32;
-    let row_h = lib_org_chip_h(reader.win_h).ceil() as i32;
-    if row_w <= 0 || row_h <= 0 {
-        return None;
-    }
-    let p = reader.theme.palette();
-    let mut rects: Vec<CanvasRect> = Vec::new();
-    let mut texts: Vec<CanvasText> = Vec::new();
-    for (label, (l, t, r, b), active) in &chips {
-        let (gl, gr) = (l + scroll, r + scroll);
-        let (fill, border, tc) = if *active {
-            (p.primary, p.primary, p.primary_content)
-        } else {
-            (p.base_100, p.base_300, p.base_content)
-        };
-        draw_button(
-            &mut rects,
-            &mut texts,
-            gl,
-            0.0,
-            gr,
-            (b - t).max(1.0),
             fill,
             border,
             tc,

@@ -245,7 +245,7 @@ pub(crate) struct ViewerState {
     /// Tema visual activo (Readest).
     #[serde(default)]
     pub(crate) theme: Option<AppTheme>,
-    /// Layout de la biblioteca (Grid/List; menú View "⋯", Tarea 1: esqueleto).
+    /// Layout de la biblioteca (Grid/List; menú View "⋯").
     /// `#[serde(default)]` = compat con `state.json` viejo → Grid.
     #[serde(default)]
     pub(crate) view_mode: crate::reader::LibraryViewMode,

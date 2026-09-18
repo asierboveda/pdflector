@@ -10,9 +10,8 @@ Pintado fluido con lápiz óptico o stylus, pipeline de dibujo acelerado en GPU 
   - **Capa Wet (trazo en vuelo)**: Gestionada por `render_wet` (`crates/pdf_android/src/gpu/pipeline.rs:686`). Renderiza directamente sobre un FBO transparente la polilínea del trazo activo (`ink_pts`), la predicción de movimiento y el cursor, combinándose con mezcla alpha en el framebuffer de presentación (`fb0`).
 - **Simplificación geométrica en captura**:
   - En `crates/pdf_android/src/reader/tools.rs:328`, al levantar el lápiz (`Up`), la polilínea muestreada se compacta con el algoritmo Douglas-Peucker (`pdf_core::simplify_polyline`) con tolerancia ε = 0,20 pt (no 0.8 pt), eliminando puntos colineales redundantes sin alterar la fidelidad caligráfica.
-- **Estado de APIs en `pdf_core`**:
-  - `StrokeCache`, `composite_annotations_alpha` y `blit_stroke_layer` existen en `crates/pdf_core/` como API pública para pruebas unitarias (`tests/strokecache.rs`) y benchmarks (`crates/pdf_bench/benches/composite.rs`).
-  - La aplicación Android no utiliza estas funciones en producción, apoyándose enteramente en la composición por hardware en GPU (ADR-007).
+- **Composición y pintado**:
+  - El producto Android no utiliza composición por CPU en producción, apoyándose enteramente en la composición por hardware en GPU (ADR-007). El compositor CPU experimental y sus cachés asociadas fueron eliminados de `pdf_core` por carecer de consumidores de producción.
 
 ## Objetivo
 
@@ -22,7 +21,7 @@ Dibujar a mano alzada con stylus manteniendo un tiempo de presentación interact
 
 - [x] C1. **Simplificación de trazos**: Integración de `simplify_polyline` con ε = 0,20 pt en el cierre del gesto (`reader/tools.rs:328`).
 - [x] C2. **Pipeline Dual FBO Wet/Dry**: Implementado en GLES2 con gestión de claves `DryKey` e invalidación selectiva (`gpu/pipeline.rs`, `gpu/dry_key.rs`).
-- [x] C3. **Microbenchmarks en host x86_64**: `benches/composite.rs` a resolución 1440×2200 reportó 4.39 ms en composición directa y 2.39 ms con `StrokeCache`. **Nota**: Estas cifras corresponden a máquina de escritorio (AMD Ryzen 7 5800H), NO a la tablet TCL.
+- [x] C3. **Microbenchmarks históricos en host x86_64**: Medición previa en host sobre un camino CPU hoy eliminado. El único criterio vivo de la fase C es medir 200 trazos con pintado vivo < 8 ms p95 en la tablet TCL, y sigue `SIN MEDIR`.
 - [ ] C4. **Medición y cierre en hardware real TCL**: Ejecutar prueba de 200 trazos activos concurrentes en la tablet TCL 9469X midiendo percentiles reales con `FrameTimer`.
 
 ## Criterio de cierre
@@ -39,6 +38,5 @@ Dibujar a mano alzada con stylus manteniendo un tiempo de presentación interact
 - `crates/pdf_android/src/gpu/dry_key.rs`
 - `crates/pdf_android/src/gpu/pipeline.rs`
 - `crates/pdf_android/src/reader/tools.rs`
-- `crates/pdf_core/src/strokecache.rs`
 - `docs/adr/ADR-007-gpu-pipeline-dry-wet.md`
 - `docs/benchmark-results.md`

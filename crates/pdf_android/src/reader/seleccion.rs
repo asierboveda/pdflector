@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Selección de texto (extraído de `reader.rs`, 2026-09-06): máquina de la selección por long-press + arrastre (`begin_sel`…`end_sel`, `clear_selection`, `has_selection`), transformaciones pantalla↔página (`screen_to_page`, `page_screen_rect`, `sel_screen_rect`, `sel_page_rect`), extracción de texto e imagen (`sel_text`, `sel_image_png_base64`) y las acciones Copiar/Subrayar/menú (`copy_sel`, `highlight_sel`, `open_sel_menu`).
+//! Selección de texto: máquina de la selección por long-press + arrastre (`begin_sel`…`end_sel`, `clear_selection`), transformaciones pantalla↔página (`screen_to_page`, `page_screen_rect`, `sel_screen_rect`, `sel_page_rect`), extracción de texto e imagen (`sel_text`, `sel_image_png_base64`) y las acciones Copiar/Subrayar/menú (`copy_sel`, `highlight_sel`, `open_sel_menu`).
 
 use super::Reader;
 use super::SelMenu;
@@ -18,25 +18,12 @@ use pdf_core::{Annotation, Color, Document, Highlight, Rect, TextSpan};
 // Selección de texto: long-press + arrastre, copiar y subrayar (Parte 1)
 // ---------------------------------------------------------------------
 //
-// El gesto vive en `input.rs` (long-press + arrastre); aquí
+// El gesto vive en `input/` (long-press + arrastre); aquí
 // el estado (`sel`/`sel_menu`), las transformaciones de coords, la
 // extracción de texto y las acciones Copiar/Subrayar. Decisiones
 // documentadas en `SelState` (coords de pantalla) y en el doc de la
 // cabecera de `lib.rs`.
 impl Reader {
-    /// ¿Hay una selección activa (en curso o fijada con su menú)? El tap
-    /// simple izq/der de página NO se dispara mientras tanto (ver
-    /// `input::sel_menu_tap`/`fire_tap_action`).
-    ///
-    /// `dead_code` intencional (2026-08-XX): los gestos consultan el estado
-    /// directamente (`sel`/`sel_menu`) y esta es la API pública que pide la
-    /// Parte 1 para que otros agentes (p. ej. la Parte 2 —IA—) sepan si hay
-    /// selección sin tocar el estado interno.
-    #[allow(dead_code)]
-    pub(crate) fn has_selection(&self) -> bool {
-        self.sel.is_some()
-    }
-
     /// Comienza el modo selección: ancla = punto del LONG-PRESS y punto
     /// actual = el mismo (el rect, un PUNTO aún sin arrastrar, crece con
     /// `update_sel`). Solo se llama al superar `LONG_PRESS_MS` con el dedo

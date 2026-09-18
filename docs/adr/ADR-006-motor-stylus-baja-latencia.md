@@ -5,6 +5,10 @@
 > **Supersedido parcialmente por:** ADR-007 (2026-08-30). Su mecanismo de presentación (front-buffer auto-refresh / overlay dedicado) quedó superseded por ADR-007 (pipeline wet/dry en FBO); el resto del ADR (elección EGL/GLES2, motor de stylus, predicción Hermite) sigue plenamente vigente.
 > **Nota:** El plan referenciaba "ADR-005" como nombre de entregable; ADR-005 ya
 > existía (UI Android nativa), por lo que esta decisión ocupa el ADR-006.
+> **Nota (2026-09-18):** las citas a `crates/pdf_spike` que aparecen en el cuerpo describen el
+> spike que validó esta decisión. Ese crate se eliminó en la limpieza de código de 2026-09-18,
+> una vez consumido: la predicción vive en `pdf_android/src/prediction.rs` y el present EGL en
+> `pdf_android/src/gpu/`. Recuperable con `git log -- crates/pdf_spike`.
 
 ## Contexto
 

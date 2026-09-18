@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Asier Bóveda
 
 //! MuPDF backend: crate `mupdf` 0.8 (messense/mupdf-rs) over MuPDF C
-//! (AGPL-3.0 — chosen in ADR-001, Fase 0.5). Single engine, always compiled.
+//! (AGPL-3.0 — chosen in ADR-001). Single engine, always compiled.
 //!
 //! MuPDF is linked statically, so unlike a dynamically-bound backend there is
 //! no external library to bind: `mupdf::Context::get()` lazily initializes a

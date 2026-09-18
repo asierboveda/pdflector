@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Zoom/pinch (extraído de `reader.rs`, 2026-09-06): anclaje del gesto (`PinchAnchor`, `begin_pinch`) y zoom rápido/final (`set_zoom_fast`, `set_zoom_sharp`) con la fórmula de anclaje y sus clamps (`anchor_pan`, `clamp_pan`).
+//! Zoom/pinch: anclaje del gesto (`PinchAnchor`, `begin_pinch`) y zoom rápido/final (`set_zoom_fast`, `set_zoom_sharp`) con la fórmula de anclaje y sus clamps (`anchor_pan`, `clamp_pan`).
 
 use super::Reader;
 use crate::PINCH_MAX;

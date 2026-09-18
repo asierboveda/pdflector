@@ -95,7 +95,6 @@ Contexto histórico (opciones evaluadas en su día, ya cerradas):
 ```
 crates/pdf_core/     # Biblioteca Rust: motor MuPDF, renderizado, anotaciones, caché, arXiv, clientes IA. Sin UI.
 crates/pdf_android/  # Plataforma y producto final Android nativo (ADR-005, NativeActivity + EGL/GLES).
-crates/pdf_spike/    # Spike de latencia y presentación de trazo stylus en Android.
 crates/pdf_app/      # Banco de pruebas egui: prototipo desktop para iteración del core, NO producto.
 crates/pdf_bench/    # Benchmarks (criterion) y barridos de rendimiento en escritorio y tablet.
 ```

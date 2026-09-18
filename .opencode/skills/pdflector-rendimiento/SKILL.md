@@ -50,16 +50,15 @@ cargo bench -p pdf_bench --bench cache_scroll   # ejecutar un fichero concreto
 cargo bench -p pdf_bench --bench cache_scroll -- --quick # modo rápido
 ```
 
-Los 9 ficheros de bench en `crates/pdf_bench/benches/` son:
+Los 8 ficheros de bench en `crates/pdf_bench/benches/` son:
 1. `open_render`: apertura de documento y render a escala 1x y 2x.
 2. `cache_scroll`: política de caché LRU vs naive, aislando el pico VmHWM en subproceso.
 3. `render_perf`: rendimiento puro de renderizado por página.
 4. `zoom`: re-renderizado en escala vs escalado por software (`scale_bitmap`).
 5. `annotations`: creación, serialización JSON y mutación de `AnnotationSet`.
-6. `blit`: copiado de búfers de píxeles y transferencias de memoria.
-7. `composite`: composición alfa de capas de anotaciones y trazos.
-8. `highlight`: detección de quads de texto y generación de resaltados.
-9. `prefetch`: comportamiento del prefetching predictivo de páginas adyacentes (±1).
+6. `blit`: copiado de búfers de píxeles y transferencias de memoria (espejo de las rutas CPU de `pdf_android/src/draw/`).
+7. `highlight`: detección de quads de texto y generación de resaltados.
+8. `prefetch`: comportamiento del prefetching predictivo de páginas adyacentes (±1).
 
 ## 2. Configuración de cross-compilación a Android
 
