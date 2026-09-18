@@ -2,11 +2,12 @@
 // Highlight hot path (Fase B): gesture -> rects alineados al texto.
 // Mide el cuello de botella auditado: O(spans x puntos) + clip por línea.
 
-use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use pdf_core::engine::TextSpan;
 use pdf_core::{
     Color, Gesture, Rect, highlight_under_gesture, highlight_under_gesture_sorted, sort_spans_by_y,
 };
+use std::hint::black_box;
 
 const HIGHLIGHT_COLOR: Color = Color {
     r: 255,

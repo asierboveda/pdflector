@@ -19,10 +19,11 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use criterion::{Criterion, black_box};
+use criterion::Criterion;
 use pdf_core::cache::RenderCache;
 use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::{Document, RenderEngine, corpus_dir};
+use std::hint::black_box;
 
 /// scale_for_level(0) == 1.0 == 72 dpi.
 const SCALE_LEVEL: u32 = 0;

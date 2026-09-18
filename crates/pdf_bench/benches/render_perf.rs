@@ -10,8 +10,9 @@
 
 use std::path::PathBuf;
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use pdf_core::{Document, RenderEngine, corpus_dir};
+use std::hint::black_box;
 
 use pdf_core::engine::mupdf::MupdfEngine;
 

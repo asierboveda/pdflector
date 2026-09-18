@@ -25,12 +25,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use pdf_core::cache::RenderCache;
 use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::{
     Document, RenderEngine, corpus_dir, scale_bitmap, scale_for_level, scale_level_for_zoom,
 };
+use std::hint::black_box;
 
 /// large_document.pdf page 0: the page every group scales / re-renders.
 const PAGE: u32 = 0;

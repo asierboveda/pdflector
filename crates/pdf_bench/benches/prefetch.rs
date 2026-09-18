@@ -27,10 +27,11 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use pdf_core::Viewport;
 use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::prefetch::Prefetcher;
+use std::hint::black_box;
 
 fn large_path() -> PathBuf {
     pdf_core::corpus_dir().join("large_document.pdf")

@@ -14,6 +14,6 @@ pdf_core = { path = "../pdf_core" }
 # the XDG data dir (~/.local/share/pdflector/app.ron): the dark-mode preference
 # survives restarts (PLAN Fase 2). It is not a new crate — a feature of the
 # existing dependency (it pulls eframe's own ron/serde/home, no direct dep).
-eframe = { version = "0.32", features = ["persistence"] }
+eframe = { version = "0.36", features = ["persistence"] }
 # Native file dialog (GTK3 on this system).
 rfd = "0.17"

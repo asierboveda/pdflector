@@ -30,11 +30,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use criterion::{
-    BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
-};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use pdf_core::AnnotationStore;
 use pdf_core::annotations::{Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote};
+use std::hint::black_box;
 
 /// Page that carries the "hot" 200 annotations in the spread sets.
 const HOT_PAGE: usize = 0;

@@ -1984,10 +1984,14 @@ fn export_worker(kind: ExportKind, pdf_path: &Path, set: &AnnotationSet) -> Expo
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // Measure the last active frame (duration since the previous update).
+    fn ui(&mut self, root: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // `egui::Context` es un `Arc` por dentro: clonarlo es barato y deja el
+        // cuerpo (escrito contra `ctx`) tal cual. Los paneles sí necesitan el
+        // `Ui` raíz, que es lo que recibe `App::ui` desde egui 0.36.
+        let ctx = root.ctx().clone();
+        // Measure the last active frame (duration since the previous render pass).
         // The `ACTIVE_FRAME_MAX` guard skips idle gaps, which would otherwise
-        // look like seconds-long frames: egui stops calling `update` when
+        // look like seconds-long frames: egui stops calling `ui` when
         // nothing repaints (no input, no repaint request).
         let now = Instant::now();
         if let Some(prev) = self.frame_start
@@ -2112,7 +2116,7 @@ impl eframe::App for App {
                 }
             }
             if changed {
-                self.reload_annotations(ctx);
+                self.reload_annotations(&ctx);
             }
         }
 
@@ -2154,12 +2158,12 @@ impl eframe::App for App {
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 16.0])
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::window(root.style())
                     .shadow(egui::epaint::Shadow::NONE) // Sin sombras pesadas
                     .corner_radius(8.0)
                     .inner_margin(8.0),
             )
-            .show(ctx, |ui| {
+            .show(&ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui
                         .button(if self.sidebar_open { "◀" } else { "▶" })
@@ -2179,10 +2183,10 @@ impl eframe::App for App {
 
         // Sidebar Izquierdo (Ocultable)
         if self.sidebar_open {
-            egui::SidePanel::left("sidebar")
+            egui::Panel::left("sidebar")
                 .resizable(true)
-                .default_width(250.0)
-                .show(ctx, |ui| {
+                .default_size(250.0)
+                .show(root, |ui| {
                     ui.horizontal(|ui| {
                         let _ = ui.selectable_label(true, "Índice (TOC)");
                         let _ = ui.selectable_label(false, "Miniaturas");
@@ -2222,7 +2226,7 @@ impl eframe::App for App {
 
                     let has_doc = self.prefetcher.is_some();
                     if ui.checkbox(&mut self.dark_mode, "Dark").changed() {
-                        self.apply_theme(ctx);
+                        self.apply_theme(&ctx);
                         if let Some(storage) = frame.storage_mut() {
                             storage.set_string(KEY_DARK_MODE, self.dark_mode.to_string());
                             storage.flush();
@@ -2277,12 +2281,12 @@ impl eframe::App for App {
             .resizable(false)
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -20.0])
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::window(root.style())
                     .shadow(egui::epaint::Shadow::NONE) // Sin sombras pesadas
                     .corner_radius(24.0) // Estilo píldora
                     .inner_margin(egui::Margin::symmetric(16, 8)),
             )
-            .show(ctx, |ui| {
+            .show(&ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.tool, ToolMode::Scroll, "✋ Pan");
                     ui.add_enabled(false, egui::Button::new("T Select")); // Placeholder
@@ -2318,10 +2322,10 @@ impl eframe::App for App {
         // `0..page_count` with `for_page` is O(pages) HashMap lookups — cheap
         // (and the panel is closed by default), so no index is kept in sync.
         if self.annot_panel_open && self.prefetcher.is_some() {
-            egui::SidePanel::right("annotations-panel")
+            egui::Panel::right("annotations-panel")
                 .resizable(true)
-                .default_width(300.0)
-                .show(ctx, |ui| {
+                .default_size(300.0)
+                .show(root, |ui| {
                     ui.heading(format!("Anotaciones ({})", self.annotations.len()));
                     ui.separator();
                     egui::ScrollArea::vertical()
@@ -2431,7 +2435,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
-            .show(ctx, |ui| {
+            .show(root, |ui| {
                 // Zoom input (ctrl+wheel, trackpad pinch). egui routes ctrl+wheel
                 // to `zoom_delta` and away from `smooth_scroll_delta`, so the
                 // ScrollArea below does not also pan while zooming.
@@ -2528,7 +2532,7 @@ impl eframe::App for App {
                         if self.tool != ToolMode::Scroll {
                             scroll =
                                 scroll.scroll_source(egui::containers::scroll_area::ScrollSource {
-                                    drag: false,
+                                    drag: egui::containers::scroll_area::DragScroll::Never,
                                     ..Default::default()
                                 });
                         }
@@ -2551,7 +2555,7 @@ impl eframe::App for App {
             let mut cancel = false;
             egui::Area::new(egui::Id::new("note-input"))
                 .fixed_pos(note.pos + egui::vec2(10.0, 10.0))
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.label(
                             egui::RichText::new("Note — Enter: save · Esc: cancel")
@@ -2598,13 +2602,13 @@ impl eframe::App for App {
         // `&mut self` freely; the result is synced back after `show`.
         if self.chat_open {
             let mut open = self.chat_open;
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             egui::Window::new("Chat")
                 .open(&mut open)
                 .default_pos(egui::pos2(screen.right() - 400.0, 80.0))
                 .default_width(380.0)
                 .resizable(true)
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     ui.horizontal(|ui| {
                         let edit = ui.add(
                             egui::TextEdit::singleline(&mut self.chat_input)
@@ -2676,7 +2680,7 @@ impl eframe::App for App {
                 .unwrap_or_default();
             egui::Window::new("Debug")
                 .default_pos([20.0, 80.0])
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     // Reference target, so the author sees at a glance
                     // whether the scroll meets the 60 fps budget (AGENTS.md §8).
                     ui.label(egui::RichText::new("Target: p95 < 16.6 ms (60 fps)").strong());

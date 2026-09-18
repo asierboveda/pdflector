@@ -45,10 +45,11 @@
 
 use std::path::PathBuf;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use pdf_core::Bitmap;
 use pdf_core::engine::mupdf::MupdfEngine;
 use pdf_core::{Document, RenderEngine, corpus_dir};
+use std::hint::black_box;
 
 // ---------------------------------------------------------------------------
 // MIRROR of pdf_android/src/draw/ (CPU-only paths, en especial
