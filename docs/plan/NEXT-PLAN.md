@@ -13,9 +13,18 @@
 | **A** | `A-latencia.md` | Instrumentación, harness `adb` y baseline reproducible | A1–A3 HECHOS · A4–A5 PENDIENTES | `FrameTimer` en logcat, sweep automatizado, gate en CI y baseline de interacción en tablet |
 | **B** | `B-subrayado.md` | Subrayador sin latencia en orden de lectura sobre texto detectado | CERRADA (2026-09-05) | Gesto → `Highlight` < 16 ms p95, sin I/O en frame de gesto; p95 3.5 ms medido en TCL |
 | **C** | `C-pintado.md` | Lápiz a mano alzada fluido (pipeline GPU Dry/Wet FBO) | Pipeline funcional · Cierre en TCL PENDIENTE | 200 trazos en página con pintado vivo < 8 ms p95 en tablet TCL (`SIN MEDIR` en tablet) |
-| **D** | `D-ia-contexto.md` | IA con contexto global del PDF (RAG BM25 local + visión) | NO INICIADA (clientes base listos) | 4/5 respuestas citan páginas reales, latencia p50 < 15 s vía API externa |
+| **D** | `D-ia-contexto.md` | IA con contexto global del PDF (RAG BM25 local + visión) | **APLAZADA** (decisión del dueño, 2026-09-18): no empezar hasta consolidar la estructura | 4/5 respuestas citan páginas reales, latencia p50 < 15 s vía API externa |
 | **E** | `E-library.md` | Biblioteca fluida en rejilla (portadas asíncronas) | E1/E2/E4 HECHOS · E3 PARCIAL | Scroll p95 < 16 ms (10 ms con 11 libros; 256 libros `SIN MEDIR`); cold-start < 200 ms (medido 349 ms) |
 | **F** | `F-arxiv.md` | Catálogo Discover arXiv y apertura directa por Intent | Core + UI HECHOS · Cierre PENDIENTE | Scroll de feed < 16 ms p95 en TCL (`SIN MEDIR`), handoff verificado por adb |
+
+### Orden de trabajo vigente
+
+1. **Cerrar lo empezado**: A4 (gate de bench en CI), A5 y C (medición de 200 trazos en la tablet), E3 (256 libros y cold-start). Todas exigen la tablet conectada.
+2. **F**: verificar en tablet el scroll del feed y el handoff por `adb`.
+3. **Deuda con issue**: memoria (cota de display lists y pico de PSS) y la decisión abierta de persistencia de anotaciones.
+4. **D (IA): APLAZADA por decisión del dueño** hasta que la estructura esté consolidada. No empezar.
+
+La IA básica (explicar la selección vía Groq/Gemini) ya está en el producto y funciona; la fase D es el salto a contexto global del documento.
 
 ---
 

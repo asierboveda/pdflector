@@ -1,5 +1,11 @@
 # Fase D — IA con contexto global del documento y selección
 
+> **APLAZADA — decisión del dueño (2026-09-18).** Esta fase **no se empieza** hasta que la
+> estructura del proyecto esté consolidada. La IA básica (consulta sobre la selección con
+> Groq/Gemini) ya está en el producto y funciona; lo que aquí se planifica es el salto a
+> contexto global del documento. Ninguna tarea D1-D4 debe iniciarse sin que el dueño lo pida.
+> Issue de seguimiento: #36.
+
 Asistente de lectura local con recuperación de contexto global del documento (RAG BM25) para explicar selecciones de texto, ecuaciones o figuras citando páginas reales.
 
 ## Auditoría
@@ -10,7 +16,7 @@ Asistente de lectura local con recuperación de contexto global del documento (R
     - Clientes API: `OllamaClient` (inferencia local), `GroqClient` (Llama 3 70B ultra-rápido) y `GeminiClient` (Gemini Flash multimodal con soporte de imagen).
   - `crates/pdf_android/src/reader/`:
     - `toast_ia.rs` (:99-101): `explain_image` SÍ adjunta el texto extraído de la página seleccionada como contexto adicional al prompt multimodal junto a la captura PNG en base64.
-    - `crates/pdf_android/src/draw/ai_panel.rs`: panel deslizante en GPU para visualización de respuestas y estado de consulta.
+    - `crates/pdf_android/src/draw/overlays.rs`: panel deslizante en GPU para visualización de respuestas y estado de consulta (`render_ai_panel`, `ai_panel_layout`).
 - **Limitaciones actuales (qué falta)**:
   - No existe índice de recuperación (RAG): el visor envía únicamente la página actual o el primer chunk. Si la respuesta requiere conceptos introducidos en capítulos previos, el modelo carece de contexto global.
   - Falta un índice BM25 puro en Rust en `pdf_core` que indexe el texto de todas las páginas al abrir el documento.
@@ -50,4 +56,4 @@ Al seleccionar un fragmento (rectángulo o trazo), generar una explicación prec
 
 - `crates/pdf_core/src/ai.rs`
 - `crates/pdf_android/src/reader/toast_ia.rs`
-- `crates/pdf_android/src/draw/ai_panel.rs`
+- `crates/pdf_android/src/draw/overlays.rs` — layout, render y scroll del panel

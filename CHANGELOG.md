@@ -9,6 +9,56 @@
 > changelog no se reescribe; el contenido está en el historial de git (`git log -- <ruta>`).
 > Para el estado vigente, ver `docs/README.md`.
 
+## 2026-09-18 — El repositorio queda en una sola rama: `main`
+
+Limpieza final de ramas. Solo queda `main` (`047b467`), tanto en local como en GitHub.
+
+- **`asierboveda/feat-ui-polish-zones` eliminada** (1 commit huérfano, `2cb6705`, del 2026-08-14, nunca tuvo PR).
+  Auditoría del commit antes de borrarlo: su parte visual (acción primaria dorada, más espaciado en
+  biblioteca y sheet) está **superada** por el sistema de temas Readest que vive hoy en `main`. Sí
+  quedaban dos mejoras funcionales sin rescatar en el panel de IA (**Copiar** y **Regenerar/Reintentar**),
+  que se anotan en el issue #36 para cuando se retome la fase D.
+- **Ramas de Dependabot**: GitHub las eliminó automáticamente al cerrar sus PRs (los 5 migrados en `047b467`).
+- Estado final: `git ls-remote --heads origin` devuelve **una sola referencia**, `refs/heads/main`.
+
+## 2026-09-18 — Fase D (IA) aplazada y errores factuales corregidos en su plan
+
+- **Decisión del dueño: la IA se aplaza** hasta que la estructura del proyecto esté consolidada.
+  Registrado en `docs/plan/NEXT-PLAN.md` (nueva sección *Orden de trabajo vigente*, con la fase D
+  marcada como aplazada) y en `docs/plan/D-ia-contexto.md` (aviso de cabecera) e issue #36
+  retitulado. La IA básica (explicar la selección con Groq/Gemini) ya está en el producto; lo
+  aplazado es el salto a contexto global del documento (RAG BM25).
+- **Corregido en `D-ia-contexto.md`**: citaba `crates/pdf_android/src/draw/ai_panel.rs`, que **no existe**;
+  el panel vive en `draw/overlays.rs` (`render_ai_panel`, `ai_panel_layout`). Sustituido en las dos
+  apariciones (componentes y referencias).
+- Añadido el **orden de trabajo vigente** al roadmap: cerrar A4/A5/C/E3 y F en hardware real, luego
+  la deuda con issue, y D al final y solo cuando el dueño lo pida.
+
+## 2026-09-18 — Dependencias al día: los 5 PRs de Dependabot, migrados
+
+Los 5 PRs (#5, #6, #22, #23, #24) llevaban abiertos desde el 12–19 de agosto contra una base que ya
+no existía. Se aplicaron **juntos** en una rama y se verificaron con el compilador: en GitHub los 3
+marcados «CLEAN» solo significaban que no había conflicto de **texto**, no que compilaran.
+
+- **Sin cambios de código**: `android_logger` 0.14→0.15, `rusqlite` 0.37→**0.40** (los 7 tests del
+  sidecar SQLite pasan) y `reqwest` 0.11→**0.12** (cross-compila a aarch64 con `rustls-tls`).
+- **`criterion` 0.5→0.8 (migración)**: `criterion::black_box` quedó deprecado y con el
+  `-D warnings` del CI rompía el build (43 avisos). Sustituido por `std::hint::black_box` en los 7
+  benches que lo usaban. Verificado **en ejecución**, no solo compilado: `cargo bench -p pdf_bench
+  --bench highlight -- --quick` corre y reporta.
+- **`eframe` 0.32→0.36 (migración de API)**: egui 0.36 es un rediseño, no un salto.
+  - `App::update(ctx, frame)` → `App::ui(ui, frame)`. El cuerpo sigue escrito contra `ctx`; se
+    obtiene con `ui.ctx().clone()` (el `Context` es un `Arc`) para no reescribir 2.800 líneas.
+  - `egui::SidePanel::{left,right}` → `egui::Panel::{left,right}` (struct unificado);
+    `default_width` → `default_size` (el `Panel` mide en el eje del panel). `CentralPanel` y
+    `Window::show(ctx, …)` siguen igual.
+  - `ctx.style()` → `root.style()`; `ctx.screen_rect()` → `ctx.viewport_rect()`;
+    `ScrollSource { drag: false }` → `drag: DragScroll::Never`.
+- **Verificación**: fmt limpio; clippy `--all-targets -D warnings` limpio; clippy del target Android
+  limpio; `cargo test -p pdf_core` 181/0; `check` aarch64 OK; un bench corriendo; `pdf_app`
+  construido, arrancado y comprobado **visualmente** (sidebar, cabecera flotante, página renderizada
+  y barra de herramientas dibujan bien tras la migración).
+
 ## 2026-09-18 — Limpieza de código: −2.619 líneas, `#[allow(dead_code)]` 44→8, `expect()` en producción 5→0
 
 Limpieza orquestada con 6 agentes en paralelo sobre dominios de ficheros disjuntos.
