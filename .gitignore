@@ -16,3 +16,7 @@ crates/pdf_android/google_key.txt
 
 # Output de build del helper IME (tools/ime/, regenerado con build.sh)
 tools/ime/out/
+
+# Logs de herramientas de desarrollo en la raíz del repo (p. ej. snowflake.log
+# que escribe Positron al abrir el proyecto): no son parte del producto.
+*.log
