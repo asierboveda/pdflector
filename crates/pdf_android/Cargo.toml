@@ -46,7 +46,7 @@ png = "0.18"
 # Base64 del PNG (sin prefijo data:) que espera `GroqClient::chat_vision`
 # (el prefijo `data:image/png;base64,` lo añade pdf_core). Crate estándar,
 # puro Rust, sin dependencias. MIT/Apache-2.0.
-base64 = "0.22"
+base64 = "0.23"
 
 # --- Empaquetado APK con cargo-apk (Fase 1) ---
 # cargo-apk genera el AndroidManifest con una NativeActivity por defecto y el
