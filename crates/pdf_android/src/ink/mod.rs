@@ -7,15 +7,24 @@
 //! 3. `KalmanPredictor`: Estimación de velocidad/aceleración y proyección dinámica a 20–35 ms.
 //! 4. `StrokeEndPredictor`: Asentamiento de masa al despegar sin discontinuidades ("cero-pop").
 //!
-//! Invariantes de rendimiento (AGENTS.md):
-//! - $O(1)$ en stack: Cero alocaciones dinámicas (`Vec`, `Box`) durante el trazo.
-//! - Cero `unwrap()` o `expect()` en producción.
-//! - Tiempo de ejecución $< 2\,\mu\text{s}$ por muestra.
+//! El motor causal nuevo evita vectores temporales por muestra, pero conserva
+//! las muestras del trazo activo en un `Vec` que puede crecer. El modelador
+//! heredado sigue disponible para el producto hasta completar la evaluación.
 
+pub mod causal;
+pub mod engine;
 pub mod input_filter;
 pub mod kalman_predictor;
 pub mod spring_mass;
 pub mod stroke_end;
+
+pub use causal::{CausalEngine, CausalInkEngine};
+pub use engine::{
+    DirtyRect, InkDelta, InkEngine, InkError, InkFinal, InkRange, InkSample, InkStyle,
+};
+
+#[cfg(test)]
+mod contract_tests;
 
 #[cfg(test)]
 pub mod tests;

@@ -750,6 +750,12 @@ pub(crate) struct Reader {
     /// Mientras es `Some`, `blit` usa el frame compuesto + la capa temporal
     /// del trazo (sin re-blitear la página por Move — requisito 5).
     pub(crate) tool_gesture: Option<ToolGesture>,
+    /// Capa causal front-buffer opcional. Los deltas que envía proceden de las
+    /// mismas muestras almacenadas en `tool_gesture.ink_engine`.
+    pub(crate) ink_overlay: Option<crate::jni::InkOverlay>,
+    /// Trazo overlay que solo puede borrarse después de aparecer en Dry:
+    /// (página, id de anotación persistida).
+    pub(crate) pending_ink_clear: Option<(u32, u64)>,
     /// ids de las anotaciones CREADAS EN ESTA SESIÓN (dedo/lápiz, en orden
     /// de creación). Solo anotaciones nuevas (no las cargadas del sidecar).
     pub(crate) session_ids: Vec<u64>,
@@ -764,15 +770,6 @@ pub(crate) struct Reader {
     /// Probe de telemetría (solo logcat): mantenido para comparar el coste
     /// del frame completo GPU con el dirty rect de la Fase 1 (ink_dirty).
     take_repaint_probe: Option<(i32, i32, i32, i32)>,
-    /// Fase 1 USI: ancla temporal del gesto (event_time del Down, base
-    /// System.nanoTime) — los t_ms de las muestras se re-escalan contra ella.
-    /// La fija `input` antes de `begin_tool_gesture`.
-    pub(crate) pending_t0_ns: Option<u64>,
-    /// Presión normalizada del último evento (0.5 si el driver no la da).
-    pub(crate) pending_pressure: Option<f32>,
-    /// Ancla temporal del gesto en curso (ns, System.nanoTime del Down del
-    /// boli); la lee `feed_stylus_history` para re-escalar los timestamps.
-    pub(crate) gesture_t0_ns: u64,
     /// Último instante en que el STYLUS tocó la pantalla (para palm rejection
     /// por tiempo: tras escribir, se ignora el táctil del dedo/palma durante
     /// ~500ms para evitar pans/zooms accidentales al apoyar la mano).

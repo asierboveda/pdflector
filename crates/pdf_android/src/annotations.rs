@@ -118,20 +118,9 @@ pub(crate) enum ToolKind {
     Ink,
 }
 
-/// Gesto de herramienta EN CURSO (dedo o lápiz bajado con una herramienta
-/// activa): puntos en coordenadas de página (puntos PDF). Al levantar,
-/// `Reader::end_tool_gesture` lo convierte en una anotación guardada
-/// (`Highlight` para el resaltador; para el boli, la POLILÍNEA MUESTREADA
-/// de la curva midpoint — cero pop, ver abajo).
-///
-/// ## Máquina midpoint (Bézier cuadrática por puntos medios)
-///
-/// Con puntos de control P0..Pn, el trazo en vivo es exactamente la
-/// polilínea estampada: tramo recto P0→M1 (Mk = punto medio P(k-1)Pk),
-/// curvas cuadráticas M(k-1)→Mk con control P(k-1), y remate M(n-1)→Pn al
-/// soltar. La misma polilínea muestreada (`ink_pts`) se PERSISTE en el
-/// `Stroke`: el replay lineal de `pdf_core::overlay` la une y reproduce el
-/// trazo 1:1 — sin `smooth_polyline` ni re-rasterizado al soltar (cero pop).
+/// Gesto de herramienta EN CURSO. Ink conserva las muestras causales en el
+/// motor y Highlight conserva sus puntos de gesto; ambos se expresan en
+/// coordenadas de página. Al finalizar se crea la anotación correspondiente.
 #[derive(Clone, Debug)]
 pub(crate) struct ToolGesture {
     /// Página (0-based) sobre la que se dibuja. Fija en el `Down`; el trazo
@@ -143,96 +132,123 @@ pub(crate) struct ToolGesture {
     /// Ancla del gesto en página (el punto del Down): para el resaltador
     /// define una esquina del rect de selección.
     pub(crate) anchor: (f32, f32),
-    /// Vértices crudos en coordenadas de página (el `Down` + cada `Move`).
-    /// Para el resaltador: puntos del gesto (bbox). Para el boli: puntos de
-    /// control Pk de la máquina midpoint (bbox + degenerate check).
+    /// Puntos de Highlight en coordenadas de página. Ink usa exclusivamente
+    /// `ink_engine.active_samples()` como fuente de geometría.
     pub(crate) points: Vec<(f32, f32)>,
     /// Spans de la página PRE-ORDENADOS por Y (B3, solo resaltador):
     /// snapshot del `PageTextCache` en el `Down` (peek sin I/O) para el
     /// preview tentativo por present y el cálculo final al soltar.
     /// Vacío si la página no estaba cacheada (fallback a la vía clásica).
     pub(crate) hl_spans: Vec<TextSpan>,
-    /// Último punto medio M(k-1) estampado (inicio de la próxima curva).
-    /// `None` hasta el segundo punto (el primer tramo es recto P0→M1).
-    pub(crate) prev_mid: Option<(f32, f32)>,
-    /// Polilínea MUESTREADA de lo estampado en el frame (coords de página):
-    /// se persiste tal cual en el `Stroke` — replay 1:1 (ver doc del tipo).
-    pub(crate) ink_pts: Vec<(f32, f32)>,
-    /// Presión USI 2.0 normalizada [0,1] por muestra (paralela a `points`):
-    /// modula el grosor `w(p) = w_base·(0.6 + 0.8·p)` (plan Área C). Los
-    /// drivers sin presión reportan 0.5 (grosor neutro) — ver
-    /// `push_with_pressure`. Solo se llena en el boli (Ink).
-    pub(crate) pressures: Vec<f32>,
-    /// Timestamps en ms monótonos por muestra (paralela a `points`), del
-    /// `event_time` NDK del boli: Δt REAL entre muestras para el predictor
-    /// (los eventos a 240 Hz batcheados NO llegan uniformes). Base: el
-    /// timestamp del Down es t=0 del trazo.
-    pub(crate) times_ms: Vec<f32>,
-    /// Pipeline de modelado físico de trazo (`google/ink-stroke-modeler`).
-    pub(crate) modeler: crate::ink::InkStrokeModeler,
-    /// Punto predicho hacia adelante (25–30 ms) por el filtro de Kalman.
-    pub(crate) predicted_pt: Option<(f32, f32)>,
+    /// Única fuente de muestras Ink; Wet y Stroke final leen estos mismos datos.
+    pub(crate) ink_engine: Option<crate::ink::CausalInkEngine>,
+    /// Este gesto ya escribió segmentos al overlay nativo y debe confirmarlos
+    /// en Up o cancelarlos si el sistema cancela el gesto.
+    pub(crate) ink_overlay_used: bool,
+    /// Ruta decidida en Down. Si el overlay no estaba listo entonces, todo el
+    /// gesto permanece en Wet; no se migra a mitad del trazo.
+    pub(crate) ink_overlay_route: bool,
 }
 
 impl ToolGesture {
     /// Empieza un gesto en `page` con el primer punto (el del `Down`).
-    /// `t0_ms`: timestamp NDK del Down (ancla temporal del gesto);
+    /// `t0_ns`: timestamp NDK del Down (ancla temporal absoluta del gesto);
     /// `pressure`: presión inicial normalizada (0.5 si el driver no la da);
     /// `w_base`: grosor base del lápiz configurado.
-    pub(crate) fn new(
+    pub(crate) fn try_new(
         page: u32,
         tool: ToolKind,
         pt: (f32, f32),
-        t0_ms: f32,
+        t0_ns: u64,
         pressure: f32,
         w_base: f32,
-    ) -> Self {
-        let mut modeler = crate::ink::InkStrokeModeler::new(w_base);
-        let res = modeler.update(pt.0, pt.1, (t0_ms as f64 * 1e6) as u64, pressure);
-        Self {
+        color: Color,
+    ) -> Result<Self, crate::ink::InkError> {
+        let sample = crate::ink::InkSample::new(pt.0, pt.1, t0_ns, pressure);
+        let ink_engine = if tool == ToolKind::Ink {
+            let mut engine =
+                crate::ink::CausalInkEngine::new(crate::ink::InkStyle::new(w_base, color))?;
+            engine.begin(sample)?;
+            Some(engine)
+        } else {
+            None
+        };
+        Ok(Self {
             page,
             tool,
             anchor: pt,
-            points: vec![pt],
-            prev_mid: None,
-            ink_pts: vec![pt],
-            pressures: vec![pressure],
-            times_ms: vec![t0_ms],
-            modeler,
-            predicted_pt: res.predicted_pt,
+            points: if tool == ToolKind::Highlight {
+                vec![pt]
+            } else {
+                Vec::new()
+            },
             hl_spans: Vec::new(),
+            ink_engine,
+            ink_overlay_used: false,
+            ink_overlay_route: false,
+        })
+    }
+
+    /// Añade una muestra Ink real. Timestamps repetidos o decrecientes se
+    /// descartan explícitamente; no se fabrican tiempos ni coordenadas.
+    pub(crate) fn push_ink_sample(
+        &mut self,
+        sample: crate::ink::InkSample,
+    ) -> Result<Option<crate::ink::InkDelta>, crate::ink::InkError> {
+        let Some(engine) = self.ink_engine.as_mut() else {
+            return Ok(None);
+        };
+        if engine
+            .last_sample()
+            .is_some_and(|previous| sample.time_ns <= previous.time_ns)
+        {
+            return Ok(None);
         }
+        engine.push(sample).map(Some)
     }
 
-    /// Añade un punto con telemetría USI (presión + timestamp del evento):
-    /// en el boli, TODO punto de control lleva presión y Δt real.
-    /// Descarta casi-duplicados (distancia < 0.25 pt ≈ < 1 px a zoom 4):
-    /// los Move llegan a 240 Hz y un punto por muestra hincharía la
-    /// polilínea sin aportar fidelidad. Las series paralelas
-    /// `pressures`/`times_ms` se mantienen alineadas con `points` (el
-    /// guard corta ANTES de tocar las tres).
-    pub(crate) fn push_with_pressure(&mut self, pt: (f32, f32), t_ms: f32, pressure: f32) {
-        if let Some(&last) = self.points.last() {
-            let d2 = (pt.0 - last.0).powi(2) + (pt.1 - last.1).powi(2);
-            if d2 < 0.0625 {
-                return;
-            }
-        }
-        self.points.push(pt);
-        self.pressures.push(pressure);
-        self.times_ms.push(t_ms);
-    }
-
-    /// Presión de la última muestra (grosor del próximo tramo): 0.5 si el
-    /// gesto no la reportó (vec vacío — nunca en el boli, pero el Highlight
-    /// comparte el tipo).
-    pub(crate) fn last_pressure(&self) -> f32 {
-        self.pressures.last().copied().unwrap_or(0.5)
-    }
-
-    /// Actualiza el punto ACTUAL del resaltador (la otra esquina del rect de
-    /// selección); para el boli es idéntico a `push`.
+    /// Actualiza el punto actual del resaltador (la otra esquina del rect de
+    /// selección).
     pub(crate) fn set_cur(&mut self, pt: (f32, f32)) {
         self.points = vec![self.anchor, pt];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ink_gesture_keeps_only_newer_real_samples_and_does_not_filter_by_distance() {
+        let mut gesture = ToolGesture::try_new(
+            0,
+            ToolKind::Ink,
+            (10.0, 20.0),
+            100,
+            0.5,
+            2.0,
+            DEFAULT_INK_COLOR,
+        )
+        .unwrap();
+
+        assert!(
+            gesture
+                .push_ink_sample(crate::ink::InkSample::new(99.0, 99.0, 100, 0.8))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            gesture
+                .push_ink_sample(crate::ink::InkSample::new(10.0, 20.0, 101, 0.6))
+                .unwrap()
+                .is_some()
+        );
+
+        let samples = gesture.ink_engine.as_ref().unwrap().active_samples();
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].point(), (10.0, 20.0));
+        assert_eq!(samples[1].point(), (10.0, 20.0));
+        assert_eq!(samples[1].time_ns, 101);
+        assert_eq!(samples[1].pressure, 0.6);
     }
 }

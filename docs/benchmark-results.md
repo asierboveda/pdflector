@@ -15,6 +15,147 @@ Este documento es el **registro único y canónico de evidencia empírica** de r
 
 ---
 
+## 2026-09-24 — Integración de la APK principal: build e inicio, sin medición de tinta
+
+- **Clasificación:** validación funcional parcial, no benchmark de latencia.
+- **Hardware:** TCL NXTPaper 11 Plus 9469X, Android 16/API 36,
+  1440×2200, ADB `A06B4A8E6774623`. Batería 77 % y lectura puntual 28,2 °C;
+  no se registró estado térmico inicial/final de un ensayo.
+- **Build:** `com.pdflector.app` versionCode `16777473`, código basado en
+  `6743699` con cambios locales sin commit; APK debug SHA-256
+  `bb22b539030508c452c74033128f58f10e02f0e9d9ccc9ebc72da1cb7141f19e`.
+  Firma SHA-256 `a1b691cffc1b8ed4897e708ba25a19bc4fc2c735871f9f57d67bbc6b13fe0969`,
+  igual que la aplicación instalada anteriormente.
+- **Flujo:** build Gradle con Rust release ARM64, `adb install -r`, arranque de
+  `PdfLectorActivity`, inspección de logcat y de superficies. El primer
+  arranque cayó por ausencia de tema AppCompat; tras declararlo, el proceso
+  cargó el PDF previo y 37 anotaciones, y creó EGL/GLES2. La actualización
+  mantuvo `/data/user/0/com.pdflector.app`.
+- **Pantalla:** la actividad solicitó 120 Hz; `dumpsys display` mostraba modo
+  activo 60 Hz (`mActiveModeId=2`) mientras la tablet estaba bloqueada. No es
+  una medición del refresco durante escritura.
+- **Resultado no medido:** posición del trazo en el PDF, continuidad,
+  transición wet→dry, p50/p95/p99, lápiz→píxel, frames perdidos, PSS y uso
+  térmico durante escritura. La pantalla bloqueada impidió la prueba física.
+
+---
+
+## 2026-09-23 — Corrección de alineación vertical en Ink Bench
+
+- **Clasificación:** prueba funcional de coordenadas en dispositivo, no
+  medición de latencia.
+- **Hardware y build:** TCL NXTPaper 11 Plus 9469X, Android 16/API 36,
+  1440×2200; APK debug aislada `com.pdflector.inkbench` sobre HEAD
+  `6743699a0d0e7129f57b9da8fe84f31034881b30` con cambios locales sin
+  commit. APK corregida SHA-256
+  `b6b765c4ebb5321f9def013351fa6b74ab63a0367fd57cdb40bff54c0d847144`.
+- **Condiciones:** pantalla encendida y tablet conectada por ADB. La vista de
+  control indicaba 60 Hz en la captura previa. No se registró una ventana
+  térmica ni se midió el refresco durante el trazo corregido.
+- **Hallazgo con lápiz físico:** el propietario movió la punta de izquierda a
+  derecha y hacia arriba; la tinta avanzó hacia abajo. El log temporal de un
+  `Down` mostró coordenadas locales/raw `(431,1111)`, origen de ambas vistas
+  `(0,0)`, tamaño 1440×2200; AndroidX entregó buffer 1440×2200 y matriz de
+  transformación identidad. La tinta apareció cerca de Y=1089, coherente
+  con `2200−1111`: la proyección GL invertía Y una vez de más.
+- **Regresión reproducible:** tras reiniciar la actividad, se inyectó
+  `adb shell input stylus swipe 300 900 700 1300 500`. La captura previa
+  mostraba tinta aproximadamente entre `(300,1300)` y `(700,900)`, y
+  `tools/ink_bench/check_alignment.py` falló para ambos extremos de entrada.
+  Se eliminó el signo negativo de Y en el vertex shader, se compilaron y
+  pasaron 9 pruebas JVM, se instaló la APK corregida y se repitió exactamente
+  el swipe. La comprobación de píxeles naranjas a 12 px de ambos extremos
+  `(300,900)` y `(700,1300)` pasó.
+- **Confirmación física:** con la APK corregida, el propietario probó el lápiz
+  y confirmó que la tinta sale justo bajo la punta. Es una observación manual
+  de alineación, no una medida de latencia ni un ensayo prolongado.
+- **Límites:** la inyección ADB verifica coordenadas del trazo asentado, no
+  latencia, presión, inclinación, rotación, continuidad en sesiones largas,
+  FPS ni calidad bajo otros flujos.
+
+---
+
+## 2026-09-23 — Arranque del experimento AndroidX de tinta
+
+- **Clasificación:** observación de instalación, superficies y memoria en
+  reposo. No es una medición de rendimiento de escritura.
+- **Hardware:** TCL NXTPaper 11 Plus 9469X, Android 16/API 36, 1440×2200,
+  dispositivo ADB `A06B4A8E6774623`.
+- **Build:** APK debug aislada `com.pdflector.inkbench` 0.1, `versionCode=1`,
+  construida sobre HEAD `6743699a0d0e7129f57b9da8fe84f31034881b30` con
+  cambios locales sin commit. SHA-256 de la APK:
+  `c3826bfadf373291c03bd5b194872e229e8c59ad72f3f7618b444b87636311ca`.
+- **Condiciones:** pantalla encendida, batería 73 %, USB cargando. Batería
+  29,6 °C según `dumpsys battery`; `thermalservice` informó skin 44,1 °C
+  con estado 1. Son lecturas puntuales, no una ventana térmica estable.
+- **Flujo:** instalación con ADB, arranque de `MainActivity`, captura de
+  pantalla, consulta de SurfaceFlinger/display/meminfo, salida al launcher y
+  regreso a la actividad. Se mantuvo el mismo proceso y no apareció un crash
+  en el logcat filtrado durante esa secuencia.
+- **Presentación:** la ventana solicitó 120 Hz y el `SurfaceView` solicitó
+  120 Hz (`ExactOrMultiple`). SurfaceFlinger mostró un
+  `FrontBufferedSurfaceControl` independiente. El modo físico efectivo siguió
+  en 60 Hz (`mActiveModeId=2`, `renderFrameRate=60.0`). La cifra de 1000 Hz
+  declarada por la capa front es una preferencia de esa capa, **no** el
+  refresco físico del panel.
+- **Memoria en reposo tras arranque de la APK final:** PSS total 62 096 KB;
+  Graphics 14 589 KB; Native Heap 15 204 KB; RSS total 187 281 KB. Una sola muestra no
+  demuestra estabilidad ni ausencia de crecimiento.
+- **Límites:** contadores de input, callbacks y commits estaban a cero. No se
+  ejecutó un trazo físico con stylus ni captura externa a ≥240 fps; no hay
+  percentiles de latencia, frames perdidos o calidad visual que puedan
+  aprobar la arquitectura. El resultado de 60 Hz tampoco acredita el objetivo
+  de 120 Hz. La APK final incorporó la lectura de timestamps de MotionEvent
+  en nanosegundos para API 34+; se reinstaló, abrió y permaneció sin crash
+  observable.
+
+---
+
+## 2026-09-23 — Baseline previo al spike de tinta causal/front-buffer
+
+- **Clasificación:** observado en hardware; todavía no es una medición de
+  latencia lápiz→píxel ni una comparativa de motores.
+- **Hardware:** TCL NXTPaper 11 Plus 9469X, Android 16/API 36, resolución
+  1440×2200. Dispositivo ADB `A06B4A8E6774623`.
+- **Build instalada:** `com.pdflector.app` 0.1.0, `versionCode=16777472`, APK
+  SHA-256
+  `303a92c6236b671d4f888ad9dc269fe6ac257b5b3465a13b2ee1632200733ebd`.
+  La checkout estaba en `6743699a0d0e7129f57b9da8fe84f31034881b30` con
+  cambios sin commit cuyo diff tenía SHA-256
+  `9a46d0ef208acaf1ba8cfbc4707a6db0be57f07d3fd92019ab1b22d30d335ba0`.
+- **Condiciones:** batería 73 %, alimentación USB activa; estado térmico del
+  servicio `1`. Lecturas HAL: batería 30,7 °C y skin 33,8 °C. Las lecturas
+  cacheadas eran superiores (skin 44,1 °C), por lo que esta sesión no se usa
+  para comparar rendimiento.
+- **Refresco:** el panel anuncia 120,00001 y 60 Hz. Con PDFLector visible y
+  enfocado, SurfaceFlinger registró la solicitud de la capa como `120.00 Hz`,
+  compatibilidad `Exact`, pero el modo físico efectivo permaneció en 60 Hz
+  (`mActiveModeId=2`, `renderFrameRate=60.0`). La configuración de la ROM
+  mostraba `ignore_app_preferred_refresh_rate_request=true`. Por tanto,
+  **solicitar 120 Hz no demuestra que el panel esté funcionando a 120 Hz**.
+- **Memoria tras arranque y 2 s de estabilización:** PSS total 176 445 KB;
+  Graphics 78 462 KB; Native Heap 83 740 KB; RSS total 286 994 KB.
+- **Validación host:** `git diff --check` correcto y toda la suite de
+  `pdf_core` correcta. `cargo test -p pdf_android` en host no es una prueba
+  válida: falló al compilar `ndk-sys`, que solo soporta targets Android. La
+  validación Android debe usar el target `aarch64-linux-android` indicado en
+  `AGENTS.md`.
+- **Limitaciones:** no se ejecutó un gesto físico controlado, no se midió
+  lápiz→píxel y no se modificó el ajuste persistente de refresco. Estas
+  métricas quedan como `NO VERIFICADO` hasta ejecutar el protocolo con stylus
+  y cámara externa de al menos 240 fps.
+
+### Corpus fijado para las comparaciones
+
+| Fichero | SHA-256 |
+|---|---|
+| `dense_textbook.pdf` | `e17d216c032b333a957b9f2f1af12edd5103b886172b6fedb72fbbeb6a11995f` |
+| `large_document.pdf` | `f4c4397134a942efd9f5ab196540d5adec56855181b10b1b809cdb483a0b0f10` |
+| `scanned_pages.pdf` | `4faf8fffab903214c2188d30459896071c7e1f2556c48e6718f08eca904e4943` |
+| `scientific_paper.pdf` | `7d0cc80dca643efa7d0f10748c60b0780711a79023761f343ad79700acb33ac7` |
+
+---
+
 ## 2026-09-07 — Batch TCL: Cold start, scroll de biblioteca y PSS bajo interacción
 
 - **Hardware**: TCL NXTPaper 11 Plus (modelo 9469X, MediaTek MT8781 8× Cortex-A55, 8 GB RAM, Android 15, pantalla 1440×2200 portrait @ 320 dpi). Pantalla ON (`svc power stayon true`), verificado retorno a `stayon false` + Dozing al finalizar.

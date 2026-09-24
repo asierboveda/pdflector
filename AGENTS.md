@@ -1,132 +1,361 @@
-# AGENTS.md — PDFLector
+# AGENTS.md — Constitución operativa de PDFLector
 
-> Reglas operativas para agentes y humanos. Este fichero es la fuente única de reglas.
-> **Producto**: lector de PDF para tablet Android con lápiz — `crates/pdf_android`.
-> **El escritorio (`crates/pdf_app`, egui) es un banco de pruebas del core, no el producto.**
-> Roadmap vigente: `docs/plan/NEXT-PLAN.md` (fases A–F). Deuda: `docs/plan/DEUDA.md`.
+Este archivo define **cómo deben trabajar los agentes y las personas en este
+repositorio**. No describe el estado completo del producto, no contiene un
+roadmap y no funciona como backlog.
 
-## Jerarquía documental
+## 1. Orden obligatorio de lectura
 
-Estos son los únicos documentos vivos. Si algo no está aquí, no existe como instrucción:
+Antes de analizar, diseñar o modificar el proyecto:
 
-| Documento | Rol |
+1. Leer este archivo completo.
+2. Leer `ESTADO_ACTUAL.md` completo.
+3. Leer el Issue asignado o, si no existe, el prompt explícito del propietario.
+4. Inspeccionar el código y las pruebas del área afectada.
+5. Abrir decisiones, evidencia o skills solo cuando sean relevantes para la
+   tarea.
+
+No usar documentos históricos como sustituto de inspeccionar el código. Si un
+archivo contradice el comportamiento ejecutable, aplicar el protocolo de la
+sección 4.
+
+## 2. Norte del producto
+
+PDFLector es una aplicación personal para leer y anotar PDFs en una tablet TCL
+NXTPaper 11 Plus (9469X) con lápiz.
+
+Prioridades, en este orden:
+
+1. **Fluidez y respuesta inmediata.**
+2. **Escritura y subrayado fiables.** El trazo debe sentirse natural y
+   predecible; no basta con que los puntos terminen guardados correctamente.
+3. **Una UX excelente para leer y tomar apuntes.**
+4. **Uso razonable de memoria, CPU, GPU y batería**, sin sacrificar las tres
+   prioridades anteriores.
+
+El núcleo del producto es:
+
+- abrir y leer PDFs;
+- navegar y manipular el documento con fluidez;
+- escribir con bolígrafo;
+- subrayar texto.
+
+Biblioteca, IA, Discover/arXiv, exportación y sincronización existen o pueden
+existir, pero son capacidades periféricas. Pueden cambiarse o eliminarse sin
+redefinir el producto.
+
+La aplicación se diseña para uso personal e instalación directa. No asumir
+requisitos de Play Store, multiusuario o servicio público salvo petición
+explícita.
+
+## 3. Fuentes de verdad
+
+Cada tipo de información tiene un único destino:
+
+| Información | Fuente canónica |
 |---|---|
-| `AGENTS.md` | Reglas operativas. Manda sobre todo lo demás. |
-| `docs/plan/NEXT-PLAN.md` | Único roadmap editable (fases A–F). |
-| `docs/plan/DEUDA.md` | Deuda técnica y decisiones abiertas, con su medida o su `SIN MEDIR`. |
-| `docs/plan/00-objetivo.md` | Norte del producto: prioridades y métricas. |
-| `docs/PROYECTO.md` | Visión, plataforma y alcance de producto. |
-| `docs/adr/` | Decisiones arquitectónicas (snapshot inmutable con `Estado` y `Fecha`). |
-| `docs/benchmark-results.md` | **Evidencia.** Registro append-only por fecha. Nunca instrucciones. |
-| `docs/legal.md` | Estado de cumplimiento de licencias. |
+| Reglas de trabajo | `AGENTS.md` |
+| Software que existe | `ESTADO_ACTUAL.md`, contrastado con el código |
+| Trabajo pendiente | GitHub Issues |
+| Decisión difícil de revertir | `docs/adr/ADR-*.md` |
+| Medición obtenida | `docs/benchmark-results.md` |
+| Procedimiento repetible | `.agents/skills/<nombre>/SKILL.md` |
+| Presentación pública | `README.md` |
 
-No hay planes paralelos, ni documentos "Pro", ni material de investigación congelado: lo que dejó de servir se borró y vive en el historial de git (`git log -- <ruta>`).
+No crear roadmaps, fases, documentos de deuda, planes de implementación ni
+listas paralelas de tareas dentro del repositorio. GitHub Issues es la única
+cola persistente. El prompt selecciona el Issue; no reemplaza su contexto.
 
-## MUST
+## 4. Protocolo ante contradicciones
 
-1. **Fluidez > RAM > resto.** Medir antes de afirmar. Objetivo de frame p95 < 16.6 ms (60 fps); en la TCL NXTPaper (pantalla de 120 Hz) el objetivo ambicioso es 8.33 ms. Todo cierre de fase exige medición con **fecha + hardware + flujo medido + métrica**.
-2. **`pdf_core` no depende de UI.** Nunca importa `egui`, Slint ni `pdf_android`. Lógica pura, motor tras `trait RenderEngine`.
-3. **Caché LRU por bytes, prefetch ±1, el hilo de UI nunca bloquea** (worker/rayon). Anotaciones vectoriales en coordenadas de página, pintadas en capa sobre el bitmap.
-4. **Español en docs, chat y commits de documentación; inglés en código y mensajes de commit de código.** El `README.md` de la portada va en inglés (repo público). Explica en 2-4 líneas cualquier crate o concepto Rust nuevo que introduzcas.
-5. **Cambios mínimos.** Implementa solo lo pedido. Si detectas algo mejorable fuera de alcance, escríbelo en `docs/plan/DEUDA.md` o en un Issue; no lo hagas.
-6. **Documenta en el mismo commit**: decisión → `docs/adr/`; medición → `docs/benchmark-results.md`; procedimiento repetible → `.opencode/skills/`. Si cambias un comando o un requisito de entorno, actualiza en el mismo commit `AGENTS.md`, `CONTRIBUTING.md` y el skill correspondiente: hoy divergen si no.
-7. **Un Issue = una tarea con criterio de cierre medible.** El repo es la verdad de plan y diseño; GitHub Issues es la cola de trabajo. Un Issue cuya fase ya no existe se cierra, no se arrastra.
+No resolver contradicciones eligiendo el texto que parezca más convincente.
+Investigar en este orden:
 
-## MUST NOT
+1. Punto de entrada y flujo de llamadas realmente conectado.
+2. Pruebas que ejercitan ese flujo.
+3. Manifiestos, scripts y CI que lo construyen.
+4. Ejecución o medición en la TCL cuando intervengan Android, GPU, input o UX.
+5. Comentarios y documentación.
 
-- **No `unwrap`/`expect` en código de producción de `pdf_core`** (fuera de `#[cfg(test)]`; usa `Result`). `unsafe` solo acotado y comentado. Los tests y benches pueden usar `unwrap` con `#[allow]` acotado y motivo.
-- **No dependencias GPL/AGPL sin aprobación explícita.** Preferir MIT/Apache-2.0 y justificar cada crate nueva en una línea.
-- **No renderizar a resolución máxima** ni conservar todas las páginas en memoria.
-- **No cerrar fase ni Issue sin medición** con fecha + hardware + flujo + métrica.
-- **Ninguna clave en Git.** `crates/pdf_android/groq_key.txt` y `google_key.txt` son locales y están en `.gitignore`. Los embebe `include_str!`, así que **el build los exige**: en un clon limpio crea placeholders (`echo placeholder > crates/pdf_android/groq_key.txt`, igual para `google_key.txt`) — es lo que hace el CI. Nunca subas una clave real ni la incrustes en una APK distribuible.
-- **La biblioteca nunca borra un PDF automáticamente.** Solo el usuario puede borrarlo.
+Clasificar el resultado:
 
-## Trabajo con agentes
+- **Verificado:** demostrado por prueba, build o medición reproducible.
+- **Observado:** confirmado manualmente, indicando dispositivo y flujo.
+- **Inferido:** deducido del código pero no ejecutado.
+- **No verificado:** no existe evidencia suficiente.
 
-Esta sección existe porque ya se pagó el precio de no tenerla: dos ramas arreglaron el mismo bug por separado y el repositorio acumuló seis worktrees y ramas duplicadas.
+Actualizar la fuente canónica afectada en el mismo cambio. No reescribir una
+decisión histórica para fingir que nunca existió: sustituirla con otra decisión
+cuando sea necesario.
 
-1. **Fuente de verdad: `main`.** Todo agente parte de `main` al día (`git fetch && git switch main && git pull --ff-only`). Ninguna rama de trabajo es fuente de verdad y `main` no se reescribe.
-2. **Un worktree = un agente = una tarea.** Cada agente trabaja en su propio worktree (`git worktree add ../pdflector-<tarea> -b feat/<tarea>` o el equivalente de Orca). Prohibido que dos agentes compartan worktree o que alguien trabaje sobre una rama ya integrada.
-3. **Antes de empezar:** `git worktree list` + `git status` de los worktrees activos. Si tu rama está integrada en `main` o va más de 20 commits por detrás, se borra antes de tocar nada.
-4. **Propiedad de fichero.** Ningún agente edita un fichero que otro tenga modificado sin commitear. Si dos tareas necesitan el mismo fichero, se serializan o se para y decide el dueño.
-5. **Al terminar:** commit atómico en tu rama, integrar en `main` (merge o cherry-pick), y luego `git worktree remove` + `git branch -d`. Lo que no esté integrado en 7 días pasa a tag `archive/<tema>` y su worktree se borra.
-6. **Un solo integrador por turno.** Quien abre la rama resuelve su merge. Prohibido mergear a `main` dos agentes a la vez.
-7. **Paralelizar por ficheros disjuntos.** Si dos tareas pueden tocar el mismo fichero, el reparto está mal hecho: reasigna dominios antes de lanzar, no después.
-8. **Contexto compartido por fichero, no por prompt.** Todo lo que un agente necesite saber se pasa como ruta (`local://…`, `docs/…`), nunca pegado en el mensaje.
+## 5. Arquitectura de referencia
 
-## Arquitectura
+La arquitectura observable está descrita en `ESTADO_ACTUAL.md`. Estas reglas
+son la referencia hasta que el propietario apruebe una sustitución:
 
-```
-crates/pdf_core      # motor MuPDF + caché LRU + prefetch + zoom + anotaciones + store SQLite
-                     # + export + sync + ai + arxiv + theme. SIN UI.
-crates/pdf_android   # PRODUCTO: app Android nativa (android-activity + EGL/GLES2 + JNI).
-                     # gpu/ (pipeline wet/dry), ink/, reader/, draw/, input/, thumbs, discover.
-crates/pdf_app       # banco de pruebas del core en escritorio (egui). No es plataforma destino.
-crates/pdf_bench     # criterion + sweep; corre en host.
-docs/adr/            # ADR-001 MuPDF/AGPL · ADR-005 Android nativo (sustituye a 004)
-                     # ADR-006 stylus EGL · ADR-007 pipeline wet/dry
-```
+- `pdf_android` es el producto y `pdf_app` es un cliente de escritorio/banco de
+  pruebas, no la plataforma objetivo.
+- `pdf_core` no tiene dependencias técnicas de frameworks de UI ni de Android.
+  Los tipos conceptualmente visuales deben seguir siendo neutrales a la
+  plataforma o salir del core.
+- Las anotaciones se modelan en coordenadas de página y se pintan como una capa
+  vectorial sobre el documento.
+- La UI no espera render, red, persistencia ni exportación síncrona.
+- Las cachés y colas tienen límites explícitos; no se retienen todas las páginas
+  de un documento.
+- El camino interactivo evita trabajo cuyo coste crezca sin control con el
+  tamaño del PDF o con la duración de una sesión.
+- Rust, Android nativo, EGL/GLES2 y MuPDF son el baseline actual, no dogmas. Un
+  agente puede proponer alternativas con evidencia, pero no iniciar una
+  migración sin aprobación.
 
-Decisiones cerradas: motor **MuPDF** (AGPL-3.0-or-later, ADR-001, decisión mantenida); plataforma final **Android nativo** (ADR-005); presión del lápiz **no necesaria**; exportación a Markdown + PDF con anotaciones incrustadas; sincronización por **Syncthing** (congelada hasta después de v1).
+Una propuesta de sustitución tecnológica debe comparar sobre el mismo hardware
+y flujo: beneficio medido, coste de migración, riesgos, licencias y estrategia
+de reversión.
 
-## Comandos
+## 6. Método de trabajo
+
+### 6.1 Antes de editar
+
+1. Confirmar objetivo, alcance y criterio observable de cierre.
+2. Inspeccionar el estado de Git y preservar cambios ajenos.
+3. Leer las rutas implicadas y sus consumidores; no diseñar desde nombres de
+   fichero o comentarios aislados.
+4. Buscar tests y mediciones existentes.
+5. Clasificar el cambio por riesgo y aplicar las aprobaciones de la sección 7.
+
+### 6.2 Durante el cambio
+
+- Hacer el cambio mínimo que resuelve el objetivo aprobado.
+- Mantener separadas lógica, presentación, persistencia y operaciones externas.
+- Preferir interfaces pequeñas, estado explícito y componentes comprobables de
+  forma aislada.
+- No introducir abstracciones para futuros hipotéticos.
+- No corregir problemas fuera de alcance. Crear o proponer un Issue cuando el
+  hallazgo merezca trabajo posterior.
+- Medir antes de optimizar y conservar únicamente cambios que mejoren el flujo
+  objetivo sin degradar otro criterio esencial.
+
+### 6.3 Después de editar
+
+1. Revisar el diff completo.
+2. Ejecutar la validación proporcional de la sección 10.
+3. Actualizar decisión, evidencia, procedimiento o estado si el cambio altera
+   su fuente canónica.
+4. Informar qué cambió, qué se verificó y qué no pudo verificarse.
+5. Pedir confirmación antes de crear un commit.
+
+## 7. Aprobaciones obligatorias
+
+Presentar diseño, alternativas relevantes y evidencia, y esperar aprobación
+antes de modificar:
+
+- UX o UI;
+- arquitectura o límites entre componentes;
+- dependencias nuevas o sustitución de tecnología;
+- formatos persistentes y migraciones de datos;
+- licencias o distribución;
+- seguridad, permisos o gestión de claves;
+- operaciones destructivas o difíciles de revertir.
+
+La aprobación de una arquitectura se solicita **explicándola al propietario
+antes de implementarla**. La explicación debe concretar el problema y el flujo
+actual, los componentes y el recorrido de los datos propuestos, las
+alternativas relevantes, por qué se recomienda una, sus efectos sobre la UX,
+dependencias y datos existentes, y cómo se verificará y podrá revertirse.
+Separar lo demostrado de lo que todavía es una hipótesis. Pedir el visto bueno
+para ese diseño concreto, no una elección de tecnología sin contexto.
+
+No construir una aplicación o APK experimental como requisito previo para
+obtener ese visto bueno ni presentar un prototipo como sustituto de la
+explicación. Un experimento aislado solo se hace cuando el propietario lo pide
+o aprueba expresamente su objetivo y alcance. Una vez aprobado el diseño,
+implementarlo en el producto dentro del alcance acordado, sin volver a pedir
+la misma aprobación.
+
+Correcciones triviales, mantenimiento mecánico y errores evidentes de bajo
+riesgo pueden ejecutarse directamente si no cambian comportamiento ni contrato.
+
+La aprobación de un diseño autoriza la implementación descrita, no autoriza el
+commit, una publicación, un borrado ni trabajo adicional.
+
+## 8. UX y cambios visuales
+
+Todo cambio de UX/UI requiere:
+
+1. describir el problema del usuario y el flujo afectado;
+2. presentar alternativas y recomendar una;
+3. obtener aprobación antes de editar;
+4. comprobar interacción, estados vacíos, errores, orientación y accesibilidad;
+5. validar en la TCL, no solo por inspección de código.
+
+No confundir "está implementado" con "se siente bien". Escritura, selección,
+scroll, zoom y navegación se evalúan con uso real además de métricas.
+
+Las ideas futuras pertenecen a Issues. No describir una interfaz planificada en
+`ESTADO_ACTUAL.md` como si estuviera disponible.
+
+## 9. Rendimiento
+
+La pantalla de referencia admite 60 y 120 Hz a 1440×2200. PDFLector debe
+solicitar 120 Hz mientras su superficie esté activa y funcionar correctamente
+si Android mantiene 60 Hz por política, batería o temperatura. Registrar el
+refresco efectivo en cada medición.
+
+Presupuestos iniciales para la TCL 9469X:
+
+| Flujo | Objetivo |
+|---|---|
+| Escritura, selección, pinch y manipulación directa | trabajo de app p95 ≤ 6 ms |
+| Presentación interactiva a 120 Hz | frame p95 ≤ 8,33 ms; p99 ≤ 16,67 ms |
+| Frames perdidos durante interacción continua | < 1 % |
+| Evento de stylus → envío de frame | p95 ≤ 8,33 ms |
+| Lápiz → píxel, medido externamente | p95 ≤ 25 ms |
+| Respuesta visual al cambio de página | ≤ 16,67 ms |
+| Página cacheada visible | ≤ 50 ms |
+| Página no cacheada nítida | ≤ 200 ms, sin bloquear input |
+| PSS estable | ≤ 250 MB |
+| Pico de estrés | ≤ 350 MB y sin crecimiento monotónico entre ciclos |
+
+Estos son presupuestos de ingeniería, no afirmaciones sobre el estado actual.
+La primera medición reproducible puede ajustarlos si demuestra un límite físico
+o del sistema. No relajarlos ni endurecerlos sin registrar evidencia y obtener
+aprobación.
+
+Detener una optimización cuando el flujo cumpla sus percentiles en varios
+ensayos, con temperatura estable, y no exista un defecto perceptible. No seguir
+iterando por una mejora numérica sin impacto observable.
+
+Cada medición debe incluir como mínimo:
+
+- fecha y commit;
+- dispositivo, versión de Android y build instalada;
+- resolución y refresco efectivo;
+- estado térmico inicial/final;
+- PDF o corpus y pasos exactos;
+- métrica, percentiles, número de muestras y resultado bruto;
+- comparación antes/después cuando evalúe un cambio.
+
+## 10. Validación
+
+Aplicar el carril correspondiente; una comprobación de compilación no sustituye
+una prueba de dispositivo.
+
+### Cambios en `pdf_core`
 
 ```bash
-# Core y banco de pruebas (host)
-cargo test -p pdf_core                       # genera el corpus antes si falta
-python3 tools/generate_corpus.py             # corpus/ (gitignored); requiere pillow + reportlab
-cargo run -p pdf_app -- file.pdf
-cargo bench -p pdf_bench -- --quick
-
-# Calidad
-cargo fmt --all
+cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
-
-# Android (TCL NXTPaper 11 Plus / 9469X, API 35, NDK r28)
-export ANDROID_NDK_HOME=$HOME/Android/Sdk/ndk/android-ndk-r28
-export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-echo placeholder > crates/pdf_android/groq_key.txt   # requisito de build (ver MUST NOT)
-echo placeholder > crates/pdf_android/google_key.txt
-cargo check -p pdf_android --target aarch64-linux-android      # verificación rápida
-cargo apk build -p pdf_android --release --target aarch64-linux-android
-
-# Medición en la tablet
-tools/adb-bench.sh                    # sweep×5 + dumpsys + screencap + p95 de logcat + JSON
+cargo test -p pdf_core
 ```
 
-Procedimiento completo de despliegue y medición: `.opencode/skills/pdflector-rendimiento/SKILL.md`.
+### Cambios en el cliente de escritorio
 
-## Validación
+```bash
+cargo check -p pdf_app
+```
 
-| Carril | Qué valida | Dónde |
-|---|---|---|
-| Host | `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, `cargo test -p pdf_core` | Local y CI |
-| Android (compilación) | Que el producto compila para la tablet (`cargo check -p pdf_android --target aarch64-linux-android`) | Local y CI (job `android`, con claves placeholder) |
-| Tablet física | Frame p95, render, PSS, gestos de lápiz, subrayado | **Solo en la TCL, vía `adb`.** Nunca afirmable desde host ni CI |
+Ejecutar pruebas específicas adicionales si se modifica su comportamiento.
 
-Los `#[cfg(test)]` de `pdf_android` no se ejecutan en host: si tocas esa crate, la verificación es la tablet.
+### Cambios Android
 
-## Definición de hecho
+```bash
+export ANDROID_NDK_HOME=/home/asierboveda/Android/Sdk/ndk/android-ndk-r28
+export PATH="$HOME/.cargo/bin:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+cargo check -p pdf_android --target aarch64-linux-android --all-targets
+cargo clippy -p pdf_android --target aarch64-linux-android --all-targets -- -D warnings
+```
 
-Un cambio está hecho cuando:
+El agente puede compilar, instalar una APK de prueba y ejecutar ADB como parte
+normal de una tarea Android. Debe anunciarlo antes. Puede observar, capturar y
+medir; no puede borrar datos personales, cambiar ajustes persistentes ni
+eliminar PDFs sin aprobación explícita.
 
-1. Compila y pasa `fmt` + `clippy` + `cargo test -p pdf_core`.
-2. Si toca render, caché o entrada: **medido en la TCL** con fecha, hardware, flujo y métrica, registrado en `docs/benchmark-results.md`.
-3. Cumple la tabla de escenarios de memoria (medido el 2026-09-06/07 en la TCL):
+Los cambios en render, input, tinta, selección, zoom, caché o lifecycle deben
+probarse en la TCL. Registrar como no verificado cualquier flujo que no se haya
+podido ejecutar allí.
 
-| Escenario | Techo declarado | Último valor medido | Estado |
-|---|---|---|---|
-| Arranque (PSS) | < 150 MB | 118 MB | ✅ |
-| Reposo (PSS) | ≤ 180 MB | 174-178 MB | ✅ |
-| Tras 15 ciclos Library→Viewer (PSS pico) | ≤ 200 MB | 232 MB → 287 MB | ❌ deuda abierta |
+### Cambios de documentación
 
-El umbral único de 150 MB para todo dejó de ser la regla: ahora se mide por escenario. El pico tras ciclos es deuda declarada en `docs/plan/DEUDA.md`, no un dato que se pueda ignorar.
+- comprobar enlaces y rutas;
+- buscar referencias a documentos eliminados;
+- ejecutar `git diff --check`;
+- contrastar afirmaciones técnicas con código o evidencia.
 
-4. La documentación afectada se actualizó en el mismo commit, y no queda ninguna referencia a ficheros borrados.
+## 11. Trabajo con varios agentes
 
-## Flujo pro
+El agente principal es el orquestador: descompone, asigna, reconcilia y valida
+el resultado integrado. Cuando la plataforma lo permita, usar agentes Luna para
+trabajo paralelo.
 
-- **Una sola raíz canónica**: `~/Projects/pdflector`. Worktrees temporales de agentes en `~/orca/workspaces/pdflector/<tarea>`. Excepciones de ruta: `~/Android/Sdk`, `/tmp`.
-- **Skills propios** → `.opencode/skills/<nombre>/SKILL.md` (versionados). **Skills de ecosistema** → `.agents/skills/` (gitignored, reproducibles desde `skills-lock.json` con `npx skills add`).
-- **Nada de documentación zombie**: lo que no sirva para una decisión futura se borra. El historial de git es el archivo.
+- Paralelizar solo dominios realmente independientes.
+- Dar a cada agente objetivo, rutas, límites y resultado verificable.
+- Los agentes de auditoría trabajan en solo lectura.
+- Dos agentes no editan el mismo fichero ni estado compartido.
+- Los agentes que editan usan ámbitos de ficheros disjuntos o worktrees
+  separados.
+- El orquestador revisa los informes y ejecuta la verificación integrada; no
+  acepta una conclusión únicamente porque la produjo un subagente.
+- Una sola persona o agente integra cambios en una rama cada vez.
+
+No lanzar agentes para aparentar paralelismo cuando el trabajo es secuencial o
+la coordinación cuesta más que la tarea.
+
+## 12. Seguridad y datos
+
+- Nunca introducir claves, tokens, credenciales, PDFs personales ni datos del
+  usuario en Git, logs persistentes o artefactos compartidos.
+- Las claves locales de IA pueden incorporarse a una build personal, pero sus
+  ficheros deben permanecer ignorados por Git. Usar placeholders para CI.
+- Rutas de keystore y credenciales de firma deben vivir en configuración local,
+  no en manifiestos versionados. Una configuración heredada no es precedente
+  para cambios nuevos.
+- No imprimir el contenido de claves durante diagnóstico.
+- La aplicación y sus herramientas nunca borran automáticamente un PDF del
+  usuario.
+- Tratar intents, nombres de fichero, respuestas de red y contenido PDF como
+  entradas no confiables.
+- Revisar licencia y compatibilidad antes de añadir una dependencia.
+
+## 13. Política de documentación
+
+Actualizar documentación solo cuando tenga un consumidor futuro claro:
+
+- cambio observable del software → `ESTADO_ACTUAL.md`;
+- decisión aprobada y costosa de revertir → ADR;
+- medición → evidencia;
+- procedimiento repetible → skill;
+- tarea pendiente → Issue;
+- cambio de reglas de trabajo → `AGENTS.md`;
+- cambio de uso público → `README.md`.
+
+No duplicar la misma afirmación en varios archivos. Enlazar a la fuente
+canónica. El historial de Git conserva lo eliminado; no mantener documentación
+zombi con banners de "histórico".
+
+## 14. Git, idioma y entrega
+
+- Preservar cambios no relacionados que ya existan en el worktree.
+- No usar comandos destructivos de Git para limpiar trabajo ajeno.
+- No crear commits, tags, ramas remotas ni PR sin autorización explícita.
+- Antes de solicitar el commit, mostrar el alcance, las verificaciones y todo lo
+  que permanezca sin comprobar.
+- Documentación y comunicación: español.
+- Código, identificadores y mensajes de error técnicos: inglés.
+- Mensajes de commit de código: inglés. Los commits solo documentales pueden
+  escribirse en español.
+
+## 15. Definición de hecho
+
+Una tarea está terminada únicamente cuando:
+
+1. cumple el objetivo y no amplía el alcance sin permiso;
+2. pasa la validación aplicable;
+3. las afirmaciones de rendimiento están medidas en el flujo y hardware
+   declarados;
+4. el comportamiento en tablet está verificado o marcado explícitamente como
+   pendiente;
+5. las fuentes canónicas afectadas están actualizadas;
+6. el diff fue revisado y no contiene secretos ni cambios ajenos;
+7. el propietario recibió un resumen y decidió si autoriza el commit.

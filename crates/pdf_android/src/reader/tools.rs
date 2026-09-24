@@ -9,8 +9,22 @@ use crate::annotations::ERASE_HL_PAD_PT;
 use crate::annotations::ToolGesture;
 use crate::annotations::ToolKind;
 use crate::view::initial_scale;
-use log::info;
+use log::{error, info};
 use pdf_core::{Annotation, Document, Gesture, Stroke};
+
+/// Starts a tool gesture from the real Down sample.
+#[inline]
+fn new_tool_gesture(
+    page: u32,
+    tool: ToolKind,
+    pt: (f32, f32),
+    time_ns: u64,
+    pressure: f32,
+    ink_width: f32,
+    ink_color: pdf_core::Color,
+) -> Result<ToolGesture, crate::ink::InkError> {
+    ToolGesture::try_new(page, tool, pt, time_ns, pressure, ink_width, ink_color)
+}
 
 impl Reader {
     /// Pan con DEDO (herramienta activa, modo mano): devuelve el pan de
@@ -52,7 +66,14 @@ impl Reader {
     /// coordenadas de página y crea el `ToolGesture` en la página actual.
     /// El blit pasa a usar el frame compuesto + capa temporal (sin
     /// re-renderizar ni re-blitear la página) mientras el gesto dure.
-    pub(crate) fn begin_tool_gesture(&mut self, sx: f32, sy: f32, tool: ToolKind) -> bool {
+    pub(crate) fn begin_tool_gesture(
+        &mut self,
+        sx: f32,
+        sy: f32,
+        tool: ToolKind,
+        event_time_ns: i64,
+        pressure: f32,
+    ) -> bool {
         if tool == ToolKind::Navigate {
             return false;
         }
@@ -63,24 +84,28 @@ impl Reader {
             return false;
         };
         self.last_stylus_time = Some(std::time::Instant::now());
-        // Fase 1 USI: ancla temporal (event_time del Down, la fija `input`)
-        // y presión inicial. Sin ancla (driver sin timestamps) → t0=0 y las
-        // muestras degradan a la ventana sin Δt real (el predictor usa el
-        // clamp de dt mínimo); sin presión → 0.5 (w_base neutro).
-        let t0 = self.pending_t0_ns.take().unwrap_or(0);
-        let pressure = self.pending_pressure.take().unwrap_or(0.5);
-        self.tool_gesture = Some(ToolGesture::new(
+        let Ok(time_ns) = u64::try_from(event_time_ns) else {
+            return false;
+        };
+        let mut gesture = match new_tool_gesture(
             self.page,
             tool,
             pt,
-            0.0,
+            time_ns,
             pressure,
             self.ink_width,
-        ));
-        // El Down ES t=0: el campo se fija tras crear el gesto.
-        if let Some(g) = self.tool_gesture.as_mut() {
-            g.times_ms[0] = 0.0;
+            self.ink_color,
+        ) {
+            Ok(gesture) => gesture,
+            Err(e) => {
+                error!("begin ink gesture: {e}");
+                return false;
+            }
+        };
+        if tool == ToolKind::Ink {
+            gesture.ink_overlay_route = self.ink_overlay.as_ref().is_some_and(|o| o.is_ready());
         }
+        self.tool_gesture = Some(gesture);
         if want_hl {
             let cached = self.text_cache.get(self.page);
             if let Some(pt) = cached {
@@ -91,7 +116,9 @@ impl Reader {
                 }
             }
         }
-        self.gesture_t0_ns = t0;
+        if tool == ToolKind::Ink {
+            self.submit_ink_overlay_segment(sx, sy, sx, sy);
+        }
         // FASE 2: la tinta es geometría GPU por frame — sin frame base que
         // clonar ni stamping. El siguiente blit pinta página + gesto.
         if self.window.is_some() {
@@ -107,7 +134,13 @@ impl Reader {
     /// (pantalla 60 Hz) bloquearía cada `unlock_and_post` ~16 ms (backpressure)
     /// → jitter/lag. Con un blit por vsync y dirty rect, el coste por frame es
     /// <1 ms y la latencia es ≤1 frame (16 ms).
-    pub(crate) fn update_tool_gesture(&mut self, sx: f32, sy: f32, t_ms: f32, pressure: f32) {
+    pub(crate) fn update_tool_gesture(
+        &mut self,
+        sx: f32,
+        sy: f32,
+        event_time_ns: i64,
+        pressure: f32,
+    ) {
         let Some(pt) = self.screen_to_page(sx, sy) else {
             return;
         };
@@ -120,83 +153,32 @@ impl Reader {
         self.last_stylus_time = Some(std::time::Instant::now());
         match tool {
             ToolKind::Ink => {
-                // Pipeline de modelado físico (google/ink-stroke-modeler):
-                // 1. Sanitiza el evento (240 Hz, noise gate 0.2 pt).
-                // 2. Simulación masa-resorte críticamente amortiguada (ζ = 1.0).
-                // 3. Estimación y proyección cinemática Kalman a 25–30 ms.
-                let Some(g) = self.tool_gesture.as_mut() else {
+                let Ok(time_ns) = u64::try_from(event_time_ns) else {
                     return;
                 };
-                let t_ns = self
-                    .gesture_t0_ns
-                    .saturating_add((t_ms as f64 * 1e6) as u64);
-                let model_res = g.modeler.update(pt.0, pt.1, t_ns, pressure);
-                g.predicted_pt = model_res.predicted_pt;
-                let confirmed_pt = model_res.confirmed_pt;
-
-                let Some(&last) = g.points.last() else {
-                    return;
+                let (accepted, previous) = {
+                    let Some(g) = self.tool_gesture.as_mut() else {
+                        return;
+                    };
+                    let previous = g
+                        .ink_engine
+                        .as_ref()
+                        .and_then(crate::ink::CausalInkEngine::last_sample);
+                    let accepted = g
+                        .push_ink_sample(crate::ink::InkSample::new(pt.0, pt.1, time_ns, pressure))
+                        .is_ok_and(|delta| delta.is_some());
+                    (
+                        accepted,
+                        previous.map(|sample| (g.page, sample.x, sample.y)),
+                    )
                 };
-                let n0 = g.points.len();
-                g.push_with_pressure(confirmed_pt, t_ms, model_res.pressure);
-                if g.points.len() == n0 {
+                if !accepted {
                     return;
                 }
-                let mid = (
-                    (last.0 + confirmed_pt.0) / 2.0,
-                    (last.1 + confirmed_pt.1) / 2.0,
-                );
-                let prev_mid = g.prev_mid;
-                let a = prev_mid.unwrap_or(last);
-
-                // Subdivisión adaptativa:
-                // steps = clamp(ceil(L_px / 4.0 * (1 - cos(theta))), 3, 14)
-                // donde theta es la deflexión angular entre el vector previo (a -> last)
-                // y el actual (last -> confirmed_pt) y L_px la longitud en píxeles de pantalla.
-                let scale = self
-                    .doc
-                    .as_ref()
-                    .and_then(|d| d.page_size(self.page).ok())
-                    .map(|(pw, ph)| initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom)
-                    .unwrap_or(1.0);
-
-                let v1 = (last.0 - a.0, last.1 - a.1);
-                let v2 = (confirmed_pt.0 - last.0, confirmed_pt.1 - last.1);
-                let l_pt = (v2.0 * v2.0 + v2.1 * v2.1).sqrt();
-                let l_px = l_pt * scale;
-
-                let steps = if prev_mid.is_none() {
-                    // Tramo inicial (recto): 3 pasos bastan para interpolar
-                    3usize
-                } else {
-                    let len1 = (v1.0 * v1.0 + v1.1 * v1.1).sqrt();
-                    let len2 = l_pt;
-                    let one_minus_cos = if len1 > 1e-4 && len2 > 1e-4 {
-                        let cos_th = ((v1.0 * v2.0 + v1.1 * v2.1) / (len1 * len2)).clamp(-1.0, 1.0);
-                        1.0 - cos_th
-                    } else {
-                        0.0
-                    };
-                    let raw_steps = ((l_px / 4.0) * one_minus_cos).ceil() as usize;
-                    raw_steps.clamp(3, 14)
-                };
-
-                // Muestrear en página la MISMA curva midpoint que dibuja el
-                // present (una sola fuente de verdad para la polilínea).
-                for i in 1..=steps {
-                    let t = i as f32 / steps as f32;
-                    let om = 1.0 - t;
-                    let q = if prev_mid.is_some() {
-                        (
-                            om * om * a.0 + 2.0 * om * t * last.0 + t * t * mid.0,
-                            om * om * a.1 + 2.0 * om * t * last.1 + t * t * mid.1,
-                        )
-                    } else {
-                        (a.0 + t * (mid.0 - a.0), a.1 + t * (mid.1 - a.1))
-                    };
-                    g.ink_pts.push(q);
+                if let Some((page, px, py)) = previous {
+                    let (x0, y0) = self.page_to_screen(page, px, py).unwrap_or((sx, sy));
+                    self.submit_ink_overlay_segment(x0, y0, sx, sy);
                 }
-                g.prev_mid = Some(mid);
             }
             ToolKind::Highlight => {
                 if let Some(g) = self.tool_gesture.as_mut() {
@@ -208,21 +190,72 @@ impl Reader {
         self.mark_repaint();
     }
 
-    /// Gesto de herramienta: al levantar el dedo convierte el gesto en una
-    /// anotación GUARDADA (persistida en el sidecar):
+    fn page_to_screen(&self, page: u32, x: f32, y: f32) -> Option<(f32, f32)> {
+        let doc = self.doc.as_ref()?;
+        let (pw, ph) = doc.page_size(page).ok()?;
+        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
+        let scale = cover * self.zoom;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round();
+        let dy = self.pan_y.round();
+        Some((x * scale + dx, y * scale + dy))
+    }
+
+    fn submit_ink_overlay_segment(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        let Some(gesture) = self.tool_gesture.as_mut() else {
+            return;
+        };
+        let Some(engine) = gesture.ink_engine.as_ref() else {
+            return;
+        };
+        if !gesture.ink_overlay_route {
+            return;
+        }
+        let style = engine.style();
+        let page = gesture.page;
+        let was_used = gesture.ink_overlay_used;
+        let Some(overlay) = self.ink_overlay.as_mut() else {
+            return;
+        };
+        if !overlay.is_ready() {
+            if was_used {
+                overlay.cancel();
+                gesture.ink_overlay_used = false;
+            }
+            gesture.ink_overlay_route = false;
+            return;
+        }
+        let scale = self
+            .doc
+            .as_ref()
+            .and_then(|doc| doc.page_size(page).ok())
+            .map(|(pw, ph)| initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom)
+            .unwrap_or(1.0);
+        let color_argb = ((style.color.a as i32) << 24)
+            | ((style.color.r as i32) << 16)
+            | ((style.color.g as i32) << 8)
+            | style.color.b as i32;
+        if overlay.render_segment(x0, y0, x1, y1, style.width * scale, color_argb) {
+            gesture.ink_overlay_used = true;
+        } else {
+            overlay.cancel();
+            gesture.ink_overlay_route = false;
+            gesture.ink_overlay_used = false;
+        }
+    }
+
+    /// Gesto de herramienta: al levantar crea la anotación persistida.
     ///
-    /// - **Boli**: la polilínea MUESTREADA de la curva midpoint (`ink_pts`,
-    ///   lo estampado en vivo) simplificada con Douglas-Peucker fino →
-    ///   `Stroke` con el grosor/color actuales. Cero pop: el frame no se
-    ///   re-pinta. Un gesto sin arrastre (un toque) se descarta.
+    /// - **Boli**: se persisten exactamente las muestras causales aceptadas
+    ///   por el motor que alimentó Wet; no se filtran, interpolan ni predicen.
     /// - **Resaltador**: `pdf_core::highlight_under_gesture` selecciona las
     ///   líneas de texto bajo el trazo (extracción perezosa, solo ahora) y
     ///   crea el `Highlight` alineado al texto; "no text" si no hay líneas.
     ///
     /// El id nuevo se apunta en `session_ids` (historial de sesión).
-    /// `(sx, sy)` = posición del Up (remate M_last→P_up en el boli; las
-    /// muestras de history ya se estamparon por el drain previo, así que el
-    /// hueco que cierra es solo el último tramo hasta el punto de soltar).
+    /// La muestra Up se añade antes de llamar aquí, después de drenar History.
     pub(crate) fn end_tool_gesture(&mut self, _sx: f32, _sy: f32) {
         let Some(g) = self.tool_gesture.take() else {
             return;
@@ -244,15 +277,33 @@ impl Reader {
         let min_d_pt = crate::TOOL_MIN_PX / scale;
         let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
         let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
-        for &(x, y) in &g.points {
-            min_x = min_x.min(x);
-            min_y = min_y.min(y);
-            max_x = max_x.max(x);
-            max_y = max_y.max(y);
+        match g.tool {
+            ToolKind::Ink => {
+                if let Some(engine) = g.ink_engine.as_ref() {
+                    for sample in engine.active_samples() {
+                        min_x = min_x.min(sample.x);
+                        min_y = min_y.min(sample.y);
+                        max_x = max_x.max(sample.x);
+                        max_y = max_y.max(sample.y);
+                    }
+                }
+            }
+            ToolKind::Highlight => {
+                for &(x, y) in &g.points {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+            ToolKind::Navigate => return,
         }
         if max_x - min_x < min_d_pt && max_y - min_y < min_d_pt {
-            // Un toque sin arrastre: sin gesto, sin anotación. La tinta que
-            // el present dibujó era solo geometría del frame — muere sola.
+            if g.ink_overlay_used
+                && let Some(overlay) = self.ink_overlay.as_mut()
+            {
+                overlay.cancel();
+            }
             if self.window.is_some() {
                 self.mark_repaint();
             }
@@ -261,80 +312,37 @@ impl Reader {
         let mut g = g;
         match g.tool {
             ToolKind::Ink => {
-                // REMATE M_last→P_up: asienta la masa virtual con StrokeEndPredictor
-                // y pasa los sub-pasos de settle() por la máquina midpoint.
-                let end_res = g.modeler.end_stroke();
-                let end_pt = end_res.confirmed_pt;
-                let p_last = g.last_pressure();
-                let (samples, count) = crate::ink::stroke_end::StrokeEndPredictor::settle(
-                    &mut g.modeler.spring_mass,
-                    end_pt,
-                    p_last,
-                );
-                if count > 0 {
-                    for s in &samples[..count] {
-                        let pt = s.pt;
-                        let Some(&last) = g.points.last() else {
-                            break;
-                        };
-                        let n0 = g.points.len();
-                        g.push_with_pressure(pt, 0.0, s.pressure);
-                        if g.points.len() == n0 {
-                            continue;
-                        }
-                        let mid = ((last.0 + pt.0) / 2.0, (last.1 + pt.1) / 2.0);
-                        let prev_mid = g.prev_mid;
-                        let a = prev_mid.unwrap_or(last);
-                        let steps = 3usize;
-                        for i in 1..=steps {
-                            let t = i as f32 / steps as f32;
-                            let om = 1.0 - t;
-                            let q = if prev_mid.is_some() {
-                                (
-                                    om * om * a.0 + 2.0 * om * t * last.0 + t * t * mid.0,
-                                    om * om * a.1 + 2.0 * om * t * last.1 + t * t * mid.1,
-                                )
-                            } else {
-                                (a.0 + t * (mid.0 - a.0), a.1 + t * (mid.1 - a.1))
-                            };
-                            g.ink_pts.push(q);
-                        }
-                        g.prev_mid = Some(mid);
-                    }
-                } else {
-                    // Fallback si count == 0: interpola Bézier manual de 3 pasos hasta end_pt
-                    if let Some(m_last) = g.prev_mid.or_else(|| g.ink_pts.last().copied())
-                        && m_last != end_pt
-                    {
-                        let ctrl = g.points.last().copied().unwrap_or(m_last);
-                        let steps = 3usize;
-                        for i in 1..=steps {
-                            let t = i as f32 / steps as f32;
-                            let om = 1.0 - t;
-                            let q = (
-                                om * om * m_last.0 + 2.0 * om * t * ctrl.0 + t * t * end_pt.0,
-                                om * om * m_last.1 + 2.0 * om * t * ctrl.1 + t * t * end_pt.1,
-                            );
-                            g.ink_pts.push(q);
-                        }
-                    }
-                }
-                // CERO POP: lo estampado en vivo ES el trazo final. Se
-                // persiste la polilínea MUESTREADA de la curva midpoint
-                // (`ink_pts`) simplificada con Douglas-Peucker fino
-                // (ε 0.20 pt ≈ 0.4 px a 2 px/pt). Sin Catmull-Rom ni re-rasterizado:
-                // la tinta del frame no se toca.
-                let sampled = if g.ink_pts.len() >= 40 {
-                    pdf_core::simplify_polyline(&g.ink_pts, 0.20)
-                } else {
-                    g.ink_pts.clone()
-                };
-                if let Some(s) = Stroke::new(sampled, self.ink_width, self.ink_color)
-                    && let Some(id) = self.annotations.add(g.page as usize, Annotation::Stroke(s))
+                let final_stroke = g
+                    .ink_engine
+                    .as_mut()
+                    .and_then(|engine| engine.finish().ok());
+                if let Some(final_stroke) = final_stroke
+                    && let Some(stroke) = Stroke::new(
+                        final_stroke.points,
+                        final_stroke.style.width,
+                        final_stroke.style.color,
+                    )
+                    && let Some(id) = self
+                        .annotations
+                        .add(g.page as usize, Annotation::Stroke(stroke))
                 {
                     self.session_ids.push(id);
                     self.save_annotations();
                     self.show_toast("ink");
+                    if g.ink_overlay_used
+                        && let Some(overlay) = self.ink_overlay.as_mut()
+                    {
+                        if overlay.is_ready() {
+                            overlay.commit();
+                            self.pending_ink_clear = Some((g.page, id));
+                        } else {
+                            overlay.cancel();
+                        }
+                    }
+                } else if g.ink_overlay_used
+                    && let Some(overlay) = self.ink_overlay.as_mut()
+                {
+                    overlay.cancel();
                 }
             }
             ToolKind::Highlight => {
@@ -410,7 +418,15 @@ impl Reader {
     /// Gesto de herramienta cancelado (segundo dedo, Cancel del sistema,
     /// ocultar la barra): descarta el trazo en curso sin crear anotación.
     pub(crate) fn cancel_tool_gesture(&mut self) {
-        if self.tool_gesture.take().is_some() && self.window.is_some() {
+        let Some(gesture) = self.tool_gesture.take() else {
+            return;
+        };
+        if gesture.ink_overlay_used
+            && let Some(overlay) = self.ink_overlay.as_mut()
+        {
+            overlay.cancel();
+        }
+        if self.window.is_some() {
             // El present GPU ya no dibuja el gesto: un frame normal.
             self.mark_repaint();
         }

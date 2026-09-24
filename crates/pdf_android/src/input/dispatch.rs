@@ -4,8 +4,7 @@
 //! Bucle de eventos de input:
 //! `handle_input` drena `input_events_iter()` y despacha cada `MotionEvent` a
 //! `handle_motion` (visor/listas), drenando antes el history del stylus y
-//! calculando el ancla de tiempo/presión USI (`pending_t0_ns` /
-//! `pending_pressure`) que el trazo consume.
+//! conservando tiempo/presión USI originales para las muestras causales.
 
 use super::motion::{PenButtons, handle_motion};
 use super::stylus::{feed_stylus_history, is_stylus_tool, normalize_pressure};
@@ -28,30 +27,29 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
                 // HISTORY 240 Hz del boli (Ink y Erase): drenar las muestras
                 // batcheadas ANTES del evento real (orden temporal). También
                 // en el Up: su history cierra el trazo sin cuerda recta final.
-                if matches!(action, MotionAction::Move | MotionAction::Up) {
+                if matches!(
+                    action,
+                    MotionAction::Move | MotionAction::Up | MotionAction::PointerUp
+                ) {
                     feed_stylus_history(reader, motion);
                 }
                 let pts: Vec<(i32, f32, f32)> = motion
                     .pointers()
                     .map(|p| (p.pointer_id(), p.x(), p.y()))
                     .collect();
-                // USI: timestamp (ns, System.nanoTime) y presión del
-                // PRIMER pointer stylus — el ancla del Down (gesture_t0_ns)
-                // y la presión del evento real salen de aquí. En multitouch
+                // USI: timestamp monotónico (ns) y presión del PRIMER pointer
+                // stylus. En multitouch
                 // solo el stylus importa (guard pointers.len()==1 aguas
                 // abajo); si no hay stylus, (0, 0.5) neutros.
                 // Nota: `Pointer` (wrapper) no expone event_time (solo
                 // HistoricalPointer y el MotionEvent); el timestamp del
                 // evento real viene de `motion.event_time()` y es común a
                 // todos los pointers del batch. La presión sí es por pointer.
-                let stylus_t_ns = motion.event_time() as u64;
                 let stylus_pressure = motion
                     .pointers()
                     .find(|p| is_stylus_tool(p.tool_type()))
                     .map(|p| normalize_pressure(p.pressure()))
                     .unwrap_or(0.5);
-                reader.pending_t0_ns = Some(stylus_t_ns);
-                reader.pending_pressure = Some(stylus_pressure);
                 // Separación dedo/stylus (S-Pen, Saber): solo el STYLUS (o
                 // borrador/estilo invertido) dibuja con la herramienta
                 // activa; los dedos (y la palma) navegan (pan/pinch).
@@ -67,12 +65,16 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
                 } else {
                     None
                 };
+                let up_is_stylus = up_idx
+                    .and_then(|idx| motion.pointers().nth(idx))
+                    .is_some_and(|p| is_stylus_tool(p.tool_type()));
                 handle_motion(
                     reader,
                     app,
                     action,
                     pts,
                     up_idx,
+                    up_is_stylus,
                     stylus,
                     PenButtons {
                         state: motion.button_state(),

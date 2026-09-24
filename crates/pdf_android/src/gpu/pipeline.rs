@@ -16,6 +16,11 @@ use super::ffi as gl;
 use super::shaders::mat3_scale_translate;
 use super::surface::Gpu;
 
+#[inline]
+fn dry_page_reconciles_pending_ink(pending_page: u32, dry_rendered_page: Option<u32>) -> bool {
+    dry_rendered_page == Some(pending_page)
+}
+
 /// Vertex de tinta: posición en PANTALLA (px, y abajo) + offset perpendicular
 /// con signo (AA por ancho) + semi-ancho del centro + centro del punto
 /// (disco redondo de tapas/juntas) + RGBA8.
@@ -729,95 +734,27 @@ impl Gpu {
 
                 match g.tool {
                     crate::annotations::ToolKind::Ink => {
-                        self.pts_scratch.clear();
-                        for &(x, y) in &g.ink_pts {
-                            self.pts_scratch.push((x * scale + dx, y * scale + dy));
-                        }
-                        let hw = (reader.ink_width * scale / 2.0).max(0.5);
-                        let pts = std::mem::take(&mut self.pts_scratch);
-                        self.draw_polyline_gpu(
-                            &pts,
-                            hw,
-                            [
-                                reader.ink_color.r,
-                                reader.ink_color.g,
-                                reader.ink_color.b,
-                                reader.ink_color.a,
-                            ],
-                        );
-                        self.pts_scratch = pts;
-
-                        // Cabezal wet curvo: sustituye los 2 segmentos rectos de la punta
-                        // por una cuadrática de 3 pasos M_last -> P_last -> P_pred
-                        // (si no hay predicado Kalman válido, degrada a recta como antes).
-                        let m_last_opt = g.prev_mid.or_else(|| g.ink_pts.last().copied());
-                        let p_last_opt = g.points.last().copied();
-
-                        if let (Some(m_last), Some(p_last), Some((px, py))) =
-                            (m_last_opt, p_last_opt, g.predicted_pt)
+                        // Si AndroidX presenta este gesto, no dibujar una
+                        // segunda copia en la surface productiva. Si la ruta
+                        // no se eligió en Down o falló, representar todas las
+                        // muestras causales aquí, sin predicción.
+                        if !g.ink_overlay_used
+                            && let Some(engine) = g.ink_engine.as_ref()
                         {
-                            // Cuadrática de 3 pasos: M_last -> P_last -> P_pred
-                            let m = (m_last.0 * scale + dx, m_last.1 * scale + dy);
-                            let p = (p_last.0 * scale + dx, p_last.1 * scale + dy);
-                            let pred = (px * scale + dx, py * scale + dy);
-                            let mut quad_pts = [m; 4];
-                            for (i, slot) in quad_pts.iter_mut().enumerate().skip(1) {
-                                let t = i as f32 / 3.0;
-                                let om = 1.0 - t;
-                                *slot = (
-                                    om * om * m.0 + 2.0 * om * t * p.0 + t * t * pred.0,
-                                    om * om * m.1 + 2.0 * om * t * p.1 + t * t * pred.1,
-                                );
+                            self.pts_scratch.clear();
+                            for sample in engine.active_samples() {
+                                self.pts_scratch
+                                    .push((sample.x * scale + dx, sample.y * scale + dy));
                             }
+                            let style = engine.style();
+                            let hw = (style.width * scale / 2.0).max(0.5);
+                            let pts = std::mem::take(&mut self.pts_scratch);
                             self.draw_polyline_gpu(
-                                &quad_pts,
+                                &pts,
                                 hw,
-                                [
-                                    reader.ink_color.r,
-                                    reader.ink_color.g,
-                                    reader.ink_color.b,
-                                    reader.ink_color.a,
-                                ],
+                                [style.color.r, style.color.g, style.color.b, style.color.a],
                             );
-                        } else {
-                            // Fallback: degradación a rectas como antes si no hay Kalman
-                            if let (Some(m_last), Some(&last)) = (g.prev_mid, g.points.last())
-                                && m_last != last
-                            {
-                                let a = (m_last.0 * scale + dx, m_last.1 * scale + dy);
-                                let b = (last.0 * scale + dx, last.1 * scale + dy);
-                                self.draw_polyline_gpu(
-                                    &[a, b],
-                                    hw,
-                                    [
-                                        reader.ink_color.r,
-                                        reader.ink_color.g,
-                                        reader.ink_color.b,
-                                        reader.ink_color.a,
-                                    ],
-                                );
-                            }
-
-                            if let Some((px, py)) = g.predicted_pt {
-                                let start_pt = g
-                                    .prev_mid
-                                    .or_else(|| g.points.last().copied())
-                                    .unwrap_or(g.anchor);
-                                if start_pt != (px, py) {
-                                    let a = (start_pt.0 * scale + dx, start_pt.1 * scale + dy);
-                                    let b = (px * scale + dx, py * scale + dy);
-                                    self.draw_polyline_gpu(
-                                        &[a, b],
-                                        hw,
-                                        [
-                                            reader.ink_color.r,
-                                            reader.ink_color.g,
-                                            reader.ink_color.b,
-                                            reader.ink_color.a,
-                                        ],
-                                    );
-                                }
-                            }
+                            self.pts_scratch = pts;
                         }
                     }
                     crate::annotations::ToolKind::Highlight => {
@@ -919,6 +856,7 @@ impl Gpu {
             ann_count: anns_count,
             dark: reader.dark,
         };
+        let mut dry_rendered_page = None;
         if self.dry_dirty || self.dry_key.is_none_or(|old| key.invalidates(&old)) {
             let has_page = self.render_dry(reader);
             self.dry_dirty = false;
@@ -927,6 +865,13 @@ impl Gpu {
             } else {
                 None
             };
+            if has_page {
+                dry_rendered_page = reader
+                    .cache
+                    .peek(reader.page)
+                    .map(|_| reader.page)
+                    .or(reader.fallback_page);
+            }
         }
 
         // 2. Renderizar capa Wet si hay capa transitoria que pintar: trazo de
@@ -1034,6 +979,38 @@ impl Gpu {
                     p95.as_secs_f64() * 1000.0,
                     self.presents
                 );
+            }
+
+            // La capa multi de AndroidX conserva el trazo tras Up. Solo
+            // reconocerlo como asentado cuando esta presentación acaba de
+            // renderizar en Dry esa página. Esto también cubre que la anotación
+            // se haya borrado antes del ack: el Dry recién presentado ya es la
+            // versión autoritativa sin esa tinta. La limpieza se difiere
+            // mientras otro gesto Ink use el overlay.
+            if let Some((pending_page, pending_id)) = reader.pending_ink_clear {
+                if dry_page_reconciles_pending_ink(pending_page, dry_rendered_page) {
+                    self.settled_ink = Some((pending_page, pending_id));
+                }
+
+                let ink_active = reader
+                    .tool_gesture
+                    .as_ref()
+                    .is_some_and(|gesture| gesture.tool == crate::annotations::ToolKind::Ink);
+                let dry_matches_view = reader.fallback_page.is_none()
+                    && self.dry_key.is_some_and(|dry_key| dry_key == key);
+                let target_page_left_view = pending_page != reader.page && dry_matches_view;
+                let no_document = reader.doc.is_none();
+                if !ink_active
+                    && (self.settled_ink == Some((pending_page, pending_id))
+                        || target_page_left_view
+                        || no_document)
+                {
+                    if let Some(overlay) = reader.ink_overlay.as_ref() {
+                        overlay.clear();
+                    }
+                    reader.pending_ink_clear = None;
+                    self.settled_ink = None;
+                }
             }
         }
         // A2 (fase A): latencia real de cambio de página — desde que
@@ -1265,5 +1242,17 @@ impl<'a> OverlayList<'a> {
                 ey as i32 - (eb.height as i32) / 2,
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod ink_clear_tests {
+    use super::dry_page_reconciles_pending_ink;
+
+    #[test]
+    fn rendered_pending_page_reconciles_even_when_its_annotation_was_erased() {
+        assert!(dry_page_reconciles_pending_ink(4, Some(4)));
+        assert!(!dry_page_reconciles_pending_ink(4, Some(3)));
+        assert!(!dry_page_reconciles_pending_ink(4, None));
     }
 }

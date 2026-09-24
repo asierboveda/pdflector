@@ -20,6 +20,9 @@ use log::{error, info, warn};
 
 use crate::reader::{LaunchPdf, LaunchRequest, LibraryEntry, LibraryScan};
 
+mod ink;
+pub(crate) use ink::InkOverlay;
+
 /// Modo inmersivo del visor: oculta la barra de estado y la de navegación del
 /// sistema (Android 15 edge-to-edge las deja DIBUJADAS sobre la app, pero el
 /// sistema se queda con los touches de su franja — un tap en la status bar

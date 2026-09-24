@@ -98,6 +98,10 @@ pub(crate) struct Gpu {
 
     pub(crate) wet_fbo: u32,
     pub(crate) wet_tex: u32,
+    /// Última anotación Ink cuya Dry llegó a un `eglSwapBuffers` exitoso.
+    /// La capa AndroidX solo se limpia cuando el marcador pendiente coincide
+    /// con este ack (o cuando un page switch ya la ha dejado fuera de vista).
+    pub(crate) settled_ink: Option<(u32, u64)>,
 
     // Búfers de trabajo prealocados: cero alocaciones en el hot path (Fase W3)
     pub(crate) ink_scratch: Vec<InkVert>,
@@ -308,6 +312,7 @@ impl Gpu {
                 dry_key: None,
                 wet_fbo: 0,
                 wet_tex: 0,
+                settled_ink: None,
                 ink_scratch: Vec::with_capacity(2048),
                 pts_scratch: Vec::with_capacity(1024),
                 current_swap_interval: 1,
@@ -394,6 +399,7 @@ impl Gpu {
             self.dry_key = None;
             self.wet_fbo = wet_fbo;
             self.wet_tex = wet_tex;
+            self.settled_ink = None;
             self.note_fbos_created();
         }
     }
@@ -429,6 +435,7 @@ impl Gpu {
             self.wet_tex = 0;
             self.dry_dirty = true;
             self.dry_key = None;
+            self.settled_ink = None;
 
             // Fade abandonado a mitad de transición (se sale del visor antes
             // de que expire): liberar YA la textura grande (ventana completa,
@@ -537,6 +544,7 @@ impl Gpu {
     pub(crate) fn reset_document(&mut self, bg: [u8; 4]) {
         self.dry_dirty = true;
         self.dry_key = None;
+        self.settled_ink = None;
         self.page_loaded = None;
         self.free_fade_tex();
         if self.dry_fbo != 0 {

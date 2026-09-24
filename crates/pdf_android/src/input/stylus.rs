@@ -4,8 +4,8 @@
 //! Bloque stylus USI 2.0: drenado del
 //! history de 240 Hz del lápiz/borrador (`STYLUS_HISTORY_CAP`,
 //! `feed_stylus_history`/`feed_stylus_sample`), detección de herramienta
-//! stylus/borrador (`is_stylus_tool`), re-escalado de timestamps NDK a ms del
-//! gesto (`gesture_ms`) y normalización de presión (`normalize_pressure`).
+//! stylus/borrador (`is_stylus_tool`) y normalización de presión
+//! (`normalize_pressure`).
 
 use super::gestos::GestureKind;
 use crate::reader::Reader;
@@ -28,16 +28,16 @@ pub(crate) fn is_stylus_tool(t: android_activity::input::ToolType) -> bool {
 /// Alimenta UNA muestra del boli al gesto en curso (la máquina de estados la
 /// lleva el evento real en `handle_motion`; aquí solo el trazo/goma). Replica
 /// los brazos Move de ToolDrawing/Erase (mismos guards: un puntero, kind
-/// activo): los puntos históricos encadenan `update_tool_gesture` (curva
-/// midpoint) o `update_erase_gesture` (`erase_last` barre sin huecos).
+/// activo): las muestras causales históricas encadenan
+/// `update_tool_gesture` o `update_erase_gesture` (`erase_last` barre sin
+/// huecos).
 ///
-/// Cada muestra lleva `t_ms` (timestamp NDK re-escalado al
-/// ancla del gesto) y `pressure` normalizada [0,1] — el predictor y el
-/// grosor dependiente de presión los consumen.
-fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32, t_ms: f32, pressure: f32) {
+/// Cada muestra conserva su timestamp monotónico NDK en ns y presión
+/// normalizada [0,1].
+fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32, time_ns: i64, pressure: f32) {
     match reader.gesture.kind {
         GestureKind::ToolDrawing if reader.gesture.pointers.len() == 1 => {
-            reader.update_tool_gesture(x, y, t_ms, pressure);
+            reader.update_tool_gesture(x, y, time_ns, pressure);
         }
         GestureKind::Erase if reader.gesture.pointers.len() == 1 => {
             reader.update_erase_gesture(x, y);
@@ -57,35 +57,17 @@ fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32, t_ms: f32, pressure: 
 /// MotionEvents, ese evento nunca arranca un trazo — el drain no cambia ese
 /// comportamiento.
 pub(crate) fn feed_stylus_history(reader: &mut Reader, motion: &MotionEvent) {
-    let t0 = reader.gesture_t0_ns;
     for p in motion.pointers().filter(|p| is_stylus_tool(p.tool_type())) {
         let hist = p.history();
         let skip = hist.len().saturating_sub(STYLUS_HISTORY_CAP);
         for hp in hist.skip(skip) {
-            // Timestamp NDK (System.nanoTime) → ms monótonos del gesto,
-            // re-escalados con el ancla tomada en el Down (gesture_t0_ns).
-            // La presión va por eje AXIS_PRESSURE (USI 2.0 la reporta;
+            // Conservar el timestamp monotónico original del sistema y la
+            // presión del eje AXIS_PRESSURE (USI 2.0 la reporta;
             // drivers sin presión dan 0.0 → neutral 0.5 en el gestor).
-            let t_ms = gesture_ms(hp.event_time(), t0);
             let pressure = normalize_pressure(hp.pressure());
-            feed_stylus_sample(reader, hp.x(), hp.y(), t_ms, pressure);
+            feed_stylus_sample(reader, hp.x(), hp.y(), hp.event_time(), pressure);
         }
     }
-}
-
-/// Re-escala un timestamp NDK (ns, base System.nanoTime) a ms del gesto:
-/// `gesture_t0_ns` es el event_time del Down (ancla t=0). Sin ancla (0.0,
-/// p. ej. muestra de dedo tras un gesto borrado) devuelve 0.
-#[inline]
-pub(crate) fn gesture_ms(event_ns: i64, t0_ns: u64) -> f32 {
-    if t0_ns == 0 {
-        return 0.0;
-    }
-    let d = event_ns as i128 - t0_ns as i128;
-    // ns → ms con saturación i128→f32 (un gesto no dura horas; wrap no ocurre
-    // en relojes monótonos de Android de 64 bits, pero el cast no debe colar
-    // basura en el predictor si el driver reporta tiempos fuera de orden).
-    (d as f64 / 1_000_000.0).clamp(-1_000.0, 1_000.0) as f32
 }
 
 /// Normaliza la presión del driver a [0.5, 1] usable: USI 2.0 reporta

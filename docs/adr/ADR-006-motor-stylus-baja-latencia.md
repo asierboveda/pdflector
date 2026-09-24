@@ -1,8 +1,13 @@
 # ADR-006 — Motor de stylus de baja latencia: EGL/GLES2 + predicción Hermite
 
-> **Estado:** Aceptado (2026-08-28; parcialmente superseded por ADR-007 en presentación; resto vigente)
+> **Estado histórico:** Aceptado (2026-08-28). ADR-007 sustituyó parte de la
+> presentación; [ADR-009](ADR-009-evaluacion-tinta-causal-front-buffer.md)
+> sustituyó la prescripción de predicción para la nueva arquitectura experimental
+> (2026-09-23). El producto aún ejecuta el pipeline heredado.
 > **Fecha:** 2026-08-28
-> **Supersedido parcialmente por:** ADR-007 (2026-08-30). Su mecanismo de presentación (front-buffer auto-refresh / overlay dedicado) quedó superseded por ADR-007 (pipeline wet/dry en FBO); el resto del ADR (elección EGL/GLES2, motor de stylus, predicción Hermite) sigue plenamente vigente.
+> **Supersedido parcialmente por:** ADR-007 (2026-08-30) en presentación y
+> ADR-009 (2026-09-23) en la predicción de la arquitectura a evaluar. El
+> historial de la decisión original se conserva a continuación.
 > **Nota:** El plan referenciaba "ADR-005" como nombre de entregable; ADR-005 ya
 > existía (UI Android nativa), por lo que esta decisión ocupa el ADR-006.
 > **Nota (2026-09-18):** las citas a `crates/pdf_spike` que aparecen en el cuerpo describen el

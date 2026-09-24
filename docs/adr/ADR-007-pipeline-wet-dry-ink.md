@@ -1,6 +1,9 @@
 # ADR-007: Pipeline de Tinta en Dos Capas (Wet/Dry) con Presentación Independiente
 
 > **Estado:** Aceptado. **Fecha:** 2026-08-30.
+> **Actualización (2026-09-23):** [ADR-009](ADR-009-evaluacion-tinta-causal-front-buffer.md)
+> sustituye la prescripción de predicción para el experimento de tinta causal;
+> la implementación del producto todavía usa este pipeline.
 > Supersede PARCIALMENTE el present de ADR-006 (dry/wet/present); el resto de ADR-006 (stylus, EGL) sigue vigente.
 > **Contexto de decisión:** `PLAN-PARIDAD-STYLUS-NATIVO` + `ADR-006` (motor EGL/GLES2). Esta decisión **revisa la Fase 2** porque, pese a tener GPU + ink-stroke-modeler + 120 Hz, la experiencia física sigue lejos de la app nativa.
 > **Supersede (parcialmente):** ADR-006 en su apartado de *present* por `eglSwapBuffers` único. No invalida la elección EGL/GLES2 ni el modeler, solo **cómo** se presenta la tinta en vuelo.

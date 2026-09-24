@@ -7,11 +7,10 @@
 //! borrado con stylus) y el input de las LISTAS — `list_tap`, `library_tap`,
 //! `picker_tap`, `library_down_zone` y `handle_picker_motion` (scroll y taps
 //! del picker interno y de la biblioteca MediaStore). El estado que consume
-//! (`GestureState`/`GestureKind`) vive en `gestos`; el re-escalado de
-//! timestamps del stylus (`gesture_ms`), en `stylus`.
+//! (`GestureState`/`GestureKind`) vive en `gestos`; las muestras de stylus
+//! conservan los timestamps monotónicos originales.
 
 use super::gestos::{GestureKind, LONG_PRESS_MS, TwoFingerMode, fire_tap_action};
-use super::stylus::gesture_ms;
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
 use crate::draw::{SettingsMenuItem, ViewMenuItem, settings_menu_geometry, view_menu_geometry};
 use crate::jni::launch_all_files_settings;
@@ -139,6 +138,7 @@ pub(crate) fn handle_motion(
     action: MotionAction,
     pts: Vec<(i32, f32, f32)>,
     up_idx: Option<usize>,
+    up_is_stylus: bool,
     stylus: bool,
     buttons: PenButtons,
     event_time: i64,
@@ -216,7 +216,7 @@ pub(crate) fn handle_motion(
                             PenMode::Ink => ToolKind::Ink,
                             PenMode::Highlight => ToolKind::Highlight,
                         };
-                        reader.begin_tool_gesture(x, y, mode_tool);
+                        reader.begin_tool_gesture(x, y, mode_tool, event_time, stylus_pressure);
                         if reader.tool_gesture.is_some() {
                             reader.gesture.kind = GestureKind::ToolDrawing;
                             return; // gesto de herramienta: sin tap ni long-press
@@ -441,13 +441,7 @@ pub(crate) fn handle_motion(
                     // frame compuesto + la capa temporal del trazo (la página
                     // NO se re-blitea por evento — requisito 5).
                     let (_, cx, cy) = reader.gesture.pointers[0];
-                    let t0 = reader.gesture_t0_ns;
-                    let t_ms = if stylus {
-                        gesture_ms(event_time, t0)
-                    } else {
-                        0.0
-                    };
-                    reader.update_tool_gesture(cx, cy, t_ms, stylus_pressure);
+                    reader.update_tool_gesture(cx, cy, event_time, stylus_pressure);
                 }
                 GestureKind::Erase if reader.gesture.pointers.len() == 1 => {
                     // Arrastre de BORRADO: hit-test del punto y eliminación
@@ -500,14 +494,18 @@ pub(crate) fn handle_motion(
                     reader.end_sel();
                 }
                 GestureKind::ToolDrawing => {
-                    // Fin del gesto de herramienta: convierte el trazo en una
-                    // anotación guardada (curva midpoint muestreada /
-                    // resaltador alineado al texto; un toque sin arrastre se
-                    // descarta). La posición del Up cierra el remate
-                    // M_last→P_up (el drain de history anterior ya estampó
-                    // las muestras intermedias).
+                    // History ya se drenó antes del evento real. El Up causal
+                    // final cierra la tinta sin inventar remates.
                     if let Some((_, ux, uy)) = up {
-                        reader.end_tool_gesture(ux, uy);
+                        if stylus {
+                            reader.update_tool_gesture(ux, uy, event_time, stylus_pressure);
+                            reader.end_tool_gesture(ux, uy);
+                        } else {
+                            // Si el lápiz ya salió en ACTION_POINTER_UP, el
+                            // último ACTION_UP puede pertenecer a la palma.
+                            // Nunca cerrar ni guardar tinta con esa coordenada.
+                            reader.cancel_tool_gesture();
+                        }
                     }
                 }
                 GestureKind::Erase => {
@@ -532,24 +530,37 @@ pub(crate) fn handle_motion(
         MotionAction::PointerUp => {
             // `up_idx` es el índice del pointer levantado dentro del evento
             // (mismo orden que `pts`): quitarlo del estado.
+            let up = up_idx.and_then(|idx| pts.get(idx).copied());
             if let Some(idx) = up_idx
                 && idx < reader.gesture.pointers.len()
             {
                 reader.gesture.pointers.remove(idx);
             }
-            // Al quedar menos de dos dedos el pinch termina: re-render nítido
-            // UNA única vez a la resolución final (`set_zoom_sharp`). El dedo
-            // restante no inicia un tap (se ignora hasta que se levanta).
-            if matches!(reader.gesture.kind, GestureKind::Pinch { .. })
-                && reader.gesture.pointers.len() < 2
-            {
-                reader.gesture.kind = GestureKind::None;
-                reader.set_zoom_sharp(reader.zoom);
-            } else if matches!(reader.gesture.kind, GestureKind::Tap { .. }) {
-                // Si había un tap armado y se levanta un puntero secundario,
-                // era un toque multitáctil, no un tap limpio de un solo dedo.
-                reader.gesture.kind = GestureKind::None;
-                reader.gesture.press_at = None;
+            match reader.gesture.kind {
+                GestureKind::ToolDrawing if pointer_up_finishes_tool_gesture(up_is_stylus) => {
+                    if let Some((_, x, y)) = up {
+                        reader.update_tool_gesture(x, y, event_time, stylus_pressure);
+                        reader.end_tool_gesture(x, y);
+                    } else {
+                        reader.cancel_tool_gesture();
+                    }
+                    // El dedo/palma restante no hereda el gesto de dibujo.
+                    reader.gesture.kind = GestureKind::None;
+                    reader.gesture.press_at = None;
+                }
+                GestureKind::Pinch { .. } if reader.gesture.pointers.len() < 2 => {
+                    // Al quedar menos de dos dedos el pinch termina:
+                    // re-render nítido una vez a la resolución final.
+                    reader.gesture.kind = GestureKind::None;
+                    reader.set_zoom_sharp(reader.zoom);
+                }
+                GestureKind::Tap { .. } => {
+                    // Un pointer-up dentro de un Tap lo convierte en gesto
+                    // multitáctil; no debe disparar la acción del Tap.
+                    reader.gesture.kind = GestureKind::None;
+                    reader.gesture.press_at = None;
+                }
+                _ => {}
             }
         }
         MotionAction::Cancel => {
@@ -589,6 +600,11 @@ pub(crate) fn handle_motion(
         }
         _ => {} // HoverMove, Scroll, Outside, ...: sin gesto definido.
     }
+}
+
+#[inline]
+fn pointer_up_finishes_tool_gesture(up_is_stylus: bool) -> bool {
+    up_is_stylus
 }
 
 /// Tap sobre la lista activa (picker interno o biblioteca MediaStore).
@@ -1497,6 +1513,12 @@ pub(crate) fn discriminate_two_finger_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_up_ends_tool_drawing_only_when_lifted_pointer_is_stylus() {
+        assert!(pointer_up_finishes_tool_gesture(true));
+        assert!(!pointer_up_finishes_tool_gesture(false));
+    }
 
     #[test]
     fn test_pan_discrimination_parallel_drift() {
