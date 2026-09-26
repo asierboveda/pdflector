@@ -1,7 +1,10 @@
 # ADR-009 — Evaluación aislada de tinta causal y front buffer
 
-> **Estado:** Aceptado para experimentación (2026-09-23). La integración en
-> el producto permanece pendiente de evidencia y aprobación.
+> **Estado:** Aceptado para experimentación (2026-09-23).
+> [ADR-010](ADR-010-integracion-tinta-causal-producto.md) sustituye, para el
+> producto, esta decisión el 2026-09-24 (integración del motor causal en
+> `pdf_android`/`android/product`); no reescribe lo que este ADR autorizó para
+> el experimento aislado.
 >
 > **Supersede:** las partes de
 > [ADR-006](ADR-006-motor-stylus-baja-latencia.md) y

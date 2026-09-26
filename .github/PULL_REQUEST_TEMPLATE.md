@@ -1,8 +1,8 @@
 ## Resumen
 <!-- Qué hace este PR y por qué. -->
 
-## Fase
-<!-- A qué fase de docs/plan/NEXT-PLAN.md corresponde (ej. Fase B — subrayado). Si no aplica, escribe N/A. -->
+## Issue
+<!-- Qué Issue de GitHub cierra o afecta este PR. Si no aplica, escribe N/A. -->
 
 ## Verificación
 - [ ] `cargo fmt --all -- --check`

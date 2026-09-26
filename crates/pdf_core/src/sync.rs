@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Asier Bóveda
 
 //! Syncthing-friendly library layout and local change detection
-//! (docs/plan/NEXT-PLAN.md; sync decision in AGENTS.md: Syncthing, frozen until
-//! after v1).
+//! (sync decision in AGENTS.md: Syncthing, frozen until after v1).
 //!
 //! # Layout convention
 //!

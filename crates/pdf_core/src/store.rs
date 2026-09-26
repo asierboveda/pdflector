@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! SQLite sidecar persistence for [`AnnotationSet`] (docs/plan/NEXT-PLAN.md;
-//! sync decision in AGENTS.md): one `.db` file per PDF, stored next to the
+//! SQLite sidecar persistence for [`AnnotationSet`] (sync decision in
+//! AGENTS.md): one `.db` file per PDF, stored next to the
 //! document under `annotations/`, designed for Syncthing (a sync conflict is
 //! contained to a single file).
 //!

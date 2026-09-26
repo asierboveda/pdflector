@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Pipeline de presentación GPU (Fase 2 de PLAN-PARIDAD-STYLUS-NATIVO,
-//! ADR-006; Tarea 2.7): contexto EGL/GLES2 sobre el ANativeWindow del visor.
+//! Pipeline de presentación GPU (ADR-006; Tarea 2.7): contexto EGL/GLES2
+//! sobre el ANativeWindow del visor.
 //! La página renderizada por MuPDF se sube como textura SOLO cuando cambia
 //! (cambio de página o re-render nítido); la tinta (trazos guardados +
-//! gesto en curso + tramo predicho) se dibuja como geometría vectorial
+//! gesto en curso, con muestras causales reales, sin predicción — ADR-009/
+//! ADR-010) se dibuja como geometría vectorial
 //! (quads con AA analítico en el fragment shader); los overlays (chrome,
 //! toolbar, sheet, menús, badge, toast, cursor de goma) son quads
 //! texturizados de los bitmaps Canvas+JNI que `draw::render_*` ya genera.

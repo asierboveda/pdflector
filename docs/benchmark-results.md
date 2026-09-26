@@ -15,6 +15,30 @@ Este documento es el **registro único y canónico de evidencia empírica** de r
 
 ---
 
+## 2026-09-26 — Alineación de tinta integrada en TCL, vertical y horizontal
+
+- **Clasificación:** observación funcional manual; no es una medición de
+  rendimiento.
+- **Hardware:** TCL NXTPaper 11 Plus 9469X, Android 16/API 36, ADB
+  `A06B4A8E6774623`. Captura vertical 1440×2200 y horizontal 2200×1440.
+  No se registraron temperatura ni condiciones de batería.
+- **Build:** `com.pdflector.app`, versionCode `16777473`, firma igual a la
+  instalación existente. Build candidata basada en `2b4d108`, con la
+  corrección local de proyección de `InkGlRenderer.kt`, aún sin commit.
+- **Flujo y resultado:** el propietario hizo trazos cortos en ambas
+  orientaciones y confirmó que la tinta quedó alineada con la punta. Durante
+  una lectura activa se observó 120 Hz; en reposo se observó 60 Hz. Son
+  observaciones puntuales, no una serie de muestras.
+- **Sin medir:** latencia lápiz→píxel, continuidad, frames perdidos, coste por
+  evento, repintado nativo adicional, transición Wet→Dry, PSS y estado térmico.
+  No se puede concluir sobre H2 ni H3 con esta prueba.
+- **Limpieza de marcas:** tras la indicación del propietario de deshacerlas,
+  una captura posterior no mostró el trazo de prueba en la página visible. El
+  propietario cree que las marcas se deshicieron; no se confirmó una inspección
+  completa de todas las páginas.
+
+---
+
 ## 2026-09-24 — Integración de la APK principal: build e inicio, sin medición de tinta
 
 - **Clasificación:** validación funcional parcial, no benchmark de latencia.

@@ -173,7 +173,7 @@ const RECENTS_MAX: usize = 5;
 /// `App::new` / `save`).
 const KEY_RECENTS: &str = "recent_pdfs";
 
-// Fase D — AI chat panel (docs/plan/NEXT-PLAN.md). The chat is best-effort and
+// AI chat panel. The chat is best-effort and
 // optional: it only needs Ollama reachable on the local network; when it is
 // not, the app keeps working and the panel shows a clear error.
 

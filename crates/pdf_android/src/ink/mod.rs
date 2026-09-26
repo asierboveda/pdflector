@@ -7,9 +7,11 @@
 //! 3. `KalmanPredictor`: Estimación de velocidad/aceleración y proyección dinámica a 20–35 ms.
 //! 4. `StrokeEndPredictor`: Asentamiento de masa al despegar sin discontinuidades ("cero-pop").
 //!
-//! El motor causal nuevo evita vectores temporales por muestra, pero conserva
-//! las muestras del trazo activo en un `Vec` que puede crecer. El modelador
-//! heredado sigue disponible para el producto hasta completar la evaluación.
+//! El motor causal nuevo (`causal`/`engine`, ADR-009/ADR-010) es el que está
+//! conectado al `Reader` del producto: evita vectores temporales por muestra,
+//! pero conserva las muestras del trazo activo en un `Vec` que puede crecer.
+//! Este modelador heredado (`InkStrokeModeler`, con predicción Kalman) sigue
+//! compilando pero no está conectado a ningún flujo del producto.
 
 pub mod causal;
 pub mod engine;

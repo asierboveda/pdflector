@@ -2,7 +2,7 @@
 
 Las convenciones del proyecto (arquitectura, prioridades, cómo trabajar,
 documentación obligatoria) están en [`AGENTS.md`](AGENTS.md) y [`docs/PROYECTO.md`](docs/PROYECTO.md).
-El roadmap activo es [`docs/plan/NEXT-PLAN.md`](docs/plan/NEXT-PLAN.md) (fases A–F).
+El trabajo pendiente se rastrea en GitHub Issues (ver [`AGENTS.md`](AGENTS.md) §3).
 
 Proyecto personal de aprendizaje en Rust; aportes externos no esperados, pero bienvenidos.
 

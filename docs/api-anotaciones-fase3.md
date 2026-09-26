@@ -1,7 +1,8 @@
 # API de anotaciones — resaltador con detección de texto + boli (Fase 3.5)
 
-> **[HISTÓRICO — congelado 2026-09-06]** Documento congelado: su contenido refleja
-> el estado de 2026-08. No editar. El roadmap vigente vive en `docs/plan/NEXT-PLAN.md`.
+> Referencia de la API de `pdf_core` incorporada en 2026-08. Para el estado
+> actual del producto, consulta [`ESTADO_ACTUAL.md`](../ESTADO_ACTUAL.md);
+> el trabajo pendiente vive en GitHub Issues, no en un roadmap local.
 
 Fecha: 2026-08-22 — Módulo nuevo: `pdf_core::selection`;
 suavizado añadido a `pdf_core::annotations`.

@@ -111,16 +111,11 @@ Separar núcleo y UI = poder mantener y optimizar el motor y la lógica de negoc
 - Procedimiento repetible: `.opencode/skills/pdflector-rendimiento/SKILL.md`.
   Ninguna afirmación de rendimiento sin fecha + flujo medido + hardware + métrica.
 
-## Hoja de ruta
+## Trabajo pendiente
 
-El roadmap vigente es **`docs/plan/NEXT-PLAN.md` (fases A–F)**:
-- **Fase A**: Latencia de interacción y render (presupuesto de frame y profiling).
-- **Fase B**: Subrayador con alineación de texto y orden de lectura.
-- **Fase C**: Pintado y lápiz con predicción de baja latencia.
-- **Fase D**: Asistente de IA y contexto (panel híbrido Groq / Gemini).
-- **Fase E**: Biblioteca curada y gestión de documentos.
-- **Fase F**: Discover / arXiv (búsqueda, descarga y apertura fluida de papers).
-- **Deuda transversal**: `docs/plan/DEUDA.md` (asuntos técnicos pendientes y optimizaciones abiertas).
+El trabajo pendiente se rastrea en GitHub Issues (`AGENTS.md` §3); este
+repositorio no mantiene un roadmap ni un backlog paralelo. El estado del
+software que existe hoy está en `ESTADO_ACTUAL.md`.
 
 ## Licencias
 

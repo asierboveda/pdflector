@@ -113,8 +113,9 @@ pub(crate) enum ToolKind {
     /// Resaltador: arrastrar sobre texto selecciona las líneas bajo el trazo
     /// y crea una `Highlight` alineada al texto (`pdf_core::selection`).
     Highlight,
-    /// Boli: el arrastre dibuja tinta freehand (`Stroke` suavizado con
-    /// `pdf_core::annotations::smooth_polyline` al soltar).
+    /// Boli: el arrastre dibuja tinta freehand (`Stroke` con las muestras
+    /// causales reales del gesto, sin suavizado ni predicción — ADR-009/
+    /// ADR-010).
     Ink,
 }
 

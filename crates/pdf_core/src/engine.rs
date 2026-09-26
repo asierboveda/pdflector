@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Rendering engine abstraction (docs/plan/NEXT-PLAN.md; AGENTS.md, MUST 2). The single backend
+//! Rendering engine abstraction (AGENTS.md, MUST 2). The single backend
 //! (MuPDF, chosen in ADR-001) implements these traits, so callers never
 //! depend on the concrete engine.
 
@@ -37,7 +37,7 @@ pub struct TextSpan {
     pub h: f32,
 }
 
-/// The extracted text of one page (docs/plan/NEXT-PLAN.md, base for Fases B y D).
+/// The extracted text of one page.
 ///
 /// Lives next to the `Document` trait (like `Bitmap`) because it is part of
 /// the engine abstraction's data contract: `Document::text` returns it and

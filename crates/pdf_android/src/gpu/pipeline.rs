@@ -682,8 +682,9 @@ impl Gpu {
         }
     }
     /// Renderiza la capa transitoria (Wet FBO transparente): avance del
-    /// trazo activo (tinta con remate + predicción Kalman, resaltador
-    /// alineado), cursor de la goma y rect de selección (fill + borde). El
+    /// trazo activo (tinta con remate, sin predicción — ADR-009/ADR-010;
+    /// resaltador alineado), cursor de la goma y rect de selección (fill +
+    /// borde). El
     /// FBO se limpia por COMPLETO en cada llamada (sin glScissor) y la
     /// textura se compone sobre la dry con offset (0,0): el trazo ya hornea
     /// su pan (página→pantalla) y el cursor/rect usan px de ventana.
@@ -829,8 +830,8 @@ impl Gpu {
     ///   dark (los 4 campos de la `DryKey`). Durante la escritura activa, la
     ///   base NUNCA se limpia ni se re-renderiza (CERO parpadeo).
     /// - Capa Wet: capa transitoria en FBO transparente — avance del trazo
-    ///   activo + predicción Kalman, cursor de la goma y rect de selección —
-    ///   re-renderizada por frame SOLO mientras `has_wet` (trazo, goma o
+    ///   activo (sin predicción — ADR-009/ADR-010), cursor de la goma y rect
+    ///   de selección — re-renderizada por frame SOLO mientras `has_wet` (trazo, goma o
     ///   selección activos).
     /// - Composición: compone `dry_fbo ⊕ wet_fbo` en el framebuffer 0 (la
     ///   ventana visible) y encima los overlays de UI por frame (no invalidan

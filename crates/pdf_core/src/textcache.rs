@@ -13,7 +13,7 @@
 //! resto es un hit de LRU de coste ~0.
 //!
 //! También es la base prevista para la Fase D (IA con contexto): para cuando `ai.rs`
-//! requiera el texto de muchas páginas (BM25 / RAG, ver `docs/plan/D-ia-contexto.md`);
+//! requiera el texto de muchas páginas (BM25 / RAG, aplazado — issue #36);
 //! con esta caché la extracción se amortiza entre el subrayado, la selección y la IA.
 //!
 //! Diseño:

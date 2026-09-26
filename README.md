@@ -5,14 +5,14 @@ no telemetry. Personal learning project (first real Rust project).
 
 Final platform: native Android (`crates/pdf_android`, ADR-005).
 The desktop `egui` app (`crates/pdf_app`) is a core testbed and prototype,
-not the final product. Active roadmap: phases A–F (`docs/plan/NEXT-PLAN.md`).
+not the final product. Pending work is tracked in GitHub Issues.
 
 ## Features
 
-- **Reading & Performance**: Fluid page flipping, pinch-to-zoom, and continuous panning with texture caching. Sustained 60 fps minimum (frame time < 16.6 ms) and target 120 fps (frame time < 8.33 ms) on the TCL NXTPaper 11 Plus 120 Hz display, with low memory footprint (PSS < 150 MB).
+- **Reading & Performance**: Page flipping, pinch-to-zoom, and continuous panning with texture caching. Performance and memory budgets are engineering targets; current device measurements are recorded in [`docs/benchmark-results.md`](docs/benchmark-results.md).
 - **Stylus Annotations**:
   - Text highlighter with automatic text detection aligned to reading order.
-  - Low-latency vector ink drawing with motion prediction (Kalman filter and spring-mass model).
+  - Low-latency vector ink drawing (`ink::causal`, ADR-009/ADR-010): only real pen samples are drawn, with no predicted/extrapolated trajectory.
   - Vector eraser removing entire strokes.
   - Background asynchronous persistence to SQLite.
 - **Discover / arXiv**: Integrated paper search across arXiv, metadata inspection, background PDF download, and immediate handoff to the reader.
@@ -24,8 +24,8 @@ not the final product. Active roadmap: phases A–F (`docs/plan/NEXT-PLAN.md`).
 
 ## Docs
 
+- [`ESTADO_ACTUAL.md`](ESTADO_ACTUAL.md) — factual snapshot of the software that exists (Spanish)
 - [`docs/PROYECTO.md`](docs/PROYECTO.md) — vision and product scope (Spanish)
-- [`docs/plan/NEXT-PLAN.md`](docs/plan/NEXT-PLAN.md) — active roadmap, phases A–F (Spanish)
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — contribution guidelines and local verification
 - [`AGENTS.md`](AGENTS.md) — operational rules for AI agents working on this repo
 
@@ -33,11 +33,11 @@ not the final product. Active roadmap: phases A–F (`docs/plan/NEXT-PLAN.md`).
 
 ```
 crates/pdf_core/     core library (no UI): engine, render, cache, annotations, arxiv, ai, export
-crates/pdf_android/  final native Android app (ADR-005, NativeActivity + EGL/GLES)
+crates/pdf_android/  Rust cdylib for the Android product (ADR-005/ADR-010, GameActivity + EGL/GLES; packaged by android/product)
 crates/pdf_app/      egui desktop testbed and prototype (not product)
 crates/pdf_bench/    benchmark harness and performance sweeps
 corpus/              test PDFs (gitignored; tools/generate_corpus.py)
-docs/                project documentation and ADRs (active roadmap: NEXT-PLAN A–F)
+docs/                project documentation and ADRs (pending work: GitHub Issues)
 ```
 
 ## Setup
@@ -65,8 +65,15 @@ echo "placeholder" > crates/pdf_android/groq_key.txt
 echo "placeholder" > crates/pdf_android/google_key.txt
 
 cargo check -p pdf_android --target aarch64-linux-android                  # quick check
-cargo apk build -p pdf_android --release --target aarch64-linux-android # build APK
 ```
+
+The shipped product APK (`com.pdflector.app`) is a Gradle/Kotlin app in
+`android/product` that hosts the Rust `cdylib` through `GameActivity`
+(`PdfLectorActivity`). Its `assembleProductDebug` Gradle task
+(`android/product/app/build.gradle.kts`) builds the Rust library for
+`aarch64-linux-android` in release mode and packages it into the debug APK.
+Signing keys live in `android/product/signing.local.properties` (gitignored),
+never in the manifest.
 
 See also: `docs/README.md` (documentation index), `docs/adr/` (architectural decision records),
 `docs/benchmark-results.md` (benchmark measurements), and `.opencode/skills/` (operational skills).
