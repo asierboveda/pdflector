@@ -8,7 +8,7 @@ Este índice ordena **las decisiones de los ADR-011 a ADR-021** para que se pued
 
 | Orden | ADR | Entrega aislada | Depende de |
 |---:|---|---|---|
-| 1 | [011 — geometría y márgenes](011-geometria-y-margenes-pdf.md) | Encuadre completo y transformación común; diagnóstico del PDF afectado | Ejemplar del bug para cierre |
+| 1 | [011 — geometría y márgenes](011-geometria-y-margenes-pdf.md) | Encuadre completo y transformación común; caso real identificado en la TCL | Medición de la corrección en tablet para cierre |
 | 2 | [019 — pan con un dedo](019-pan-con-un-dedo.md) | Desplazamiento de hoja ampliada con arbitraje de tap/selección/lápiz | 011 |
 | 3 | [021 — zoom inmediato](021-zoom-dos-dedos-inmediato.md) | Primer feedback en el siguiente present y render nítido asíncrono | 011 |
 | 4 | [012 — menú de anotación](012-menu-de-anotacion.md) | Barra de cuatro herramientas y alojamiento del selector de lectura | Ninguna; Recorte se muestra inactivo hasta 013 |
@@ -24,7 +24,7 @@ El orden prioriza la corrección geométrica, porque pan, zoom, selección de ti
 
 ## Límite de cada Issue
 
-Cada fila da lugar a **un Issue** con el criterio de cierre del ADR enlazado. Ningún Issue se cierra por compilación solamente cuando toca render, caché o entrada: hace falta medición en la TCL con fecha, hardware, flujo y métrica registrada en `docs/benchmark-results.md`. Para ADR-011 además hace falta reproducir el PDF de PowerPoint afectado; sin ese artefacto solo se puede entregar la mejora general de encuadre, no declarar resuelto el bug específico. ADR-015 es una evolución de la explicación de selección ya presente y ADR-016 reutiliza ese cliente; ninguno inicia la fase D de contexto global del PDF, aplazada en `NEXT-PLAN.md`.
+Cada fila da lugar a **un Issue** con el criterio de cierre del ADR enlazado. Ningún Issue se cierra por compilación solamente cuando toca render, caché o entrada: hace falta medición en la TCL con fecha, hardware, flujo y métrica registrada en `docs/benchmark-results.md`. Para ADR-011 ya existe un caso reproducible en la tablet (`Guide_campus_virtual_26.pdf`, p. 2); cerrar el bug exige comprobar allí el encuadre corregido y las cuatro esquinas, no solo cambiar la fórmula. El PDF PowerPoint mencionado al inicio se verifica también si se facilita su ejemplar. ADR-015 es una evolución de la explicación de selección ya presente y ADR-016 reutiliza ese cliente; ninguno inicia la fase D de contexto global del PDF, aplazada en `NEXT-PLAN.md`.
 
 ## Reparto sin solapamiento
 
