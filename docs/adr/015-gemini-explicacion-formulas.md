@@ -8,7 +8,7 @@ Ya existe selección rectangular y extracción de texto/PNG en `reader/seleccion
 
 ## Decisión
 
-La acción **Explicar fórmula** usará siempre Gemini multimodal: PNG de la región seleccionada más texto extraído de esa región y número de página como contexto. Nunca enviará el documento entero. La ruta de autenticación del producto personal será una clave API que el propietario introduce en ajustes, cifrada en almacenamiento privado con una clave de Android Keystore y obtenida por JNI al iniciar la solicitud. No se empaquetará una clave real en la APK. El modelo será un identificador configurable con valor inicial documentado y validado mediante `models.list` o una consulta mínima; no se asumirá que «Pro» concede acceso a un modelo concreto. La app mostrará antes del primer envío que la selección sale a Google.
+La acción **Explicar fórmula** usará siempre Gemini multimodal: PNG de la región seleccionada más texto extraído de esa región y número de página como contexto. Nunca enviará el documento entero. La ruta de autenticación del producto personal será una clave API que el propietario introduce en ajustes, cifrada en almacenamiento privado mediante AES-GCM con clave no exportable de Android Keystore y obtenida por JNI al iniciar la solicitud. El fichero cifrado se excluye de copias de seguridad. No se empaquetará una clave real en la APK. El modelo inicial será `gemini-flash-latest`, ya usado como valor por defecto en `pdf_core::ai::GeminiClient`; el usuario podrá cambiarlo. Antes de la primera solicitud con una combinación clave/modelo se verificará que `models.list` expone `generateContent` para ese identificador; si no, se mostrará un error de configuración sin cambiar de modelo silenciosamente. No se asumirá que «Pro» concede acceso a un modelo concreto. La app mostrará antes del primer envío que la selección sale a Google.
 
 Se descarta usar la cuenta de Gemini de la app como token de API: no es una credencial compatible. Se descarta OCR local nuevo porque el PNG multimodal ya cubre fórmulas no extraíbles. Se descarta mantener Groq como fallback silencioso para fórmulas, porque cambiaría la interpretación y la privacidad sin indicarlo.
 
@@ -22,7 +22,7 @@ Se descarta usar la cuenta de Gemini de la app como token de API: no es una cred
 
 1. Una fórmula vectorial y una fórmula incluida como imagen reciben explicación asociada a la región elegida y página correcta; el modo sin texto extraíble sigue funcionando con imagen.
 2. Sin clave, sin cuota, sin red o con respuesta bloqueada se muestra un error recuperable; no se envía nada ni se crea respuesta falsa. Cerrar el panel impide mostrar resultados tardíos.
-3. La APK distribuible no contiene credenciales reales; la clave no aparece en Git, logs, URL ni backup. Borrar el ajuste elimina la copia cifrada y deshabilita la acción.
+3. La APK distribuible no contiene credenciales reales; la clave no aparece en Git, logs, URL ni backup. Borrar el ajuste elimina la copia cifrada y deshabilita la acción. Un modelo inexistente o sin `generateContent` da un error visible antes de enviar la selección.
 4. La llamada HTTP y el render de región nunca bloquean UI; en TCL se registra fecha, hardware, flujo, frame p95, PSS y latencia de respuesta p50/p95 por separado.
 
 ## Fuera de alcance
