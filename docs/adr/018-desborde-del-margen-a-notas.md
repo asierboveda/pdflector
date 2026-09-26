@@ -8,7 +8,7 @@ La petición es escribir notas junto a la página y, cuando no haya espacio, abr
 
 ## Decisión
 
-Ofrecer una acción explícita **Nota en margen**. Antes de abrir el editor, evaluar un rectángulo de nota de tamaño mínimo **120 × 80 pt** alrededor del punto tocado. Es válido si queda dentro de la caja visible, deja 8 pt de separación de texto, imágenes y anotaciones existentes, y no invade el área ocupada por contenido extraído. Si no existe rectángulo válido en el margen lateral más cercano, abrir directamente una entrada vinculada a esa página en el cuaderno de ADR-017, con ancla en el punto tocado. Si la extracción de ocupación falla o es incompleta, usar el panel de cuaderno como opción segura; no escribir sobre el PDF a ciegas. El usuario siempre puede abrir el cuaderno manualmente.
+Ofrecer una acción explícita **Nota en margen**. Antes de abrir el editor, evaluar un rectángulo de nota de tamaño mínimo **120 × 80 pt** alrededor del punto tocado. Es válido si queda dentro de la caja visible, deja 8 pt de separación de texto, imágenes y anotaciones existentes, y no invade el área ocupada por contenido extraído. Si no existe rectángulo válido en el margen lateral más cercano, abrir directamente una entrada vinculada a esa página en el cuaderno de ADR-017, con ancla en el punto tocado. Si una nota iniciada en línea agota su rectángulo al añadir texto o tinta, el mismo borrador pasa al panel antes de aceptar el contenido que lo desbordaría; conserva página y ancla, sin truncar ni duplicar la nota. Si la extracción de ocupación falla o es incompleta, usar el panel de cuaderno como opción segura; no escribir sobre el PDF a ciegas. El usuario siempre puede abrir el cuaderno manualmente.
 
 Se descarta basarse en `crop_margins` y umbral RGB: detectaría mal páginas con fondos, sombras o imágenes. Se descarta ampliar el PDF artificialmente: desalinearía anotaciones y exportación.
 
@@ -16,13 +16,14 @@ Se descarta basarse en `crop_margins` y umbral RGB: detectaría mal páginas con
 
 - `pdf_core/src/margins.rs`: calcular regiones disponibles como diferencia entre caja visible y unión de rectángulos de texto, imágenes y anotaciones, con expansión de 8 pt. Resultado `PageMarginDecision::Inline(rect) | Notebook(anchor)`, puro y cacheable por revisión de página/anotaciones. Requiere que el adaptador MuPDF exponga cajas de imagen/gráfico cuando las haya; si falta, devolver `Notebook`.
 - `pdf_android/src/reader/notes.rs`: solicitar decisión en worker tras tap sobre acción Nota en margen; mostrar indicador de espera sin bloquear. `Inline` usa el editor de nota anclada; `Notebook` abre el panel preseleccionado en la página. Guardar la vinculación y el rectángulo en el modelo de ADR-017.
-- `reader/geometry.rs`: convertir punto de pantalla a página mediante ADR-011, incluso con zoom, rotación y futuro Scroll. Recalcular cuando cambian anotaciones o la caja visible.
+- `reader/geometry.rs`: convertir punto de pantalla a página mediante ADR-011, incluso con zoom, rotación y futuro Scroll. Recalcular cuando cambian anotaciones o la caja visible. El editor mide el contenido pendiente con la misma escala y el mismo rectángulo reservado; al no caber, convierte atómicamente el borrador en entrada de cuaderno y deja de pintar su representación en línea.
 
 ## Criterios de aceptación
 
 1. En una página con margen ≥ 120 × 80 pt, se abre el editor en el margen y el rectángulo no solapa contenido ni anotaciones; en una página a sangre o con margen insuficiente se abre el panel de apuntes con la página correcta.
 2. Un PDF escaneado o una extracción fallida abre el panel, sin colocar contenido encima de la imagen. Al girar o ampliar, el ancla de página se conserva.
 3. La decisión es determinista para el mismo PDF y anotaciones. La UI no espera a MuPDF; se registra en TCL fecha, hardware, flujo, frame p95, PSS y latencia de decisión.
+4. Al escribir una nota que supera el espacio inicialmente reservado, aparece en el panel con todo el texto y la tinta introducidos, la misma página y ancla; tras cerrar y reabrir hay una sola nota y no queda un fragmento duplicado en el margen.
 
 ## Fuera de alcance
 

@@ -8,7 +8,7 @@ El motor actual extrae texto por líneas y renderiza páginas, pero no expone en
 
 ## Decisión
 
-Hacer activables referencias a figuras con destino **verificable**. Prioridad: enlace interno del PDF cuyo origen coincide con una referencia textual; si no existe, índice local de leyendas `Fig./Figure/Figura + número` y coincidencia única de identificador. Si dos leyendas coinciden o la extracción falla, la referencia no se activa y se informa al mantenerla pulsada; nunca se abre una figura posiblemente incorrecta. El destino se muestra como recorte de la figura y su leyenda en un popup pequeño sobre la página actual, con ampliar/cerrar; no altera página, zoom ni posición de lectura. Los enlaces externos mantienen su tratamiento separado.
+Hacer activables referencias a figuras con destino **verificable**. Prioridad: enlace interno del PDF cuyo origen coincide con una referencia textual y cuya página destino contiene una única leyenda con el mismo identificador; si no existe tal enlace, índice local de leyendas `Fig./Figure/Figura + número` y coincidencia única de identificador en el documento. Si un enlace apunta a una página con varias leyendas, solo se usa la que coincide exactamente con el número citado; si falta o hay duplicados, la referencia no se activa y se informa al mantenerla pulsada. Nunca se abre una figura posiblemente incorrecta. El destino se muestra como recorte de la figura y su leyenda en un popup pequeño sobre la página actual, con ampliar/cerrar; no altera página, zoom ni posición de lectura. Los enlaces externos mantienen su tratamiento separado.
 
 Se descarta un modelo de IA para descubrir figuras: introduciría red, latencia y falsos vínculos en una tarea de navegación local. Se descarta ir a la página destino y volver: pierde contexto y no cumple el popup pedido.
 
@@ -20,7 +20,7 @@ Se descarta un modelo de IA para descubrir figuras: introduciría red, latencia 
 
 ## Criterios de aceptación
 
-1. En un PDF con enlace interno a figura y otro con referencia de texto sin enlace pero leyenda única, tocar el identificador abre la figura o la página destino con leyenda en popup; la página y el zoom originales no cambian al cerrar.
+1. En un PDF con enlace interno a figura y otro con referencia de texto sin enlace pero leyenda única, tocar el identificador abre la figura o la página destino con leyenda en popup; la página y el zoom originales no cambian al cerrar. Si la página destino contiene dos figuras, solo se activa la leyenda cuyo número coincide con la referencia.
 2. Una referencia ambigua, externa o sin leyenda verificable no abre un destino incorrecto. Tocar fuera del popup lo cierra sin pasar página.
 3. El popup permite ampliar y desplazar su contenido, conserva nitidez suficiente para leer la leyenda y no deja una textura residente tras cerrarse; caché ≤ 8 MiB.
 4. En TCL se registran fecha, hardware, flujo de apertura de 20 figuras, latencia tap→popup, frame p95 y PSS; el render y el índice no bloquean el hilo UI.
