@@ -62,6 +62,16 @@ fn reconcile_pending_ink(
     }
 }
 
+fn has_native_wet(
+    gesture: Option<&crate::annotations::ToolGesture>,
+    erase_active: bool,
+    selection_active: bool,
+) -> bool {
+    gesture.is_some_and(crate::annotations::ToolGesture::requires_native_wet)
+        || erase_active
+        || selection_active
+}
+
 /// Vertex de tinta: posición en PANTALLA (px, y abajo) + offset perpendicular
 /// con signo (AA por ancho) + semi-ancho del centro + centro del punto
 /// (disco redondo de tapas/juntas) + RGBA8.
@@ -893,8 +903,11 @@ impl Gpu {
         // en la wet como el trazo — sin esto, el gesto Selecting (long-press
         // de dedo, sin tool_gesture ni erase_pt) nunca llegaría a render_wet
         // y el rect sería invisible en GPU (Tarea 2.5).
-        let has_wet =
-            reader.tool_gesture.is_some() || reader.erase_pt.is_some() || reader.sel.is_some();
+        let has_wet = has_native_wet(
+            reader.tool_gesture.as_ref(),
+            reader.erase_pt.is_some(),
+            reader.sel.is_some(),
+        );
         if has_wet {
             self.render_wet(reader);
         }
@@ -958,9 +971,8 @@ impl Gpu {
             self.free_fade_tex(); // sin fade activo: no retener el snapshot
         }
 
-        // 4. Conmutación dinámica de swap interval:
-        // Durante trazo activo (Wet Ink), eglSwapInterval(0) despacha inmediatamente
-        // al display sin bloqueo de VSYNC (< 4 ms). En commit/reposo, eglSwapInterval(1) a 120 Hz.
+        // 4. La superficie nativa evita el bloqueo de VSYNC solo mientras tiene
+        // wet que presentar; el ink presentado por AndroidX no requiere swaps.
         let target_swap_interval = if has_wet { 0 } else { 1 };
         self.set_swap_interval(target_swap_interval);
 
@@ -1260,7 +1272,41 @@ impl<'a> OverlayList<'a> {
 
 #[cfg(test)]
 mod ink_clear_tests {
-    use super::reconcile_pending_ink;
+    use super::{has_native_wet, reconcile_pending_ink};
+    use crate::annotations::{DEFAULT_INK_COLOR, ToolGesture, ToolKind};
+
+    #[test]
+    fn native_wet_includes_fallback_highlight_eraser_and_selection_only() {
+        assert!(!has_native_wet(None, false, false));
+        assert!(has_native_wet(None, true, false));
+        assert!(has_native_wet(None, false, true));
+
+        let mut ink = ToolGesture::try_new(
+            0,
+            ToolKind::Ink,
+            (10.0, 20.0),
+            100,
+            0.5,
+            2.0,
+            DEFAULT_INK_COLOR,
+        )
+        .unwrap();
+        assert!(has_native_wet(Some(&ink), false, false));
+        ink.ink_overlay_used = true;
+        assert!(!has_native_wet(Some(&ink), false, false));
+
+        let highlight = ToolGesture::try_new(
+            0,
+            ToolKind::Highlight,
+            (10.0, 20.0),
+            100,
+            0.5,
+            2.0,
+            DEFAULT_INK_COLOR,
+        )
+        .unwrap();
+        assert!(has_native_wet(Some(&highlight), false, false));
+    }
 
     #[test]
     fn dry_ack_is_remembered_until_the_active_ink_gesture_ends() {
