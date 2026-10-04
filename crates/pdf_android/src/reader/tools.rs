@@ -76,6 +76,19 @@ fn cancel_used_ink_overlay<O: InkOverlayOps>(overlay: &mut O, overlay_used: bool
     }
 }
 
+fn cancel_gesture_for_transition<O: InkOverlayOps>(
+    gesture: &mut Option<ToolGesture>,
+    overlay: Option<&mut O>,
+) -> bool {
+    let Some(gesture) = gesture.take() else {
+        return false;
+    };
+    if let Some(overlay) = overlay {
+        cancel_used_ink_overlay(overlay, gesture.ink_overlay_used);
+    }
+    true
+}
+
 fn submit_ink_overlay_segment_for_gesture<O: InkOverlayOps>(
     gesture: &mut ToolGesture,
     overlay: Option<&mut O>,
@@ -476,11 +489,8 @@ impl Reader {
     /// Gesto de herramienta cancelado (segundo dedo, Cancel del sistema,
     /// ocultar la barra): descarta el trazo en curso sin crear anotación.
     pub(crate) fn cancel_tool_gesture(&mut self) {
-        let Some(gesture) = self.tool_gesture.take() else {
+        if !cancel_gesture_for_transition(&mut self.tool_gesture, self.ink_overlay.as_mut()) {
             return;
-        };
-        if let Some(overlay) = self.ink_overlay.as_mut() {
-            cancel_used_ink_overlay(overlay, gesture.ink_overlay_used);
         }
         if self.window.is_some() {
             // El present GPU ya no dibuja el gesto: un frame normal.
@@ -787,5 +797,20 @@ mod ink_overlay_lifecycle_tests {
         assert!(!gesture.ink_overlay_used);
         assert_eq!(overlay.cancels, 1);
         assert_eq!(overlay.segments, 0);
+    }
+
+    #[test]
+    fn transition_cancels_overlay_before_discarding_used_ink_gesture() {
+        let mut gesture = ink_gesture();
+        gesture.ink_overlay_used = true;
+        let mut gesture = Some(gesture);
+        let mut overlay = FakeOverlay::default();
+
+        let discarded = cancel_gesture_for_transition(&mut gesture, Some(&mut overlay));
+
+        assert!(discarded);
+        assert!(gesture.is_none());
+        assert_eq!(overlay.cancels, 1);
+        assert_eq!(overlay.commits, 0);
     }
 }

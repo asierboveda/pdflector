@@ -157,6 +157,12 @@ limpieza de tinta provisional espera la presentación Dry correspondiente.
 La decisión y sus límites están en
 [`ADR-010`](docs/adr/ADR-010-integracion-tinta-causal-producto.md).
 
+**Inferido del código (2026-10-04):** entrar en la biblioteca, abrir con éxito
+otro PDF y terminar la ventana cancelan el gesto activo antes de descartarlo.
+Si el gesto había enviado segmentos al overlay AndroidX, se invoca su
+`cancel()`; la terminación lo hace antes de liberar la superficie EGL. Estos
+tres flujos aún no se han vuelto a comprobar en la TCL para esta corrección.
+
 La implementación está en `crates/pdf_android/src/gpu/pipeline.rs:508-514` y
 `crates/pdf_android/src/gpu/pipeline.rs:679-965`. La geometría de tinta se
 dibuja con tiras de triángulos y discos con antialiasing, usando buffers scratch
