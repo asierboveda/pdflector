@@ -15,6 +15,397 @@ Este documento es el **registro único y canónico de evidencia empírica** de r
 
 ---
 
+## 2026-10-04 — Confirmación de cierre del propietario (ADR-011)
+
+- **Clasificación:** cierre confirmado por el propietario para los cuatro
+  criterios de aceptación de ADR-011 en la TCL NXTPaper 11 Plus 9469X. Esta
+  entrada registra la confirmación recibida, no una nueva medición ejecutada
+  por el agente.
+- **Alcance confirmado:** el propietario confirma que se completaron las
+  comprobaciones de encuadre, geometría página↔pantalla dentro de tolerancia,
+  alineación/selección tras rotación física, navegación/caché y rendimiento
+  indicados por el ADR.
+- **Registro disponible:** la evidencia anterior de encuadre, interacción y
+  pruebas automatizadas permanece en las entradas precedentes. La documentación
+  disponible no contiene los valores crudos del round-trip ni del ensayo de
+  rendimiento confirmado por el propietario. No se reconstruyen ni se inventan
+  valores de error, p95/p99, frames perdidos o PSS. Los PSS y p95 de diagnóstico
+  del 2026-09-27 permanecen etiquetados como no comparables y no se presentan
+  como ese ensayo.
+- **Límite documental:** no se recuperaron con esta confirmación el hash/build
+  exacto, la identificación por nombre/hash de cada PDF de prueba ni las
+  muestras crudas del ensayo original. El cierre se atribuye explícitamente a
+  la confirmación del propietario; esta entrada no convierte los diagnósticos
+  anteriores en un benchmark reproducible.
+
+---
+
+## 2026-09-27 — Revisión física de encuadre, tinta y selección (ADR-011)
+
+- **Clasificación:** observación funcional confirmada por el propietario en la
+  TCL NXTPaper 11 Plus 9469X. No se recogieron capturas ni coordenadas crudas
+  durante esta sesión; no es una medición de round-trip ni de rendimiento.
+- **Build:** no se consultaron por ADB el versionCode ni el hash de la APK en
+  esta sesión; no se atribuye esta observación a un identificador de build
+  comprobado aquí. No se compiló ni instaló una APK durante la guía.
+- **Guide, página 2:** el propietario reabrió manualmente
+  `Guide_campus_virtual_26.pdf` en vertical y confirmó que se veían completos
+  el título, el texto, el mapa y los cuatro bordes. Esto vuelve a comprobar el
+  caso original que no se había reabierto en la pasada diagnóstica anterior.
+- **Página de prueba rotada/CropBox desplazado:** con el mismo ejemplar de
+  prueba en dos orientaciones físicas de la tablet, el propietario probó el
+  lápiz y el gesto de selección táctil en zoom 1 y 2. Reportó tinta visible
+  durante el contacto y trazo asentado alineado bajo la punta en ambos zooms y
+  orientaciones. También reportó correcto el seguimiento del dedo por el gesto
+  táctil. La selección descrita aquí es el gesto que sigue el dedo; esta
+  observación no acredita selección semántica de texto.
+- **Identificación y condiciones no capturadas:** no se anotaron el nombre ni
+  el hash del PDF de prueba, muestras numéricas, capturas, temperatura, PSS ni
+  refresco efectivo de esta sesión. La orientación inicial no quedó indicada;
+  la segunda se obtuvo girando físicamente la tablet 90°.
+- **Pendiente:** el round-trip pantalla↔página con tolerancia ≤1 punto PDF
+  requiere pares de coordenadas y error calculado; la inspección visual no lo
+  demuestra. PSS comparable y frame p95/p99/pérdida de frames siguen sin una
+  medición controlada. Esta sesión no cierra esos criterios ni el ADR completo.
+
+---
+
+## 2026-09-27 — Geometría, selección y métricas diagnósticas ADB (ADR-011)
+
+- **Clasificación:** observaciones funcionales con PDFs generados y eventos
+  sintéticos en TCL. La página rotada se inspeccionó visualmente, sin probar
+  sobre ella la alineación de tinta/selección. PSS y frame p95 son muestras
+  diagnósticas; no constituyen un benchmark ni cierran el ADR.
+- **Dispositivo/build:** TCL NXTPaper 11 Plus 9469X, Android 16/API 36,
+  1440×2200, rotación 0 (portrait), app `com.pdflector.app` 0.2.0,
+  versionCode `16777473`, proceso 22604 durante las comprobaciones. El ensayo
+  parte del worktree `codex/adr-011-geometria`, revisión
+  `496f5127cbf47cc30f5beffffa25c470a09a71de` más cambios locales. No se
+  registró el SHA-256 del APK instalado en esta pasada. Refresco efectivo
+  60 Hz; el panel anuncia soporte de 120 Hz. Estado térmico 1 al inicio y fin;
+  CPU/GPU reportadas 49,292 °C y skin 44,066 °C en ambas lecturas, sin cambio
+  térmico significativo observado. El SoC y la batería no quedaron registrados
+  en esta pasada.
+- **Página abierta al inicio:** se capturó e inspeccionó antes de cualquier
+  interacción; la imagen mostraba texto en español, sin título/página legible
+  en la interfaz. No se interactuó con ese documento. La captura privada se
+  eliminó después y no se conserva en el repositorio ni en `/tmp`.
+- **A4 visible:** PDF A4 generado con borde azul inset, abierto con `ACTION_VIEW`.
+  Se vieron los cuatro bordes sin recorte aparente. PDF SHA-256
+  `d1b2629bbbb37eb6d7f8a91a95153f934d7f2d0d2849ecf9028653ff22aed426`;
+  captura `a4-border-selection-open.png`, SHA-256
+  `7e9b0ffe69ee77e6e021961c7c71d12be6e181e473f91da63a7655a4246b3152`.
+- **Rotación y CropBox desplazado:** PDF generado con MediaBox
+  `[0 0 620 880]`, CropBox `[75 55 545 825]`, Rotate 90. En pantalla se vio
+  en formato apaisado aunque la tablet permaneció en vertical, con borde rojo
+  y contenido diagonal dentro del recorte, sin clipping aparente. Esto
+  comprueba presentación visible, no la alineación de tinta, selección o
+  round-trip de coordenadas. PDF SHA-256
+  `50d38d45e0cf84dd724959e49b1c05f2cceb1c1cc2ca0cd32c13e09ed7f0d121`;
+  captura `rotated-shifted-cropbox-open.png`, SHA-256
+  `0cd799316df05e0aeb06752e55c9e6a32200de3b14d08c83af5a5ce3174a3d6a`.
+- **Stylus sintético:** se inyectaron `DOWN`, siete `MOVE` y `UP` por ADB sobre
+  el A4 generado. Los logs registraron envíos de `gl_present` y la captura
+  posterior a `UP` muestra una línea asentada aproximadamente sobre la
+  trayectoria. Las capturas en DOWN/MOVE no difieren visualmente del blanco
+  previo, así que esta prueba no demuestra feedback wet durante el contacto ni
+  sensación/latencia del lápiz físico. El propietario ya confirmó por separado
+  tinta física durante el movimiento horizontal en la build limpia; aquella es
+  una observación manual independiente.
+- **Selección sintética:** long-press y arrastre táctiles ADB en el texto del
+  A4 seleccionaron “The quick brown fox jumps over the lazy” y mostraron el
+  menú Copiar/Subrayar/IA. No se eligió ninguna acción ni se creó resaltado.
+  Captura `text-selection-diagonal.png`, SHA-256
+  `3071242fc7d51c90682c3af8d4f196dba64d360de1201ed975fed7fd16d56560`.
+- **PSS total (kB, `dumpsys meminfo`, muestras ~1 s):** antes de la interacción
+  sintética: 17:27:36.667 `298944`; 17:27:37.839 `298635`; 17:27:38.976
+  `287167`; 17:27:40.111 `287167`; 17:27:41.226 `287167`. Después de la
+  interacción: 17:33:09.218 `203281`; 17:33:10.372 `198961`; 17:33:11.487
+  `198917`; 17:33:12.614 `198917`; 17:33:13.731 `198917`. Son estados
+  diferentes y una serie breve, no una prueba controlada de PSS estable ni de
+  estrés. Los datos brutos están en `/tmp/pdflector-adr011-evidence/`.
+- **Frame p95 leído de logcat:** `09-27 17:31:29.814 ... 797.6 ms (120
+  frames)` sin contexto controlado; y `09-27 17:32:45.527 ... 68.2 ms (120
+  frames)` tras 140 comandos ADB individuales `MOVE`. La segunda ventana
+  incluye tiempos ociosos y latencia de los comandos anfitriones; ninguna cifra
+  es un p95 válido de frame durante interacción continua o de trabajo de app.
+  No se midieron p99, frames perdidos ni lápiz→píxel. El refresco seguía en
+  60 Hz. Los logs y capturas de ensayo no personales permanecen en
+  `/tmp/pdflector-adr011-evidence/`.
+- **Estado y limpieza:** no se abrió, anotó, copió, exportó ni borró ningún PDF
+  personal. Se retiraron del dispositivo los dos PDFs generados y sus sidecars
+  de anotación. Para no reabrir un documento personal cuyo URI/página guardados
+  no estaban disponibles de forma segura, la aplicación quedó en Biblioteca;
+  la lista de recientes puede conservar las URI ya retiradas de los dos
+  fixtures. No se limpiaron datos de aplicación.
+- **Pendiente:** repetir con flujo de interacción continuo para métricas de
+  frame válidas; medir PSS con estados y protocolo comparables; probar
+  selección/tinta sobre la página rotada a zoom 1 y 2, rotación física de
+  tablet y puntos de página↔pantalla en dispositivo; repetir el caso Guide de
+  p. 2 para el cierre del bug original.
+
+---
+
+## 2026-09-27 — Tinta wet en horizontal (ADR-011)
+
+- **Clasificación:** observación funcional del propietario en la TCL; no es
+  una medición de latencia y no cierra el ADR-011.
+- **Dispositivo/build:** TCL NXTPaper 11 Plus, modelo 9469X, Android 16/API 36.
+  APK `com.pdflector.app` 0.2.0, versionCode `16777473`, instalada mediante
+  actualización conservando los datos existentes. SHA-256 instalado y local:
+  `9019f61cdb21774c1e624a66dc7277f47bb59868a35ba8cd53bd60444d77f749`.
+- **Flujo observado:** con la tablet en horizontal, mantener el lápiz apoyado y
+  moverlo. El propietario confirmó que la tinta aparece durante el movimiento
+  en la build limpia; la primera build con la transformación de proyección aún
+  mostraba el trazo al levantar el lápiz.
+- **Diagnóstico de la build instrumentada:** callback AndroidX con superficie
+  lógica de 2200×1440 y buffer prerrotado de 1440×2200; la matriz aplicada a
+  los puntos llevó las coordenadas a rango de clip y se envió el frame a
+  presentación. La instrumentación se retiró antes de generar la build limpia.
+- **Límites:** no se midieron latencia lápiz→píxel, p95/p99 de frame, pérdida de
+  frames ni refresco efectivo durante esta observación. Selección, zoom 2 y
+  página rotada/CropBox desplazado siguen sin validar en la TCL.
+
+---
+
+## 2026-09-26 — Ejecución del encuadre PDF (ADR-011)
+
+- **Clasificación:** verificación automática y observación visual parcial en
+  dispositivo. No cierra el ADR: faltan interacción física y frame p95.
+- **Código/build:** worktree `codex/adr-011-geometria`, HEAD
+  `496f5127cbf47cc30f5beffffa25c470a09a71de` más cambios locales del ADR-011,
+  incluidos los ya presentes al iniciar esta ejecución. APK debug ARM64
+  `com.pdflector.app` 0.2.0 / versionCode `16777473`; SHA-256
+  `92f01fc16aa47ca61eb3aa486da4724ec717a7d8f067398874c43d80c4198a42`.
+  Construida con el wrapper Gradle 8.9 y NDK r28; build `assembleProductDebug`
+  correcto e instalación final mediante `adb install -r`. El arranque frío de
+  `PdfLectorActivity` devolvió `Status: ok` en 1106 ms; `firstInstallTime`
+  siguió en 2026-09-07. Las capturas muestran la p. 2/18 de Guide y, al final,
+  `dense_textbook.pdf`, p. 70/93.
+- **Validación automática:** `cargo fmt --all -- --check`, `git diff --check`,
+  `cargo clippy -p pdf_core --all-targets -- -D warnings`,
+  `cargo test -p pdf_core` (186 pasaron, 0 fallaron),
+  `cargo check -p pdf_android --target aarch64-linux-android --all-targets`,
+  `cargo clippy -p pdf_android --target aarch64-linux-android --all-targets
+  -- -D warnings` y build del APK: correctos. En la TCL pasaron 12 pruebas
+  Android ARM64: 7 de `view` (incluyen cuatro de contain/margen), 3 de caché,
+  transformación y mapeo a bitmap, y 2 de prefetch ±1. No se ejecutó allí el
+  conjunto completo de pruebas.
+- **Dispositivo/condiciones:** TCL NXTPaper 11 Plus, modelo 9469X, MT8781,
+  Android 16/API 36; ADB `A06B4A8E6774623`; 1440×2200, 320 dpi, rotación 0,
+  pantalla encendida, USB, batería 41 %. Refresco efectivo 60 Hz (modo 2,
+  `renderFrameRate=60.0`); el panel anuncia también 120 Hz. En la sesión
+  previa, la muestra térmica almacenada a las 21:07:31 fue CPU/GPU 49,292 °C,
+  SoC 49,475 °C, skin 44,066 °C y batería 27,6 °C. En la sesión final, a las
+  21:33, HAL informó piel 35,052 °C y batería 29,3 °C; CPU/GPU/SoC no estaban
+  disponibles. No hay temperaturas inicial/final comparables.
+- **Separación de builds:** las primeras muestras visuales y de PSS de esta
+  entrada corresponden al APK candidato previo, SHA-256
+  `b51477cded9f875af744b9b94417af8151f37bce97f3532bd3140183b0734c14`.
+  El APK final
+  `92f01fc16aa47ca61eb3aa486da4724ec717a7d8f067398874c43d80c4198a42` se
+  instaló y probó después: muestra Guide p. 2 completa, arranca correctamente
+  y volvió a `dense_textbook.pdf` p. 70/93. La serie final de PSS está separada
+  de las muestras del candidato previo.
+- **Flujo observado:** se abrió la posición guardada de
+  `Guide_campus_virtual_26.pdf`, p. 2/18, desde la biblioteca. Se ven los
+  cuatro bordes, el título «Come to our Library», el texto y el mapa completos.
+  `dense_textbook.pdf`, p. 70/93, apareció centrado; su papel blanco se funde
+  con el fondo, por lo que no se dan por verificadas visualmente sus cuatro
+  esquinas. No se guardaron capturas ni PDFs en el repositorio. Se restauró la
+  posición guardada de `dense_textbook.pdf` a p. 70/93.
+- **PSS/RSS crudos (KiB):** tras navegar a la p. 2 de Guide,
+  `261504/377371`; después de reposo, a las 21:07:31 y con intervalos de 4 s,
+  `192318/308871`, `192146/308699`, `192146/308699`. En `dense_textbook.pdf`
+  p. 70, tras restaurar, una muestra fue `339643/460105`. Son estados distintos,
+  del APK candidato previo
+  `b51477cded9f875af744b9b94417af8151f37bce97f3532bd3140183b0734c14`. En el
+  APK final
+  `92f01fc16aa47ca61eb3aa486da4724ec717a7d8f067398874c43d80c4198a42`, después
+  de abrir Guide p. 2, las muestras fueron `253720/371079`, `196042/313927` a los 4 s y
+  `196100/313935` a los 8 s. Esta serie corta refleja navegación/reposo, no un
+  pico de estrés ni por sí sola el presupuesto estable de memoria.
+- **No medido/no observado:** frame p95/p99 y frames perdidos durante
+  interacción continua; lápiz→píxel; selección real (el long-press sintético
+  no activó selección); escritura con lápiz, zoom 2 y cambio de orientación;
+  página rotada con `CropBox` desplazado en pantalla. La prueba core sí cubre
+  geométricamente ese último tipo de PDF. Un ejemplar PowerPoint independiente
+  no está disponible en la prueba.
+- **Protección de datos:** no se borraron ni exportaron PDFs, no se limpió el
+  almacenamiento de la app y no se añadieron anotaciones. El binario temporal
+  de pruebas Android se retiró de `/data/local/tmp`.
+
+---
+
+## 2026-09-26 — Validación automática y ciclo de vida ADB (ADR-010)
+
+- **Clasificación:** validación parcial del ADR-010; no cierra el ADR. Los
+  percentiles de interacción y los gestos físicos siguen sin medirse en esta
+  tanda.
+- **Código probado:** worktree `adr-011`, HEAD
+  `496f5127cbf47cc30f5beffffa25c470a09a71de`, con cambios locales sin commit
+  presentes. Las comprobaciones Rust se ejecutaron contra ese árbol; no se
+  atribuyen a una build limpia de `main`.
+- **Build instalada:** TCL NXTPaper 11 Plus, modelo `9469X`, Android 16/API 36,
+  app `com.pdflector.app` 0.2.0 / versionCode `16777473` (minSdk 29,
+  targetSdk 35). APK debug ARM64 local e instalada con SHA-256 idéntico:
+  `d86175be519d7fcff33646b6fa492ebda8a7f531958d19fc8b52f91217b19c14`.
+  No se reconstruyó ni reinstaló durante esta tanda: se comprobó la identidad
+  del APK existente y no se alteraron los datos de la app. `apksigner verify`
+  confirmó la firma APK v2; certificado SHA-256
+  `a1b691cffc1b8ed4897e708ba25a19bc4fc2c735871f9f57d67bbc6b13fe0969`.
+- **Toolchain:** Rust 1.98.1; Android NDK r28 en
+  `/home/asierboveda/Android/Sdk/ndk/android-ndk-r28`, con el toolchain
+  LLVM/sysroot de ese NDK para la compilación cruzada.
+- **Validación automática:**
+  - `cargo fmt --all -- --check`: correcto.
+  - `git diff --check`: correcto tras añadir esta entrada.
+  - `cargo clippy --all-targets -- -D warnings`: correcto.
+  - `cargo test -p pdf_core`: 184 pruebas correctas, 0 fallidas.
+  - `cargo check -p pdf_android --target aarch64-linux-android --all-targets`:
+    correcto.
+  - `cargo clippy -p pdf_android --target aarch64-linux-android --all-targets
+    -- -D warnings`: correcto.
+  - `cargo test -p pdf_android --target aarch64-linux-android --lib --no-run`:
+    correcto; el binario se ejecutó en la TCL con ADB: 57 pruebas, 56
+    correctas y 1 fallida. Fallo
+    `ink::tests::test_proyeccion_kalman_y_modulacion`,
+    `crates/pdf_android/src/ink/tests.rs:140`: lead observado `9.47 pt` frente
+    a `~15 pt` esperado. Ejecución: se copió
+    `target/aarch64-linux-android/debug/deps/pdf_android-bb6df0b0fcfb5913` con
+    `adb push`, se aplicó `adb shell chmod 755
+    /data/local/tmp/pdflector-adr010-tests` y se lanzó con
+    `adb shell /data/local/tmp/pdflector-adr010-tests`. La discrepancia queda
+    abierta; no se modificó código.
+  - `./gradlew :app:testDebugUnitTest`: no ejecutable; el repositorio no tiene
+    `android/product/gradlew` y el entorno no tiene un binario Gradle instalado.
+    No se obtuvieron resultados de pruebas JVM de Kotlin.
+- **Dispositivo y estado:** serial `A06B4A8E6774623`; pantalla encendida,
+  1440×2200, rotación 0, densidad 320 dpi. El panel admite 60/120 Hz; el modo
+  efectivo leído fue 60 Hz (`mActiveModeId=2`). Batería 39 %, USB conectado.
+  Muestra térmica puntual: CPU/GPU/SoC ~49.3–49.5 °C, piel 44.1 °C,
+  batería 27.6 °C; estado térmico 1. No es una medición térmica antes/después.
+- **Flujo ADB:** con `PdfLectorActivity` reanudada, se envió `KEYCODE_HOME` y
+  se volvió con `adb shell am start -W -n
+  com.pdflector.app/.PdfLectorActivity`. Resultado `Status: ok`,
+  `LaunchState: WARM`, `TotalTime: 349 ms`; la actividad quedó reanudada.
+  El filtro de logcat para errores de `AndroidRuntime`, `PdfLectorActivity` y
+  `pdf_android` no devolvió líneas. Esto confirma un ciclo Inicio/retorno
+  caliente, no la recuperación tras destruir la superficie durante un trazo.
+- **Memoria (KiB, muestras puntuales):** antes del ciclo,
+  PSS `345142` / RSS `467993`; después, PSS `268760` / RSS `391946`.
+  Corresponden a momentos/estados distintos; no forman una serie de reposo o
+  estrés y no demuestran el presupuesto de memoria estable. Frames, pérdidas
+  de frame y latencia lápiz→píxel: `SIN MEDIR`.
+- **Criterios del ADR aún pendientes de observación de producto:** gestos
+  físicos y continuidad con zoom; transición wet→dry tras presentación
+  correcta; cancelación de un gesto en la UI; cambio de página durante tinta;
+  pérdida/recreación de superficie durante tinta; ejecución de la ruta Rust
+  wet de respaldo cuando AndroidX rechace un segmento; y mediciones de
+  interacción en la TCL. La observación manual ya registrada en esta fecha
+  informa que a zoom alto el trazo aparece al levantar el lápiz, aunque la
+  línea asentada se alinea con la punta; se observaron pequeños bordes. Eso no
+  valida feedback continuo a zoom alto ni wet→dry.
+- **Protección de datos:** no se limpió almacenamiento, no se desinstaló la
+  aplicación y no se inyectaron trazos ADB en PDFs personales. Las acciones de
+  este ensayo fueron lecturas ADB, extracción de la APK a `/tmp`, ejecución
+  del harness de pruebas y el ciclo Inicio/retorno.
+
+---
+
+## 2026-09-26 — Tinta con zoom: observación manual del propietario
+
+- **Clasificación:** observación funcional durante las pruebas de ADR-011; sin
+  medición de latencia.
+- **Hardware/build:** TCL NXTPaper 11 Plus 9469X, APK
+  `com.pdflector.app` 0.2.0, versionCode `16777473`, SHA-256
+  `d86175be519d7fcff33646b6fa492ebda8a7f531958d19fc8b52f91217b19c14`.
+- **Flujo observado:** al escribir sin zoom, el trazo se muestra durante el
+  gesto. Con zoom alto, el trazo no se muestra hasta levantar el lápiz; tras
+  levantarlo, la línea asentada coincide con el recorrido de la punta. El
+  propietario también observó pequeños bordes en el trazo.
+- **Límites:** no se anotaron página, orientación ni factor de zoom exacto; no
+  se midieron latencia, refresco de frames durante el gesto ni presión. La
+  alineación final observada no demuestra feedback continuo correcto con zoom
+  ni permite atribuir los bordes a suavizado de trayectoria o antialiasing.
+
+---
+
+## 2026-09-26 — Revisión A4 por ADB durante ADR-011
+
+- **Clasificación:** observación visual y muestras de memoria en TCL; no es
+  benchmark de interacción continua.
+- **Hardware/build:** TCL NXTPaper 11 Plus 9469X, Android 16/API 36. APK
+  `com.pdflector.app` 0.2.0, versionCode `16777473`, SHA-256
+  `d86175be519d7fcff33646b6fa492ebda8a7f531958d19fc8b52f91217b19c14`.
+- **Documento:** `dense_textbook.pdf` de la biblioteca privada de la app,
+  SHA-256 `4a039e5c8127a3511d2bde331255c2a8222e478b7797ef4638458ca707a25e64`.
+  Se leyó solo su metadato PDF en memoria: 93 páginas, tamaño
+  `595.276 × 841.89 pt`, rotación 0, `MediaBox = CropBox = [0, 0, 595.28,
+  841.89]` (A4).
+- **Flujo:** filtrar la biblioteca por el nombre del corpus, abrirlo y capturar
+  la vista en la página 25/93. La página se ve completa y centrada. El fondo y
+  el papel son blancos, así que la captura no permite distinguir con precisión
+  las cuatro esquinas del rectángulo; confirma el encuadre aparente, no una
+  medición de sus esquinas. No se guardó la captura en el repositorio.
+- **Pantalla:** ADB informó panel 1440×2200, densidad 320 dpi, rotación 0 y
+  modo activo 60 Hz (`mActiveModeId=2`; 120 Hz también soportado). Durante el
+  flujo las capturas de superficie pasaron de 2200×1440 a 1440×2200; se
+  registra la discrepancia sin atribuirla a un cambio físico de orientación.
+- **PSS crudo (KiB, misma sesión):** tras abrir, `387198` (RSS `510027`);
+  tras 6 s `293630` (`416459`); tras 11 s `293618` (`416447`); tras 16 s
+  `281890` (`404719`). Una muestra posterior a interacción fue `302228`
+  (`425058`). El valor inicial supera el presupuesto de pico de 350 MiB y las
+  muestras asentadas superan el objetivo estable de 250 MiB; la secuencia
+  decreciente no muestra crecimiento monotónico en este intervalo.
+- **Frames:** `SIN MEDIR` p95 válido para interacción continua. Hubo eventos
+  `gl_present` puntuales durante apertura y navegación, pero no una secuencia
+  controlada de 120 presents activos; no se usan como percentil ni como prueba
+  del presupuesto de frame. No se midió lápiz→píxel.
+- **Límites:** esto verifica visualmente un A4 en la tablet. No prueba
+  selección/tinta, zoom 2, giro físico durante selección, ni página rotada o
+  `CropBox` desplazado en el dispositivo.
+
+---
+
+## 2026-09-26 — Encuadre completo del PDF panorámico (ADR-011)
+
+- **Clasificación:** observación funcional en la TCL más muestras puntuales de
+  sistema; no constituye una validación de latencia ni cierra el ADR.
+- **Hardware:** TCL NXTPaper 11 Plus, modelo 9469X, Android 16/API 36,
+  1440×2200 px, densidad 320 dpi, dispositivo ADB `A06B4A8E6774623`.
+  Pantalla encendida; batería 38 %, USB conectado. El panel admite 60/120 Hz y
+  `dumpsys display` informó modo activo 60 Hz (`mActiveModeId=2`). Temperatura
+  puntual al final: CPU/GPU 49,292 °C, SoC 49,475 °C, skin 44,066 °C,
+  batería 25,8 °C, estado térmico 1 para skin y 0 para CPU/GPU/SoC. No se
+  capturó temperatura inicial comparable.
+- **Build:** `com.pdflector.app` 0.2.0, versionCode `16777473`, Android ARM64
+  debug, instalada con `adb install -r` sobre la instalación existente.
+  Fuentes basadas en `496f5127cbf47cc30f5beffffa25c470a09a71de` más cambios
+  locales sin commit. APK SHA-256
+  `d86175be519d7fcff33646b6fa492ebda8a7f531958d19fc8b52f91217b19c14`.
+- **Flujo observado:** abrir la posición restaurada del documento privado
+  `Guide_campus_virtual_26.pdf`, página 1, y avanzar a página 2/18 en portrait.
+  La captura en tablet muestra los cuatro bordes de la diapositiva y el título
+  completo «Come to our Library», texto y mapa. Es la misma página panorámica
+  que antes aparecía recortada. No se guardó el PDF ni la captura en el
+  repositorio. No se verificaron A4, stylus/selección, zoom 2, rotación de
+  tablet ni la alineación de una página rotada/CropBox desplazado en pantalla.
+- **Métricas crudas:** PSS total en tres muestras separadas por 4 s sobre la
+  misma página después de instalar la APK final: `195984`, `195544`, `195544`
+  KiB; RSS `311509`, `311065`, `311065` KiB. Son muestras puntuales después
+  de navegación, no una serie de estrés ni prueba de estabilidad. Un ensayo de
+  taps ADB con pausas en la versión previa informó p95 `62,8 ms` en 120
+  presents; incluye tiempo ocioso, no representa frame p95 bajo interacción
+  continua ni se compara con el presupuesto de 8,33 ms. No se midió lápiz→px
+  ni porcentaje de frames perdidos.
+- **Límite de cierre:** queda observada la corrección de encuadre en el caso
+  concreto del ADR. Las cuatro esquinas en A4, la geometría rotada/desplazada
+  con anotaciones, selección y tinta en el dispositivo y el giro de tablet
+  siguen pendientes de comprobación.
+
+---
+
 ## 2026-09-24 — Integración de la APK principal: build e inicio, sin medición de tinta
 
 - **Clasificación:** validación funcional parcial, no benchmark de latencia.

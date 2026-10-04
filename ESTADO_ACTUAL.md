@@ -12,11 +12,18 @@ El punto de partida se reconstruyó el **2026-09-23** sobre el commit
 manifiestos, pruebas, scripts y configuración de CI. La documentación previa
 no se utilizó como fuente para describir el producto.
 
-**Actualización 2026-09-24:** la APK principal
-se ha migrado a `GameActivity` con host Kotlin/Gradle y capa de tinta AndroidX.
-La build se ha instalado como actualización en la TCL, conservando datos y
-firma. El proceso carga el documento previo y crea la superficie EGL; la
-prueba física del trazo integrado sigue pendiente de desbloquear la tablet.
+**Actualización 2026-09-27:** la APK principal se ejecuta en `GameActivity` con
+host Kotlin/Gradle y capa de tinta AndroidX. El propietario observó tinta wet
+durante el movimiento en horizontal en la build de diagnóstico de la TCL. La
+build limpia, sin trazas temporales, también se probó en la TCL y el propietario
+confirmó que la tinta aparece mientras escribe en horizontal. Se instaló
+conservando los datos. El detalle de la observación está en
+[`ADR-011`](docs/adr/011-geometria-y-margenes-pdf.md).
+
+**Actualización 2026-10-04:** el propietario confirma que los cuatro criterios
+de ADR-011 se cumplieron en la TCL y da el ADR por cerrado. La clasificación de
+este cierre y la ausencia de valores cuantitativos en la documentación
+disponible constan en el ADR y en [`docs/benchmark-results.md`](docs/benchmark-results.md).
 
 La jerarquía usada para resolver contradicciones fue:
 
@@ -176,6 +183,53 @@ El movimiento de pinch actualiza la transformación sin renderizar cada evento;
 al finalizar solicita el bitmap nítido. La aplicación conserva rutas CPU de
 composición/blit como apoyo, pero la presentación principal del visor está
 conectada al pipeline GPU.
+
+El visor abre las páginas con `contain`, centradas en ambos ejes y con un
+margen constante de 12 dp. `pdf_core::engine::Document::page_geometry` expone
+los límites visibles, las cajas PDF, la rotación y la transformación PDF→página;
+el worker MuPDF calcula y cachea esos datos por página, y los envía junto al
+bitmap. Android los conserva en una LRU de cinco páginas para que el visor no
+abra páginas MuPDF en el frame. `PageScreenTransform` es compartida por
+render, selección, tinta, pinch y composición GPU; la caché de bitmaps mantiene
+su límite por bytes. La navegación pide la página actual y como máximo sus
+vecinas inmediatas al worker.
+
+El overlay wet AndroidX transforma sus vértices desde píxeles lógicos de la
+superficie a píxeles del buffer aplicando la pre-rotación antes de proyectarlos
+a GL; la misma ruta sirve para el trazo en vivo y su capa consolidada.
+
+**Verificado en código y pruebas:** `pdf_core` cubre geometría normal, una
+página sintética con rotación y `CropBox` desplazado, y el límite/promoción de
+su LRU de cinco páginas. Pruebas Android ARM64 cubren el round-trip
+pantalla↔página, el mapeo a bitmap recortado, el encuadre con margen y el
+prefetch ±1. Las pruebas JVM de `InkProjection` cubren la proyección de
+superficie normal y las matrices AndroidX de 90° y 270°. **Observado en la TCL
+el 2026-09-26:** `Guide_campus_virtual_26.pdf` p. 2 mostró sus bordes, título,
+texto y mapa completos; una página de `dense_textbook.pdf` se vio centrada.
+**Observado en la TCL mediante ADB el 2026-09-27:** un PDF A4 generado con
+borde visible mostró sus cuatro bordes. Una página de prueba con rotación 90° y
+`CropBox` desplazado se mostró en formato apaisado, con la tablet en vertical,
+y con su borde y contenido dentro del recorte. Un trazo sintético sobre el A4
+quedó asentado aproximadamente sobre la trayectoria inyectada, y un gesto
+táctil sintético seleccionó una frase; esto no valida la
+alineación de tinta o selección sobre la página rotada. Las capturas durante
+contacto del stylus sintético no mostraron tinta wet. **Observado por el
+propietario en la TCL el 2026-09-27:** la primera APK con el cambio de
+proyección mantuvo el síntoma de que la tinta aparecía al levantar el lápiz.
+En una build diagnóstica posterior, el propietario confirmó que la tinta
+aparece durante el movimiento en horizontal; confirmó el mismo comportamiento
+con la build limpia.
+
+El registro de validación del 2026-09-27 dejó esas comprobaciones como
+pendientes. El 2026-10-04 el propietario confirmó que después se completaron
+los cuatro criterios, incluidos tinta/selección sobre la página rotada a zoom
+1 y 2, giro físico, round-trip y rendimiento. El detalle cuantitativo del
+ensayo original no aparece en la documentación disponible y no se reconstruye
+a partir de las muestras ADB diagnósticas, que no sirven para acreditar los
+presupuestos. El estado y esta
+limitación documental se mantienen en
+[`docs/adr/011-geometria-y-margenes-pdf.md`](docs/adr/011-geometria-y-margenes-pdf.md)
+y [`docs/benchmark-results.md`](docs/benchmark-results.md).
 
 #### Selección e IA
 
