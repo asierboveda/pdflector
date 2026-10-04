@@ -103,7 +103,9 @@ páginas desde cero.
 
 ### 3.2 `pdf_android`
 
-El punto de entrada es `android_main`
+El host Gradle conecta el empaquetado JNI de las variantes Debug y Release con
+`buildRustArm64`, que compila y copia `libpdf_android.so` antes de integrarla
+en los artefactos Android. El punto de entrada Rust es `android_main`
 (`crates/pdf_android/src/lib.rs:654-743`). El proceso mantiene un `Reader` como
 estado principal y cuatro modos de UI definidos en
 `crates/pdf_android/src/reader/mod.rs:90-108`:

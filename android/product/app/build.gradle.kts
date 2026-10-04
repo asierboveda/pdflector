@@ -105,6 +105,11 @@ tasks.register("assembleProductDebug") {
 }
 
 // Packaging must never start before the freshly built native library is copied.
-tasks.matching { it.name == "mergeDebugJniLibFolders" || it.name == "mergeDebugNativeLibs" }.configureEach {
+tasks.matching {
+    it.name == "mergeDebugJniLibFolders" ||
+        it.name == "mergeDebugNativeLibs" ||
+        it.name == "mergeReleaseJniLibFolders" ||
+        it.name == "mergeReleaseNativeLibs"
+}.configureEach {
     dependsOn(buildRustArm64)
 }
