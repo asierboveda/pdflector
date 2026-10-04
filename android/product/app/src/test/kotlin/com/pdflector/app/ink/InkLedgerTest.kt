@@ -5,6 +5,18 @@ import org.junit.Test
 
 class InkLedgerTest {
     @Test
+    fun generationValidityRejectsSegmentsCapturedBeforeClear() {
+        val ledger = InkLedger()
+        val stale = segment(ledger.generation(), 1f)
+
+        ledger.clear()
+        val current = segment(ledger.generation(), 2f)
+
+        assertEquals(false, ledger.isCurrentGeneration(stale))
+        assertEquals(true, ledger.isCurrentGeneration(current))
+    }
+
+    @Test
     fun retainsConsecutiveCommitsUntilDryAcknowledgement() {
         val ledger = InkLedger()
         val first = segment(ledger.generation(), 1f)

@@ -24,6 +24,7 @@ trait InkOverlayOps {
     ) -> bool;
     fn commit(&mut self);
     fn cancel(&mut self);
+    fn clear(&mut self);
 }
 
 impl InkOverlayOps for crate::jni::InkOverlay {
@@ -49,6 +50,10 @@ impl InkOverlayOps for crate::jni::InkOverlay {
 
     fn cancel(&mut self) {
         crate::jni::InkOverlay::cancel(self);
+    }
+
+    fn clear(&mut self) {
+        crate::jni::InkOverlay::clear(self);
     }
 }
 
@@ -87,6 +92,19 @@ fn cancel_gesture_for_transition<O: InkOverlayOps>(
         cancel_used_ink_overlay(overlay, gesture.ink_overlay_used);
     }
     true
+}
+
+fn clear_ink_overlay_for_reader_exit<O: InkOverlayOps>(
+    gesture: &mut Option<ToolGesture>,
+    mut overlay: Option<&mut O>,
+    pending_ink_clear: &mut Option<(u32, u64)>,
+) -> bool {
+    let discarded_gesture = cancel_gesture_for_transition(gesture, overlay.as_deref_mut());
+    if let Some(overlay) = overlay {
+        overlay.clear();
+    }
+    *pending_ink_clear = None;
+    discarded_gesture
 }
 
 fn submit_ink_overlay_segment_for_gesture<O: InkOverlayOps>(
@@ -143,6 +161,19 @@ fn new_tool_gesture(
 }
 
 impl Reader {
+    /// Descarta cualquier tinta wet que siga en la superficie compartida al
+    /// salir del documento. Las anotaciones secas y su sidecar permanecen.
+    pub(crate) fn clear_ink_overlay_for_reader_exit(&mut self) {
+        let discarded_gesture = clear_ink_overlay_for_reader_exit(
+            &mut self.tool_gesture,
+            self.ink_overlay.as_mut(),
+            &mut self.pending_ink_clear,
+        );
+        if discarded_gesture && self.window.is_some() {
+            self.mark_repaint();
+        }
+    }
+
     /// Pan con DEDO (herramienta activa, modo mano): devuelve el pan de
     /// partida al bajar el dedo (mismo formato que `set_pan`).
     pub(crate) fn begin_pan(&self) -> (f32, f32) {
@@ -701,7 +732,9 @@ mod ink_overlay_lifecycle_tests {
         render_ok: bool,
         commits: usize,
         cancels: usize,
+        clears: usize,
         segments: usize,
+        events: Vec<&'static str>,
     }
 
     impl InkOverlayOps for FakeOverlay {
@@ -728,6 +761,12 @@ mod ink_overlay_lifecycle_tests {
 
         fn cancel(&mut self) {
             self.cancels += 1;
+            self.events.push("cancel");
+        }
+
+        fn clear(&mut self) {
+            self.clears += 1;
+            self.events.push("clear");
         }
     }
 
@@ -812,5 +851,39 @@ mod ink_overlay_lifecycle_tests {
         assert!(gesture.is_none());
         assert_eq!(overlay.cancels, 1);
         assert_eq!(overlay.commits, 0);
+    }
+
+    #[test]
+    fn reader_exit_clears_overlay_after_gesture_has_ended() {
+        let mut gesture = None;
+        let mut overlay = FakeOverlay::default();
+        let mut pending = Some((7, 42));
+
+        clear_ink_overlay_for_reader_exit(&mut gesture, Some(&mut overlay), &mut pending);
+
+        assert!(gesture.is_none());
+        assert_eq!(pending, None);
+        assert_eq!(overlay.clears, 1);
+        assert_eq!(overlay.cancels, 0);
+        assert_eq!(overlay.commits, 0);
+        assert_eq!(overlay.events, ["clear"]);
+    }
+
+    #[test]
+    fn reader_exit_cancels_active_overlay_before_clearing_it() {
+        let mut gesture = ink_gesture();
+        gesture.ink_overlay_used = true;
+        let mut gesture = Some(gesture);
+        let mut overlay = FakeOverlay::default();
+        let mut pending = None;
+
+        clear_ink_overlay_for_reader_exit(&mut gesture, Some(&mut overlay), &mut pending);
+
+        assert!(gesture.is_none());
+        assert_eq!(pending, None);
+        assert_eq!(overlay.cancels, 1);
+        assert_eq!(overlay.clears, 1);
+        assert_eq!(overlay.commits, 0);
+        assert_eq!(overlay.events, ["cancel", "clear"]);
     }
 }

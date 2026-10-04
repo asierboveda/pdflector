@@ -276,9 +276,9 @@ impl Reader {
         };
         match engine.open(Path::new(path)) {
             Ok(doc) => {
-                // El documento anterior deja de ser el destino del gesto.
-                // Cancelar antes de sustituir su estado o sus anotaciones.
-                self.cancel_tool_gesture();
+                // El documento anterior deja de ser el destino de la tinta.
+                // Limpiar la superficie wet antes de sustituir sus anotaciones.
+                self.clear_ink_overlay_for_reader_exit();
                 // A1: flush explícito del estado diferido antes de sustituir
                 // el documento — conserva en library.json la última posición
                 // del PDF anterior (el `save_state` del final registra el

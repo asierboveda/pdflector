@@ -25,6 +25,8 @@ internal class InkLedger {
 
     @Synchronized fun generation(): Long = generation
 
+    @Synchronized fun isCurrentGeneration(segment: InkSegment): Boolean = segment.generation == generation
+
     @Synchronized fun commit(params: Collection<InkSegment>): List<InkSegment> {
         committed.addAll(params.filter { it.generation == generation })
         return committed.toList()
@@ -155,6 +157,7 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
         transform: FloatArray,
         param: InkSegment,
     ) {
+        if (!ledger.isCurrentGeneration(param)) return
         prepareGl()
         if (bufferInfo.width <= 0 || bufferInfo.height <= 0) return
         GLES20.glViewport(0, 0, bufferInfo.width, bufferInfo.height)
