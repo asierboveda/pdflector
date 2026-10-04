@@ -8,9 +8,8 @@ use crate::annotations::ERASE_HIT_RADIUS_PT;
 use crate::annotations::ERASE_HL_PAD_PT;
 use crate::annotations::ToolGesture;
 use crate::annotations::ToolKind;
-use crate::view::initial_scale;
 use log::{error, info};
-use pdf_core::{Annotation, Document, Gesture, Stroke};
+use pdf_core::{Annotation, Gesture, Stroke};
 
 /// Starts a tool gesture from the real Down sample.
 #[inline]
@@ -48,7 +47,7 @@ impl Reader {
         let (dw, dh) = self.page_doc_size_px(self.page);
         if dw > 0.0 && dh > 0.0 {
             self.pan_x = Self::clamp_pan(self.pan_x + dx, dw * self.zoom, self.win_w as f32, false);
-            self.pan_y = Self::clamp_pan(self.pan_y + dy, dh * self.zoom, self.win_h as f32, true);
+            self.pan_y = Self::clamp_pan(self.pan_y + dy, dh * self.zoom, self.win_h as f32, false);
             self.mark_repaint();
         }
     }
@@ -191,19 +190,14 @@ impl Reader {
     }
 
     fn page_to_screen(&self, page: u32, x: f32, y: f32) -> Option<(f32, f32)> {
-        let doc = self.doc.as_ref()?;
-        let (pw, ph) = doc.page_size(page).ok()?;
-        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
-        let scale = cover * self.zoom;
-        if !scale.is_finite() || scale <= 0.0 {
-            return None;
-        }
-        let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round();
-        let dy = self.pan_y.round();
-        Some((x * scale + dx, y * scale + dy))
+        Some(self.page_screen_transform(page)?.page_to_screen(x, y))
     }
 
     fn submit_ink_overlay_segment(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        let Some(page) = self.tool_gesture.as_ref().map(|gesture| gesture.page) else {
+            return;
+        };
+        let scale = self.page_scale(page).unwrap_or(1.0);
         let Some(gesture) = self.tool_gesture.as_mut() else {
             return;
         };
@@ -214,7 +208,6 @@ impl Reader {
             return;
         }
         let style = engine.style();
-        let page = gesture.page;
         let was_used = gesture.ink_overlay_used;
         let Some(overlay) = self.ink_overlay.as_mut() else {
             return;
@@ -227,12 +220,6 @@ impl Reader {
             gesture.ink_overlay_route = false;
             return;
         }
-        let scale = self
-            .doc
-            .as_ref()
-            .and_then(|doc| doc.page_size(page).ok())
-            .map(|(pw, ph)| initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom)
-            .unwrap_or(1.0);
         let color_argb = ((style.color.a as i32) << 24)
             | ((style.color.r as i32) << 16)
             | ((style.color.g as i32) << 8)
@@ -267,13 +254,8 @@ impl Reader {
         // Gesto degenerado (un toque sin arrastre): descartar silenciosamente.
         // El umbral está en px de PANTALLA (TOOL_MIN_PX, el recorrido mínimo
         // del dedo/lápiz); el bbox del gesto en página se convierte con la
-        // escala efectiva del blit (cover × zoom).
-        let scale = self
-            .doc
-            .as_ref()
-            .and_then(|d| d.page_size(g.page).ok())
-            .map(|(pw, ph)| initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom)
-            .unwrap_or(1.0);
+        // escala efectiva del blit (contain × zoom).
+        let scale = self.page_scale(g.page).unwrap_or(1.0);
         let min_d_pt = crate::TOOL_MIN_PX / scale;
         let (mut min_x, mut min_y) = (f32::INFINITY, f32::INFINITY);
         let (mut max_x, mut max_y) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
@@ -465,12 +447,7 @@ impl Reader {
 
     /// Radio del cursor de la goma en px (radio en puntos × escala efectiva).
     fn eraser_radius_px(&self) -> f32 {
-        let scale = self
-            .doc
-            .as_ref()
-            .and_then(|d| d.page_size(self.page).ok())
-            .map(|(pw, ph)| initial_scale(pw, ph, self.win_w, self.win_h) * self.zoom)
-            .unwrap_or(1.0);
+        let scale = self.page_scale(self.page).unwrap_or(1.0);
         ERASE_HIT_RADIUS_PT * scale
     }
 

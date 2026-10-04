@@ -37,6 +37,118 @@ fn page_size_is_a4_with_tolerance() {
 }
 
 #[test]
+fn page_geometry_exposes_pdf_boxes_and_maps_crop_box_to_visible_bounds() {
+    let geometry = open_test_doc().page_geometry(0).unwrap();
+    assert_eq!(geometry.rotation, 0);
+    assert!((geometry.visible_bounds.width() - 595.27).abs() <= 1.0);
+    assert!((geometry.visible_bounds.height() - 841.89).abs() <= 1.0);
+
+    let corners = [
+        geometry
+            .pdf_to_page
+            .transform_point(geometry.crop_box.x0, geometry.crop_box.y0),
+        geometry
+            .pdf_to_page
+            .transform_point(geometry.crop_box.x0, geometry.crop_box.y1),
+        geometry
+            .pdf_to_page
+            .transform_point(geometry.crop_box.x1, geometry.crop_box.y0),
+        geometry
+            .pdf_to_page
+            .transform_point(geometry.crop_box.x1, geometry.crop_box.y1),
+    ];
+    let min_x = corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+    let max_x = corners
+        .iter()
+        .map(|p| p.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+    let max_y = corners
+        .iter()
+        .map(|p| p.1)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!((min_x - geometry.visible_bounds.x0).abs() <= 1.0);
+    assert!((max_x - geometry.visible_bounds.x1).abs() <= 1.0);
+    assert!((min_y - geometry.visible_bounds.y0).abs() <= 1.0);
+    assert!((max_y - geometry.visible_bounds.y1).abs() <= 1.0);
+}
+
+#[test]
+fn rotated_page_with_shifted_crop_box_maps_visible_corners_and_render_size() {
+    let path =
+        std::env::temp_dir().join(format!("pdflector-rotated-crop-{}.pdf", std::process::id()));
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /CropBox [40 30 260 370] /Rotate 90 /Resources << >> /Contents 4 0 R >>",
+        "<< /Length 0 >>\nstream\n\nendstream",
+    ];
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (idx, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", idx + 1, object).as_bytes());
+    }
+    let xref_offset = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n").as_bytes(),
+    );
+    std::fs::write(&path, pdf).unwrap();
+
+    let doc = MupdfEngine::new().unwrap().open(&path).unwrap();
+    let geometry = doc.page_geometry(0).unwrap();
+    assert_eq!(geometry.rotation, 90);
+    assert!((geometry.crop_box.x0 - 40.0).abs() <= 0.01);
+    assert!((geometry.crop_box.y0 - 30.0).abs() <= 0.01);
+    assert!((geometry.crop_box.x1 - 260.0).abs() <= 0.01);
+    assert!((geometry.crop_box.y1 - 370.0).abs() <= 0.01);
+    assert!((geometry.visible_bounds.width() - 340.0).abs() <= 1.0);
+    assert!((geometry.visible_bounds.height() - 220.0).abs() <= 1.0);
+
+    let corners = [
+        geometry
+            .pdf_to_page
+            .transform_point(geometry.crop_box.x0, geometry.crop_box.y0),
+        geometry
+            .pdf_to_page
+            .transform_point(geometry.crop_box.x0, geometry.crop_box.y1),
+        geometry
+            .pdf_to_page
+            .transform_point(geometry.crop_box.x1, geometry.crop_box.y0),
+        geometry
+            .pdf_to_page
+            .transform_point(geometry.crop_box.x1, geometry.crop_box.y1),
+    ];
+    let min_x = corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+    let max_x = corners
+        .iter()
+        .map(|p| p.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+    let max_y = corners
+        .iter()
+        .map(|p| p.1)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!((min_x - geometry.visible_bounds.x0).abs() <= 1.0);
+    assert!((max_x - geometry.visible_bounds.x1).abs() <= 1.0);
+    assert!((min_y - geometry.visible_bounds.y0).abs() <= 1.0);
+    assert!((max_y - geometry.visible_bounds.y1).abs() <= 1.0);
+
+    let bitmap = doc.render_page(0, 1.0).unwrap();
+    assert_eq!(bitmap.width, geometry.visible_bounds.width().round() as u32);
+    assert_eq!(
+        bitmap.height,
+        geometry.visible_bounds.height().round() as u32
+    );
+    drop(doc);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn renders_page_1_to_rgba_bitmap_of_expected_dimensions() {
     let doc = open_test_doc();
     let scale = 2.0;

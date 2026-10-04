@@ -12,6 +12,7 @@ use super::PickerKind;
 use super::Reader;
 use super::UiMode;
 use super::discover_state::DiscoverState;
+use super::geometry::PageGeometryCache;
 use super::library_state::LibraryState;
 use super::load_pen_mode;
 use super::scan_pdfs;
@@ -51,6 +52,7 @@ impl Reader {
             bitmap: None,
             picker_bmp_ver: 0,
             cache: PageCache::new(CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES),
+            page_geometry_cache: PageGeometryCache::default(),
             rendered_zoom: 1.0,
             zoom: 1.0,
             pan_x: 0.0,
@@ -60,6 +62,7 @@ impl Reader {
             offset_y: 0,
             win_w: 0,
             win_h: 0,
+            density_dpi: app.config().density().unwrap_or(160),
             gesture: GestureState::new(),
             mode: UiMode::Library,
             pdf_list: Vec::new(),
@@ -371,7 +374,7 @@ impl Reader {
         self.mode_badge = None;
         self.sheet_bitmap = None;
         self.list_dirty = true;
-        // Nueva ventana → posible nueva escala cover: las páginas de la caché
+        // Nueva ventana → posible nueva escala contain: las páginas de la caché
         // se reutilizan si el tamaño no cambió; el redraw detecta el cambio de
         // `win_w/h` y limpia la caché si hace falta.
         self.redraw();

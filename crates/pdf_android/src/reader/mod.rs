@@ -56,6 +56,7 @@ mod toast_ia;
 mod tools;
 
 // Tipos del worker de render y del anclaje del pinch: campos del `struct Reader`.
+use geometry::PageGeometryCache;
 use pinch::PinchAnchor;
 use redraw::{RenderWorker, WorkerMsg};
 
@@ -339,7 +340,7 @@ pub(crate) struct EmptyStateGeom {
 /// página) porque el gesto, el render del rect y el menú viven en pantalla y
 /// la conversión a página solo se hace UNA vez cuando se necesita
 /// (`sel_page_rect`, con `screen_to_page` — la INVERSA exacta del mapeo del
-/// blit, misma `scale = cover × zoom` y `dx/dy` que la capa de anotaciones).
+/// blit, usando la geometría compartida de página).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SelState {
     /// Punto del long-press (px de ventana): esquina fija del rect.
@@ -448,8 +449,8 @@ pub(crate) struct Reader {
     /// direccional): +1 avanzando, -1 retrocediendo, 0 sin dirección previa
     /// (apertura del documento o restauración de posición — no hay viaje).
     /// La fija `goto_page` — punto común de `next_page`/`prev_page`/
-    /// `jump_page` y de los taps — con el signo del delta; decide la ventana
-    /// asimétrica 2-delante/1-detrás de `prefetch_pages` (navigation.rs).
+    /// `jump_page` y de los taps — con el signo del delta; ordena la ventana
+    /// de radio ±1 de `prefetch_pages` (navigation.rs).
     last_direction: i8,
     /// Referencia owned al ANativeWindow (Some entre InitWindow y TerminateWindow).
     window: Option<NativeWindow>,
@@ -461,8 +462,8 @@ pub(crate) struct Reader {
     /// la lista): clave de la textura GPU dedicada del picker. El present
     /// GPU solo la re-sube cuando esta versión cambia (Tarea 2.7).
     pub(crate) picker_bmp_ver: u64,
-    /// Caché LRU de páginas renderizadas (página → `CachedPage`: crop
-    /// centrado a ventana del render cover + metadatos del render full) para
+    /// Caché LRU de páginas renderizadas (página → `CachedPage`: bitmap
+    /// visible + metadatos del render full) para
     /// el paso de página INSTANTÁNEO (prev/next): evita re-renderizar al
     /// volver atrás y precarga la vecina (el worker async; el render síncrono
     /// `ensure_pages_rendered` quedó como camino legacy). Guarda SIEMPRE
@@ -470,13 +471,16 @@ pub(crate) struct Reader {
     /// (`draw::blit_page`). SOLO se dibuja la página actual (modo UNA HOJA);
     /// las vecinas solo se cachean.
     pub(crate) cache: PageCache,
+    /// Geometry returned with worker renders, kept separately from the UI
+    /// document so frame paths never load a MuPDF page synchronously.
+    pub(crate) page_geometry_cache: PageGeometryCache,
     /// Zoom con el que están renderizados los bitmaps de la caché (1.0 =
-    /// escala *cover* base; el re-render nítido al soltar el pinch pone
+    /// escala contain base; el re-render nítido al soltar el pinch pone
     /// `rendered_zoom = self.zoom`). El blit usa el zoom RELATIVO
     /// `zoom / rendered_zoom`: 1:1 nítido para bitmaps recién renderizados,
     /// escala vecino-más-cercano del bitmap viejo durante el pinch.
     pub(crate) rendered_zoom: f32,
-    /// Factor de zoom continuo (1.0 = página completa *cover*).
+    /// Factor de zoom continuo (1.0 = caja visible completa en contain).
     pub(crate) zoom: f32,
     /// Desplazamiento de anclaje del pinch (px, f32): el punto de pantalla
     /// bajo el CENTRO del pinch permanece fijo mientras se hace zoom
@@ -500,6 +504,9 @@ pub(crate) struct Reader {
     /// Dimensiones actuales de la ventana (px).
     pub(crate) win_w: i32,
     pub(crate) win_h: i32,
+    /// Density reported by Android's current configuration, used to convert
+    /// the fixed 12 dp page margin into the window's pixel coordinates.
+    pub(crate) density_dpi: u32,
     /// Máquina de gestos (tap/pinch).
     pub(crate) gesture: GestureState,
     /// Modo de UI actual (visor de página o picker de PDFs).

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Pipeline de render del visor y la biblioteca: `redraw`, `blit` y los blits de la biblioteca en dos planos (`rebuild_library*`, `splice_*`, `lib_band_covers`), transformaciones página→px (`page_doc_size_px`, `centered_base`, `page_size_pt`) y el worker actor de render asíncrono (`WorkerMsg`/`WorkerReq`/`WorkerCmd`/`RenderWorker`, `render_worker_req`, `launch_render`, `start/stop_render_worker`, `poll_render`, `render_in_flight_for`).
+//! Pipeline de render del visor y la biblioteca: `redraw`, `blit` y los blits de la biblioteca en dos planos (`rebuild_library*`, `splice_*`, `lib_band_covers`), transformaciones página→px (`page_doc_size_px`) y el worker actor de render asíncrono (`WorkerMsg`/`WorkerReq`/`WorkerCmd`/`RenderWorker`, `render_worker_req`, `launch_render`, `start/stop_render_worker`, `poll_render`, `render_in_flight_for`).
 
 use super::Reader;
 use super::UiMode;
@@ -29,21 +29,19 @@ use crate::draw::render_viewer_bottom_chrome;
 use crate::draw::render_viewer_top_chrome;
 use crate::draw::splice_row;
 use crate::theme;
-use crate::view::initial_scale;
+use crate::view::{initial_scale_with_margin, viewport_margin_px};
 use crate::zoom::blit_fast;
 use log::info;
 use log::warn;
+use pdf_core::engine::PageGeometry;
 use pdf_core::engine::mupdf::{MupdfDocument, MupdfEngine};
 use pdf_core::{Bitmap, Document, RenderEngine};
 use std::time::Instant;
 
 /// Mensaje del worker de render asíncrono: el bitmap cacheable a la escala
-/// pedida (`target_zoom` = factor de zoom con el que se renderizó, la "escala
-/// efectiva" = cover × target_zoom) + metadatos del render. El bitmap NO es
-/// el render full: es su recorte a la ventana del worker — X CENTRADO +
-/// Y ALINEADO ARRIBA (`crop_rect`, fix de residency — el full a cover pesa
-/// 27,4 MiB en landscape y dejaba 1 solo residente en la caché; el recorte
-/// deja ≤ ~12,7 MiB → ~3 residentes). `full_w/full_h` son las dims del
+/// pedida (`target_zoom` = factor de zoom sobre contain) + metadatos del
+/// render. Si el presupuesto del bitmap requiere recorte, el cache conserva
+/// su origen X/Y. `full_w/full_h` son las dims del
 /// render FULL (lo que se dibujó antes de recortar) y `crop_x/crop_y` el
 /// origen del recorte dentro de él: los consumidores que convierten pantalla
 /// ↔ píxeles del render (transición fast→sharp del pinch, selección →
@@ -51,6 +49,7 @@ use std::time::Instant;
 pub(crate) struct WorkerMsg {
     seq: u64,
     page: u32,
+    geometry: PageGeometry,
     bitmap: Bitmap,
     target_zoom: f32,
     full_w: u32,
@@ -65,8 +64,8 @@ pub(crate) struct WorkerMsg {
     early: bool,
 }
 
-/// Petición de render al worker actor: páginas a la escala pedida, ventana
-/// congelada del cover y canal de respuesta propio por lote. El hilo drena
+/// Petición de render al worker actor: páginas a la escala pedida, viewport
+/// y margen congelados y canal de respuesta propio por lote. El hilo drena
 /// comandos entre páginas (preemption por `seq`) en `render_worker_req`.
 struct WorkerReq {
     seq: u64,
@@ -75,6 +74,7 @@ struct WorkerReq {
     clamp_level: bool,
     win_w: i32,
     win_h: i32,
+    margin_px: f32,
     reply: std::sync::mpsc::Sender<WorkerMsg>,
 }
 
@@ -122,32 +122,26 @@ fn render_worker_req(
                 }
             }
         }
-        if let Ok((pw, ph)) = doc.page_size(page) {
-            let cover = initial_scale(pw, ph, req.win_w, req.win_h);
+        if let Ok(geometry) = doc.page_geometry(page) {
+            let bounds = geometry.visible_bounds;
+            let (pw, ph) = (bounds.width(), bounds.height());
+            let fit = initial_scale_with_margin(pw, ph, req.win_w, req.win_h, req.margin_px);
             // Presupuesto: el bitmap debe caber en la caché. El worker no tiene
             // acceso a `self`, así que aplica la regla con su propio cálculo.
-            let mut scale = cover * target;
+            let mut scale = fit * target;
             let px_pdf = pw as f64 * ph as f64;
             let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
             while scale > 0.001 && px_pdf * scale as f64 * scale as f64 > max_px {
                 scale *= 0.5;
             }
-            let target_eff = if cover > 0.0 { scale / cover } else { 1.0 };
+            let target_eff = if fit > 0.0 { scale / fit } else { 1.0 };
             if let Ok(bmp) = doc.render_page(page, scale) {
                 let (full_w, full_h) = (bmp.width, bmp.height);
-                // Crop a la ventana (fix raíz de residency): el render full a
-                // cover excede la ventana en al menos un eje y pesa hasta
-                // 27,4 MiB en landscape (2200×3112) — solo cabía 1 residente
-                // en la caché de 48 MiB y cada turno re-renderizaba (~115 ms).
-                // Recortado a (min(bw, win_w), min(bh, win_h)) queda ≤ ~12,7
-                // MiB → ~3 residentes y turnos sin re-render. Origen: X
-                // CENTRADO (compensa el centrado X del blit) e Y = 0 (el blit
-                // alinea ARRIBA en Y — un crop centrado en Y mostraría la
-                // franja central de la página en vez de la superior). La
-                // composición NO cambia: a blit_zoom == 1 el crop reproduce
-                // los píxeles del render full (ver render_dry); los
-                // metadatos permiten a los consumidores (pinch fast→sharp,
-                // sel_image) volver a la cuadrícula del render full.
+                // El render a contain suele caber completo; se mantiene el
+                // recorte acotado para páginas cuyo tamaño final exceda la
+                // ventana por zoom, redondeo o presupuesto. Su origen viaja
+                // junto al bitmap y los consumidores vuelven a la cuadrícula
+                // del render full.
                 let (bitmap, (crop_x, crop_y)) =
                     if req.win_w > 0 && req.win_h > 0 && req.target_zoom <= 1.01 {
                         let (cw, ch) = (
@@ -166,6 +160,7 @@ fn render_worker_req(
                 let _ = req.reply.send(WorkerMsg {
                     seq: req.seq,
                     page,
+                    geometry,
                     bitmap,
                     target_zoom: target_eff,
                     full_w,
@@ -195,7 +190,7 @@ impl Reader {
             self.bitmap = None; // lista del picker → re-render
             self.library.lib_header = None; // zona fija de la biblioteca: tamaño nuevo
             self.library.lib_band = None; // banda de contenido: tamaño nuevo
-            self.cache.clear(); // nueva escala cover → los bitmaps viejos no sirven
+            self.cache.clear(); // cambió el viewport → la escala anterior no sirve
             self.list_dirty = true;
             self.page_badge = None;
             self.chrome_top_bitmap = None;
@@ -504,34 +499,27 @@ impl Reader {
         // Sin filas horizontales en la banda (carousel/organización ocultos).
     }
 
-    /// Tamaño de la página `page` en px de ventana a zoom 1 (cover × puntos
+    /// Tamaño de la página `page` en px de ventana a zoom 1 (contain × puntos
     /// PDF): las dimensiones que el usuario ve con el factor 1.0, base del
     /// centrado y del anclaje del pinch. Equivale a `bitmap_cached.width /
-    /// rendered_zoom` (los bitmaps se renderizan a cover × rendered_zoom);
+    /// rendered_zoom` (los bitmaps se renderizan a contain × rendered_zoom);
     /// se calcula de la página para no depender de un hit de caché.
     pub(crate) fn page_doc_size_px(&self, page: u32) -> (f32, f32) {
-        let Some(doc) = self.doc.as_ref() else {
+        let Some(geometry) = self.page_geometry_cache.get(page) else {
             return (0.0, 0.0);
         };
-        let Ok((pw, ph)) = doc.page_size(page) else {
-            return (0.0, 0.0);
-        };
-        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
-        (pw * cover, ph * cover)
-    }
-
-    /// Esquina superior izquierda del bitmap escalado para centrado
-    /// horizontal: `base(z) = (win − doc·z) / 2` (px de zoom 1), la misma
-    /// fórmula que `blit` usa para `dx` sin pan. Lineal en `z`; en el
-    /// anclaje Y la base es 0 (el borde superior de la página actual está
-    /// fijo en el borde superior del viewport — modo UNA HOJA, sin scroll).
-    pub(crate) fn centered_base(win: i32, doc: f32, z: f32) -> f32 {
-        (win as f32 - doc * z) / 2.0
-    }
-
-    /// Tamaño de página en puntos PDF (`None` si no hay documento o falla).
-    pub(crate) fn page_size_pt(&self, page: u32) -> Option<(f32, f32)> {
-        self.doc.as_ref()?.page_size(page).ok()
+        let (pw, ph) = (
+            geometry.visible_bounds.width(),
+            geometry.visible_bounds.height(),
+        );
+        let scale = initial_scale_with_margin(
+            pw,
+            ph,
+            self.win_w,
+            self.win_h,
+            viewport_margin_px(self.density_dpi),
+        );
+        (pw * scale, ph * scale)
     }
 
     /// Presenta el frame actual según el modo y el motor disponible.
@@ -773,7 +761,7 @@ impl Reader {
     }
 
     /// Lanza el render ASÍNCRONO de `pages` a la escala `target_zoom`
-    /// (factor de zoom — el worker calcula `cover × target_zoom` con su
+    /// (factor de zoom — el worker calcula `contain × target_zoom` con su
     /// propio documento). `clamp_level` limita el render a un nivel 2^x
     /// cercano (early sharp durante el pinch: evita renders gigantes por
     /// cada Move; el sharp final usa `clamp_level=false` para nitidez
@@ -784,7 +772,7 @@ impl Reader {
     /// zoom alto (p. ej. 8800×11640 px = 400 MB) petaba la RAM de la tablet
     /// ("se queda pillada") y expulsaba toda la caché. La escala se reduce
     /// por mitades hasta caber; el `target_zoom` enviado refleja el zoom
-    /// EFECTIVO (escala/cover) para que el blit quede 1:1.
+    /// EFECTIVO (escala/contain) para que el blit quede 1:1.
     pub(crate) fn launch_render(&mut self, pages: Vec<u32>, target_zoom: f32, clamp_level: bool) {
         // Actor persistente (F3.1): sin worker (documento aún sin abrir del
         // todo) no hay a quién pedir — los llamantes previos al open no
@@ -805,6 +793,7 @@ impl Reader {
             clamp_level,
             win_w,
             win_h,
+            margin_px: viewport_margin_px(self.density_dpi),
             reply: tx,
         }));
     }
@@ -826,6 +815,7 @@ impl Reader {
     /// hasta `Stop`. Un worker anterior se detiene antes.
     pub(crate) fn start_render_worker(&mut self, path: &str) {
         self.stop_render_worker();
+        self.page_geometry_cache.clear();
         let (tx, rx) = std::sync::mpsc::channel::<WorkerCmd>();
         let path = path.to_string();
         let handle = std::thread::Builder::new()
@@ -883,6 +873,7 @@ impl Reader {
                     if msg.seq != self.render_seq {
                         continue; // lote obsoleto: descartar
                     }
+                    self.cache_page_geometry(msg.page, msg.geometry);
                     // Guard (robustez del pase de página): un bitmap
                     // degenerado (0×0 o data vacía — dims degenerados del
                     // render) NUNCA entra en la caché: envenenaría la página

@@ -9,10 +9,9 @@ use super::SelState;
 use crate::SEL_MIN_PX;
 use crate::draw::render_sel_menu;
 use crate::draw::sel_menu_layout;
-use crate::view::initial_scale;
 use android_activity::AndroidApp;
 use base64::Engine;
-use pdf_core::{Annotation, Color, Document, Highlight, Rect, TextSpan};
+use pdf_core::{Annotation, Color, Highlight, Rect, TextSpan};
 
 // ---------------------------------------------------------------------
 // Selección de texto: long-press + arrastre, copiar y subrayar (Parte 1)
@@ -83,41 +82,26 @@ impl Reader {
     }
 
     /// Transformación pantalla → página (px de ventana → puntos PDF): la
-    /// INVERSA exacta del mapeo del blit (`screen = (dx, dy) + pt × scale`,
-    /// con `scale = cover × zoom` y `dx/dy` la esquina del bitmap escalado —
-    /// centrado cover + pan de anclaje; ver `blit` y `PageAnnots`). Es la
+    /// INVERSA exacta del mapeo del blit: escala contain × zoom, origen
+    /// centrado y pan de anclaje; ver la transformación común de página.
+    /// Es la
     /// misma familia de transformación que usan el pinch (`anchor_pan`) y la
     /// capa de anotaciones, así que el rect de selección queda alineado con
     /// lo que se ve. None si la página actual no está disponible.
     pub(crate) fn screen_to_page(&self, sx: f32, sy: f32) -> Option<(f32, f32)> {
-        let doc = self.doc.as_ref()?;
-        let (pw, ph) = doc.page_size(self.page).ok()?;
-        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
-        let scale = cover * self.zoom;
-        if !scale.is_finite() || scale <= 0.0 {
-            return None;
-        }
-        let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round();
-        let dy = self.pan_y.round();
-        Some(((sx - dx) / scale, (sy - dy) / scale))
+        Some(
+            self.page_screen_transform(self.page)?
+                .screen_to_page(sx, sy),
+        )
     }
 
     /// Rectángulo de la página actual en px de ventana (left, top, right,
     /// bottom): la posición del bitmap escalado + su tamaño a la escala
-    /// efectiva `cover × zoom` — la MISMA geometría del blit. None si la
+    /// efectiva `contain × zoom` — la MISMA geometría del blit. None si la
     /// página no está disponible. Se usa para RECORTAR el rect de selección
     /// a los bordes de la hoja (nunca a la ventana entera).
     fn page_screen_rect(&self) -> Option<(f32, f32, f32, f32)> {
-        let doc = self.doc.as_ref()?;
-        let (pw, ph) = doc.page_size(self.page).ok()?;
-        let cover = initial_scale(pw, ph, self.win_w, self.win_h);
-        let scale = cover * self.zoom;
-        if !scale.is_finite() || scale <= 0.0 {
-            return None;
-        }
-        let dx = (Self::centered_base(self.win_w, pw * cover, self.zoom) + self.pan_x).round();
-        let dy = self.pan_y.round();
-        Some((dx, dy, dx + pw * scale, dy + ph * scale))
+        Some(self.page_screen_transform(self.page)?.page_screen_rect())
     }
 
     /// Rect normalizado de la selección en px de ventana (left, top, right,
@@ -202,19 +186,11 @@ impl Reader {
     /// hay bitmap, escala inválida o el crop queda vacío (zoom/pan raro) —
     /// el llamador cae al envío solo-texto.
     ///
-    /// Mapeo ventana → píxeles del bitmap: la MISMA geometría del blit
-    /// (`blit`): el render FULL de la página se dibujaría en `(dx, dy)`
-    /// escalado por `blit_zoom = zoom / rendered_zoom`, así que un px de
-    /// pantalla `s` cae en el px del render full `(s − origen) / blit_zoom`.
-    /// El bitmap residente es el recorte a ventana (X-centrado, Y-top) de
-    /// ese render (fix de residency), así que se resta el origen del crop
-    /// (`cached.crop_x/crop_y`) para caer en los píxeles realmente
-    /// almacenados; si la selección cae fuera del crop (pan/zoom extremos
-    /// que dejan ver parte de la página recortada) el clamp recorta a lo
-    /// disponible. Se usa floor/ceil para que el crop cubra al menos la
-    /// región seleccionada — el rect de selección ya viene recortado a la
-    /// hoja por `sel_screen_rect`, pero el pan puede dejar parte del rect
-    /// fuera del bitmap.
+    /// Mapea la selección desde pantalla a página y de ahí a los píxeles
+    /// almacenados, usando la misma transformación que dibuja e hit-testea la
+    /// página. El bitmap residente es un recorte del render completo, por lo
+    /// que se resta su origen (`crop_x/crop_y`) y se limita el resultado a los
+    /// píxeles disponibles.
     ///
     /// Modo oscuro: la caché guarda SIEMPRE bitmaps normales (la inversión
     /// se aplica al blitear, `draw::blit_page`), así que el crop sale con
@@ -225,45 +201,26 @@ impl Reader {
         let cached = self.cache.peek(self.page)?;
         let bmp = &cached.bitmap;
         let (l, t, r, b) = self.sel_screen_rect()?;
-        // Escala de dibujo del render cacheado (relativa a su render): 1:1
-        // nítido en reposo (`rendered_zoom == zoom`), vecino-más-cercano del
-        // bitmap viejo durante el pinch. Si no es finita (defensa), no hay
-        // imagen que mandar.
-        // Blit EFECTIVO del bitmap residente (fix salto-pinch): deriva del
-        // propio bitmap, no de `rendered_zoom` (puede discrepar del residente).
-        let blit_zoom = match self.entry_blit_zoom() {
-            Some(b) => b,
-            None => {
-                if self.rendered_zoom.is_finite() && self.rendered_zoom > 0.0 {
-                    self.zoom / self.rendered_zoom
-                } else {
-                    return None;
-                }
-            }
-        };
-        if !blit_zoom.is_finite() || blit_zoom <= 0.0 {
-            return None;
-        }
-        // Esquina del render FULL escalado en pantalla (misma aritmética que
-        // el blit sobre el bitmap sin recortar: centrado horizontal cover +
-        // pan de anclaje; Y alineado arriba). El bitmap residente es el crop
-        // centrado a ventana de ese render: restamos el origen del crop para
-        // caer en los píxeles almacenados (ver doc del mapeo arriba).
-        let dx =
-            (((self.win_w as f32 - cached.full_w as f32 * blit_zoom) / 2.0) + self.pan_x).round();
-        let dy = self.pan_y.round();
-        let x0 = ((l - dx) / blit_zoom).floor() - cached.crop_x as f32;
-        let y0 = ((t - dy) / blit_zoom).floor() - cached.crop_y as f32;
-        let x1 = ((r - dx) / blit_zoom).ceil() - cached.crop_x as f32;
-        let y1 = ((b - dy) / blit_zoom).ceil() - cached.crop_y as f32;
+        let (x0, y0, x1, y1) = self
+            .page_screen_transform(self.page)?
+            .screen_rect_to_bitmap(
+                (l, t, r, b),
+                cached.full_w,
+                cached.full_h,
+                cached.crop_x,
+                cached.crop_y,
+            )?;
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
             return None; // NaN/inf (defensa): sin imagen
         }
         // Rect en píxeles del bitmap residente (crop), recortado a sus bordes.
-        let (x0, y0) = (x0.max(0.0) as u32, y0.max(0.0) as u32);
+        let (x0, y0) = (
+            x0.floor().clamp(0.0, bmp.width as f32) as u32,
+            y0.floor().clamp(0.0, bmp.height as f32) as u32,
+        );
         let (x1, y1) = (
-            (x1 as i64).min(bmp.width as i64) as u32,
-            (y1 as i64).min(bmp.height as i64) as u32,
+            x1.ceil().clamp(0.0, bmp.width as f32) as u32,
+            y1.ceil().clamp(0.0, bmp.height as f32) as u32,
         );
         if x0 >= x1 || y0 >= y1 {
             return None; // crop vacío (rect fuera del bitmap): sin imagen

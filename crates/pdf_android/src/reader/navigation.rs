@@ -16,6 +16,45 @@ use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
 
+fn prefetch_page_window(page: u32, page_count: u32, direction: i8) -> Vec<u32> {
+    if page_count == 0 {
+        return Vec::new();
+    }
+    let last = page_count - 1;
+    let mut pages = Vec::with_capacity(3);
+    let mut push = |candidate: u32| pages.push(candidate);
+    match direction {
+        1 => {
+            if page > 0 {
+                push(page - 1);
+            }
+            push(page);
+            if page < last {
+                push(page + 1);
+            }
+        }
+        -1 => {
+            if page < last {
+                push(page + 1);
+            }
+            push(page);
+            if page > 0 {
+                push(page - 1);
+            }
+        }
+        _ => {
+            if page > 0 {
+                push(page - 1);
+            }
+            push(page);
+            if page < last {
+                push(page + 1);
+            }
+        }
+    }
+    pages
+}
+
 impl Reader {
     /// Cambia a la página `page` (0-based) — modo UNA HOJA: `page` se fija
     /// directamente (no hay scroll que alinear: la columna de páginas se
@@ -24,10 +63,9 @@ impl Reader {
     /// salen de la caché (paso instantáneo). Invalida los overlays cacheados
     /// (indicador, sheet, frame de la animación).
     ///
-    /// Fase B (prefetch direccional): registra la dirección del turno
-    /// (`last_direction`, signo del delta) y, cuando la página nueva NO está
-    /// en caché, lanza la ventana asimétrica 2-delante/1-detrás de
-    /// `prefetch_pages` (solo misses) en lugar del ±1 simétrico histórico.
+    /// Registra la dirección del turno (`last_direction`, signo del delta)
+    /// y, cuando la página nueva NO está en caché, renderiza la página y sus
+    /// vecinas inmediatas en orden direccional.
     fn goto_page(&mut self, page: u32) {
         let prev = self.page;
         if prev == page {
@@ -66,7 +104,7 @@ impl Reader {
                 );
             }
             let pages = self
-                .prefetch_pages(page) // ventana direccional ordenada (fase B)
+                .prefetch_pages(page) // página actual y vecinas inmediatas
                 .into_iter()
                 .filter(|&p| self.cache.peek(p).is_none())
                 .collect::<Vec<u32>>();
@@ -86,23 +124,18 @@ impl Reader {
         }
     }
 
-    /// Páginas candidatas del prefetch alrededor de `page` (fase B), en ORDEN
-    /// de lanzamiento:
+    /// Páginas candidatas del prefetch alrededor de `page`, en ORDEN de
+    /// lanzamiento:
     /// 1. la página por DETRÁS de la dirección de viaje (radio 1),
     /// 2. la página ACTUAL (`page`),
-    /// 3. hacia DELANTE en la dirección de viaje, de la más cercana a la más
-    ///    lejana (radio 2).
+    /// 3. hacia DELANTE en la dirección de viaje (radio 1).
     ///
     /// El orden no es el del ejemplo del brief (vecina delantera primero):
     /// con la página de atrás como PRIMERA llegada, el LRU de la caché la
-    /// sacrifica antes que la actual cuando el lote completo (2+1+actual = 4
-    /// páginas ≈ 51 MiB a 12,7 MiB/página) excede los 48 MiB del presupuesto
-    /// — la inserción del 4º bitmap expulsa al más antiguo (frente LRU), que
-    /// es la de atrás, y la actual sobrevive al lote (nunca pantalla en
-    /// blanco tras un salto con lote completo). En el caso común (la de
-    /// atrás ya cacheada — el usuario viene de ella) la actual queda PRIMERA
-    /// del lote y minimiza la latencia del turno; las delanteras (siguientes
-    /// taps probables) entran justo después.
+    /// sacrifica antes que la actual si se supera el presupuesto. En el caso
+    /// común (la de atrás ya cacheada — el usuario viene de ella) la actual
+    /// queda PRIMERA del lote y minimiza la latencia del turno; la siguiente
+    /// página probable entra justo después.
     ///
     /// Sin dirección (`last_direction == 0`: apertura, restore, salto
     /// inicial) → ventana simétrica ±1 (comportamiento previo a la fase B).
@@ -112,52 +145,7 @@ impl Reader {
         let Some(doc) = self.doc.as_ref() else {
             return Vec::new();
         };
-        let n = doc.page_count();
-        if n == 0 {
-            return Vec::new();
-        }
-        let last = n - 1;
-        let mut pages = Vec::with_capacity(4);
-        // Añade `p` (los guards evitan el overflow de u32 y los duplicados
-        // al clampear: docs de 1 página o page == last).
-        let mut push = |p: u32| pages.push(p);
-        match self.last_direction {
-            1 => {
-                if page > 0 {
-                    push(page - 1); // detrás (radio 1) — víctima LRU natural
-                }
-                push(page); // actual: sustituye al fallback en un turno miss
-                if page < last {
-                    push(page + 1); // delante, cercana → lejana (radio 2)
-                }
-                if page + 1 < last {
-                    push(page + 2);
-                }
-            }
-            -1 => {
-                if page < last {
-                    push(page + 1); // detrás (radio 1) — víctima LRU natural
-                }
-                push(page); // actual
-                if page > 0 {
-                    push(page - 1); // delante, cercana → lejana (radio 2)
-                }
-                if page > 1 {
-                    push(page - 2);
-                }
-            }
-            _ => {
-                // Sin dirección: ventana simétrica ±1 (comportamiento previo).
-                if page > 0 {
-                    push(page - 1);
-                }
-                push(page);
-                if page < last {
-                    push(page + 1);
-                }
-            }
-        }
-        pages
+        prefetch_page_window(page, doc.page_count(), self.last_direction)
     }
 
     pub(crate) fn next_page(&mut self) {
@@ -392,5 +380,25 @@ impl Reader {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod prefetch_tests {
+    use super::prefetch_page_window;
+
+    #[test]
+    fn prefetch_window_stays_within_one_page_of_current_page() {
+        assert_eq!(prefetch_page_window(2, 5, 1), vec![1, 2, 3]);
+        assert_eq!(prefetch_page_window(2, 5, -1), vec![3, 2, 1]);
+        assert_eq!(prefetch_page_window(2, 5, 0), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn prefetch_window_clamps_to_document_edges() {
+        assert_eq!(prefetch_page_window(0, 1, 1), vec![0]);
+        assert_eq!(prefetch_page_window(0, 4, 1), vec![0, 1]);
+        assert_eq!(prefetch_page_window(3, 4, -1), vec![3, 2]);
+        assert!(prefetch_page_window(0, 0, 0).is_empty());
     }
 }

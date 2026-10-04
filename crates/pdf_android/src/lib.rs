@@ -13,10 +13,9 @@
 //!   interno y lo abre con `pdf_core` (motor MuPDF, ADR-001).
 //! - Con "abrir con" (ACTION_VIEW + content://) abre el PDF directamente sin
 //!   pasar por la biblioteca (ver `launch_intent_pdf`).
-//! - En cada redibujado renderiza la página actual a una escala *cover*
-//!   (`max(win_w / page_w, win_h / page_h)`, puntos PDF → px; ver `view`)
-//!   multiplicada por el factor de zoom continuo (1.0 = página completa),
-//!   centrada sobre un fondo oscuro (letterbox).
+//! - Al abrir, renderiza la caja visible completa con política `contain`,
+//!   centrada en ambos ejes y con margen de 12 dp; el factor de zoom continuo
+//!   (1.0 = encuadre inicial) se aplica después (ver `view`).
 //! - Blitea el `Bitmap` RGBA8 de pdf_core al `ANativeWindow` fila a fila,
 //!   respetando `buffer.stride` (en píxeles, puede ser > `width`). El formato
 //!   del buffer se fuerza a `R8G8B8A8_UNORM` con
@@ -79,24 +78,23 @@
 //! toda la geometría de la columna apilada (`page_offsets`/`page_heights`/
 //! `doc_height`/`scroll_y`/`layout_dirty`/`pending_page`), `visible_pages()`,
 //! `blit_stacked` y `update_page_from_scroll` (ver el diff del commit). El
-//! blit dibuja UNA página (fondo + página actual + anotaciones + overlays,
-//! `draw::blit_page`) centrada con cover y recortada a los bordes de la
-//! ventana; el zoom (pinch) actúa SOLO sobre la página actual (recortada a
-//! sus bordes, nunca otra hoja) y mantiene el pan de anclaje. La `PageCache`
+//! blit dibuja UNA página (fondo + página actual + anotaciones + overlays)
+//! completa con política contain, centrada en ambos ejes y con margen de
+//! interfaz. Render, hit testing, selección y anotaciones comparten la
+//! geometría visible de MuPDF y su transformación página↔pantalla. El zoom
+//! (pinch) actúa SOLO sobre la página actual. La `PageCache`
 //! (LRU) se CONSERVA para que prev/next sea instantáneo (precarga la vecina,
 //! `ensure_pages_rendered`), pero las vecinas nunca se dibujan:
 //!
 //! - `cache.rs` (`PageCache`): LRU en RAM de páginas renderizadas
-//!   (página → `CachedPage`: el crop a ventana del render cover — X
-//!   centrado, Y arriba — + metadatos `full_w/full_h/crop_x/crop_y`), limitada por bytes (48 MiB)
+//!   (página → `CachedPage`: bitmap visible y metadatos
+//!   `full_w/full_h/crop_x/crop_y`), limitada por bytes (48 MiB)
 //!   y por entradas (5), coherente con el RSS < 150 MB; evita el re-render al
 //!   volver atrás. Los bitmaps se guardan SIEMPRE normales: la inversión de
 //!   modo oscuro se aplica al blitear (`draw::blit_page`).
 //! - Render (vía caché) de la página actual + 1 vecina por lado (prefetch
 //!   simple: el paso de página es instantáneo); el blit dibuja SOLO la
-//!   página actual (centrado cover + pan de anclaje del pinch, recorte a la
-//!   ventana) con un solo lock+present (`draw::blit_page`, vecino-más-cercano
-//!   para el zoom).
+//!   página actual con pan de anclaje y vecino-más-cercano durante el pinch.
 //! - El pinch hace zoom (factor relativo + anclado; re-render nítido al
 //!   soltar); el tap cambia de página. La página actual alimenta el
 //!   indicador "N / total", los saltos ±10 y la persistencia (`persist`), que
@@ -256,7 +254,7 @@
 //!   gesto, el render del rect y el menú viven en pantalla; la conversión a
 //!   página se hace UNA sola vez al extraer texto (`sel_text`) o subrayar
 //!   (`highlight_sel`) con `Reader::screen_to_page`, la INVERSA exacta del
-//!   mapeo del blit (misma `scale = cover × zoom` y `dx/dy` que `PageAnnots`).
+//!   mapeo del blit a través de `PageScreenTransform`.
 //! - **Render** (`draw/`): el rect de selección se dibuja translúcido con
 //!   borde sobre la página, RECORTADO a los bordes de la hoja
 //!   (`Reader::sel_screen_rect`); el menú flotante se renderiza con el
@@ -430,7 +428,7 @@ pub(crate) const GOOGLE_API_KEY: &str = include_str!("../google_key.txt");
 pub(crate) const GEMINI_MODEL: &str = "gemini-flash-latest";
 /// Límites del factor de zoom continuo (1.0 = página completa a pantalla).
 /// `PINCH_MIN = 1.0`: SIN zoom hacia fuera — la página no se puede ver más
-/// pequeña que a pantalla completa (cover); el pan queda limitado a los
+/// pequeña que el encuadre inicial contain; el pan queda limitado a los
 /// bordes de la hoja (ver `Reader::clamp_pan`).
 pub(crate) const PINCH_MIN: f32 = 1.0;
 pub(crate) const PINCH_MAX: f32 = 8.0;
@@ -704,6 +702,10 @@ pub fn android_main(app: AndroidApp) {
                 if let Some(win) = app.native_window() {
                     reader.set_window(win);
                 }
+                reader.redraw();
+            }
+            PollEvent::Main(MainEvent::ConfigChanged { .. }) => {
+                reader.set_density_dpi(app.config().density().unwrap_or(160));
                 reader.redraw();
             }
             PollEvent::Main(MainEvent::RedrawNeeded { .. }) => {

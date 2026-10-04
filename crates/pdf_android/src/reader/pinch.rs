@@ -30,12 +30,12 @@ impl Reader {
     /// Fórmula de anclaje del pinch: el pan (px) que, a zoom `z`, deja fijo
     /// en pantalla el punto de documento que estaba bajo el ancla al iniciar
     /// el gesto. `base0`/`base` son la posición de origen del bitmap escalado
-    /// al zoom de partida (`z0`) y al zoom actual (`z`) — centrado horizontal
-    /// `centered_base` o 0 en Y — y `pan0` el pan de partida.
+    /// al zoom de partida (`z0`) y al zoom actual (`z`) — obtenido de la
+    /// transformación compartida de página — y `pan0` el pan de partida.
     ///
     /// Derivación del anclaje. El mapeo pantalla de un punto de documento `q`
     /// (px a zoom 1) es `screen(q, z) = base(z) + pan(z) + q·z`, con
-    /// `base(z)` la posición de origen del bitmap escalado:
+    /// `base(z)` el origen de página calculado a ese zoom:
     ///
     /// - el punto bajo el ancla al iniciar el gesto es
     ///   `q = (ancla − base(z0) − pan0) / z0` y no cambia durante el gesto;
@@ -63,20 +63,14 @@ impl Reader {
     /// o `dh·zoom`) y `win` el tamaño de la ventana en ese eje (f32).
     ///
     /// Geometría real del blit (`blit`): la página ocupa en pantalla
-    /// `[base + pan, base + pan + page]`, con `base` la posición de origen
-    /// del bitmap escalado SIN pan — centrada en X (`centered_base`,
-    /// `align_top = false`) y alineada al borde superior en Y (`base = 0`,
-    /// `align_top = true`; el anclaje Y real del pinch es "arriba",
-    /// confirmado en `blit`: `dy = pan_y`).
+    /// `[base + pan, base + pan + page]`, con `base` la posición centrada del
+    /// bitmap escalado SIN pan en el eje correspondiente.
     ///
     /// - Si `page >= win` (la página es más grande que la ventana): exige
     ///   cubrirla entera, `base + pan <= 0` y `base + pan + page >= win`, o
-    ///   sea `pan ∈ [win − page − base, −base]`. En Y (`base = 0`) queda
-    ///   `pan.clamp(win − page, 0)`; en X el rango se desplaza por el
-    ///   centrado de `centered_base`: `[(win − page)/2, (page − win)/2]`.
+    ///   sea `pan ∈ [win − page − base, −base]`.
     /// - Si `page < win` (página más pequeña; solo posible con zoom < 1):
-    ///   centrada en X (el centrado ya lo hace `centered_base` → pan 0) y
-    ///   arriba en Y (pan 0).
+    ///   centrada en ambos ejes (pan 0).
     pub(crate) fn clamp_pan(pan: f32, page: f32, win: f32, align_top: bool) -> f32 {
         if page >= win {
             let base = if align_top { 0.0 } else { (win - page) / 2.0 };
@@ -87,7 +81,7 @@ impl Reader {
     }
 
     /// Blit EFECTIVO del bitmap residente de la página actual (fix salto-pinch):
-    /// escala del bitmap que HAY en caché (`full_w` frente al tamaño cover) en
+    /// escala del bitmap que HAY en caché (`full_w` frente al tamaño contain) en
     /// vez de `zoom / rendered_zoom`. El campo `rendered_zoom` sigue al último
     /// render de la página actual, pero la entrada residente puede venir de otro
     /// lote o sobrevivir a evicciones vecinas (desfase observado en tablet:
@@ -147,15 +141,14 @@ impl Reader {
             return;
         }
         // De vuelta a zoom 1.0 (PINCH_MIN): la página vuelve a su posición
-        // natural (centrada en X, alineada arriba en Y). BUG: sin este
+        // natural (centrada en ambos ejes). BUG: sin este
         // reset, un pan residual de un zoom previo dejaba la vista
         // "colgada" en un offset (p. ej. el tercio inferior de la página,
-        // pan_y ≈ −400 px con la página cover más alta que la ventana) sin
+        // pan_y ≈ −400 px con la página ampliada más alta que la ventana) sin
         // forma de corregirlo — la app NO tiene gesto de pan (el arrastre
         // se eliminó), así que el único "home" posible es el centrado. El
-        // clamp de X ya fuerza ~0 (la página a cover casi iguala la
-        // ventana), pero en Y el rango de `clamp_pan` admite offsets
-        // grandes; por eso el reset es explícito en ambos ejes.
+        // pan residual puede dejar la página fuera de su posición natural;
+        // por eso el reset es explícito en ambos ejes.
         if zoom <= PINCH_MIN + 1e-4 {
             self.pan_x = 0.0;
             self.pan_y = 0.0;
@@ -168,30 +161,25 @@ impl Reader {
         if let Some(p) = self.pinch {
             let (dw, dh) = self.page_doc_size_px(self.page);
             if dw > 0.0 && dh > 0.0 {
-                // X: el bitmap escalado se centra en la ventana → base
-                // dependiente del zoom. Y: el borde superior de la página
-                // actual queda en el borde superior del viewport (modo UNA
-                // HOJA, sin scroll) → base 0. Ambos se clampean después a los
-                // bordes de la hoja (ver `clamp_pan`).
-                self.pan_x = Self::clamp_pan(
-                    Self::anchor_pan(
-                        p.ax,
-                        Self::centered_base(self.win_w, dw, p.z0),
-                        Self::centered_base(self.win_w, dw, zoom),
-                        p.z0,
-                        p.pan_x0,
-                        zoom,
-                    ),
-                    dw * zoom,
-                    self.win_w as f32,
-                    false,
-                );
-                self.pan_y = Self::clamp_pan(
-                    Self::anchor_pan(p.ay, 0.0, 0.0, p.z0, p.pan_y0, zoom),
-                    dh * zoom,
-                    self.win_h as f32,
-                    true,
-                );
+                // Los orígenes incluyen el margen/contain y salen de la
+                // misma geometría visible que usa el blit y el hit testing.
+                if let (Some(base0), Some(base)) = (
+                    self.page_origin_at_zoom(self.page, p.z0),
+                    self.page_origin_at_zoom(self.page, zoom),
+                ) {
+                    self.pan_x = Self::clamp_pan(
+                        Self::anchor_pan(p.ax, base0.0, base.0, p.z0, p.pan_x0, zoom),
+                        dw * zoom,
+                        self.win_w as f32,
+                        false,
+                    );
+                    self.pan_y = Self::clamp_pan(
+                        Self::anchor_pan(p.ay, base0.1, base.1, p.z0, p.pan_y0, zoom),
+                        dh * zoom,
+                        self.win_h as f32,
+                        false,
+                    );
+                }
             }
         }
         self.zoom = zoom;
@@ -247,13 +235,8 @@ impl Reader {
                 // × zoom/rendered_zoom)` px (vecino-más-cercano) y tras el
                 // re-render el NUEVO a `round(dw × zoom)` px 1:1 — la
                 // diferencia (≤ 1 px, por el redondeo de píxeles del render)
-                // desplazaría el borde izquierdo de la página al soltar.
-                // Corregimos el pan para que el borde DIBUJADO quede en el
-                // mismo píxel: en `blit`, `dx = round((win − w)/2 + pan)`,
-                // así que para que el nuevo dx iguale al dibujado en fast
-                // basta `pan_nuevo = dx_fast − (win − w_nuevo)/2` (la
-                // corrección es solo en X: en Y el borde superior es
-                // `dy = round(pan_y)`, independiente del tamaño del bitmap).
+                // desplazaría el origen de la página al soltar. Corregimos
+                // ambos ejes para conservar el origen dibujado.
                 //
                 // El ancho se toma de `full_w` del CachedPage, NO de
                 // `bmp.width`: el bitmap cacheado es el recorte a la ventana
@@ -278,6 +261,14 @@ impl Reader {
                 let new_w = (dw as f64 * zoom as f64).round() as f32;
                 let dx_fast = ((self.win_w as f32 - old_w) / 2.0 + self.pan_x).round();
                 self.pan_x = dx_fast - (self.win_w as f32 - new_w) / 2.0;
+                let old_h = self
+                    .cache
+                    .peek(self.page)
+                    .map(|b| b.full_h as f32 * old_blit)
+                    .unwrap_or(dh * zoom);
+                let new_h = (dh as f64 * zoom as f64).round() as f32;
+                let dy_fast = ((self.win_h as f32 - old_h) / 2.0 + self.pan_y).round();
+                self.pan_y = dy_fast - (self.win_h as f32 - new_h) / 2.0;
             }
             // El pan de anclaje YA es el del zoom final (último
             // `set_zoom_fast`); el re-render a la nueva escala
@@ -291,7 +282,7 @@ impl Reader {
             // también tras el re-render (`rendered_zoom = zoom` → la escala
             // efectiva `doc·zoom` no cambia).
             self.pan_x = Self::clamp_pan(self.pan_x, dw * zoom, self.win_w as f32, false);
-            self.pan_y = Self::clamp_pan(self.pan_y, dh * zoom, self.win_h as f32, true);
+            self.pan_y = Self::clamp_pan(self.pan_y, dh * zoom, self.win_h as f32, false);
         }
         self.zoom = zoom;
         // SHARP ASÍNCRONO: NO se limpia la caché ni se re-renderiza en el

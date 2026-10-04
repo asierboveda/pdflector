@@ -9,6 +9,215 @@ use super::LibSort;
 use super::Reader;
 use super::discover_state::{DiscoverScreen, DiscoverTab};
 use crate::draw::ButtonRect;
+use std::cell::RefCell;
+use std::collections::VecDeque;
+
+const PAGE_GEOMETRY_CACHE_CAPACITY: usize = 5;
+
+/// Bounded metadata cache populated by render-worker results so page geometry
+/// is available to the UI without opening or inspecting a MuPDF page in a frame.
+#[derive(Default)]
+pub(crate) struct PageGeometryCache {
+    entries: RefCell<VecDeque<(u32, pdf_core::engine::PageGeometry)>>,
+}
+
+impl PageGeometryCache {
+    pub(crate) fn get(&self, page: u32) -> Option<pdf_core::engine::PageGeometry> {
+        let mut entries = self.entries.borrow_mut();
+        let index = entries
+            .iter()
+            .position(|(cached_page, _)| *cached_page == page)?;
+        let (_, geometry) = entries.remove(index)?;
+        entries.push_front((page, geometry));
+        Some(geometry)
+    }
+
+    pub(crate) fn insert(&self, page: u32, geometry: pdf_core::engine::PageGeometry) {
+        let mut entries = self.entries.borrow_mut();
+        if let Some(index) = entries
+            .iter()
+            .position(|(cached_page, _)| *cached_page == page)
+        {
+            entries.remove(index);
+        }
+        entries.push_front((page, geometry));
+        while entries.len() > PAGE_GEOMETRY_CACHE_CAPACITY {
+            entries.pop_back();
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        self.entries.borrow_mut().clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.borrow().len()
+    }
+}
+
+/// The shared transform for one page in the viewer. All page↔screen paths
+/// use this mapping so the bitmap, selection, persisted annotations and ink
+/// overlay agree on the visible MuPDF page coordinates.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PageScreenTransform {
+    geometry: pdf_core::engine::PageGeometry,
+    scale: f32,
+    origin_x: f32,
+    origin_y: f32,
+}
+
+impl PageScreenTransform {
+    pub(crate) fn new(
+        geometry: pdf_core::engine::PageGeometry,
+        win_w: i32,
+        win_h: i32,
+        margin_px: f32,
+        zoom: f32,
+        pan_x: f32,
+        pan_y: f32,
+    ) -> Option<Self> {
+        let bounds = geometry.visible_bounds;
+        let scale = crate::view::initial_scale_with_margin(
+            bounds.width(),
+            bounds.height(),
+            win_w,
+            win_h,
+            margin_px,
+        ) * zoom;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let (origin_x, origin_y) = crate::view::page_origin(
+            bounds.width(),
+            bounds.height(),
+            scale,
+            win_w,
+            win_h,
+            margin_px,
+        );
+        Some(Self {
+            geometry,
+            scale,
+            origin_x: origin_x + pan_x,
+            origin_y: origin_y + pan_y,
+        })
+    }
+
+    pub(crate) fn scale(self) -> f32 {
+        self.scale
+    }
+
+    pub(crate) fn page_origin(self) -> (f32, f32) {
+        (self.origin_x, self.origin_y)
+    }
+
+    pub(crate) fn page_to_screen(self, x: f32, y: f32) -> (f32, f32) {
+        let bounds = self.geometry.visible_bounds;
+        (
+            self.origin_x + (x - bounds.x0) * self.scale,
+            self.origin_y + (y - bounds.y0) * self.scale,
+        )
+    }
+
+    pub(crate) fn screen_to_page(self, x: f32, y: f32) -> (f32, f32) {
+        let bounds = self.geometry.visible_bounds;
+        (
+            bounds.x0 + (x - self.origin_x) / self.scale,
+            bounds.y0 + (y - self.origin_y) / self.scale,
+        )
+    }
+
+    pub(crate) fn page_screen_rect(self) -> (f32, f32, f32, f32) {
+        let bounds = self.geometry.visible_bounds;
+        let (left, top) = self.page_to_screen(bounds.x0, bounds.y0);
+        (
+            left,
+            top,
+            left + bounds.width() * self.scale,
+            top + bounds.height() * self.scale,
+        )
+    }
+
+    /// Maps a screen rectangle into the resident bitmap's coordinates. The
+    /// bitmap represents the complete visible page at its render scale, then
+    /// stores the crop beginning at (`crop_x`, `crop_y`).
+    pub(crate) fn screen_rect_to_bitmap(
+        self,
+        rect: (f32, f32, f32, f32),
+        full_w: u32,
+        full_h: u32,
+        crop_x: u32,
+        crop_y: u32,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let bounds = self.geometry.visible_bounds;
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 || full_w == 0 || full_h == 0 {
+            return None;
+        }
+        let (x0, y0) = self.screen_to_page(rect.0, rect.1);
+        let (x1, y1) = self.screen_to_page(rect.2, rect.3);
+        let scale_x = full_w as f32 / bounds.width();
+        let scale_y = full_h as f32 / bounds.height();
+        Some((
+            (x0 - bounds.x0) * scale_x - crop_x as f32,
+            (y0 - bounds.y0) * scale_y - crop_y as f32,
+            (x1 - bounds.x0) * scale_x - crop_x as f32,
+            (y1 - bounds.y0) * scale_y - crop_y as f32,
+        ))
+    }
+}
+
+impl Reader {
+    pub(crate) fn cache_page_geometry(&self, page: u32, geometry: pdf_core::engine::PageGeometry) {
+        self.page_geometry_cache.insert(page, geometry);
+    }
+
+    pub(crate) fn set_density_dpi(&mut self, density_dpi: u32) {
+        let density_dpi = density_dpi.max(1);
+        if self.density_dpi == density_dpi {
+            return;
+        }
+        self.density_dpi = density_dpi;
+        self.cache.clear();
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.invalidate_dry();
+        }
+        self.mark_repaint();
+    }
+
+    pub(crate) fn page_screen_transform(&self, page: u32) -> Option<PageScreenTransform> {
+        self.page_screen_transform_at(page, self.zoom, self.pan_x, self.pan_y)
+    }
+
+    pub(crate) fn page_screen_transform_at(
+        &self,
+        page: u32,
+        zoom: f32,
+        pan_x: f32,
+        pan_y: f32,
+    ) -> Option<PageScreenTransform> {
+        let geometry = self.page_geometry_cache.get(page)?;
+        PageScreenTransform::new(
+            geometry,
+            self.win_w,
+            self.win_h,
+            crate::view::viewport_margin_px(self.density_dpi),
+            zoom,
+            pan_x,
+            pan_y,
+        )
+    }
+
+    pub(crate) fn page_origin_at_zoom(&self, page: u32, zoom: f32) -> Option<(f32, f32)> {
+        self.page_screen_transform_at(page, zoom, 0.0, 0.0)
+            .map(PageScreenTransform::page_origin)
+    }
+
+    pub(crate) fn page_scale(&self, page: u32) -> Option<f32> {
+        self.page_screen_transform(page)
+            .map(PageScreenTransform::scale)
+    }
+}
 
 /// Alto (px) de cada fila del picker, proporcional a la ventana.
 pub(crate) fn picker_row_h(win_h: i32) -> i32 {
@@ -812,4 +1021,79 @@ pub(crate) fn disc_detail_layout(
     let total_h = abstract_bot + 60.0;
 
     (action_btn, total_h)
+}
+
+#[cfg(test)]
+mod page_screen_transform_tests {
+    use super::{PageGeometryCache, PageScreenTransform};
+    use pdf_core::engine::{PageGeometry, PageRect, PageTransform};
+
+    fn shifted_geometry() -> PageGeometry {
+        PageGeometry {
+            visible_bounds: PageRect {
+                x0: 24.0,
+                y0: 48.0,
+                x1: 324.0,
+                y1: 448.0,
+            },
+            media_box: PageRect {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 400.0,
+                y1: 500.0,
+            },
+            crop_box: PageRect {
+                x0: 24.0,
+                y0: 48.0,
+                x1: 324.0,
+                y1: 448.0,
+            },
+            rotation: 0,
+            pdf_to_page: PageTransform::IDENTITY,
+        }
+    }
+
+    #[test]
+    fn shifted_page_round_trips_between_screen_and_page_with_zoom_and_pan() {
+        let transform =
+            PageScreenTransform::new(shifted_geometry(), 1440, 2200, 24.0, 1.75, 63.0, -25.0)
+                .unwrap();
+        let point = (173.25, 301.5);
+        let screen = transform.page_to_screen(point.0, point.1);
+        let restored = transform.screen_to_page(screen.0, screen.1);
+
+        assert!((restored.0 - point.0).abs() <= 1.0);
+        assert!((restored.1 - point.1).abs() <= 1.0);
+    }
+
+    #[test]
+    fn shifted_page_selection_maps_to_cropped_bitmap_coordinates() {
+        let transform =
+            PageScreenTransform::new(shifted_geometry(), 1440, 2200, 24.0, 2.0, 30.0, -10.0)
+                .unwrap();
+        let screen_a = transform.page_to_screen(74.0, 98.0);
+        let screen_b = transform.page_to_screen(124.0, 148.0);
+        let rect = (screen_a.0, screen_a.1, screen_b.0, screen_b.1);
+
+        let pixels = transform
+            .screen_rect_to_bitmap(rect, 600, 800, 40, 80)
+            .unwrap();
+
+        assert_eq!(pixels, (60.0, 20.0, 160.0, 120.0));
+    }
+
+    #[test]
+    fn page_geometry_cache_promotes_hits_and_evicts_after_five_pages() {
+        let cache = PageGeometryCache::default();
+        for page in 0..5 {
+            cache.insert(page, shifted_geometry());
+        }
+
+        assert_eq!(cache.get(0), Some(shifted_geometry()));
+        cache.insert(5, shifted_geometry());
+
+        assert_eq!(cache.len(), 5);
+        assert_eq!(cache.get(1), None);
+        assert_eq!(cache.get(0), Some(shifted_geometry()));
+    }
 }

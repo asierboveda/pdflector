@@ -553,37 +553,41 @@ impl Gpu {
                 // Propiedad del crop a ventana (fix de residency): el bitmap
                 // cacheado es el recorte del render full a la ventana del
                 // worker — X CENTRADO (`crop_x = (full_w − w)/2`, compensa el
-                // centrado X de este quad) e Y ALINEADO ARRIBA (`crop_y = 0`,
-                // igual que este quad: `page_dy = 0`). Por eso este quad
-                // dibuja el crop con su PROPIO tamaño sin conocer la caja
-                // full: a `blit_zoom == 1` (reposo, `rendered_zoom == zoom`)
-                // reproduce los píxeles de página del render full sin
-                // recortar (en X por la compensación del centrado; en Y por
-                // la alineación top compartida) y llena la ventana 1:1.
-                // `full_w/crop_x/crop_y` los consumen pinch y sel_image (y
-                // `ann_dx` aquí abajo) para volver a la cuadrícula del render
-                // full. Caveat: con `blit_zoom != 1` (preview del pinch,
+                // centrado X de este quad) e Y ALINEADO ARRIBA (`crop_y = 0`).
+                // El origen compartido coloca el recorte dentro de la página
+                // centrada; a `blit_zoom == 1` (reposo,
+                // `rendered_zoom == zoom`) reproduce los píxeles del render
+                // full sin recortar.
+                // `full_w/crop_x/crop_y` los consumen pinch y sel_image para
+                // volver a la cuadrícula del render full. Caveat: con
+                // `blit_zoom != 1` (preview del pinch,
                 // vecino-más-cercano del bitmap viejo) los bordes del crop
                 // pueden mostrar smear transitorio hasta que aterriza el
                 // render sharp (`poll_render` → `invalidate_dry`).
                 let pw = bmp.width as f32 * blit_zoom;
                 self.upload_page_if_needed(page_idx, reader.rendered_zoom, bmp);
-                // Pan horneado en el quad de la página: la dry FBO es la ventana
-                // visible y dibuja la región del documento correspondiente a
-                // (pan_x, pan_y); la composición a fb0 va con offset (0,0).
-                let page_dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
-                let page_dy = reader.pan_y.round();
-                // Origen de la capa de ANOTACIONES (abajo): la esquina de la
-                // CAJA FULL del render en pantalla (sin pan). Difiere del
-                // origen del quad (`page_dx/page_dy`, que posiciona el CROP)
-                // en el origen del recorte: las anotaciones viven en coords
-                // de PÁGINA (doc × scale), igual que `screen_to_page`, así
-                // que se anclan a la caja full, no al crop — si no, se
-                // desplazan `crop_x·blit_zoom` px respecto al contenido que
-                // marcan.
-                let ann_dx = page_dx - page.crop_x as f32 * blit_zoom;
-                let ann_dy = page_dy - page.crop_y as f32 * blit_zoom;
-
+                // La página y sus capas usan el mismo origen de página; el
+                // recorte del bitmap desplaza el quad dentro de ese origen.
+                // El fallback conserva el render ante geometría inválida.
+                let transform = reader.page_screen_transform(page_idx);
+                let (page_dx, page_dy) = transform
+                    .map(|transform| {
+                        let (origin_x, origin_y) = transform.page_origin();
+                        (
+                            (origin_x + page.crop_x as f32 * blit_zoom).round(),
+                            (origin_y + page.crop_y as f32 * blit_zoom).round(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        let full_h = page.full_h as f32 * blit_zoom;
+                        (
+                            ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round(),
+                            ((reader.win_h as f32 - full_h) / 2.0
+                                + reader.pan_y
+                                + page.crop_y as f32 * blit_zoom)
+                                .round(),
+                        )
+                    });
                 gl::glUseProgram(self.prog_tex.prog);
                 gl::glActiveTexture(gl::GL_TEXTURE0);
                 gl::glBindTexture(gl::GL_TEXTURE_2D, self.page_tex);
@@ -635,41 +639,36 @@ impl Gpu {
                 gl::glBindBuffer(gl::GL_ARRAY_BUFFER, 0);
 
                 // 2. Anotaciones consolidadas: se hornean con la página (el
-                // pan las desplaza juntas). Ancladas a la caja FULL
-                // (`ann_dx/ann_dy`), no al quad del crop.
-                let mut scale = 1.0f32;
-                if let Some((pw, ph)) = reader.page_size_pt(page_idx) {
-                    scale = crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h)
-                        * reader.zoom;
-                }
-                let dx = ann_dx;
-                let dy = ann_dy;
+                // pan las desplaza juntas). Se ubican mediante la
+                // transformación compartida, no por el origen del crop.
                 let anns = reader.annotations.for_page(page_idx as usize);
-                for a in &anns {
-                    if let pdf_core::Annotation::Highlight(h) = &a.kind {
-                        for r in &h.rects {
-                            let r = r.normalized();
-                            let (x0, y0) = (r.x * scale + dx, r.y * scale + dy);
-                            let (x1, y1) = ((r.x + r.w) * scale + dx, (r.y + r.h) * scale + dy);
-                            let rgba = [h.color.r, h.color.g, h.color.b, h.color.a];
-                            self.draw_solid_quad(x0, y0, x1, y1, rgba);
+                if let Some(transform) = transform {
+                    for a in &anns {
+                        if let pdf_core::Annotation::Highlight(h) = &a.kind {
+                            for r in &h.rects {
+                                let r = r.normalized();
+                                let (x0, y0) = transform.page_to_screen(r.x, r.y);
+                                let (x1, y1) = transform.page_to_screen(r.x + r.w, r.y + r.h);
+                                let rgba = [h.color.r, h.color.g, h.color.b, h.color.a];
+                                self.draw_solid_quad(x0, y0, x1, y1, rgba);
+                            }
                         }
                     }
-                }
-                for a in &anns {
-                    if let pdf_core::Annotation::Stroke(s) = &a.kind {
-                        self.pts_scratch.clear();
-                        for &(x, y) in &s.points {
-                            self.pts_scratch.push((x * scale + dx, y * scale + dy));
+                    for a in &anns {
+                        if let pdf_core::Annotation::Stroke(s) = &a.kind {
+                            self.pts_scratch.clear();
+                            for &(x, y) in &s.points {
+                                self.pts_scratch.push(transform.page_to_screen(x, y));
+                            }
+                            let hw = (s.width * transform.scale() / 2.0).max(0.5);
+                            let pts = std::mem::take(&mut self.pts_scratch);
+                            self.draw_polyline_gpu(
+                                &pts,
+                                hw,
+                                [s.color.r, s.color.g, s.color.b, s.color.a],
+                            );
+                            self.pts_scratch = pts;
                         }
-                        let hw = (s.width * scale / 2.0).max(0.5);
-                        let pts = std::mem::take(&mut self.pts_scratch);
-                        self.draw_polyline_gpu(
-                            &pts,
-                            hw,
-                            [s.color.r, s.color.g, s.color.b, s.color.a],
-                        );
-                        self.pts_scratch = pts;
                     }
                 }
                 return true;
@@ -700,38 +699,14 @@ impl Gpu {
             gl::glClear(gl::GL_COLOR_BUFFER_BIT);
 
             if let Some(g) = reader.tool_gesture.as_ref() {
-                let mut scale = 1.0f32;
-                if let Some((pw, ph)) = reader.page_size_pt(reader.page) {
-                    scale = crate::view::initial_scale(pw, ph, reader.win_w, reader.win_h)
-                        * reader.zoom;
-                }
-                // Blit EFECTIVO del bitmap residente (fix salto-pinch): deriva
-                // del propio bitmap, no de `rendered_zoom` (puede discrepar).
-                let blit_zoom = reader.entry_blit_zoom().unwrap_or(
-                    if reader.rendered_zoom.is_finite() && reader.rendered_zoom > 0.0 {
-                        reader.zoom / reader.rendered_zoom
-                    } else {
-                        1.0
-                    },
-                );
-                // Origen de la capa transitoria: la CAJA FULL del render
-                // (tinta/resaltado están en coords de página `doc × scale`,
-                // igual que `screen_to_page` y que la capa de anotaciones de
-                // la dry — ver `ann_dx/ann_dy` allí). El bitmap cacheado es
-                // el crop a ventana (X-centrado, Y-top) de ese render: la
-                // esquina de la caja full está `crop_x·blit_zoom` px a la
-                // izquierda del quad del crop (y `crop_y·blit_zoom` arriba),
-                // así que se usa `full_w` — con el ancho del crop la tinta
-                // saldría desplazada `crop_x·blit_zoom` px bajo el boli.
-                // La wet se compone con offset (0,0): hornea su propio pan.
-                let pw = reader
-                    .cache
-                    .peek(reader.page)
-                    .map(|b| b.full_w as f32 * blit_zoom)
-                    .unwrap_or(0.0);
-                let dx = ((reader.win_w as f32 - pw) / 2.0 + reader.pan_x).round();
-                let dy = reader.pan_y.round();
-
+                let transform = match reader.page_screen_transform(reader.page) {
+                    Some(transform) => transform,
+                    None => {
+                        gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0);
+                        return;
+                    }
+                };
+                let scale = transform.scale();
                 match g.tool {
                     crate::annotations::ToolKind::Ink => {
                         // Si AndroidX presenta este gesto, no dibujar una
@@ -744,7 +719,7 @@ impl Gpu {
                             self.pts_scratch.clear();
                             for sample in engine.active_samples() {
                                 self.pts_scratch
-                                    .push((sample.x * scale + dx, sample.y * scale + dy));
+                                    .push(transform.page_to_screen(sample.x, sample.y));
                             }
                             let style = engine.style();
                             let hw = (style.width * scale / 2.0).max(0.5);
@@ -762,8 +737,8 @@ impl Gpu {
                         if g.hl_spans.is_empty() {
                             // Sin spans cacheados: bbox crudo ancla→cursor.
                             let cur = g.points.last().copied().unwrap_or(g.anchor);
-                            let (x0, y0) = (g.anchor.0 * scale + dx, g.anchor.1 * scale + dy);
-                            let (x1, y1) = (cur.0 * scale + dx, cur.1 * scale + dy);
+                            let (x0, y0) = transform.page_to_screen(g.anchor.0, g.anchor.1);
+                            let (x1, y1) = transform.page_to_screen(cur.0, cur.1);
                             self.draw_solid_quad(
                                 x0.min(x1),
                                 y0.min(y1),
@@ -782,13 +757,9 @@ impl Gpu {
                                 pdf_core::HIGHLIGHT_COLOR,
                             ) {
                                 for r in &hl.rects {
-                                    self.draw_solid_quad(
-                                        r.x * scale + dx,
-                                        r.y * scale + dy,
-                                        (r.x + r.w) * scale + dx,
-                                        (r.y + r.h) * scale + dy,
-                                        [c.r, c.g, c.b, c.a],
-                                    );
+                                    let (x0, y0) = transform.page_to_screen(r.x, r.y);
+                                    let (x1, y1) = transform.page_to_screen(r.x + r.w, r.y + r.h);
+                                    self.draw_solid_quad(x0, y0, x1, y1, [c.r, c.g, c.b, c.a]);
                                 }
                             }
                         }

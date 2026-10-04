@@ -42,21 +42,50 @@ internal data class ClipPoint(val x: Float, val y: Float)
 /** Converts SurfaceView top-left pixel coordinates to GL clip coordinates. */
 internal object InkProjection {
     fun toClip(x: Float, y: Float, width: Float, height: Float): ClipPoint {
-        require(width > 0f && height > 0f)
-        return ClipPoint(2f * x / width - 1f, 2f * y / height - 1f)
+        return toClip(x, y, width, height, IDENTITY_TRANSFORM)
     }
 
-    fun putClip(buffer: FloatBuffer, x: Float, y: Float, width: Float, height: Float) {
-        buffer.put(2f * x / width - 1f)
-        buffer.put(2f * y / height - 1f)
+    fun toClip(
+        x: Float,
+        y: Float,
+        bufferWidth: Float,
+        bufferHeight: Float,
+        transform: FloatArray,
+    ): ClipPoint {
+        require(bufferWidth > 0f && bufferHeight > 0f && transform.size >= 16)
+        val bufferX = transform[0] * x + transform[4] * y + transform[12]
+        val bufferY = transform[1] * x + transform[5] * y + transform[13]
+        return ClipPoint(
+            2f * bufferX / bufferWidth - 1f,
+            2f * bufferY / bufferHeight - 1f,
+        )
     }
+
+    fun putClip(
+        buffer: FloatBuffer,
+        x: Float,
+        y: Float,
+        bufferWidth: Float,
+        bufferHeight: Float,
+        transform: FloatArray,
+    ) {
+        val point = toClip(x, y, bufferWidth, bufferHeight, transform)
+        buffer.put(point.x)
+        buffer.put(point.y)
+    }
+
+    private val IDENTITY_TRANSFORM = floatArrayOf(
+        1f, 0f, 0f, 0f,
+        0f, 1f, 0f, 0f,
+        0f, 0f, 1f, 0f,
+        0f, 0f, 0f, 1f,
+    )
 }
 
-/** Reusable causal-segment renderer; AndroidX pre-rotation is applied by the vertex shader. */
+/** Reusable causal-segment renderer with AndroidX pre-rotation applied before clip projection. */
 internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRenderer.Callback<InkSegment> {
     private var program = 0
     private var positionLocation = -1
-    private var transformLocation = -1
     private var colorLocation = -1
     private val vertices = ByteBuffer
         .allocateDirect(8 * Float.SIZE_BYTES)
@@ -74,7 +103,7 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
     ) {
         prepareGl()
         GLES20.glViewport(0, 0, bufferInfo.width, bufferInfo.height)
-        drawSegment(width, height, transform, param)
+        drawSegment(width, height, bufferInfo.width, bufferInfo.height, transform, param)
     }
 
     override fun onDrawMultiBufferedLayer(
@@ -89,7 +118,9 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
         GLES20.glViewport(0, 0, bufferInfo.width, bufferInfo.height)
         GLES20.glClearColor(0f, 0f, 0f, 0f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        ledger.commit(params).forEach { drawSegment(width, height, transform, it) }
+        ledger.commit(params).forEach {
+            drawSegment(width, height, bufferInfo.width, bufferInfo.height, transform, it)
+        }
     }
 
     private fun prepareGl() {
@@ -109,20 +140,30 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
         }
         program = linked
         positionLocation = GLES20.glGetAttribLocation(program, "aPosition")
-        transformLocation = GLES20.glGetUniformLocation(program, "uBufferTransform")
         colorLocation = GLES20.glGetUniformLocation(program, "uColor")
         GLES20.glEnable(GLES20.GL_BLEND)
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         GLES20.glClearColor(0f, 0f, 0f, 0f)
     }
 
-    private fun drawSegment(width: Int, height: Int, transform: FloatArray, segment: InkSegment) {
+    private fun drawSegment(
+        width: Int,
+        height: Int,
+        bufferWidth: Int,
+        bufferHeight: Int,
+        transform: FloatArray,
+        segment: InkSegment,
+    ) {
         if (width <= 0 || height <= 0 || segment.widthPx <= 0f) return
-        fillQuad(segment, width.toFloat(), height.toFloat())
+        fillQuad(
+            segment,
+            bufferWidth.toFloat(),
+            bufferHeight.toFloat(),
+            transform,
+        )
         vertices.position(0)
 
         GLES20.glUseProgram(program)
-        GLES20.glUniformMatrix4fv(transformLocation, 1, false, transform, 0)
         GLES20.glUniform4f(
             colorLocation,
             ((segment.colorArgb ushr 16) and 0xff) / 255f,
@@ -143,27 +184,88 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
         GLES20.glDisableVertexAttribArray(positionLocation)
     }
 
-    private fun fillQuad(segment: InkSegment, width: Float, height: Float) {
+    private fun fillQuad(
+        segment: InkSegment,
+        bufferWidth: Float,
+        bufferHeight: Float,
+        transform: FloatArray,
+    ) {
         val dx = segment.x1 - segment.x0
         val dy = segment.y1 - segment.y0
         val lengthSquared = dx * dx + dy * dy
         val halfWidth = segment.widthPx / 2f
         vertices.position(0)
         if (lengthSquared == 0f) {
-            InkProjection.putClip(vertices, segment.x0 - halfWidth, segment.y0 + halfWidth, width, height)
-            InkProjection.putClip(vertices, segment.x0 + halfWidth, segment.y0 + halfWidth, width, height)
-            InkProjection.putClip(vertices, segment.x0 - halfWidth, segment.y0 - halfWidth, width, height)
-            InkProjection.putClip(vertices, segment.x0 + halfWidth, segment.y0 - halfWidth, width, height)
+            InkProjection.putClip(
+                vertices,
+                segment.x0 - halfWidth,
+                segment.y0 + halfWidth,
+                bufferWidth,
+                bufferHeight,
+                transform,
+            )
+            InkProjection.putClip(
+                vertices,
+                segment.x0 + halfWidth,
+                segment.y0 + halfWidth,
+                bufferWidth,
+                bufferHeight,
+                transform,
+            )
+            InkProjection.putClip(
+                vertices,
+                segment.x0 - halfWidth,
+                segment.y0 - halfWidth,
+                bufferWidth,
+                bufferHeight,
+                transform,
+            )
+            InkProjection.putClip(
+                vertices,
+                segment.x0 + halfWidth,
+                segment.y0 - halfWidth,
+                bufferWidth,
+                bufferHeight,
+                transform,
+            )
             return
         }
 
         val scale = halfWidth / sqrt(lengthSquared)
         val normalX = -dy * scale
         val normalY = dx * scale
-        InkProjection.putClip(vertices, segment.x0 + normalX, segment.y0 + normalY, width, height)
-        InkProjection.putClip(vertices, segment.x0 - normalX, segment.y0 - normalY, width, height)
-        InkProjection.putClip(vertices, segment.x1 + normalX, segment.y1 + normalY, width, height)
-        InkProjection.putClip(vertices, segment.x1 - normalX, segment.y1 - normalY, width, height)
+        InkProjection.putClip(
+            vertices,
+            segment.x0 + normalX,
+            segment.y0 + normalY,
+            bufferWidth,
+            bufferHeight,
+            transform,
+        )
+        InkProjection.putClip(
+            vertices,
+            segment.x0 - normalX,
+            segment.y0 - normalY,
+            bufferWidth,
+            bufferHeight,
+            transform,
+        )
+        InkProjection.putClip(
+            vertices,
+            segment.x1 + normalX,
+            segment.y1 + normalY,
+            bufferWidth,
+            bufferHeight,
+            transform,
+        )
+        InkProjection.putClip(
+            vertices,
+            segment.x1 - normalX,
+            segment.y1 - normalY,
+            bufferWidth,
+            bufferHeight,
+            transform,
+        )
     }
 
     private fun compileShader(type: Int, source: String): Int {
@@ -180,10 +282,9 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
 
     private companion object {
         const val VERTEX_SHADER = """
-            uniform mat4 uBufferTransform;
             attribute vec2 aPosition;
             void main() {
-                gl_Position = uBufferTransform * vec4(aPosition, 0.0, 1.0);
+                gl_Position = vec4(aPosition, 0.0, 1.0);
             }
         """
 

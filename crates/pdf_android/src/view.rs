@@ -1,48 +1,63 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Escala inicial de apertura de documento: política "cover" (pantalla completa).
+//! Escala inicial y encuadre visible de la página.
 //!
-//! Módulo separado para que otro agente pueda cambiar la política de escala de
-//! apertura SIN tocar `Reader::render_current_page`. La partición de `lib.rs`
-//! (2026-08-13) aísla aquí la única decisión de escala que hoy vive inline en
-//! el render.
+//! Módulo separado para mantener la política de escala de apertura fuera del
+//! camino de render de `Reader`.
 //!
-//! ## Cover vs contain (por qué `max` y no `min`)
-//!
-//! Al abrir un documento queremos aprovechar TODO el espacio de la tablet:
-//! con *contain* (`min`) la página cabe entera pero, si su proporción no
-//! coincide con la de la ventana, quedan barras (letterbox) a los lados o
-//! arriba/abajo. Con *cover* (`max`) la página LLENA ancho y alto y el exceso
-//! se recorta por los bordes — en la práctica, los márgenes de la página.
-//! Es un recorte geométrico por proporción; NO analiza píxeles (para recortar
-//! los márgenes blancos reales está `crop_margins`, bonus aparte).
+//! La escala inicial contiene la caja visible dentro del viewport, dejando
+//! un margen fijo de interfaz y centrando la página en ambos ejes.
 
 use pdf_core::Bitmap;
 
-/// Render scale for opening a document so the page fills the screen.
-/// Política "cover": la página llena la ventana en ancho Y alto; el sobrante
-/// (márgenes) se recorta. Sin letterbox.
-///
-/// Fórmula: `scale = max(win_w / page_w, win_h / page_h)` con `win_*` como f32
-/// (el doble cast de `i32` a `f32` es intencional: sin él, la división entera
-/// truncaría). El zoom continuo se multiplica DESPUÉS en el caller.
-///
-/// Clamp de seguridad: si `page_w` o `page_h` no son finitos positivos (p. ej.
-/// página corrupta con tamaño 0, que daría división por cero → +∞, o NaN) el
-/// cociente deja de ser un número finito > 0 y se devuelve 1.0 (escala neutra,
-/// 1 px = 1 pt, 72 dpi) en vez de propagar ∞/NaN al render.
-pub fn initial_scale(page_w: f32, page_h: f32, win_w: i32, win_h: i32) -> f32 {
-    // Cover: llenar la pantalla recortando el exceso. `max` en vez del `min`
-    // de contain. El chequeo del resultado cubre la división por cero
-    // (`page_w == 0.0` → +∞) y los tamaños NaN/negativos: no hace falta
-    // comprobar `page_w`/`page_h` por separado.
-    let cover = (win_w as f32 / page_w).max(win_h as f32 / page_h);
-    if cover.is_finite() && cover > 0.0 {
-        cover
+/// Convert the fixed 12 dp interface margin to the window's physical pixels.
+pub(crate) fn viewport_margin_px(density_dpi: u32) -> f32 {
+    12.0 * density_dpi.max(1) as f32 / 160.0
+}
+
+/// Render scale for opening a document with its complete visible box in view.
+pub(crate) fn initial_scale_with_margin(
+    page_w: f32,
+    page_h: f32,
+    win_w: i32,
+    win_h: i32,
+    margin_px: f32,
+) -> f32 {
+    let margin = if margin_px.is_finite() {
+        margin_px.max(0.0)
+    } else {
+        0.0
+    };
+    let available_w = (win_w as f32 - 2.0 * margin).max(1.0);
+    let available_h = (win_h as f32 - 2.0 * margin).max(1.0);
+    let contain = (available_w / page_w).min(available_h / page_h);
+    if page_w.is_finite()
+        && page_w > 0.0
+        && page_h.is_finite()
+        && page_h > 0.0
+        && contain.is_finite()
+        && contain > 0.0
+    {
+        contain
     } else {
         1.0
     }
+}
+
+/// Center the complete visible page in the window at its opening scale.
+pub(crate) fn page_origin(
+    page_w: f32,
+    page_h: f32,
+    scale: f32,
+    win_w: i32,
+    win_h: i32,
+    _margin_px: f32,
+) -> (f32, f32) {
+    (
+        (win_w as f32 - page_w * scale) / 2.0,
+        (win_h as f32 - page_h * scale) / 2.0,
+    )
 }
 
 /// Umbral de "blanco de papel": un píxel se considera margen si sus canales
@@ -63,12 +78,9 @@ const WHITE_THRESHOLD: u8 = 245;
 /// (ancho = `right - left`, alto = `bottom - top`); `None` si la página está
 /// completamente en blanco o el bitmap está vacío/corrupto.
 ///
-/// Coste O(ancho × alto), una sola pasada por píxel. Pensada para llamarse
-/// UNA vez al abrir/cambiar de página y cachear el rect — NUNCA en el camino
-/// de render o scroll (60 fps, presupuesto < 16,6 ms/frame). La política
-/// "cover" de `initial_scale` ya recorta por los bordes geométricamente; este
-/// rect permite recortar además los MÁRGENES BLANCOS reales (páginas
-/// escaneadas con margen ancho de editorial) cuando el caller lo integre.
+/// Coste O(ancho × alto), una pasada por píxel. No tiene llamador en la app:
+/// el encuadre de página usa la caja visible del documento y no recorta por
+/// contenido de píxeles.
 ///
 /// `dead_code` intencional: API pública usada por tests unitarios (sin caller
 /// todavía en la app). En un cdylib rustc la marca dead_code aunque sea `pub`;
@@ -125,35 +137,51 @@ pub fn crop_margins(bitmap: &Bitmap) -> Option<(u32, u32, u32, u32)> {
 mod tests {
     use super::*;
 
-    /// Cobertura: sin letterbox — la escala es `max`, no `min`.
+    /// La página cabe dentro del viewport con el margen y centrado definidos.
     #[test]
-    fn initial_scale_is_cover_not_contain() {
-        // Página A4 en vertical (595×842) en ventana apaisada 1280×800:
-        // contain daría min(2.15, 0.95) = 0.95 (barras arriba/abajo);
-        // cover debe dar max(2.15, 0.95) = 2.15 (recorta los lados).
-        let scale = initial_scale(595.0, 842.0, 1280, 800);
-        let contain = (1280.0_f32 / 595.0).min(800.0_f32 / 842.0);
-        let cover = (1280.0_f32 / 595.0).max(800.0_f32 / 842.0);
-        assert_eq!(scale, cover);
-        assert!(scale > contain);
+    fn initial_scale_contains_page_inside_margin() {
+        let scale = initial_scale_with_margin(595.0, 842.0, 1280, 800, 24.0);
+        let expected = ((1280.0_f32 - 48.0) / 595.0).min((800.0_f32 - 48.0) / 842.0);
+        assert_eq!(scale, expected);
+        assert!(scale * 595.0 <= 1280.0 - 48.0);
+        assert!(scale * 842.0 <= 800.0 - 48.0);
     }
 
-    /// La escala llena ancho Y alto (según la dimensión limitante).
+    /// El origen de contain deja el mismo margen a ambos lados del eje.
     #[test]
-    fn initial_scale_fills_both_dimensions() {
-        let scale = initial_scale(595.0, 842.0, 1280, 800);
-        assert!(scale * 595.0 >= 1280.0 - 0.5); // ancho cubierto
-        assert!(scale * 842.0 >= 800.0 - 0.5); // alto cubierto
+    fn initial_origin_centers_page_inside_margin() {
+        let scale = initial_scale_with_margin(1440.0, 810.0, 1440, 2200, 24.0);
+        let (x, y) = page_origin(1440.0, 810.0, scale, 1440, 2200, 24.0);
+        let right = 1440.0 - (x + 1440.0 * scale);
+        let bottom = 2200.0 - (y + 810.0 * scale);
+        assert!((x - right).abs() <= 0.01);
+        assert!((y - bottom).abs() <= 0.01);
+        assert!(x >= 24.0 && y >= 24.0);
     }
 
     /// División por cero / NaN / negativos → fallback 1.0, nunca ∞/NaN.
     #[test]
     fn initial_scale_clamps_bad_page_sizes() {
-        assert_eq!(initial_scale(0.0, 842.0, 1280, 800), 1.0);
-        assert_eq!(initial_scale(595.0, 0.0, 1280, 800), 1.0);
-        assert_eq!(initial_scale(f32::NAN, 842.0, 1280, 800), 1.0);
-        assert_eq!(initial_scale(-595.0, 842.0, 1280, 800), 1.0);
-        assert_eq!(initial_scale(f32::INFINITY, 842.0, 1280, 800), 1.0);
+        assert_eq!(initial_scale_with_margin(0.0, 842.0, 1280, 800, 24.0), 1.0);
+        assert_eq!(initial_scale_with_margin(595.0, 0.0, 1280, 800, 24.0), 1.0);
+        assert_eq!(
+            initial_scale_with_margin(f32::NAN, 842.0, 1280, 800, 24.0),
+            1.0
+        );
+        assert_eq!(
+            initial_scale_with_margin(-595.0, 842.0, 1280, 800, 24.0),
+            1.0
+        );
+        assert_eq!(
+            initial_scale_with_margin(f32::INFINITY, 842.0, 1280, 800, 24.0),
+            1.0
+        );
+    }
+
+    #[test]
+    fn viewport_margin_converts_dp_using_display_density() {
+        assert_eq!(viewport_margin_px(160), 12.0);
+        assert_eq!(viewport_margin_px(320), 24.0);
     }
 
     /// crop_margins: recorta márgenes blancos en un bitmap sintético.

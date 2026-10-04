@@ -11,14 +11,19 @@
 //! process-wide lock is needed).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 use mupdf::{Colorspace, Matrix, TextBlockContent, TextPageFlags};
 
-use crate::engine::{Bitmap, Document, Error, PageText, RenderEngine, Result, TextSpan};
+use crate::engine::{
+    Bitmap, Document, Error, PageGeometry, PageRect, PageText, PageTransform, RenderEngine, Result,
+    TextSpan,
+};
 
 pub struct MupdfEngine;
+
+const PAGE_GEOMETRY_CACHE_CAPACITY: usize = 5;
 
 impl MupdfEngine {
     /// MuPDF links statically and bootstraps its context on first use, so
@@ -51,6 +56,7 @@ impl RenderEngine for MupdfEngine {
         Ok(MupdfDocument {
             inner: doc,
             display_lists: RefCell::new(HashMap::new()),
+            page_geometries: RefCell::new(VecDeque::new()),
         })
     }
 }
@@ -68,6 +74,9 @@ pub struct MupdfDocument {
     /// (mupdf-rs types are plain FFI pointers, no auto traits), which the
     /// compiler enforces if a future caller shares it across threads.
     display_lists: RefCell<HashMap<u32, mupdf::DisplayList>>,
+    /// Tiny immutable page metadata is retained after first access so frame
+    /// and gesture paths never ask MuPDF to recalculate the page transform.
+    page_geometries: RefCell<VecDeque<(u32, PageGeometry)>>,
 }
 
 impl MupdfDocument {
@@ -84,6 +93,32 @@ impl MupdfDocument {
         Ok(page)
     }
 
+    /// Reads and promotes a geometry entry in the five-page LRU. Metadata is
+    /// small, but an unbounded per-document map grows with every page visited.
+    fn cached_page_geometry(&self, page: u32) -> Option<PageGeometry> {
+        let mut cache = self.page_geometries.borrow_mut();
+        let index = cache
+            .iter()
+            .position(|(cached_page, _)| *cached_page == page)?;
+        let (_, geometry) = cache.remove(index)?;
+        cache.push_front((page, geometry));
+        Some(geometry)
+    }
+
+    fn cache_page_geometry(&self, page: u32, geometry: PageGeometry) {
+        let mut cache = self.page_geometries.borrow_mut();
+        if let Some(index) = cache
+            .iter()
+            .position(|(cached_page, _)| *cached_page == page)
+        {
+            cache.remove(index);
+        }
+        cache.push_front((page, geometry));
+        while cache.len() > PAGE_GEOMETRY_CACHE_CAPACITY {
+            cache.pop_back();
+        }
+    }
+
     /// Display list of `page`, building it on first use (F3.3). Retained in
     /// `display_lists` for the document's lifetime; dropped with the map.
     fn display_list_for(&self, page: u32) -> Result<std::cell::Ref<'_, mupdf::DisplayList>> {
@@ -96,6 +131,35 @@ impl MupdfDocument {
         }
         Ok(std::cell::Ref::map(self.display_lists.borrow(), |m| {
             &m[&page]
+        }))
+    }
+
+    /// Reads an inherited PDF page box without applying page rotation. The
+    /// mupdf-rs `PdfPage::crop_box()` helper combines the rotated bounds with
+    /// the crop-box offset, which does not describe the source box on rotated
+    /// pages; the page CTM handles rotation separately.
+    fn pdf_box(page: &mupdf::pdf::PdfPage, key: &str) -> Result<Option<PageRect>> {
+        let object = page.object();
+        let Some(array) = object
+            .get_dict_inheritable(key)
+            .map_err(|e| Error::Engine(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let mut coordinates = [0.0f32; 4];
+        for (index, coordinate) in coordinates.iter_mut().enumerate() {
+            let value = array
+                .get_array(index as i32)
+                .map_err(|e| Error::Engine(e.to_string()))?
+                .ok_or_else(|| Error::Engine(format!("invalid {key}: missing coordinate")))?;
+            *coordinate = value.as_float().map_err(|e| Error::Engine(e.to_string()))?;
+        }
+        let [x0, y0, x1, y1] = coordinates;
+        Ok(Some(PageRect {
+            x0: x0.min(x1),
+            y0: y0.min(y1),
+            x1: x0.max(x1),
+            y1: y0.max(y1),
         }))
     }
 
@@ -130,11 +194,53 @@ impl Document for MupdfDocument {
     }
 
     fn page_size(&self, page: u32) -> Result<(f32, f32)> {
-        let bounds = self
-            .load_page(page)?
+        let bounds = self.page_geometry(page)?.visible_bounds;
+        Ok((bounds.width(), bounds.height()))
+    }
+
+    fn page_geometry(&self, page: u32) -> Result<PageGeometry> {
+        if let Some(geometry) = self.cached_page_geometry(page) {
+            return Ok(geometry);
+        }
+
+        let page_obj = self.load_page(page)?;
+        let bounds = page_obj
             .bounds()
             .map_err(|e| Error::Engine(e.to_string()))?;
-        Ok((bounds.x1 - bounds.x0, bounds.y1 - bounds.y0))
+        let pdf_page =
+            mupdf::pdf::PdfPage::try_from(page_obj).map_err(|e| Error::Engine(e.to_string()))?;
+        let media = Self::pdf_box(&pdf_page, "MediaBox")?
+            .ok_or_else(|| Error::Engine("page has no valid MediaBox".to_string()))?;
+        let crop = Self::pdf_box(&pdf_page, "CropBox")?.unwrap_or(media);
+        let ctm = pdf_page.ctm().map_err(|e| Error::Engine(e.to_string()))?;
+        let geometry = PageGeometry {
+            visible_bounds: PageRect {
+                x0: bounds.x0,
+                y0: bounds.y0,
+                x1: bounds.x1,
+                y1: bounds.y1,
+            },
+            media_box: PageRect {
+                x0: media.x0,
+                y0: media.y0,
+                x1: media.x1,
+                y1: media.y1,
+            },
+            crop_box: crop,
+            rotation: pdf_page
+                .rotation()
+                .map_err(|e| Error::Engine(e.to_string()))?,
+            pdf_to_page: PageTransform {
+                a: ctm.a,
+                b: ctm.b,
+                c: ctm.c,
+                d: ctm.d,
+                e: ctm.e,
+                f: ctm.f,
+            },
+        };
+        self.cache_page_geometry(page, geometry);
+        Ok(geometry)
     }
 
     fn render_page(&self, page: u32, scale: f32) -> Result<Bitmap> {
@@ -186,5 +292,107 @@ impl Document for MupdfDocument {
             .collect();
 
         Ok(PageText { text, spans })
+    }
+}
+
+#[cfg(test)]
+mod geometry_cache_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_PDF: AtomicU64 = AtomicU64::new(0);
+
+    struct TempPdf(std::path::PathBuf);
+
+    impl Drop for TempPdf {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn multi_page_pdf(page_count: u32) -> TempPdf {
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            format!(
+                "<< /Type /Pages /Kids [{}] /Count {page_count} >>",
+                (0..page_count)
+                    .map(|page| format!("{} 0 R", page + 3))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        ];
+        for page in 0..page_count {
+            let stream_id = page_count + page + 3;
+            objects.push(format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> /Contents {stream_id} 0 R >>"
+            ));
+        }
+        for _ in 0..page_count {
+            objects.push("<< /Length 0 >>\nstream\n\nendstream".to_string());
+        }
+
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::with_capacity(objects.len());
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref_offset = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+
+        let path = std::env::temp_dir().join(format!(
+            "pdflector-geometry-cache-{}-{}.pdf",
+            std::process::id(),
+            NEXT_TEMP_PDF.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, pdf).unwrap();
+        TempPdf(path)
+    }
+
+    #[test]
+    fn geometry_metadata_cache_stays_within_five_pages() {
+        let path = multi_page_pdf(8);
+        let doc = MupdfEngine::new().unwrap().open(&path.0).unwrap();
+
+        for page in 0..doc.page_count() {
+            doc.page_geometry(page).unwrap();
+        }
+
+        assert!(
+            doc.page_geometries.borrow().len() <= 5,
+            "metadata cache retained {} pages after visiting 8",
+            doc.page_geometries.borrow().len()
+        );
+    }
+
+    #[test]
+    fn geometry_metadata_cache_promotes_hits_before_evicting() {
+        let path = multi_page_pdf(7);
+        let doc = MupdfEngine::new().unwrap().open(&path.0).unwrap();
+
+        for page in 0..5 {
+            doc.page_geometry(page).unwrap();
+        }
+        doc.page_geometry(0).unwrap();
+        doc.page_geometry(5).unwrap();
+
+        let cached_pages = doc
+            .page_geometries
+            .borrow()
+            .iter()
+            .map(|(page, _)| *page)
+            .collect::<Vec<_>>();
+        assert_eq!(cached_pages, vec![5, 0, 4, 3, 2]);
     }
 }
