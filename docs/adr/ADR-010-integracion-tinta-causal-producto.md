@@ -1,7 +1,7 @@
 # ADR-010 — Integrar tinta causal de baja latencia en el producto Android
 
-> **Estado:** arquitectura aprobada por el propietario el 2026-09-24;
-> implementación en validación. Sustituye para el producto la decisión
+> **Estado:** cumplida y con verificación funcional manual confirmada por el
+> propietario el 2026-09-26. Sustituye para el producto la decisión
 > experimental de [ADR-009](ADR-009-evaluacion-tinta-causal-front-buffer.md),
 > sin reescribir lo que aquella autorizaba en su momento.
 
@@ -50,12 +50,20 @@ estructura, sin convertir otra APK experimental en requisito de aprobación.
 
 ## Verificación y límites de evidencia
 
-El build, la firma, la instalación conservando datos, el arranque, los gestos
-con lápiz, la transición wet→dry, la cancelación, el cambio de página y el
-ciclo de vida deben comprobarse por separado. El experimento anterior
-demuestra alineación, no latencia ni calidad integradas. Los percentiles
-objetivo de `AGENTS.md` siguen siendo presupuestos, no resultados medidos.
-La evidencia obtenida se registra en `docs/benchmark-results.md`.
+El propietario confirma el cierre funcional manual de los flujos de continuidad
+a zoom alto, wet→dry, interacción durante la escritura, cambio de página y
+pérdida de superficie en la TCL 9469X con la aplicación principal abierta. En
+la escritura, el contacto de dedos se ignora para evitar que la hoja se mueva.
+La tinta asentada no tiene una acción disponible para quitarla en el flujo
+comprobado; el propietario indica que esa capacidad ya está prevista para
+trabajo posterior y queda fuera de este ADR.
+
+La captura de continuidad muestra tinta antes de levantar el lápiz. Wet→dry y
+los demás resultados fueron confirmados por el propietario, pero no todos
+cuentan con una captura o log utilizable de esta sesión. La evidencia y sus
+límites se registran en `docs/benchmark-results.md`. Esta verificación es
+funcional: no mide latencia, refresco efectivo, frames perdidos ni presupuestos
+de rendimiento. Los objetivos de `AGENTS.md` siguen sin ser resultados medidos.
 
 ## Reversión
 

@@ -294,9 +294,14 @@ La firma SHA-256 coincide con la aplicación previamente instalada y
 `adb install -r` conservó sus datos. Un primer arranque falló por falta de
 tema AppCompat; se corrigió el manifiesto y la actualización posterior
 arrancó, cargó el documento y las 37 anotaciones preexistentes, y creó la
-superficie EGL. La tablet estaba bloqueada durante esta observación: todavía
-no hay validación física de trazo, subrayado, wet→dry ni percentiles de
-latencia de la APK integrada. Los detalles se registran en
+superficie EGL. La tablet estaba bloqueada durante esta observación, por lo que
+entonces no se validó físicamente el trazo. El propietario completó y confirmó
+la verificación funcional manual de ADR-010 el 2026-09-26 en la TCL 9469X:
+continuidad a zoom alto, wet→dry, interacción de dedos durante escritura,
+cambio de página y pérdida de superficie. La tinta asentada no tiene una acción
+disponible para quitarla en el flujo comprobado; esa capacidad queda para
+trabajo posterior ya previsto. No se midieron percentiles de latencia ni
+refresco efectivo. Los detalles y límites de evidencia están en
 `docs/benchmark-results.md`.
 
 ## 5. Contradicciones y límites detectados

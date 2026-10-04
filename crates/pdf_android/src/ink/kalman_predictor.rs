@@ -76,7 +76,7 @@ impl KalmanFilter1D {
 
         let fp10 = p[1][0] + p[2][0] * dt;
         let fp11 = p[1][1] + p[2][1] * dt;
-        let fp12 = p[1][2] + p[2][1] * dt;
+        let fp12 = p[1][2] + p[2][2] * dt;
 
         let fp20 = p[2][0];
         let fp21 = p[2][1];
