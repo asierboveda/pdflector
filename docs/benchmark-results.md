@@ -406,6 +406,91 @@ Este documento es el **registro único y canónico de evidencia empírica** de r
 
 ---
 
+## 2026-09-26 — Verificación funcional manual de la tinta integrada (ADR-010)
+
+- **Clasificación:** verificación funcional declarada y confirmada por el
+  propietario en la TCL NXTPaper 11 Plus 9469X, con `PdfLectorActivity` en
+  primer plano. La sesión no recogió versión Android, versionCode instalada,
+  estado térmico ni refresco efectivo. No es una medición de rendimiento.
+- **Continuidad a zoom alto:** durante un trazo físico continuo la tinta ya
+  aparece antes de levantar el lápiz. El propietario lo confirmó y el vídeo de
+  pantalla lo muestra en el fotograma de aproximadamente 4 s:
+  `/tmp/pdflector-continuidad.h264` (fotograma:
+  `/tmp/pdflector-continuidad-frame100.png`).
+- **Wet→dry:** el propietario informa que el trazo permaneció igual tras
+  levantar el lápiz. La captura `/tmp/pdflector-wet-dry.h264` solo decodifica
+  un fotograma y no permite comprobar visualmente la transición.
+- **Interacción durante escritura y cancelación:** el propietario aclara que
+  los contactos de dedos se ignoran mientras se escribe para no desplazar la
+  hoja. En la secuencia de cancelación solicitada, el resultado reportado fue
+  «la tinta permaneció o quedó anotación»; la captura
+  `/tmp/pdflector-cancelacion.h264` solo tiene un fotograma y no permite
+  separar tinta provisional de anotaciones ya asentadas. El propietario
+  confirma que no hay una acción disponible para quitar tinta asentada; esa
+  capacidad queda para trabajo posterior ya previsto.
+- **Cambio de página durante el trazo y pérdida de superficie:** el propietario
+  declara ambos flujos comprobados y conformes. No se obtuvo captura o log
+  utilizable de esos dos casos en esta sesión, por lo que el registro conserva
+  explícitamente su carácter de confirmación del propietario.
+- **Cierre:** el propietario da por cumplida y verificada funcionalmente la
+  integración de ADR-010. No se infieren latencia, refresco, estabilidad
+  temporal ni cumplimiento de los presupuestos de `AGENTS.md`.
+
+---
+
+## 2026-09-26 — Resolución del fallo de proyección Kalman (ADR-010)
+
+- **Alcance:** se cierra el fallo de
+  `ink::tests::test_proyeccion_kalman_y_modulacion`. Esa verificación unitaria,
+  por sí sola, no cerraba ADR-010; la verificación funcional manual posterior
+  del mismo día queda registrada en la entrada anterior.
+- **Diagnóstico confirmado:** en la propagación `F·P` de
+  `KalmanFilter1D::update`, `fp12` usaba `p[2][1] * dt` donde la matriz exige
+  `p[2][2] * dt`. El término omitía la varianza de aceleración al propagar la
+  covarianza velocidad-aceleración. No había discrepancia de unidades ni del
+  horizonte: el test alimenta puntos cada `0.004 s`, usa `500 pt/s` y el
+  predictor rectilíneo conserva su horizonte de `0.030 s` (`15 pt`).
+- **Cambio aplicado:** se corrigió únicamente ese índice en
+  `crates/pdf_android/src/ink/kalman_predictor.rs`. No se cambió el test ni se
+  relajó su esperado.
+- **Reproducción anterior al fix:** en la TCL NXTPaper 11 Plus 9469X, el test
+  Android ARM64 informó `lead: 9.47 pt vs esperado 15.00 pt` y falló.
+- **Verificación posterior:** el mismo test, compilado para
+  `aarch64-linux-android` y ejecutado por ADB en la TCL, pasó: `1 passed; 0
+  failed; 0 ignored; 0 measured; 55 filtered out`. No se midieron latencia ni
+  calidad visual del trazo en esta ejecución unitaria.
+- **Suite de `pdf_core`:** `cargo test -p pdf_core` terminó con código 0:
+  181 pruebas pasaron, 0 fallaron; 0 doctests.
+- **Límite:** esta prueba unitaria, por sí sola, solo cierra el fallo de la
+  proyección; no valida otros criterios funcionales de tinta. El cierre manual
+  posterior de ADR-010 queda documentado en la entrada más reciente.
+
+---
+
+## 2026-09-26 — Alineación de tinta integrada en TCL, vertical y horizontal
+
+- **Clasificación:** observación funcional manual; no es una medición de
+  rendimiento.
+- **Hardware:** TCL NXTPaper 11 Plus 9469X, Android 16/API 36, ADB
+  `A06B4A8E6774623`. Captura vertical 1440×2200 y horizontal 2200×1440.
+  No se registraron temperatura ni condiciones de batería.
+- **Build:** `com.pdflector.app`, versionCode `16777473`, firma igual a la
+  instalación existente. Build candidata basada en `2b4d108`, con la
+  corrección local de proyección de `InkGlRenderer.kt`, aún sin commit.
+- **Flujo y resultado:** el propietario hizo trazos cortos en ambas
+  orientaciones y confirmó que la tinta quedó alineada con la punta. Durante
+  una lectura activa se observó 120 Hz; en reposo se observó 60 Hz. Son
+  observaciones puntuales, no una serie de muestras.
+- **Sin medir:** latencia lápiz→píxel, continuidad, frames perdidos, coste por
+  evento, repintado nativo adicional, transición Wet→Dry, PSS y estado térmico.
+  No se puede concluir sobre H2 ni H3 con esta prueba.
+- **Limpieza de marcas:** tras la indicación del propietario de deshacerlas,
+  una captura posterior no mostró el trazo de prueba en la página visible. El
+  propietario cree que las marcas se deshicieron; no se confirmó una inspección
+  completa de todas las páginas.
+
+---
+
 ## 2026-09-24 — Integración de la APK principal: build e inicio, sin medición de tinta
 
 - **Clasificación:** validación funcional parcial, no benchmark de latencia.

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Fase D: consulta a un LLM — local vía Ollama o en la nube vía
-//! Groq/Gemini (docs/plan/NEXT-PLAN.md).
+//! Consulta a un LLM — local vía Ollama o en la nube vía Groq/Gemini.
 //!
 //! Four pieces, all UI-independent (pdf_core rules §4):
 //!

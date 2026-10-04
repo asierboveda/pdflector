@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Frame timing and memory metrics for the debug overlay (docs/plan/NEXT-PLAN.md, Fase A).
+//! Frame timing and memory metrics for the debug overlay.
 //!
 //! `FrameTimer` keeps a ring buffer of the last frame durations and answers
 //! percentile queries (the p95 frame time target is < 16.6 ms at 60 fps,

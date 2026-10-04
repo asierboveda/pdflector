@@ -5,7 +5,7 @@
 ## Reglas
 
 - **`AGENTS.md` manda** sobre todo lo demás: es el contrato operativo para agentes y humanos.
-- **El repo es la verdad de plan y diseño.** GitHub Issues es solo la cola de trabajo.
+- **GitHub Issues es la única cola de trabajo pendiente.** El repo no mantiene un roadmap ni un backlog paralelo (`AGENTS.md` §3).
 - **Nada de documentos zombie.** Un documento que no sirve para una decisión futura se borra, no se congela con un banner.
 - **Toda afirmación de rendimiento exige fecha + hardware + flujo medido + métrica.** Si no hay medición, se escribe `SIN MEDIR`.
 
@@ -24,22 +24,8 @@
 
 | Documento | Contenido |
 |---|---|
+| [`../ESTADO_ACTUAL.md`](../ESTADO_ACTUAL.md) | Instantánea factual del software que existe, contrastada con el código |
 | [`PROYECTO.md`](PROYECTO.md) | Visión, plataforma y alcance |
-
-### Plan
-
-| Documento | Contenido |
-|---|---|
-| [`plan/NEXT-PLAN.md`](plan/NEXT-PLAN.md) | **Único roadmap editable**: fases A–F |
-| [`plan/00-objetivo.md`](plan/00-objetivo.md) | Norte del producto: prioridades y métricas |
-| [`plan/DEUDA.md`](plan/DEUDA.md) | Deuda técnica medida y backlog de arquitectura |
-| [`plan/A-latencia.md`](plan/A-latencia.md) | Fase A — instrumentación y harness |
-| [`plan/B-subrayado.md`](plan/B-subrayado.md) | Fase B — subrayado sin latencia (cerrada) |
-| [`plan/C-pintado.md`](plan/C-pintado.md) | Fase C — pintado a mano alzada (GPU dry/wet) |
-| [`plan/D-ia-contexto.md`](plan/D-ia-contexto.md) | Fase D — IA con contexto del documento |
-| [`plan/E-library.md`](plan/E-library.md) | Fase E — biblioteca |
-| [`plan/F-arxiv.md`](plan/F-arxiv.md) | Fase F — arXiv / Discover |
-| [`plan/README.md`](plan/README.md) | Mapa del directorio de plan |
 
 ### Decisiones (ADR)
 
@@ -55,6 +41,8 @@ Snapshots inmutables con `Estado` y `Fecha`. No se reescriben; se sustituyen con
 | [`ADR-006`](adr/ADR-006-motor-stylus-baja-latencia.md) | Motor de stylus de baja latencia (EGL/GLES2) |
 | [`ADR-007`](adr/ADR-007-pipeline-wet-dry-ink.md) | Pipeline de tinta en dos capas (wet/dry) |
 | [`ADR-008`](adr/ADR-008-integracion-zoom-ux-stylus.md) | Integración de zoom + UI/UX sobre el stack de stylus |
+| [`ADR-009`](adr/ADR-009-evaluacion-tinta-causal-front-buffer.md) | Evaluación aislada de tinta causal y front buffer (experimento) |
+| [`ADR-010`](adr/ADR-010-integracion-tinta-causal-producto.md) | Integración de la tinta causal en el producto Android — **sustituye ADR-009 para el producto** |
 
 ### Evidencia y registro
 

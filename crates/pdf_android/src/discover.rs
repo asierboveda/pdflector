@@ -3,7 +3,7 @@
 
 //! Worker de fondo y caché de feeds para la funcionalidad Discover de arXiv.
 //!
-//! Conforme al diseño de `docs/plan/F-arxiv.md` (Fase F):
+//! Diseño de Discover (catálogo e integración con arXiv):
 //! - 1 hilo, 1 conexión, rate limit respetado vía `ArxivClient`.
 //! - Descarga streaming en bloques de 8KB a fichero temporal `.part` y rename atómico.
 //! - FeedCache en disco: límite ≤ 4 MiB, LRU, TTL de 10 minutos.
