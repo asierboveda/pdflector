@@ -181,6 +181,11 @@ coordenadas de página. La ruta conectada del bolígrafo usa muestras reales
 mediante `ink/engine.rs` y `ink/causal.rs`, sin extrapolación futura. El
 resaltador mantiene su camino de selección de texto.
 
+En `PointerUp`, levantar el stylus finaliza el gesto de herramienta; levantar
+otro puntero mientras el dibujo está activo lo cancela y limpia el estado del
+gesto. La cobertura unitaria de ambas decisiones está en
+`crates/pdf_android/src/input/motion.rs`.
+
 El movimiento de pinch actualiza la transformación sin renderizar cada evento;
 al finalizar solicita el bitmap nítido. La aplicación conserva rutas CPU de
 composición/blit como apoyo, pero la presentación principal del visor está

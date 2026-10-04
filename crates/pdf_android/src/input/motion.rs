@@ -537,13 +537,14 @@ pub(crate) fn handle_motion(
                 reader.gesture.pointers.remove(idx);
             }
             match reader.gesture.kind {
-                GestureKind::ToolDrawing if pointer_up_finishes_tool_gesture(up_is_stylus) => {
-                    if let Some((_, x, y)) = up {
-                        reader.update_tool_gesture(x, y, event_time, stylus_pressure);
-                        reader.end_tool_gesture(x, y);
-                    } else {
-                        reader.cancel_tool_gesture();
-                    }
+                GestureKind::ToolDrawing => {
+                    dispatch_tool_pointer_up(
+                        pointer_up_tool_action(up_is_stylus),
+                        up,
+                        event_time,
+                        stylus_pressure,
+                        reader,
+                    );
                     // El dedo/palma restante no hereda el gesto de dibujo.
                     reader.gesture.kind = GestureKind::None;
                     reader.gesture.press_at = None;
@@ -602,9 +603,53 @@ pub(crate) fn handle_motion(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerUpToolAction {
+    Finish,
+    Cancel,
+}
+
+trait ToolPointerUpTarget {
+    fn finish_tool_pointer_up(&mut self, x: f32, y: f32, time_ns: i64, pressure: f32);
+    fn cancel_tool_pointer_up(&mut self);
+}
+
+impl ToolPointerUpTarget for Reader {
+    fn finish_tool_pointer_up(&mut self, x: f32, y: f32, time_ns: i64, pressure: f32) {
+        self.update_tool_gesture(x, y, time_ns, pressure);
+        self.end_tool_gesture(x, y);
+    }
+
+    fn cancel_tool_pointer_up(&mut self) {
+        self.cancel_tool_gesture();
+    }
+}
+
+fn dispatch_tool_pointer_up<T: ToolPointerUpTarget>(
+    action: PointerUpToolAction,
+    up: Option<(i32, f32, f32)>,
+    time_ns: i64,
+    pressure: f32,
+    target: &mut T,
+) {
+    if action == PointerUpToolAction::Finish {
+        if let Some((_, x, y)) = up {
+            target.finish_tool_pointer_up(x, y, time_ns, pressure);
+        } else {
+            target.cancel_tool_pointer_up();
+        }
+    } else {
+        target.cancel_tool_pointer_up();
+    }
+}
+
 #[inline]
-fn pointer_up_finishes_tool_gesture(up_is_stylus: bool) -> bool {
-    up_is_stylus
+fn pointer_up_tool_action(up_is_stylus: bool) -> PointerUpToolAction {
+    if up_is_stylus {
+        PointerUpToolAction::Finish
+    } else {
+        PointerUpToolAction::Cancel
+    }
 }
 
 /// Tap sobre la lista activa (picker interno o biblioteca MediaStore).
@@ -1515,9 +1560,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pointer_up_ends_tool_drawing_only_when_lifted_pointer_is_stylus() {
-        assert!(pointer_up_finishes_tool_gesture(true));
-        assert!(!pointer_up_finishes_tool_gesture(false));
+    fn pointer_up_routes_stylus_to_finish_and_other_pointer_to_cancel() {
+        assert_eq!(pointer_up_tool_action(true), PointerUpToolAction::Finish);
+        assert_eq!(pointer_up_tool_action(false), PointerUpToolAction::Cancel);
+    }
+
+    #[derive(Default)]
+    struct FakeToolPointerUpTarget {
+        finishes: usize,
+        cancels: usize,
+    }
+
+    impl ToolPointerUpTarget for FakeToolPointerUpTarget {
+        fn finish_tool_pointer_up(&mut self, _x: f32, _y: f32, _time_ns: i64, _pressure: f32) {
+            self.finishes += 1;
+        }
+
+        fn cancel_tool_pointer_up(&mut self) {
+            self.cancels += 1;
+        }
+    }
+
+    #[test]
+    fn pointer_up_dispatch_finishes_only_the_lifted_stylus() {
+        let mut target = FakeToolPointerUpTarget::default();
+
+        dispatch_tool_pointer_up(
+            PointerUpToolAction::Finish,
+            Some((0, 20.0, 30.0)),
+            9,
+            0.7,
+            &mut target,
+        );
+
+        assert_eq!(target.finishes, 1);
+        assert_eq!(target.cancels, 0);
+    }
+
+    #[test]
+    fn pointer_up_dispatch_cancels_for_other_pointer_or_missing_coordinates() {
+        let mut target = FakeToolPointerUpTarget::default();
+
+        dispatch_tool_pointer_up(
+            PointerUpToolAction::Cancel,
+            Some((1, 20.0, 30.0)),
+            9,
+            0.7,
+            &mut target,
+        );
+        dispatch_tool_pointer_up(PointerUpToolAction::Finish, None, 9, 0.7, &mut target);
+
+        assert_eq!(target.finishes, 0);
+        assert_eq!(target.cancels, 2);
     }
 
     #[test]

@@ -16,9 +16,50 @@ use super::ffi as gl;
 use super::shaders::mat3_scale_translate;
 use super::surface::Gpu;
 
-#[inline]
-fn dry_page_reconciles_pending_ink(pending_page: u32, dry_rendered_page: Option<u32>) -> bool {
-    dry_rendered_page == Some(pending_page)
+#[derive(Debug, PartialEq, Eq)]
+struct PendingInkClearState {
+    pending: Option<(u32, u64)>,
+    settled: Option<(u32, u64)>,
+    clear_overlay: bool,
+}
+
+fn reconcile_pending_ink(
+    pending: Option<(u32, u64)>,
+    settled: Option<(u32, u64)>,
+    dry_rendered_page: Option<u32>,
+    ink_active: bool,
+    current_page: u32,
+    dry_matches_view: bool,
+    no_document: bool,
+) -> PendingInkClearState {
+    let Some((pending_page, pending_id)) = pending else {
+        return PendingInkClearState {
+            pending,
+            settled,
+            clear_overlay: false,
+        };
+    };
+    let mut settled = settled;
+    if dry_rendered_page == Some(pending_page) {
+        settled = Some((pending_page, pending_id));
+    }
+
+    let target_page_left_view = pending_page != current_page && dry_matches_view;
+    if !ink_active
+        && (settled == Some((pending_page, pending_id)) || target_page_left_view || no_document)
+    {
+        PendingInkClearState {
+            pending: None,
+            settled: None,
+            clear_overlay: true,
+        }
+    } else {
+        PendingInkClearState {
+            pending,
+            settled,
+            clear_overlay: false,
+        }
+    }
 }
 
 /// Vertex de tinta: posición en PANTALLA (px, y abajo) + offset perpendicular
@@ -960,28 +1001,28 @@ impl Gpu {
             // versión autoritativa sin esa tinta. La limpieza se difiere
             // mientras otro gesto Ink use el overlay.
             if let Some((pending_page, pending_id)) = reader.pending_ink_clear {
-                if dry_page_reconciles_pending_ink(pending_page, dry_rendered_page) {
-                    self.settled_ink = Some((pending_page, pending_id));
-                }
-
                 let ink_active = reader
                     .tool_gesture
                     .as_ref()
                     .is_some_and(|gesture| gesture.tool == crate::annotations::ToolKind::Ink);
                 let dry_matches_view = reader.fallback_page.is_none()
                     && self.dry_key.is_some_and(|dry_key| dry_key == key);
-                let target_page_left_view = pending_page != reader.page && dry_matches_view;
                 let no_document = reader.doc.is_none();
-                if !ink_active
-                    && (self.settled_ink == Some((pending_page, pending_id))
-                        || target_page_left_view
-                        || no_document)
-                {
+                let state = reconcile_pending_ink(
+                    Some((pending_page, pending_id)),
+                    self.settled_ink,
+                    dry_rendered_page,
+                    ink_active,
+                    reader.page,
+                    dry_matches_view,
+                    no_document,
+                );
+                self.settled_ink = state.settled;
+                if state.clear_overlay {
                     if let Some(overlay) = reader.ink_overlay.as_ref() {
                         overlay.clear();
                     }
-                    reader.pending_ink_clear = None;
-                    self.settled_ink = None;
+                    reader.pending_ink_clear = state.pending;
                 }
             }
         }
@@ -1219,12 +1260,61 @@ impl<'a> OverlayList<'a> {
 
 #[cfg(test)]
 mod ink_clear_tests {
-    use super::dry_page_reconciles_pending_ink;
+    use super::reconcile_pending_ink;
 
     #[test]
-    fn rendered_pending_page_reconciles_even_when_its_annotation_was_erased() {
-        assert!(dry_page_reconciles_pending_ink(4, Some(4)));
-        assert!(!dry_page_reconciles_pending_ink(4, Some(3)));
-        assert!(!dry_page_reconciles_pending_ink(4, None));
+    fn dry_ack_is_remembered_until_the_active_ink_gesture_ends() {
+        let pending = Some((4, 17));
+
+        let after_dry = reconcile_pending_ink(pending, None, Some(4), true, 4, true, false);
+        assert_eq!(after_dry.pending, pending);
+        assert_eq!(after_dry.settled, pending);
+        assert!(!after_dry.clear_overlay);
+
+        let after_gesture = reconcile_pending_ink(
+            after_dry.pending,
+            after_dry.settled,
+            None,
+            false,
+            4,
+            true,
+            false,
+        );
+        assert_eq!(after_gesture.pending, None);
+        assert_eq!(after_gesture.settled, None);
+        assert!(after_gesture.clear_overlay);
+    }
+
+    #[test]
+    fn another_dry_page_does_not_acknowledge_pending_ink() {
+        let pending = Some((4, 17));
+
+        let after = reconcile_pending_ink(pending, None, Some(3), false, 4, true, false);
+
+        assert_eq!(after.pending, pending);
+        assert_eq!(after.settled, None);
+        assert!(!after.clear_overlay);
+    }
+
+    #[test]
+    fn pending_ink_is_cleared_when_its_page_leaves_the_view_or_document_closes() {
+        let pending = Some((4, 17));
+
+        assert_eq!(
+            reconcile_pending_ink(pending, None, Some(5), false, 5, true, false),
+            super::PendingInkClearState {
+                pending: None,
+                settled: None,
+                clear_overlay: true,
+            }
+        );
+        assert_eq!(
+            reconcile_pending_ink(pending, None, None, false, 4, false, true),
+            super::PendingInkClearState {
+                pending: None,
+                settled: None,
+                clear_overlay: true,
+            }
+        );
     }
 }

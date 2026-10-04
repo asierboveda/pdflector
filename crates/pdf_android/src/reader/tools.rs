@@ -11,6 +11,110 @@ use crate::annotations::ToolKind;
 use log::{error, info};
 use pdf_core::{Annotation, Gesture, Stroke};
 
+trait InkOverlayOps {
+    fn is_ready(&self) -> bool;
+    fn render_segment(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        width_px: f32,
+        color_argb: i32,
+    ) -> bool;
+    fn commit(&mut self);
+    fn cancel(&mut self);
+}
+
+impl InkOverlayOps for crate::jni::InkOverlay {
+    fn is_ready(&self) -> bool {
+        crate::jni::InkOverlay::is_ready(self)
+    }
+
+    fn render_segment(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        width_px: f32,
+        color_argb: i32,
+    ) -> bool {
+        crate::jni::InkOverlay::render_segment(self, x0, y0, x1, y1, width_px, color_argb)
+    }
+
+    fn commit(&mut self) {
+        crate::jni::InkOverlay::commit(self);
+    }
+
+    fn cancel(&mut self) {
+        crate::jni::InkOverlay::cancel(self);
+    }
+}
+
+fn commit_used_ink_overlay<O: InkOverlayOps>(
+    overlay: &mut O,
+    overlay_used: bool,
+    page: u32,
+    annotation_id: u64,
+) -> Option<(u32, u64)> {
+    if !overlay_used {
+        return None;
+    }
+    if overlay.is_ready() {
+        overlay.commit();
+        Some((page, annotation_id))
+    } else {
+        overlay.cancel();
+        None
+    }
+}
+
+fn cancel_used_ink_overlay<O: InkOverlayOps>(overlay: &mut O, overlay_used: bool) {
+    if overlay_used {
+        overlay.cancel();
+    }
+}
+
+fn submit_ink_overlay_segment_for_gesture<O: InkOverlayOps>(
+    gesture: &mut ToolGesture,
+    overlay: Option<&mut O>,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    scale: f32,
+) {
+    if !gesture.ink_overlay_route {
+        return;
+    }
+    let Some(engine) = gesture.ink_engine.as_ref() else {
+        return;
+    };
+    let style = engine.style();
+    let was_used = gesture.ink_overlay_used;
+    let Some(overlay) = overlay else {
+        return;
+    };
+    if !overlay.is_ready() {
+        cancel_used_ink_overlay(overlay, was_used);
+        gesture.ink_overlay_used = false;
+        gesture.ink_overlay_route = false;
+        return;
+    }
+    let color_argb = ((style.color.a as i32) << 24)
+        | ((style.color.r as i32) << 16)
+        | ((style.color.g as i32) << 8)
+        | style.color.b as i32;
+    if overlay.render_segment(x0, y0, x1, y1, style.width * scale, color_argb) {
+        gesture.ink_overlay_used = true;
+    } else {
+        cancel_used_ink_overlay(overlay, true);
+        gesture.ink_overlay_route = false;
+        gesture.ink_overlay_used = false;
+    }
+}
+
 /// Starts a tool gesture from the real Down sample.
 #[inline]
 fn new_tool_gesture(
@@ -201,36 +305,15 @@ impl Reader {
         let Some(gesture) = self.tool_gesture.as_mut() else {
             return;
         };
-        let Some(engine) = gesture.ink_engine.as_ref() else {
-            return;
-        };
-        if !gesture.ink_overlay_route {
-            return;
-        }
-        let style = engine.style();
-        let was_used = gesture.ink_overlay_used;
-        let Some(overlay) = self.ink_overlay.as_mut() else {
-            return;
-        };
-        if !overlay.is_ready() {
-            if was_used {
-                overlay.cancel();
-                gesture.ink_overlay_used = false;
-            }
-            gesture.ink_overlay_route = false;
-            return;
-        }
-        let color_argb = ((style.color.a as i32) << 24)
-            | ((style.color.r as i32) << 16)
-            | ((style.color.g as i32) << 8)
-            | style.color.b as i32;
-        if overlay.render_segment(x0, y0, x1, y1, style.width * scale, color_argb) {
-            gesture.ink_overlay_used = true;
-        } else {
-            overlay.cancel();
-            gesture.ink_overlay_route = false;
-            gesture.ink_overlay_used = false;
-        }
+        submit_ink_overlay_segment_for_gesture(
+            gesture,
+            self.ink_overlay.as_mut(),
+            x0,
+            y0,
+            x1,
+            y1,
+            scale,
+        );
     }
 
     /// Gesto de herramienta: al levantar crea la anotación persistida.
@@ -314,17 +397,10 @@ impl Reader {
                     if g.ink_overlay_used
                         && let Some(overlay) = self.ink_overlay.as_mut()
                     {
-                        if overlay.is_ready() {
-                            overlay.commit();
-                            self.pending_ink_clear = Some((g.page, id));
-                        } else {
-                            overlay.cancel();
-                        }
+                        self.pending_ink_clear = commit_used_ink_overlay(overlay, true, g.page, id);
                     }
-                } else if g.ink_overlay_used
-                    && let Some(overlay) = self.ink_overlay.as_mut()
-                {
-                    overlay.cancel();
+                } else if let Some(overlay) = self.ink_overlay.as_mut() {
+                    cancel_used_ink_overlay(overlay, g.ink_overlay_used);
                 }
             }
             ToolKind::Highlight => {
@@ -403,10 +479,8 @@ impl Reader {
         let Some(gesture) = self.tool_gesture.take() else {
             return;
         };
-        if gesture.ink_overlay_used
-            && let Some(overlay) = self.ink_overlay.as_mut()
-        {
-            overlay.cancel();
+        if let Some(overlay) = self.ink_overlay.as_mut() {
+            cancel_used_ink_overlay(overlay, gesture.ink_overlay_used);
         }
         if self.window.is_some() {
             // El present GPU ya no dibuja el gesto: un frame normal.
@@ -604,5 +678,114 @@ impl Reader {
             self.save_annotations();
         }
         self.mark_repaint();
+    }
+}
+
+#[cfg(test)]
+mod ink_overlay_lifecycle_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeOverlay {
+        ready: bool,
+        render_ok: bool,
+        commits: usize,
+        cancels: usize,
+        segments: usize,
+    }
+
+    impl InkOverlayOps for FakeOverlay {
+        fn is_ready(&self) -> bool {
+            self.ready
+        }
+
+        fn render_segment(
+            &mut self,
+            _x0: f32,
+            _y0: f32,
+            _x1: f32,
+            _y1: f32,
+            _width_px: f32,
+            _color_argb: i32,
+        ) -> bool {
+            self.segments += 1;
+            self.render_ok
+        }
+
+        fn commit(&mut self) {
+            self.commits += 1;
+        }
+
+        fn cancel(&mut self) {
+            self.cancels += 1;
+        }
+    }
+
+    fn ink_gesture() -> ToolGesture {
+        ToolGesture::try_new(
+            7,
+            ToolKind::Ink,
+            (10.0, 10.0),
+            1,
+            0.5,
+            2.0,
+            pdf_core::Color {
+                r: 28,
+                g: 32,
+                b: 43,
+                a: 255,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn end_commits_used_overlay_and_tracks_page_and_annotation() {
+        let mut overlay = FakeOverlay {
+            ready: true,
+            ..FakeOverlay::default()
+        };
+
+        let pending = commit_used_ink_overlay(&mut overlay, true, 7, 42);
+
+        assert_eq!(pending, Some((7, 42)));
+        assert_eq!(overlay.commits, 1);
+        assert_eq!(overlay.cancels, 0);
+    }
+
+    #[test]
+    fn cancel_discards_used_overlay_without_committing() {
+        let mut overlay = FakeOverlay::default();
+
+        cancel_used_ink_overlay(&mut overlay, true);
+
+        assert_eq!(overlay.cancels, 1);
+        assert_eq!(overlay.commits, 0);
+    }
+
+    #[test]
+    fn overlay_losing_readiness_switches_gesture_to_native_wet_fallback() {
+        let mut gesture = ink_gesture();
+        gesture.ink_overlay_route = true;
+        gesture.ink_overlay_used = true;
+        let mut overlay = FakeOverlay {
+            ready: false,
+            ..FakeOverlay::default()
+        };
+
+        submit_ink_overlay_segment_for_gesture(
+            &mut gesture,
+            Some(&mut overlay),
+            10.0,
+            10.0,
+            20.0,
+            20.0,
+            1.0,
+        );
+
+        assert!(!gesture.ink_overlay_route);
+        assert!(!gesture.ink_overlay_used);
+        assert_eq!(overlay.cancels, 1);
+        assert_eq!(overlay.segments, 0);
     }
 }
