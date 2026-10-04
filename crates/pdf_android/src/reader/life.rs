@@ -382,6 +382,9 @@ impl Reader {
 
     /// `TerminateWindow`: soltar la ventana (drop → `ANativeWindow_release`).
     pub(crate) fn terminate_window(&mut self) {
+        // Cancelar mientras el host y el renderer wet aún pertenecen a esta
+        // ventana, antes de liberar la superficie EGL.
+        self.cancel_tool_gesture();
         if let Some(g) = self.gpu.as_mut() {
             g.drop_surface();
         }

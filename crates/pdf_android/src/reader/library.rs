@@ -45,6 +45,8 @@ impl Reader {
     /// de mostrar la página. El campo de búsqueda arranca CERRADO. Vacía →
     /// EMPTY STATE ("Tu biblioteca está vacía" + botón "Añadir PDF").
     pub(crate) fn enter_library(&mut self, app: &AndroidApp) {
+        // Salida del visor: cancela el overlay antes de descartar el gesto.
+        self.cancel_tool_gesture();
         // A1: flush explícito del estado diferido ANTES de cambiar de modo —
         // `save_state` registra el progreso del libro solo en modo Viewer y
         // la biblioteca recarga `library.json` justo debajo: sin este flush
