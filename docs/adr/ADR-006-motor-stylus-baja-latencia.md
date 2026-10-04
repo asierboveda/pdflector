@@ -3,7 +3,9 @@
 > **Estado histórico:** Aceptado (2026-08-28). ADR-007 sustituyó parte de la
 > presentación; [ADR-009](ADR-009-evaluacion-tinta-causal-front-buffer.md)
 > sustituyó la prescripción de predicción para la nueva arquitectura experimental
-> (2026-09-23). El producto aún ejecuta el pipeline heredado.
+> (2026-09-23). [ADR-010](ADR-010-integracion-tinta-causal-producto.md) sustituye
+> para el producto, el 2026-09-24, la predicción y el pipeline de presentación
+> heredado que aquí se describen.
 > **Fecha:** 2026-08-28
 > **Supersedido parcialmente por:** ADR-007 (2026-08-30) en presentación y
 > ADR-009 (2026-09-23) en la predicción de la arquitectura a evaluar. El

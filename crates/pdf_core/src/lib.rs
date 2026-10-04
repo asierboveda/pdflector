@@ -3,8 +3,7 @@
 
 //! pdf_core — PDFLector's core library: document handling, rendering, cache,
 //! annotations, persistence and export. UI-independent by design (see
-//! docs/plan/NEXT-PLAN.md; AGENTS.md, MUST 2): no egui, no windowing, compiles
-//! headless.
+//! AGENTS.md, MUST 2): no egui, no windowing, compiles headless.
 
 pub mod ai;
 pub mod annotations;

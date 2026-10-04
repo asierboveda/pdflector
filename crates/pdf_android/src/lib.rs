@@ -37,8 +37,9 @@
 //!
 //! ## Rediseño de UX: pantalla completa, sheet, rejilla (2026-08-XX)
 //!
-//! Cambios ESTRUCTURALES del visor y la biblioteca (el estilo lo hará otro
-//! agente; aquí solo la estructura funcional; ver `docs/plan/NEXT-PLAN.md`):
+//! Cambios estructurales del visor y la biblioteca realizados durante el
+//! rediseño de 2026-08. Este resumen conserva decisiones de aquella etapa;
+//! el estado actual del producto está descrito en `ESTADO_ACTUAL.md`.
 //!
 //! 1. **Visor a pantalla completa**: la barra superior fija (Open/✏️/●/↶/±10/
 //!    Dark) se ELIMINÓ; el documento ocupa TODA la pantalla. Los ajustes
@@ -60,11 +61,10 @@
 //!    LRU acotada en `thumbs.rs` (36 entradas / 9 MiB, portadas de 200 px).
 //!    La tira de letras A-Z se quitó (no encaja en la rejilla; decisión
 //!    documentada).
-//! 4. **Lápiz ✏️, subrayado, undo ↶ y color ● eliminados** (minimalista): no
-//!    hay gesto de dibujo; se MANTIENEN la carga y el render de anotaciones
-//!    ya guardadas (los trazos del usuario no se pierden, solo no se pueden
-//!    crear desde la UI por ahora). El estado de dibujo queda en
-//!    `annotations.rs` con `#![allow(dead_code)]` (ver su cabecera).
+//! 4. **Estado de aquella etapa (2026-08):** los controles de lápiz,
+//!    subrayado, undo y color se habían retirado temporalmente. La ruta de
+//!    tinta y resaltado volvió a integrarse después; véase ADR-010 y
+//!    `ESTADO_ACTUAL.md`.
 //!
 //! ## Página a página + caché de páginas (2026-08-XX)
 //!

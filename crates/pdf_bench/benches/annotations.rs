@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Annotations benchmark: does the vector annotation model (Fases B y C,
-//! docs/plan/NEXT-PLAN.md) scale to a real document with hundreds of
-//! annotations?
+//! Annotations benchmark: does the vector annotation model scale to a real
+//! document with hundreds of annotations?
 //!
 //! The Fase C acceptance criterion is that 200+ visible strokes must not
 //! degrade frame time, and persistence (SQLite sidecar) must stay cheap for

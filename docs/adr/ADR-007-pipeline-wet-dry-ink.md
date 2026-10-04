@@ -2,10 +2,16 @@
 
 > **Estado:** Aceptado. **Fecha:** 2026-08-30.
 > **Actualización (2026-09-23):** [ADR-009](ADR-009-evaluacion-tinta-causal-front-buffer.md)
-> sustituye la prescripción de predicción para el experimento de tinta causal;
-> la implementación del producto todavía usa este pipeline.
+> sustituye la prescripción de predicción para el experimento de tinta causal.
+> **Actualización (2026-09-24):** [ADR-010](ADR-010-integracion-tinta-causal-producto.md)
+> sustituye este pipeline para el producto (host Gradle/GameActivity + capa
+> AndroidX de tinta); este ADR sigue vigente para el resto del pipeline Dry
+> nativo (página, anotaciones consolidadas, EGL/GLES2 de respaldo).
 > Supersede PARCIALMENTE el present de ADR-006 (dry/wet/present); el resto de ADR-006 (stylus, EGL) sigue vigente.
-> **Contexto de decisión:** `PLAN-PARIDAD-STYLUS-NATIVO` + `ADR-006` (motor EGL/GLES2). Esta decisión **revisa la Fase 2** porque, pese a tener GPU + ink-stroke-modeler + 120 Hz, la experiencia física sigue lejos de la app nativa.
+> **Contexto de decisión:** documento de plan histórico ya no existente
+> (citado en su momento como `PLAN-PARIDAD-STYLUS-NATIVO`; no se localiza en
+> el repositorio ni en su historial de Git) + `ADR-006` (motor EGL/GLES2).
+> Esta decisión **revisa la Fase 2** porque, pese a tener GPU + ink-stroke-modeler + 120 Hz, la experiencia física sigue lejos de la app nativa.
 > **Supersede (parcialmente):** ADR-006 en su apartado de *present* por `eglSwapBuffers` único. No invalida la elección EGL/GLES2 ni el modeler, solo **cómo** se presenta la tinta en vuelo.
 
 ---
@@ -23,7 +29,7 @@ Estado actual en `crates/pdf_android` (commit `00592ff`), verificado leyendo el 
 | Bucle principal | `src/lib.rs:641-745` | `poll_events(Some(8ms))` → `if reader.take_repaint() { reader.blit() }`. Cada present va a la cadencia del bucle, no a la cadencia de entrada. |
 | 120 Hz | `src/jni.rs:enable_120hz` | `preferredRefreshRate = 120.0f` + `preferredDisplayModeId = 1`. Activado. |
 
-### Métricas medidas (ADR-006 / benchmark-results.md)
+### Métricas medidas (ADR-006 / docs/benchmark-results.md)
 - Present GPU: **p50 0.17 ms** (eglSwapBuffers), pero **el frame completo se recompone cada vez**. La **cadencia** queda limitada por el bucle (8 ms poll → hasta 1 frame de espera tras cada muestra).
 - Modeler: **0.525 µs/llamada**. No es el cuello.
 - Causa de la latencia **no es** el GPU (0.17 ms) ni el modeler (0.5 µs): **es la re-composición del frame entero y su acoplamiento a la cadencia del bucle + el vsync**.
@@ -150,7 +156,7 @@ Se adopta la arquitectura **en dos capas** que usa `androidx.graphics.lowlatency
 - Eliminar el churn: VBO persistente, trazos guardados rasterizados al FBO dry (no re-transformados por frame).
 
 ### Fase W4 — Verificación instrumental y cierre
-- Medición completa (ver §8), frente a app nativa, y commit con resultados en `benchmark-results.md`.
+- Medición completa (ver §8), frente a app nativa, y commit con resultados en `docs/benchmark-results.md`.
 
 ---
 

@@ -151,7 +151,10 @@ adb shell svc power stayon false
 
 ## 5. App en la tablet (`pdf_android`)
 
-Crate `crates/pdf_android` (cdylib, `android-activity` 0.6 con backend `native-activity`, paquete `com.pdflector.app`), empaquetada con `cargo-apk` v0.10.0.
+Crate `crates/pdf_android` (cdylib, `android-activity` 0.6 con backend
+`game-activity`), empaquetado por el módulo Gradle/Kotlin `android/product`
+(AGP 8.7.3) en `PdfLectorActivity` (extiende `GameActivity`), paquete
+`com.pdflector.app`.
 
 ### Compilación e instalación
 
@@ -160,10 +163,19 @@ Crate `crates/pdf_android` (cdylib, `android-activity` 0.6 con backend `native-a
 echo placeholder > crates/pdf_android/groq_key.txt
 echo placeholder > crates/pdf_android/google_key.txt
 
-# Build e instalación del APK release
-cargo apk build --release --target aarch64-linux-android -p pdf_android
-adb install -r target/release/apk/pdf_android.apk
+# ANDROID_NDK_HOME y las variables de la sección 2 deben estar exportadas:
+# la tarea `assembleProductDebug` ejecuta internamente
+# `cargo build -p pdf_android --lib --release --target aarch64-linux-android`
+# (ver android/product/app/build.gradle.kts) y empaqueta el .so resultante.
+cd android/product
+gradle assembleProductDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+La firma personal, si existe, se lee de
+`android/product/signing.local.properties` (gitignorado); sin ese fichero,
+Gradle firma con la clave de depuración por defecto. No hay `gradlew` en el
+repositorio: se necesita un `gradle` del sistema compatible con AGP 8.7.3.
 
 > **Atención**: las mediciones de memoria solo son válidas en compilaciones **release**. Las versiones debug con debuginfo producen un RSS significativamente superior (~205 MB) debido a símbolos e instrumentación.
 
@@ -187,7 +199,7 @@ adb shell am start -a android.intent.action.VIEW -d "file:///sdcard/Download/dem
 
 ```bash
 # Lanzar la actividad principal
-adb shell am start -n com.pdflector.app/android.app.NativeActivity
+adb shell am start -n com.pdflector.app/.PdfLectorActivity
 
 # Memoria de la app (TOTAL PSS y TOTAL RSS)
 adb shell dumpsys meminfo com.pdflector.app
@@ -232,7 +244,7 @@ adb shell rm -rf /data/local/tmp/pdflector
   - **Hardware**: ej. `TCL NXTPaper 11 Plus (9469X, Android 15, NDK r28, build release)`
   - **Flujo medido**: ej. `Arranque en frío`, `Sweep 5 documentos corpus`, `15 ciclos Library→Viewer`
   - **Métrica**: ej. `PSS = 118 MB`, `render1x p50 = 14.2 ms`, `frame p95 = 7.9 ms`
-- Para actualizar el estado o avance de las tareas, editar `docs/plan/NEXT-PLAN.md` o cerrar los issues pertinentes en GitHub Issues.
+- Para actualizar el estado o avance de las tareas, cerrar los issues pertinentes en GitHub Issues.
 
 ## 8. Diagnóstico de problemas comunes
 

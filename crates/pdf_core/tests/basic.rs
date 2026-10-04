@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! pdf_core acceptance tests (docs/plan/NEXT-PLAN.md; engine decision in
+//! pdf_core acceptance tests (engine decision in
 //! docs/adr/ADR-001-motor-pdf.md): open a PDF, report page count, render page 1
 //! to a bitmap of the expected dimensions. The engine under test is MuPDF —
 //! single backend since ADR-001.
