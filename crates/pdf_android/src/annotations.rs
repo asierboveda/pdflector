@@ -208,6 +208,17 @@ impl ToolGesture {
         engine.push(sample).map(Some)
     }
 
+    /// Whether this gesture needs the native EGL wet layer to be presented.
+    /// Ink already accepted by the AndroidX overlay is drawn on its own
+    /// surface; highlights and ink fallback remain on the native path.
+    pub(crate) fn requires_native_wet(&self) -> bool {
+        match self.tool {
+            ToolKind::Ink => !self.ink_overlay_used,
+            ToolKind::Highlight => true,
+            ToolKind::Navigate => false,
+        }
+    }
+
     /// Actualiza el punto actual del resaltador (la otra esquina del rect de
     /// selección).
     pub(crate) fn set_cur(&mut self, pt: (f32, f32)) {
@@ -218,6 +229,36 @@ impl ToolGesture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_native_wet_gestures_require_native_presentation() {
+        let mut ink = ToolGesture::try_new(
+            0,
+            ToolKind::Ink,
+            (10.0, 20.0),
+            100,
+            0.5,
+            2.0,
+            DEFAULT_INK_COLOR,
+        )
+        .unwrap();
+
+        assert!(ink.requires_native_wet());
+        ink.ink_overlay_used = true;
+        assert!(!ink.requires_native_wet());
+
+        let highlight = ToolGesture::try_new(
+            0,
+            ToolKind::Highlight,
+            (10.0, 20.0),
+            100,
+            0.5,
+            2.0,
+            DEFAULT_INK_COLOR,
+        )
+        .unwrap();
+        assert!(highlight.requires_native_wet());
+    }
 
     #[test]
     fn ink_gesture_keeps_only_newer_real_samples_and_does_not_filter_by_distance() {

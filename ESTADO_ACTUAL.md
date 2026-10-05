@@ -147,7 +147,9 @@ La presentación del PDF usa EGL/GLES2 y un pipeline de dos capas:
 - **Dry**: página y anotaciones consolidadas; se reutiliza mientras su clave de
   página, zoom, pan, tema y generación de anotaciones no cambie.
 - **Wet nativa de respaldo**: geometría transitoria del trazo activo, goma y
-  selección; se recompone durante el gesto cuando no se usa la capa AndroidX.
+  selección; se recompone durante el gesto cuando Rust debe presentarla. Si
+  AndroidX acepta la tinta, sus muestras no solicitan repintados EGL nativos y
+  esa superficie conserva el intervalo de swap de reposo.
 
 En el producto actualizado, el bolígrafo dispone además de una `SurfaceView`
 transparente superior gestionada por `GLFrontBufferedRenderer`. Kotlin aloja

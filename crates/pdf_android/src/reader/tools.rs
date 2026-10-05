@@ -334,7 +334,13 @@ impl Reader {
             }
             ToolKind::Navigate => {}
         }
-        self.mark_repaint();
+        if self
+            .tool_gesture
+            .as_ref()
+            .is_some_and(ToolGesture::requires_native_wet)
+        {
+            self.mark_repaint();
+        }
     }
 
     fn page_to_screen(&self, page: u32, x: f32, y: f32) -> Option<(f32, f32)> {
