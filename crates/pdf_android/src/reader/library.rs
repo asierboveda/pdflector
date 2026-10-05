@@ -89,6 +89,7 @@ impl Reader {
         self.tool = ToolKind::Navigate;
         self.tool_gesture = None;
         self.session_ids.clear();
+        self.reset_undo_history();
         self.lib_close_ime(app);
         self.reload_curated_library(app);
     }

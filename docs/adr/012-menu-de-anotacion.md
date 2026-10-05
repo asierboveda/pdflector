@@ -1,6 +1,6 @@
 # ADR-012 — Menú de anotación del visor
 
-**Estado:** Decisión documentada; implementación pendiente. **Fecha:** 2026-09-26.
+**Estado:** Implementada con cambios; sustituida en parte por [ADR-022](022-barra-acoplable.md) (posición, color/grosor, deshacer/rehacer y botón superior del lápiz). **Fecha:** 2026-09-26.
 
 ## Contexto
 

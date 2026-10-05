@@ -11,7 +11,7 @@
 //! conservan los timestamps monotónicos originales.
 
 use super::gestos::{GestureKind, LONG_PRESS_MS, TwoFingerMode, fire_tap_action};
-use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_MODE, PenMode, ToolKind};
+use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_SELECT, PenMode, ToolKind};
 use crate::draw::{SettingsMenuItem, ViewMenuItem, settings_menu_geometry, view_menu_geometry};
 use crate::jni::launch_all_files_settings;
 use crate::reader::discover_categories::ARXIV_CATEGORIES;
@@ -40,6 +40,21 @@ use std::time::Instant;
 /// rápido, sin long-press). El temporizador se desarma al moverse, al entrar
 /// en el pinch o al levantar.
 pub(crate) fn tick_gestures(reader: &mut Reader, _app: &AndroidApp) {
+    // Pulsación larga sobre la barra de herramientas: empieza a arrastrarla.
+    if let GestureKind::ToolbarPress { start_x, start_y } = reader.gesture.kind
+        && reader
+            .gesture
+            .press_at
+            .is_some_and(|at| at.elapsed() >= LONG_PRESS_MS)
+    {
+        reader.gesture.press_at = None;
+        reader.gesture.kind = GestureKind::ToolbarDrag;
+        reader.begin_toolbar_drag(start_x, start_y);
+        if let Some(&(_, x, y)) = reader.gesture.pointers.first() {
+            reader.update_toolbar_drag(x, y);
+        }
+        return;
+    }
     // Con una herramienta de anotación activa el long-press NO entra en modo
     // selección: el dedo es tinta/resaltador. (El gesto de herramienta no
     // necesita tick: el trazo avanza con los Moves.)
@@ -186,35 +201,77 @@ pub(crate) fn handle_motion(
             // solo entra si el dedo NO se levanta antes de `LONG_PRESS_MS` y
             // NO se mueve más de `TAP_SLOP`.
             reader.gesture.pointers = pts;
-            // CONTROL TOTAL CON EL BOLI (sin menús): el Down del STYLUS sobre
-            // la página (fuera del chrome de la UI) o dibuja (Ink/Highlight
-            // según el modo persistido del boli, SIEMPRE activo) o BORRA si
-            // trae el botón DOWN pulsado. El dedo sigue navegando igual
-            // (tap/pinch/pan); los gestos existentes no se rompen.
+            // Barra de herramientas (o su popover abierto): el Down de dedo o
+            // lápiz es de la barra — tap al levantar, o arrastre tras la
+            // pulsación larga sobre la tarjeta. Nunca empieza un trazo.
+            if reader.gesture.pointers.len() == 1
+                && let Some(&(_, x, y)) = reader.gesture.pointers.first()
+                && let Some(draggable) = reader.toolbar_hit(x, y)
+            {
+                reader.gesture.kind = GestureKind::ToolbarPress {
+                    start_x: x,
+                    start_y: y,
+                };
+                reader.gesture.press_at = draggable.then(Instant::now);
+                return;
+            }
+            // LÁPIZ sobre la página (fuera de la barra): con la barra abierta
+            // aplica la herramienta elegida (dibujar, subrayar, borrar o
+            // lazo); cerrada, navega como el dedo (ADR-012). Los botones
+            // físicos mandan siempre: el INFERIOR mantenido borra y el
+            // SUPERIOR mantenido dibuja el lazo de Recorte. El dedo sigue
+            // navegando igual (tap/pinch/pan).
             if reader.gesture.pointers.len() == 1
                 && let Some(&(_, x, y)) = reader.gesture.pointers.first()
             {
                 // SEPARACIÓN DEDO/STYLUS: solo el lápiz dibuja/borra; los
                 // dedos (y la palma) navegan (pan/pinch).
                 if stylus {
-                    // El modo ERASE nunca coexiste con un gesto de tinta en
-                    // curso: si hay trazo, este Down no hace nada (el trazo
-                    // actual termina como estaba).
+                    // Nada nuevo empieza con un gesto de tinta en curso: el
+                    // trazo actual termina como estaba.
                     if reader.tool_gesture.is_some() {
                         return;
                     }
-                    if buttons.state.0 & PEN_BTN_ERASE.0 != 0 {
-                        // [C] BORRAR: botón DOWN mantenido + tocar el PDF.
+                    let erase_btn = buttons.state.0 & PEN_BTN_ERASE.0 != 0;
+                    let select_btn = buttons.state.0 & PEN_BTN_SELECT.0 != 0;
+                    let tool = (!reader.toolbar_collapsed).then_some(reader.pen_mode);
+                    let lasso = select_btn || tool == Some(PenMode::Lasso);
+                    // Selección de Recorte activa: agarrarla la mueve o
+                    // escala; tocar fuera la descarta sin dibujar (salvo que
+                    // se empiece otro lazo).
+                    if reader.recorte_selected() {
+                        if let Some(scaling) = reader.recorte_hit(x, y)
+                            && reader.begin_recorte_drag(x, y, scaling)
+                        {
+                            reader.gesture.kind = GestureKind::RecorteDrag;
+                            return;
+                        }
+                        reader.clear_recorte();
+                        if !lasso && !erase_btn {
+                            reader.gesture.kind = GestureKind::None;
+                            reader.gesture.press_at = None;
+                            return;
+                        }
+                    }
+                    if erase_btn || tool == Some(PenMode::Eraser) {
+                        // [C] BORRAR: botón DOWN mantenido (o Goma de la
+                        // barra) + tocar el PDF.
                         if reader.begin_erase_gesture(x, y) {
                             reader.gesture.kind = GestureKind::Erase;
                             return; // borrado: sin tap ni long-press
                         }
-                    } else {
-                        // [A] Dibujar SIEMPRE, según el modo persistido del
-                        // boli (sin depender de la barra de herramientas).
-                        let mode_tool = match reader.pen_mode {
-                            PenMode::Ink => ToolKind::Ink,
+                    } else if lasso {
+                        // Recorte: lazo con el botón SUPERIOR mantenido o con
+                        // la herramienta Recorte.
+                        if reader.begin_lasso(x, y) {
+                            reader.gesture.kind = GestureKind::Lasso;
+                            return;
+                        }
+                    } else if let Some(mode) = tool {
+                        // [A] Dibujar o subrayar con la herramienta elegida.
+                        let mode_tool = match mode {
                             PenMode::Highlight => ToolKind::Highlight,
+                            _ => ToolKind::Ink,
                         };
                         reader.begin_tool_gesture(x, y, mode_tool, event_time, stylus_pressure);
                         if reader.tool_gesture.is_some() {
@@ -222,8 +279,8 @@ pub(crate) fn handle_motion(
                             return; // gesto de herramienta: sin tap ni long-press
                         }
                     }
-                    // Si no arrancó gesto (p. ej. fuera de la página), el
-                    // Down sigue como tap normal.
+                    // Barra cerrada o gesto no iniciado (p. ej. fuera de la
+                    // página): el Down sigue como tap normal.
                 } else if reader.tool != ToolKind::Navigate {
                     // Dedo con herramienta ACTIVA (barra): modo mano — pan 1
                     // dedo (el pinch 2 dedos lo convierte el PointerDown).
@@ -275,10 +332,25 @@ pub(crate) fn handle_motion(
             // convertía el gesto en pinch y la página reescalaba de golpe.
             if matches!(
                 reader.gesture.kind,
-                GestureKind::ToolDrawing | GestureKind::Erase
+                GestureKind::ToolDrawing
+                    | GestureKind::Erase
+                    | GestureKind::Lasso
+                    | GestureKind::RecorteDrag
             ) && stylus
             {
                 return;
+            }
+            // Un segundo puntero sobre la barra cancela su tap o arrastre.
+            match reader.gesture.kind {
+                GestureKind::ToolbarPress { .. } => {
+                    reader.gesture.kind = GestureKind::None;
+                    reader.gesture.press_at = None;
+                }
+                GestureKind::ToolbarDrag => {
+                    reader.cancel_toolbar_drag();
+                    reader.gesture.kind = GestureKind::None;
+                }
+                _ => {}
             }
             // Segundo dedo: pinch. Distancia inicial = base del factor de
             // zoom; el centro del pinch (punto medio de los dedos) se fija
@@ -295,6 +367,13 @@ pub(crate) fn handle_motion(
                 // pinch — la herramienta sigue activa para el siguiente Down.
                 if matches!(reader.gesture.kind, GestureKind::ToolDrawing) {
                     reader.cancel_tool_gesture();
+                }
+                // Recorte: un lazo a medias se descarta; un arrastre vuelve
+                // atrás sin modificar los trazos.
+                match reader.gesture.kind {
+                    GestureKind::Lasso => reader.clear_recorte(),
+                    GestureKind::RecorteDrag => reader.cancel_recorte_drag(),
+                    _ => {}
                 }
                 // Durante el BORRADO el segundo puntero no es un pinch: se
                 // ignora (el borrado continúa; ver palm rejection arriba).
@@ -454,6 +533,29 @@ pub(crate) fn handle_motion(
                     let (_, cx, cy) = reader.gesture.pointers[0];
                     reader.set_pan(pan0.0 + (cx - start.0), pan0.1 + (cy - start.1));
                 }
+                GestureKind::ToolbarPress { start_x, start_y }
+                    if reader.gesture.pointers.len() == 1 =>
+                {
+                    // Moverse antes de la pulsación larga anula el tap.
+                    let (_, cx, cy) = reader.gesture.pointers[0];
+                    let moved = ((cx - start_x).powi(2) + (cy - start_y).powi(2)).sqrt();
+                    if moved > TAP_SLOP {
+                        reader.gesture.kind = GestureKind::None;
+                        reader.gesture.press_at = None;
+                    }
+                }
+                GestureKind::ToolbarDrag if reader.gesture.pointers.len() == 1 => {
+                    let (_, cx, cy) = reader.gesture.pointers[0];
+                    reader.update_toolbar_drag(cx, cy);
+                }
+                GestureKind::Lasso if reader.gesture.pointers.len() == 1 => {
+                    let (_, cx, cy) = reader.gesture.pointers[0];
+                    reader.update_lasso(cx, cy);
+                }
+                GestureKind::RecorteDrag if reader.gesture.pointers.len() == 1 => {
+                    let (_, cx, cy) = reader.gesture.pointers[0];
+                    reader.update_recorte_drag(cx, cy);
+                }
                 _ => {}
             }
         }
@@ -512,6 +614,32 @@ pub(crate) fn handle_motion(
                     // Fin del borrado: persiste UNA vez si algo se eliminó.
                     reader.end_erase_gesture();
                 }
+                GestureKind::ToolbarPress { start_x, start_y } => {
+                    if let Some((_, x, y)) = up {
+                        let moved = ((x - start_x).powi(2) + (y - start_y).powi(2)).sqrt();
+                        if moved <= TAP_SLOP {
+                            reader.toolbar_tap(x, y);
+                        }
+                    }
+                }
+                GestureKind::ToolbarDrag => match up {
+                    Some((_, x, y)) => reader.end_toolbar_drag(x, y),
+                    None => reader.cancel_toolbar_drag(),
+                },
+                GestureKind::Lasso => {
+                    if stylus {
+                        reader.end_lasso();
+                    } else {
+                        reader.clear_recorte();
+                    }
+                }
+                GestureKind::RecorteDrag => {
+                    if stylus {
+                        reader.end_recorte_drag();
+                    } else {
+                        reader.cancel_recorte_drag();
+                    }
+                }
                 GestureKind::Pan { .. } => {
                     // Fin del pan con dedo: no hay nada que asentar (el pan
                     // ya quedó aplicado en cada Move).
@@ -555,9 +683,26 @@ pub(crate) fn handle_motion(
                     reader.gesture.kind = GestureKind::None;
                     reader.set_zoom_sharp(reader.zoom);
                 }
-                GestureKind::Tap { .. } => {
+                GestureKind::Tap { .. } | GestureKind::ToolbarPress { .. } => {
                     // Un pointer-up dentro de un Tap lo convierte en gesto
                     // multitáctil; no debe disparar la acción del Tap.
+                    reader.gesture.kind = GestureKind::None;
+                    reader.gesture.press_at = None;
+                }
+                GestureKind::ToolbarDrag => {
+                    reader.cancel_toolbar_drag();
+                    reader.gesture.kind = GestureKind::None;
+                }
+                GestureKind::Lasso | GestureKind::RecorteDrag => {
+                    // Igual que la tinta: levantar el lápiz confirma;
+                    // levantar otro puntero cancela.
+                    let lasso = matches!(reader.gesture.kind, GestureKind::Lasso);
+                    match pointer_up_tool_action(up_is_stylus) {
+                        PointerUpToolAction::Finish if lasso => reader.end_lasso(),
+                        PointerUpToolAction::Finish => reader.end_recorte_drag(),
+                        PointerUpToolAction::Cancel if lasso => reader.clear_recorte(),
+                        PointerUpToolAction::Cancel => reader.cancel_recorte_drag(),
+                    }
                     reader.gesture.kind = GestureKind::None;
                     reader.gesture.press_at = None;
                 }
@@ -571,6 +716,12 @@ pub(crate) fn handle_motion(
             // el siguiente pinch o cambio de página.
             let pinch_active = matches!(reader.gesture.kind, GestureKind::Pinch { .. });
             let erasing = matches!(reader.gesture.kind, GestureKind::Erase);
+            match reader.gesture.kind {
+                GestureKind::ToolbarDrag => reader.cancel_toolbar_drag(),
+                GestureKind::Lasso => reader.clear_recorte(),
+                GestureKind::RecorteDrag => reader.cancel_recorte_drag(),
+                _ => {}
+            }
             reader.gesture.pointers.clear();
             reader.gesture.kind = GestureKind::None;
             reader.gesture.press_at = None;
@@ -585,19 +736,6 @@ pub(crate) fn handle_motion(
             if pinch_active {
                 reader.set_zoom_sharp(reader.zoom);
             }
-        }
-        MotionAction::ButtonPress => {
-            // [B] Botón UP del boli: alterna el modo (funciona TAMBIÉN con
-            // el boli en el AIRE: ButtonPress llega sin contacto). Fuente de
-            // verdad de la calibración: `action_button()` en
-            // Press/Release.
-            if u32::from(buttons.action) == PEN_BTN_MODE.0 {
-                reader.toggle_pen_mode();
-            }
-        }
-        MotionAction::ButtonRelease => {
-            // Sin acción: el toggle se decide en el Press (un Press+Release
-            // no debe alternar dos veces).
         }
         _ => {} // HoverMove, Scroll, Outside, ...: sin gesto definido.
     }

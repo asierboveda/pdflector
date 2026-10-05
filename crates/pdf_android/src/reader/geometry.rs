@@ -128,6 +128,13 @@ impl PageScreenTransform {
         )
     }
 
+    /// Límites visibles de la página en coordenadas de página
+    /// (x0, y0, x1, y1).
+    pub(crate) fn page_bounds(self) -> (f32, f32, f32, f32) {
+        let b = self.geometry.visible_bounds;
+        (b.x0, b.y0, b.x0 + b.width(), b.y0 + b.height())
+    }
+
     pub(crate) fn page_screen_rect(self) -> (f32, f32, f32, f32) {
         let bounds = self.geometry.visible_bounds;
         let (left, top) = self.page_to_screen(bounds.x0, bounds.y0);

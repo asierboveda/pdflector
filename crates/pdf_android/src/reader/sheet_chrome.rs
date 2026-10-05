@@ -125,6 +125,7 @@ impl Reader {
         self.library.lib_band = None;
         self.toast_bitmap = None;
         self.sel_menu = None;
+        self.invalidate_toolbar();
         info!("theme set to {:?} (dark: {})", self.theme, self.dark);
         self.save_state();
         self.redraw();
@@ -143,6 +144,7 @@ impl Reader {
         self.library.lib_band = None;
         self.toast_bitmap = None;
         self.sel_menu = None;
+        self.invalidate_toolbar();
         info!("theme cycled to {:?} (dark: {})", self.theme, self.dark);
         self.save_state();
         self.redraw();

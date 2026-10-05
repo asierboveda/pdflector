@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Anotaciones y modo del boli: carga y guardado del sidecar (`load_annotations`, `save_annotations`) y la persistencia del modo de tinta (`toggle_pen_mode`, `persist_pen_mode`).
+//! Anotaciones y modo del boli: carga y guardado del sidecar (`load_annotations`, `save_annotations`), modo del lápiz y su persistencia (`set_pen_mode`, `persist_tool_state`) y deshacer/rehacer (`record_annotation_edit`, `undo_annotation`, `redo_annotation`).
 
 use super::Reader;
 use crate::annotations::PenMode;
+use crate::undo::AnnotationEdit;
 use log::error;
 use log::info;
 use pdf_core::AnnotationSet;
 use pdf_core::store::AnnotationStore;
 use pdf_core::store::sidecar_path;
-use std::fs;
 use std::path::Path;
 
 impl Reader {
@@ -80,42 +80,83 @@ impl Reader {
         });
     }
 
-    /// [B] Botón UP del boli: alterna el modo (Ink ↔ Highlight), muestra el
-    /// toast con el modo NUEVO y lo persiste en `tool_state.json`. Lo llama
-    /// `input` desde `MotionAction::ButtonPress` (funciona con el boli en el
-    /// aire Y en contacto; algunos bolis no emiten ButtonPress — ver la
-    /// fuente de verdad doble en `input.rs`).
-    pub(crate) fn toggle_pen_mode(&mut self) {
-        self.pen_mode = match self.pen_mode {
-            PenMode::Ink => PenMode::Highlight,
-            PenMode::Highlight => PenMode::Ink,
-        };
-        self.persist_pen_mode();
-        self.mode_badge = None; // el indicador de esquina muestra el modo nuevo
-        self.show_toast(self.pen_mode.label());
+    /// Fija la herramienta del lápiz (barra), la persiste y refresca la
+    /// barra. Un gesto en curso o una selección de Recorte se cancelan sin
+    /// guardar nada a medias (ADR-012).
+    pub(crate) fn set_pen_mode(&mut self, mode: PenMode) {
+        if self.pen_mode == mode {
+            return;
+        }
+        self.cancel_tool_gesture();
+        self.clear_recorte();
+        self.pen_mode = mode;
+        self.persist_tool_state();
+        self.invalidate_toolbar();
     }
 
-    /// Persiste el modo del boli en `tool_state.json` (campo "mode"). NO
-    /// toca `persist.rs` (fuera de alcance de esta tarea): lee el JSON
-    /// completo como `Value` (respetando lo que escribe `persist` —
-    /// ink_color/ink_width) y solo conserva/añade "mode".
-    fn persist_pen_mode(&self) {
-        let Some(dir) = self.internal_dir.as_deref() else {
+    /// Persiste modo, color/grosor del boli, color del resaltador y plegado
+    /// de la barra en `tool_state.json`.
+    pub(crate) fn persist_tool_state(&self) {
+        let state = crate::persist::ToolState {
+            ink_color: self.ink_color,
+            ink_width: self.ink_width,
+            highlight_color: self.highlight_color,
+            mode: self.pen_mode,
+            toolbar_collapsed: self.toolbar_collapsed,
+            toolbar_dock: self.toolbar_dock,
+        };
+        crate::persist::save_tool_state(self.internal_dir.as_deref(), &state);
+    }
+
+    /// Registra una acción del usuario sobre las anotaciones en el historial
+    /// de deshacer. Refresca la barra solo si cambia la disponibilidad de
+    /// sus botones ↶/↷ (evita re-renderizarla tras cada trazo).
+    pub(crate) fn record_annotation_edit(&mut self, edit: AnnotationEdit) {
+        let before = (self.undo.can_undo(), self.undo.can_redo());
+        self.undo.push(edit);
+        if before != (self.undo.can_undo(), self.undo.can_redo()) {
+            self.invalidate_toolbar();
+        }
+    }
+
+    /// Deshace la última acción sobre las anotaciones (botón ↶ de la barra).
+    pub(crate) fn undo_annotation(&mut self) {
+        self.clear_recorte();
+        let page = self.undo.undo(&mut self.annotations);
+        self.after_history_step(page);
+    }
+
+    /// Rehace la última acción deshecha (botón ↷ de la barra).
+    pub(crate) fn redo_annotation(&mut self) {
+        self.clear_recorte();
+        let page = self.undo.redo(&mut self.annotations);
+        self.after_history_step(page);
+    }
+
+    /// Tras deshacer/rehacer: recompone la capa Dry, guarda el sidecar,
+    /// refresca la barra y lleva la vista a la página afectada si es otra.
+    fn after_history_step(&mut self, page: Option<usize>) {
+        self.invalidate_toolbar();
+        let Some(page) = page else {
             return;
         };
-        let path = dir.join("tool_state.json");
-        let mut v = fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        v["mode"] = serde_json::json!(match self.pen_mode {
-            PenMode::Ink => "Ink",
-            PenMode::Highlight => "Highlight",
-        });
-        if let Ok(text) = serde_json::to_string_pretty(&v)
-            && let Err(e) = fs::write(&path, text)
-        {
-            error!("persist pen_mode {}: {e}", path.display());
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.invalidate_dry();
         }
+        self.save_annotations();
+        if page as u32 != self.page {
+            self.jump_page(page as i32 - self.page as i32);
+        }
+        self.mark_repaint();
+    }
+
+    /// Olvida el historial de deshacer (cambio de documento o salida del
+    /// lector) y cierra el popover de la barra.
+    pub(crate) fn reset_undo_history(&mut self) {
+        self.clear_recorte();
+        self.undo.clear();
+        self.erase_edit = AnnotationEdit::default();
+        self.close_toolbar_popover();
+        self.invalidate_toolbar();
     }
 }

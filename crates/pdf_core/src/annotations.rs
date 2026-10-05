@@ -571,6 +571,373 @@ fn clip_segment_by_circle(
     }
 }
 
+/// Smallest uniform scale accepted by [`AnnotationSet::transform_strokes`].
+pub const MIN_STROKE_SCALE: f32 = 0.5;
+/// Largest uniform scale accepted by [`AnnotationSet::transform_strokes`].
+pub const MAX_STROKE_SCALE: f32 = 2.0;
+
+/// Uniform scale about `origin` followed by a translation, in page points:
+/// `p' = origin + (p - origin) * scale + (dx, dy)`. Stroke widths scale by
+/// the same factor, so a moved group keeps its look.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UniformTransform {
+    pub origin: (f32, f32),
+    pub scale: f32,
+    pub dx: f32,
+    pub dy: f32,
+}
+
+impl UniformTransform {
+    /// The identity transform.
+    pub const IDENTITY: Self = Self {
+        origin: (0.0, 0.0),
+        scale: 1.0,
+        dx: 0.0,
+        dy: 0.0,
+    };
+
+    /// Maps one page point.
+    pub fn apply(&self, (x, y): (f32, f32)) -> (f32, f32) {
+        let (ox, oy) = self.origin;
+        (
+            ox + (x - ox) * self.scale + self.dx,
+            oy + (y - oy) * self.scale + self.dy,
+        )
+    }
+
+    /// Maps a rect (the scale is positive, so corners stay ordered).
+    pub fn apply_rect(&self, r: Rect) -> Rect {
+        let r = r.normalized();
+        let (x0, y0) = self.apply((r.x, r.y));
+        let (x1, y1) = self.apply((r.x + r.w, r.y + r.h));
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    }
+}
+
+/// Why [`AnnotationSet::transform_strokes`] or
+/// [`AnnotationSet::restore`] rejected a request. Nothing is modified when an
+/// error is returned.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransformError {
+    /// No annotation with this id.
+    MissingId(u64),
+    /// The annotation lives on another page.
+    WrongPage(u64),
+    /// The annotation is not a stroke.
+    NotStroke(u64),
+    /// Scale outside [`MIN_STROKE_SCALE`]..=[`MAX_STROKE_SCALE`] or not finite.
+    InvalidScale,
+    /// The transform would produce a non-finite point or width.
+    NonFinite,
+}
+
+impl std::fmt::Display for TransformError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingId(id) => write!(f, "annotation {id} not found"),
+            Self::WrongPage(id) => write!(f, "annotation {id} is on another page"),
+            Self::NotStroke(id) => write!(f, "annotation {id} is not a stroke"),
+            Self::InvalidScale => write!(f, "scale outside the allowed range"),
+            Self::NonFinite => write!(f, "transform produces non-finite geometry"),
+        }
+    }
+}
+
+impl std::error::Error for TransformError {}
+
+impl AnnotationSet {
+    /// Ids of the strokes on `page_idx` touched by the closed `lasso`
+    /// polygon (page points): a stroke is selected WHOLE when any of its
+    /// vertices lies inside the lasso or any of its segments crosses the
+    /// lasso outline. Highlights and notes are never selected. A lasso with
+    /// fewer than 3 points selects nothing. Ids come in z order.
+    pub fn strokes_in_lasso(&self, page_idx: usize, lasso: &[(f32, f32)]) -> Vec<u64> {
+        if lasso.len() < 3 {
+            return Vec::new();
+        }
+        let Some(anns) = self.by_page.get(&page_idx) else {
+            return Vec::new();
+        };
+        anns.iter()
+            .filter(|a| match &a.kind {
+                Annotation::Stroke(s) => stroke_touches_polygon(s, lasso),
+                _ => false,
+            })
+            .map(|a| a.id)
+            .collect()
+    }
+
+    /// Applies `t` to the points and width of the strokes `ids` of
+    /// `page_idx`, in place: ids, z order and colours are preserved. The
+    /// whole request is validated first, so either every stroke changes or
+    /// none does. Returns the previous version of each stroke (for undo with
+    /// [`AnnotationSet::restore`]).
+    pub fn transform_strokes(
+        &mut self,
+        page_idx: usize,
+        ids: &[u64],
+        t: &UniformTransform,
+    ) -> Result<Vec<Annotated>, TransformError> {
+        if !t.scale.is_finite() || !(MIN_STROKE_SCALE..=MAX_STROKE_SCALE).contains(&t.scale) {
+            return Err(TransformError::InvalidScale);
+        }
+        let mut before = Vec::with_capacity(ids.len());
+        let mut after = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let ann = self.find(id).ok_or(TransformError::MissingId(id))?;
+            if ann.page_idx != page_idx {
+                return Err(TransformError::WrongPage(id));
+            }
+            let Annotation::Stroke(s) = &ann.kind else {
+                return Err(TransformError::NotStroke(id));
+            };
+            let points: Vec<(f32, f32)> = s.points.iter().map(|&p| t.apply(p)).collect();
+            let width = s.width * t.scale;
+            if !width.is_finite() || points.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+                return Err(TransformError::NonFinite);
+            }
+            before.push(ann.clone());
+            after.push(Annotation::Stroke(Stroke {
+                points,
+                width,
+                color: s.color,
+            }));
+        }
+        for (old, kind) in before.iter().zip(after) {
+            if let Some(slot) = self.find_mut(old.id) {
+                slot.kind = kind;
+            }
+        }
+        Ok(before)
+    }
+
+    /// Puts back `snapshot` (as returned by `transform_strokes`), replacing
+    /// each annotation's content in place by id. Validated first: on error
+    /// nothing changes.
+    pub fn restore(&mut self, snapshot: &[Annotated]) -> Result<(), TransformError> {
+        for ann in snapshot {
+            let current = self.find(ann.id).ok_or(TransformError::MissingId(ann.id))?;
+            if current.page_idx != ann.page_idx {
+                return Err(TransformError::WrongPage(ann.id));
+            }
+        }
+        for ann in snapshot {
+            if let Some(slot) = self.find_mut(ann.id) {
+                slot.kind = ann.kind.clone();
+            }
+        }
+        Ok(())
+    }
+
+    /// The annotation with `id`, if present.
+    pub fn find(&self, id: u64) -> Option<&Annotated> {
+        self.by_page.values().flatten().find(|a| a.id == id)
+    }
+
+    fn find_mut(&mut self, id: u64) -> Option<&mut Annotated> {
+        self.by_page.values_mut().flatten().find(|a| a.id == id)
+    }
+}
+
+/// Even-odd point-in-polygon test (page points).
+pub fn point_in_polygon(p: (f32, f32), poly: &[(f32, f32)]) -> bool {
+    let mut inside = false;
+    let mut j = poly.len().wrapping_sub(1);
+    for i in 0..poly.len() {
+        let (xi, yi) = poly[i];
+        let (xj, yj) = poly[j];
+        if (yi > p.1) != (yj > p.1) && p.0 < (xj - xi) * (p.1 - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Whether segments `a`–`b` and `c`–`d` intersect (touching counts).
+fn segments_intersect(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)) -> bool {
+    let cross = |o: (f32, f32), p: (f32, f32), q: (f32, f32)| {
+        (p.0 - o.0) * (q.1 - o.1) - (p.1 - o.1) * (q.0 - o.0)
+    };
+    let on_segment = |o: (f32, f32), p: (f32, f32), q: (f32, f32)| {
+        q.0 >= o.0.min(p.0) && q.0 <= o.0.max(p.0) && q.1 >= o.1.min(p.1) && q.1 <= o.1.max(p.1)
+    };
+    let (d1, d2) = (cross(c, d, a), cross(c, d, b));
+    let (d3, d4) = (cross(a, b, c), cross(a, b, d));
+    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+    {
+        return true;
+    }
+    (d1 == 0.0 && on_segment(c, d, a))
+        || (d2 == 0.0 && on_segment(c, d, b))
+        || (d3 == 0.0 && on_segment(a, b, c))
+        || (d4 == 0.0 && on_segment(a, b, d))
+}
+
+fn stroke_touches_polygon(s: &Stroke, poly: &[(f32, f32)]) -> bool {
+    if s.points.iter().any(|&p| point_in_polygon(p, poly)) {
+        return true;
+    }
+    let n = poly.len();
+    s.points
+        .windows(2)
+        .any(|w| (0..n).any(|i| segments_intersect(w[0], w[1], poly[i], poly[(i + 1) % n])))
+}
+
+/// Bounding box of a stroke including half its width (page points).
+pub fn stroke_bounds(s: &Stroke) -> Option<Rect> {
+    let (mut x0, mut y0) = (f32::INFINITY, f32::INFINITY);
+    let (mut x1, mut y1) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for &(x, y) in &s.points {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    if !x0.is_finite() {
+        return None;
+    }
+    let hw = s.width / 2.0;
+    Some(Rect::new(
+        x0 - hw,
+        y0 - hw,
+        x1 - x0 + s.width,
+        y1 - y0 + s.width,
+    ))
+}
+
+#[cfg(test)]
+mod lasso_tests {
+    use super::*;
+
+    const INK: Color = Color {
+        r: 10,
+        g: 20,
+        b: 30,
+        a: 255,
+    };
+
+    fn line(set: &mut AnnotationSet, page: usize, a: (f32, f32), b: (f32, f32)) -> u64 {
+        set.add(
+            page,
+            Annotation::Stroke(Stroke::new(vec![a, b], 2.0, INK).unwrap()),
+        )
+        .unwrap()
+    }
+
+    fn square(x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<(f32, f32)> {
+        vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    }
+
+    #[test]
+    fn lasso_selects_exactly_the_strokes_it_touches() {
+        let mut set = AnnotationSet::new();
+        let inside = line(&mut set, 0, (20.0, 20.0), (30.0, 30.0));
+        let crossing = line(&mut set, 0, (0.0, 50.0), (100.0, 50.0));
+        let _outside = line(&mut set, 0, (200.0, 200.0), (210.0, 210.0));
+        let _other_page = line(&mut set, 1, (20.0, 20.0), (30.0, 30.0));
+        set.add(
+            0,
+            Annotation::Highlight(Highlight {
+                rects: vec![Rect::new(20.0, 20.0, 10.0, 10.0)],
+                color: INK,
+            }),
+        );
+        let lasso = square(10.0, 10.0, 60.0, 60.0);
+        assert_eq!(set.strokes_in_lasso(0, &lasso), vec![inside, crossing]);
+        assert!(
+            set.strokes_in_lasso(0, &square(300.0, 300.0, 310.0, 310.0))
+                .is_empty()
+        );
+        assert!(set.strokes_in_lasso(0, &lasso[..2]).is_empty());
+    }
+
+    #[test]
+    fn transform_preserves_id_order_colour_and_page() {
+        let mut set = AnnotationSet::new();
+        let a = line(&mut set, 0, (10.0, 10.0), (20.0, 10.0));
+        let b = line(&mut set, 0, (10.0, 20.0), (20.0, 20.0));
+        let c = line(&mut set, 0, (50.0, 50.0), (60.0, 60.0));
+        let t = UniformTransform {
+            origin: (10.0, 10.0),
+            scale: 2.0,
+            dx: 5.0,
+            dy: -5.0,
+        };
+        let before = set.transform_strokes(0, &[a, c], &t).unwrap();
+        assert_eq!(before.iter().map(|x| x.id).collect::<Vec<_>>(), vec![a, c]);
+        let page = set.for_page(0);
+        assert_eq!(page.iter().map(|x| x.id).collect::<Vec<_>>(), vec![a, b, c]);
+        let Annotation::Stroke(sa) = &page[0].kind else {
+            panic!("stroke expected");
+        };
+        assert_eq!(sa.points, vec![(15.0, 5.0), (35.0, 5.0)]);
+        assert_eq!(sa.width, 4.0);
+        assert_eq!(sa.color, INK);
+
+        set.restore(&before).unwrap();
+        let Annotation::Stroke(sa) = &set.for_page(0)[0].kind else {
+            panic!("stroke expected");
+        };
+        assert_eq!(sa.points, vec![(10.0, 10.0), (20.0, 10.0)]);
+        assert_eq!(sa.width, 2.0);
+    }
+
+    #[test]
+    fn invalid_requests_change_nothing() {
+        let mut set = AnnotationSet::new();
+        let a = line(&mut set, 0, (10.0, 10.0), (20.0, 10.0));
+        let other = line(&mut set, 1, (10.0, 10.0), (20.0, 10.0));
+        let hl = set
+            .add(
+                0,
+                Annotation::Highlight(Highlight {
+                    rects: vec![Rect::new(0.0, 0.0, 5.0, 5.0)],
+                    color: INK,
+                }),
+            )
+            .unwrap();
+        let snapshot = set.clone();
+        let mut t = UniformTransform::IDENTITY;
+        t.dx = 3.0;
+        assert_eq!(
+            set.transform_strokes(0, &[a, 999], &t),
+            Err(TransformError::MissingId(999))
+        );
+        assert_eq!(
+            set.transform_strokes(0, &[a, other], &t),
+            Err(TransformError::WrongPage(other))
+        );
+        assert_eq!(
+            set.transform_strokes(0, &[a, hl], &t),
+            Err(TransformError::NotStroke(hl))
+        );
+        for scale in [0.49, 2.01, f32::NAN] {
+            let bad = UniformTransform { scale, ..t };
+            assert_eq!(
+                set.transform_strokes(0, &[a], &bad),
+                Err(TransformError::InvalidScale)
+            );
+        }
+        let huge = UniformTransform {
+            dx: f32::INFINITY,
+            ..t
+        };
+        assert_eq!(
+            set.transform_strokes(0, &[a], &huge),
+            Err(TransformError::NonFinite)
+        );
+        assert_eq!(set, snapshot);
+    }
+
+    #[test]
+    fn stroke_bounds_include_half_the_width() {
+        let s = Stroke::new(vec![(10.0, 10.0), (20.0, 30.0)], 2.0, INK).unwrap();
+        assert_eq!(stroke_bounds(&s), Some(Rect::new(9.0, 9.0, 12.0, 22.0)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

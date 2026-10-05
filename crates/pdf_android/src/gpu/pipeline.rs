@@ -683,6 +683,8 @@ impl Gpu {
                 // pan las desplaza juntas). Se ubican mediante la
                 // transformación compartida, no por el origen del crop.
                 let anns = reader.annotations.for_page(page_idx as usize);
+                // Trazos de Recorte en arrastre: los pinta la vista previa Wet.
+                let hidden = reader.recorte_hidden_ids();
                 if let Some(transform) = transform {
                     for a in &anns {
                         if let pdf_core::Annotation::Highlight(h) = &a.kind {
@@ -696,6 +698,9 @@ impl Gpu {
                         }
                     }
                     for a in &anns {
+                        if hidden.contains(&a.id) {
+                            continue;
+                        }
                         if let pdf_core::Annotation::Stroke(s) = &a.kind {
                             self.pts_scratch.clear();
                             for &(x, y) in &s.points {
@@ -775,7 +780,7 @@ impl Gpu {
                         }
                     }
                     crate::annotations::ToolKind::Highlight => {
-                        let c = pdf_core::HIGHLIGHT_COLOR;
+                        let c = g.hl_color;
                         if g.hl_spans.is_empty() {
                             // Sin spans cacheados: bbox crudo ancla→cursor.
                             let cur = g.points.last().copied().unwrap_or(g.anchor);
@@ -793,11 +798,9 @@ impl Gpu {
                             // sin I/O: spans pre-ordenados en el Down). Sin
                             // save hasta el Up.
                             let gesture = pdf_core::Gesture::Points(g.points.clone());
-                            if let Some(hl) = pdf_core::highlight_under_gesture_sorted(
-                                &g.hl_spans,
-                                &gesture,
-                                pdf_core::HIGHLIGHT_COLOR,
-                            ) {
+                            if let Some(hl) =
+                                pdf_core::highlight_under_gesture_sorted(&g.hl_spans, &gesture, c)
+                            {
                                 for r in &hl.rects {
                                     let (x0, y0) = transform.page_to_screen(r.x, r.y);
                                     let (x1, y1) = transform.page_to_screen(r.x + r.w, r.y + r.h);
@@ -823,6 +826,53 @@ impl Gpu {
                 let pts = std::mem::take(&mut self.pts_scratch);
                 self.draw_polyline_gpu(&pts, 1.5, rgba);
                 self.pts_scratch = pts;
+            }
+
+            // Recorte (ADR-013): lazo en curso, o caja + asa de la selección y
+            // vista previa de los trazos durante el arrastre.
+            if let Some(rc) = reader.recorte.as_ref()
+                && let Some(transform) = reader.page_screen_transform(rc.page)
+            {
+                let c = crate::theme::SEL_BORDER_RGBA;
+                if rc.bounds.is_none() && rc.lasso.len() >= 2 {
+                    self.pts_scratch.clear();
+                    for &(x, y) in rc.lasso.iter().chain(rc.lasso.first()) {
+                        self.pts_scratch.push(transform.page_to_screen(x, y));
+                    }
+                    let pts = std::mem::take(&mut self.pts_scratch);
+                    self.draw_polyline_gpu(&pts, 1.5, c);
+                    self.pts_scratch = pts;
+                }
+                if let Some(drag) = rc.drag {
+                    let t = drag.transform;
+                    for &id in &rc.ids {
+                        let Some(pdf_core::Annotation::Stroke(s)) =
+                            reader.annotations.find(id).map(|a| &a.kind)
+                        else {
+                            continue;
+                        };
+                        self.pts_scratch.clear();
+                        for &p in &s.points {
+                            let (x, y) = t.apply(p);
+                            self.pts_scratch.push(transform.page_to_screen(x, y));
+                        }
+                        let hw = (s.width * t.scale * transform.scale() / 2.0).max(0.5);
+                        let pts = std::mem::take(&mut self.pts_scratch);
+                        self.draw_polyline_gpu(
+                            &pts,
+                            hw,
+                            [s.color.r, s.color.g, s.color.b, s.color.a],
+                        );
+                        self.pts_scratch = pts;
+                    }
+                }
+                if let Some(b) = rc.shown_bounds() {
+                    let (l, t) = transform.page_to_screen(b.x, b.y);
+                    let (r, bt) = transform.page_to_screen(b.x + b.w, b.y + b.h);
+                    self.draw_sel_border(l, t, r, bt);
+                    let h = 12.0;
+                    self.draw_solid_quad(r - h, bt - h, r + h, bt + h, c);
+                }
             }
 
             // Rect de selección (fill + borde) en px de ventana
@@ -893,8 +943,10 @@ impl Gpu {
         // en la wet como el trazo — sin esto, el gesto Selecting (long-press
         // de dedo, sin tool_gesture ni erase_pt) nunca llegaría a render_wet
         // y el rect sería invisible en GPU (Tarea 2.5).
-        let has_wet =
-            reader.tool_gesture.is_some() || reader.erase_pt.is_some() || reader.sel.is_some();
+        let has_wet = reader.tool_gesture.is_some()
+            || reader.erase_pt.is_some()
+            || reader.sel.is_some()
+            || reader.recorte.is_some();
         if has_wet {
             self.render_wet(reader);
         }
@@ -1212,7 +1264,13 @@ impl<'a> OverlayList<'a> {
         if let Some(tb) = reader.toast_bitmap.as_ref() {
             let (_, by, _, _) = crate::reader::page_badge_rect(reader.win_w, reader.win_h);
             let tx = (reader.win_w - tb.width as i32) / 2;
-            let ty = by - tb.height as i32 - 8;
+            let mut ty = by - tb.height as i32 - 8;
+            // Barra acoplada abajo: el aviso va por encima de ella.
+            if reader.toolbar_dock == crate::draw::ToolbarDock::Bottom
+                && let Some((_, card_top, _, _)) = reader.toolbar_card()
+            {
+                ty = ty.min(card_top as i32 - tb.height as i32 - 8);
+            }
             out.items.push((tb, reader.toast_id, tx, ty));
         }
         if reader.chrome_visible {
@@ -1231,11 +1289,12 @@ impl<'a> OverlayList<'a> {
             let (bx, by, _, _) = crate::reader::page_badge_rect(reader.win_w, reader.win_h);
             out.items.push((b, reader.page_badge_id, bx, by));
         }
-        if !reader.chrome_visible
-            && let Some(mb) = reader.mode_badge.as_ref()
-        {
-            let (bx, by, _, _) = crate::draw::mode_badge_rect(reader.win_w, reader.win_h);
-            out.items.push((mb, reader.mode_badge_id, bx, by));
+        if let Some((tb, x, y)) = reader.toolbar_bitmap.as_ref() {
+            let (dx, dy) = reader.toolbar_drag_offset();
+            out.items.push((tb, reader.toolbar_id, *x + dx, *y + dy));
+        }
+        if let Some((pb, x, y)) = reader.toolbar_popover_bitmap.as_ref() {
+            out.items.push((pb, reader.toolbar_popover_id, *x, *y));
         }
         if let Some(menu) = reader.sel_menu.as_ref() {
             out.items

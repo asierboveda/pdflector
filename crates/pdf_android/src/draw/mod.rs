@@ -8,8 +8,8 @@
 //!
 //! Submódulos:
 //! - `primitives`: blits crudos del buffer (relleno, copias, RGB565).
-//! - `tinta`: rasterizador de trazos (brocha de disco + Liang–Barsky).
-//! - `chrome`: barras e indicadores del visor (página, modo, goma).
+//! - `chrome`: barras e indicadores del visor (página, goma).
+//! - `toolbar`: barra de herramientas del visor y su popover.
 //! - `sheet`: panel de ajustes deslizante.
 //! - `menus`: picker de PDFs y menús ⋯/☰.
 //! - `library`: pantalla de biblioteca (cabecera, zona, portadas).
@@ -30,11 +30,9 @@ mod menus;
 mod overlays;
 mod primitives;
 mod sheet;
-mod tinta;
+mod toolbar;
 pub(crate) use chrome::ButtonRect;
-pub(crate) use chrome::mode_badge_rect;
 pub(crate) use chrome::render_eraser_cursor;
-pub(crate) use chrome::render_mode_badge;
 pub(crate) use chrome::render_page_badge;
 pub(crate) use chrome::render_viewer_bottom_chrome;
 pub(crate) use chrome::render_viewer_top_chrome;
@@ -65,7 +63,15 @@ pub(crate) use primitives::copy_region;
 pub(crate) use primitives::fill_buffer;
 pub(crate) use sheet::render_sheet;
 pub(crate) use sheet::sheet_buttons;
-pub(crate) use tinta::draw_ink_segment_on_frame;
+pub(crate) use toolbar::PopoverCell;
+pub(crate) use toolbar::ToolbarButton;
+pub(crate) use toolbar::ToolbarDock;
+pub(crate) use toolbar::ToolbarLayout;
+pub(crate) use toolbar::ToolbarPopover;
+pub(crate) use toolbar::render_toolbar;
+pub(crate) use toolbar::render_toolbar_popover;
+pub(crate) use toolbar::toolbar_layout;
+pub(crate) use toolbar::toolbar_popover_layout;
 /// Dibuja rectángulos y textos (fuente del sistema, antialiasing) con
 /// `android.graphics.Canvas` vía JNI y devuelve el resultado como `Bitmap`
 /// RGBA8. Orden de dibujo: fondo → rects → textos.
@@ -156,6 +162,30 @@ impl CanvasText {
             align,
             bold,
             text: text.into(),
+        }
+    }
+}
+
+/// Segmento recto con extremos redondeados (iconos de la barra de
+/// herramientas): de (x0, y0) a (x1, y1), `width` px, color ARGB.
+pub(crate) struct CanvasLine {
+    pub(crate) x0: f32,
+    pub(crate) y0: f32,
+    pub(crate) x1: f32,
+    pub(crate) y1: f32,
+    pub(crate) width: f32,
+    pub(crate) color: u32,
+}
+
+impl CanvasLine {
+    pub(crate) fn new(p0: (f32, f32), p1: (f32, f32), width: f32, color: u32) -> Self {
+        Self {
+            x0: p0.0,
+            y0: p0.1,
+            x1: p1.0,
+            y1: p1.1,
+            width,
+            color,
         }
     }
 }
@@ -254,6 +284,20 @@ fn jni_text_bitmap(
     h: i32,
     bg: u32,
     rects: &[CanvasRect],
+    texts: &[CanvasText],
+) -> Option<Bitmap> {
+    jni_canvas_bitmap(w, h, bg, rects, &[], texts)
+}
+
+/// Como `jni_text_bitmap`, con segmentos antialiasados de extremos
+/// redondeados entre los rectángulos y los textos. Orden de dibujo: fondo →
+/// rects → líneas → textos.
+fn jni_canvas_bitmap(
+    w: i32,
+    h: i32,
+    bg: u32,
+    rects: &[CanvasRect],
+    lines: &[CanvasLine],
     texts: &[CanvasText],
 ) -> Option<Bitmap> {
     let vm = JavaVM::singleton().ok()?;
@@ -378,6 +422,50 @@ fn jni_text_bitmap(
                 }
             }
 
+            // Líneas (el estilo del Paint no afecta a drawLine: siempre traza).
+            if !lines.is_empty() {
+                let cap_class = env.find_class(jni_str!("android/graphics/Paint$Cap"))?;
+                let cap_round = env
+                    .get_static_field(
+                        &cap_class,
+                        jni_str!("ROUND"),
+                        jni_sig!(sig = android.graphics.Paint::Cap),
+                    )?
+                    .l()?;
+                env.call_method(
+                    &paint,
+                    jni_str!("setStrokeCap"),
+                    jni_sig!(sig = (android.graphics.Paint::Cap) -> void),
+                    &[JValue::Object(&cap_round)],
+                )?;
+                for l in lines {
+                    env.call_method(
+                        &paint,
+                        jni_str!("setColor"),
+                        jni_sig!(sig = (int) -> void),
+                        &[JValue::Int(l.color as i32)],
+                    )?;
+                    env.call_method(
+                        &paint,
+                        jni_str!("setStrokeWidth"),
+                        jni_sig!(sig = (float) -> void),
+                        &[JValue::Float(l.width)],
+                    )?;
+                    env.call_method(
+                        &canvas,
+                        jni_str!("drawLine"),
+                        jni_sig!(sig = (float, float, float, float, android.graphics.Paint) -> void),
+                        &[
+                            JValue::Float(l.x0),
+                            JValue::Float(l.y0),
+                            JValue::Float(l.x1),
+                            JValue::Float(l.y1),
+                            JValue::Object(&paint),
+                        ],
+                    )?;
+                }
+            }
+
             // Textos.
             for t in texts {
                 env.call_method(
@@ -467,7 +555,7 @@ fn jni_text_bitmap(
                 env.exception_clear();
                 Ok(())
             });
-            error!("jni_text_bitmap ({w}x{h}): {e}");
+            error!("jni_canvas_bitmap ({w}x{h}): {e}");
             None
         }
     }

@@ -9,7 +9,7 @@
 //! `EmptyStateGeom`), el `struct Reader` con sus campos (los de la biblioteca,
 //! `lib_*`, viven en `LibraryState` — ver `library_state.rs`), los helpers
 //! libres del modelo (`title_from_name`, `scan_pdfs`, …), dos métodos transversales
-//! (`next_ovl_id`, `mark_repaint`), `load_pen_mode` y el `Drop`. La LÓGICA vive en 12
+//! (`next_ovl_id`, `mark_repaint`) y el `Drop`. La LÓGICA vive en 14
 //! submódulos por responsabilidad (ver abajo). El input (gestos) está en `input`, el
 //! dibujo en `draw`, el JNI en `jni`, la escala inicial en `view` (stub) y el blit
 //! rápido en `zoom` (stub). Los paths `crate::reader::*` que consumen `draw`, `input`,
@@ -48,11 +48,13 @@ mod library_state;
 mod life;
 mod navigation;
 mod pinch;
+mod recorte;
 mod redraw;
 mod seleccion;
 mod sheet_chrome;
 mod tick;
 mod toast_ia;
+mod toolbar;
 mod tools;
 
 // Tipos del worker de render y del anclaje del pinch: campos del `struct Reader`.
@@ -638,12 +640,31 @@ pub(crate) struct Reader {
     pub(crate) page_badge: Option<Bitmap>,
     /// Id de generación de `page_badge` (caché GPU; ver `ovl_seq`).
     pub(crate) page_badge_id: u64,
-    /// Bitmap del indicador de MODO del boli (overlay abajo a la derecha,
-    /// ✏️/🖍️): se invalida al alternar modo o cambiar ventana — el usuario
-    /// siempre ve en qué modo va a dibujar el boli.
-    pub(crate) mode_badge: Option<Bitmap>,
-    /// Id de generación de `mode_badge` (caché GPU; ver `ovl_seq`).
-    pub(crate) mode_badge_id: u64,
+    /// Barra de herramientas del visor (bitmap + posición en px de ventana):
+    /// siempre visible en el visor; se invalida (None) al cambiar
+    /// herramienta, color, grosor, disponibilidad de deshacer/rehacer,
+    /// plegado, tema o ventana (`invalidate_toolbar`).
+    pub(crate) toolbar_bitmap: Option<(Bitmap, i32, i32)>,
+    /// Id de generación de `toolbar_bitmap` (caché GPU; ver `ovl_seq`).
+    pub(crate) toolbar_id: u64,
+    /// ¿Barra cerrada a un solo botón? Cerrada, el lápiz navega (ADR-012).
+    /// Persistido en `tool_state.json`.
+    pub(crate) toolbar_collapsed: bool,
+    /// Borde al que está acoplada la barra. Persistido.
+    pub(crate) toolbar_dock: crate::draw::ToolbarDock,
+    /// Arrastre de la barra en curso (pulsación larga): (punto de partida,
+    /// punto actual) en px de ventana. Al soltar se acopla al borde más
+    /// cercano.
+    pub(crate) toolbar_drag: Option<((f32, f32), (f32, f32))>,
+    /// Recorte en curso (ADR-013): lazo dibujándose o trazos seleccionados
+    /// para mover/escalar. None sin selección.
+    pub(crate) recorte: Option<recorte::Recorte>,
+    /// Popover abierto junto a la barra (colores o grosores); None = cerrado.
+    pub(crate) toolbar_popover: Option<crate::draw::ToolbarPopover>,
+    /// Bitmap + posición del popover abierto.
+    pub(crate) toolbar_popover_bitmap: Option<(Bitmap, i32, i32)>,
+    /// Id de generación de `toolbar_popover_bitmap` (caché GPU).
+    pub(crate) toolbar_popover_id: u64,
     /// Posición de pantalla de la GOMA durante el borrado (None = sin gesto
     /// de borrado): dibuja el cursor circular (`eraser_cursor`) para que el
     /// usuario vea exactamente qué área se va a borrar.
@@ -731,15 +752,20 @@ pub(crate) struct Reader {
     /// selección de texto (long-press) queda desactivada mientras esté
     /// activa (`input::tick_gestures`).
     pub(crate) tool: ToolKind,
-    /// Modo del BOLI persistido (`PenMode`): el boli dibuja (Ink) o subraya
-    /// (Highlight) SIEMPRE que toca el PDF, sin depender de la barra de
-    /// herramientas; el botón UP del boli lo alterna (`toggle_pen_mode`) y se
-    /// guarda en `tool_state.json`. La barra de herramientas sigue existiendo y
-    /// `set_tool` sincroniza este modo para que ambas entradas coincidan.
+    /// Herramienta del lápiz persistida (`PenMode`): con la barra abierta el
+    /// lápiz dibuja (Ink), subraya (Highlight), borra (Eraser) o selecciona
+    /// con lazo (Lasso). La elige la barra (`set_pen_mode`); se guarda en
+    /// `tool_state.json`. Con la barra cerrada el lápiz navega.
     pub(crate) pen_mode: PenMode,
     /// ¿El gesto de BORRADO en curso ha eliminado alguna anotación? Se guarda
     /// `store.save` UNA vez al levantar (o cancelar) si cambió algo.
     erase_dirty: bool,
+    /// Edición acumulada por la pasada de goma en curso; al levantar entra
+    /// en el historial de deshacer como una sola acción.
+    erase_edit: crate::undo::AnnotationEdit,
+    /// Historial de deshacer/rehacer del documento abierto (en memoria,
+    /// acotado; se vacía al cambiar de documento).
+    pub(crate) undo: crate::undo::UndoHistory,
     /// Última posición de la GOMA en coords de página (para el barrido
     /// continuo del borrado: un punto entre dos pasadas consecutivas también
     /// se borra). None = sin barrido previo (primer Move del gesto).
@@ -750,6 +776,8 @@ pub(crate) struct Reader {
     /// Grosor actual del boli en pt (arranca en `STROKE_WIDTH_PT`). Cada
     /// trazo guarda su grosor.
     pub(crate) ink_width: f32,
+    /// Color actual del resaltador (arranca en `pdf_core::HIGHLIGHT_COLOR`).
+    pub(crate) highlight_color: Color,
     /// Gesto de herramienta EN CURSO (dedo/lápiz bajado con una herramienta
     /// activa): puntos y ancla en coordenadas de PÁGINA (ver `ToolGesture`).
     /// `Some` mientras el dedo está abajo; se convierte en una anotación
@@ -823,30 +851,6 @@ pub(crate) struct Reader {
     /// Worker actor para render de portadas en segundo plano (Fase E1).
     thumb_worker: Option<crate::thumbs::ThumbWorker>,
     thumb_rx: Option<std::sync::mpsc::Receiver<crate::thumbs::ThumbMsg>>,
-}
-
-/// Lee el modo del boli persistido en `tool_state.json` (campo "mode":
-/// "Ink" | "Highlight"). RETROCOMPATIBLE: un fichero viejo sin el campo (o
-/// con un valor desconocido) carga como `Ink`. Best-effort, como el resto de
-/// la persistencia. NO toca `persist.rs` (fuera de alcance de esta tarea):
-/// el JSON completo se lee como `Value`; al guardar (`persist_pen_mode`)
-/// solo se conserva/añade "mode", respetando lo que escribe `persist`
-/// (ink_color/ink_width).
-fn load_pen_mode(internal_dir: Option<&Path>) -> PenMode {
-    let Some(dir) = internal_dir else {
-        return PenMode::Ink;
-    };
-    let path = dir.join("tool_state.json");
-    let Ok(text) = fs::read_to_string(&path) else {
-        return PenMode::Ink;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return PenMode::Ink;
-    };
-    match v.get("mode").and_then(|m| m.as_str()) {
-        Some("Highlight") => PenMode::Highlight,
-        _ => PenMode::Ink,
-    }
 }
 
 impl Reader {

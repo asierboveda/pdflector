@@ -200,6 +200,91 @@ otro puntero mientras el dibujo está activo lo cancela y limpia el estado del
 gesto. La cobertura unitaria de ambas decisiones está en
 `crates/pdf_android/src/input/motion.rs`.
 
+#### Barra de herramientas del visor
+
+Implementa [`ADR-012`](docs/adr/012-menu-de-anotacion.md) con los cambios de
+[`ADR-022`](docs/adr/022-barra-acoplable.md) (`crates/pdf_android/src/draw/toolbar.rs`,
+`reader/toolbar.rs`). La barra flotante contiene:
+
+- Bolígrafo, Subrayador, Goma y Recorte, solo con iconos y botones de 48 dp;
+- Deshacer y Rehacer;
+- Cerrar.
+
+Comportamiento:
+
+- **Posición:** se acopla a cualquier borde, centrada (vertical en los
+  laterales, horizontal arriba/abajo, sin tapar el chrome del visor). Una
+  pulsación larga la arrastra y al soltar se acopla al borde más cercano.
+  Sin borde guardado, izquierda.
+- **Color y grosor:** tocar de nuevo el Bolígrafo activo abre cinco colores y
+  tres grosores; tocar de nuevo el Subrayador activo abre cinco colores. El
+  subrayado desde el menú de selección usa el color del subrayador.
+- **Cerrada (`Navegar`):** queda un botón con la herramienta atenuada y el
+  lápiz navega como el dedo; la herramienta elegida se conserva.
+- **Botones del lápiz**, con la barra abierta o cerrada: el inferior
+  mantenido borra; el superior mantenido dibuja el lazo de Recorte. Ya no
+  alterna Bolígrafo/Subrayador.
+- Un `Down` sobre la barra, o con el popover abierto, nunca inicia trazo ni
+  selección.
+- La barra es un bitmap Canvas+JNI que solo se regenera al cambiar su estado;
+  el camino del trazo no cambia. Ya no existe el indicador de modo de la
+  esquina inferior derecha.
+
+El historial de deshacer (`crates/pdf_android/src/undo.rs`) vive en memoria,
+es por documento, está acotado a 100 acciones y se vacía al cambiar de
+documento o volver a la biblioteca. Cada trazo, subrayado, pasada de goma o
+movimiento/escala de Recorte es una acción. Deshacer un borrado re-añade los
+trazos con id nuevo al final del orden z de su página; mover/escalar conserva
+el id. Si la acción es de otra página, la vista salta a ella.
+
+`tool_state.json` guarda herramienta, color y grosor del bolígrafo, color del
+subrayador, barra cerrada y borde; cada campo tiene valor por defecto.
+
+#### Recorte
+
+Implementa [`ADR-013`](docs/adr/013-recorte-de-tinta.md)
+(`crates/pdf_android/src/reader/recorte.rs`; modelo en
+`pdf_core::AnnotationSet::{strokes_in_lasso, transform_strokes, restore}`).
+
+- El lazo, con la herramienta Recorte o con el botón superior mantenido,
+  selecciona los trazos completos de la página actual que toca.
+- Arrastrar la caja mueve la selección y su asa inferior derecha la escala
+  (0,5×–2×).
+- Un movimiento se limita al 25 % del menor lado de la página y ningún
+  movimiento ni escala saca la caja de la página.
+- Al soltar, la transformación se aplica en una operación que conserva id,
+  orden y color; se guarda una vez y entra en el historial.
+- Tocar fuera de la caja, cambiar de herramienta o de página, cerrar la barra
+  o perder la superficie descarta la selección sin tocar los trazos.
+- Durante el arrastre, la capa Dry se compone sin los trazos seleccionados y
+  la vista previa se dibuja en Wet.
+
+**Verificado (2026-10-05, base `b26adc3` con cambios sin commit):**
+- `cargo fmt --check`, `clippy -D warnings` (host y `pdf_android` aarch64) y
+  `cargo test -p pdf_core` (190 pruebas, 0 fallos).
+- Binario `--lib` de `pdf_android` ejecutado en la TCL por ADB: 92 pruebas,
+  0 fallos. Cubren geometría de la barra en los cuatro bordes y ambas
+  orientaciones, popovers, borde más cercano, límites de mover/escalar,
+  historial (incluidas ediciones en su sitio y remapeo de ids), selección por
+  lazo y compatibilidad de `tool_state.json`.
+
+**Instalado en TCL 9469X mediante ADB (2026-10-05):** la APK con barra
+acoplable y Recorte se actualizó con `adb install -r`, conservando los datos.
+La build con iconos solos se abrió y se capturó la pantalla del visor. Se
+observó la barra con sus cuatro iconos de herramienta, Deshacer, Rehacer y
+Cerrar, sin nombres bajo los iconos.
+
+**Observado en TCL 9469X (2026-10-05):** solo la primera versión de la barra
+(vertical, con botones de color/grosor). No se ejercitó la build acoplable.
+
+**No verificado:**
+- interacción de la build nueva: arrastre de barra, popovers, botones físicos,
+  Recorte, deshacer y rehacer;
+- arrastre de la barra, estado cerrado, botones físicos y Recorte en la
+  tablet;
+- orientación vertical;
+- frame p95 y PSS.
+
 El movimiento de pinch actualiza la transformación sin renderizar cada evento;
 al finalizar solicita el bitmap nítido. La aplicación conserva rutas CPU de
 composición/blit como apoyo, pero la presentación principal del visor está

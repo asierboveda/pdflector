@@ -19,7 +19,6 @@ use crate::draw::render_discover_zone;
 use crate::draw::render_eraser_cursor;
 use crate::draw::render_library_header;
 use crate::draw::render_library_zone;
-use crate::draw::render_mode_badge;
 use crate::draw::render_page_badge;
 use crate::draw::render_picker_list;
 use crate::draw::render_search_chip_row;
@@ -196,6 +195,8 @@ impl Reader {
             self.chrome_top_bitmap = None;
             self.chrome_bottom_bitmap = None;
             self.sheet_bitmap = None;
+            self.toolbar_bitmap = None;
+            self.toolbar_popover_bitmap = None;
         }
         match self.mode {
             UiMode::Viewer => {
@@ -541,6 +542,12 @@ impl Reader {
     /// coalescing por vsync (el bucle principal lo llama una vez por
     /// iteración tras `take_repaint`).
     pub(crate) fn blit(&mut self) {
+        if self.window.is_none() {
+            return;
+        }
+        if self.mode == UiMode::Viewer {
+            self.materialize_toolbar();
+        }
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -582,11 +589,6 @@ impl Reader {
                     // (next_ovl_id) chocaría; los campos son disjuntos.
                     self.ovl_seq += 1;
                     self.toast_id = self.ovl_seq;
-                }
-                if !self.chrome_visible && self.mode_badge.is_none() {
-                    self.mode_badge = render_mode_badge(self);
-                    self.ovl_seq += 1;
-                    self.mode_badge_id = self.ovl_seq;
                 }
                 if self.erase_pt.is_some() && self.eraser_cursor.is_none() && self.erase_r_px > 4.0
                 {

@@ -11,7 +11,7 @@ use crate::draw::render_sel_menu;
 use crate::draw::sel_menu_layout;
 use android_activity::AndroidApp;
 use base64::Engine;
-use pdf_core::{Annotation, Color, Highlight, Rect, TextSpan};
+use pdf_core::{Annotation, Highlight, Rect, TextSpan};
 
 // ---------------------------------------------------------------------
 // Selección de texto: long-press + arrastre, copiar y subrayar (Parte 1)
@@ -277,19 +277,14 @@ impl Reader {
             // El rect de selección completo como un único rect (el modelo
             // permite varios rects por línea; aquí basta con la caja).
             rects: vec![rect],
-            // Amarillo por defecto, alfa ~43 % (translúcido sobre el texto).
-            color: Color {
-                r: 255,
-                g: 235,
-                b: 59,
-                a: 110,
-            },
+            // Color actual del resaltador de la barra de herramientas.
+            color: self.highlight_color,
         });
         if let Some(id) = self.annotations.add(self.page as usize, ann) {
-            // El id devuelto va a la pila de la sesión: el "↶" de la barra
-            // de herramientas deshace también los subrayados hechos con la
-            // selección de texto (misma sesión).
+            // El "↶" de la barra de herramientas deshace también los
+            // subrayados hechos con la selección de texto.
             self.session_ids.push(id);
+            self.record_annotation_edit(crate::undo::AnnotationEdit::added(self.page as usize, id));
             self.save_annotations();
             self.show_toast("highlighted");
         } else {

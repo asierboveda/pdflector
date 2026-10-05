@@ -111,6 +111,21 @@ pub(crate) enum GestureKind {
         start: (f32, f32),
         pan0: (f32, f32),
     },
+    /// Dedo o lápiz sobre la barra de herramientas (o con su popover
+    /// abierto): al levantar sin moverse es un tap de la barra; mantenido
+    /// `LONG_PRESS_MS` sobre la tarjeta pasa a `ToolbarDrag`.
+    ToolbarPress {
+        start_x: f32,
+        start_y: f32,
+    },
+    /// Arrastre de la barra tras la pulsación larga: al soltar se acopla al
+    /// borde más cercano.
+    ToolbarDrag,
+    /// STYLUS dibujando el lazo de Recorte (herramienta Recorte o botón
+    /// superior mantenido).
+    Lasso,
+    /// STYLUS moviendo o escalando la selección de Recorte.
+    RecorteDrag,
 }
 
 /// Estado de los gestos: pointers activos (pointer_id, x, y) + gesto en curso

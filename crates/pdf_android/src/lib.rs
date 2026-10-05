@@ -349,6 +349,7 @@ mod jni;
 mod persist;
 mod reader;
 mod thumbs;
+mod undo;
 mod view;
 mod zoom;
 

@@ -11,7 +11,7 @@ Este índice ordena **las decisiones de los ADR-011 a ADR-021** para que se pued
 | 1 | [011 — geometría y márgenes](011-geometria-y-margenes-pdf.md) | Encuadre completo y transformación común; caso real identificado en la TCL | Medición de la corrección en tablet para cierre |
 | 2 | [019 — pan con un dedo](019-pan-con-un-dedo.md) | Desplazamiento de hoja ampliada con arbitraje de tap/selección/lápiz | 011 |
 | 3 | [021 — zoom inmediato](021-zoom-dos-dedos-inmediato.md) | Primer feedback en el siguiente present y render nítido asíncrono | 011 |
-| 4 | [012 — menú de anotación](012-menu-de-anotacion.md) | Barra de cuatro herramientas y alojamiento del selector de lectura | Ninguna; Recorte se muestra inactivo hasta 013 |
+| 4 | [012 — menú de anotación](012-menu-de-anotacion.md) | Barra de cuatro herramientas y alojamiento del selector de lectura; sustituido en parte por [022 — barra acoplable](022-barra-acoplable.md) | Ninguna |
 | 5 | [013 — recorte de tinta](013-recorte-de-tinta.md) | Lazo, mover y escalar trazos persistidos | 011, 012 |
 | 6 | [017 — cuaderno general](017-cuaderno-de-notas-generales.md) | Notas textuales y manuscritas por documento | Ninguna |
 | 7 | [018 — desborde de margen](018-desborde-del-margen-a-notas.md) | Elegir entre nota sobre la página y panel de apuntes | 011, 017 |

@@ -14,7 +14,6 @@ use super::UiMode;
 use super::discover_state::DiscoverState;
 use super::geometry::PageGeometryCache;
 use super::library_state::LibraryState;
-use super::load_pen_mode;
 use super::scan_pdfs;
 use crate::PINCH_MAX;
 use crate::PINCH_MIN;
@@ -44,6 +43,7 @@ use std::path::Path;
 
 impl Reader {
     pub(crate) fn new(app: &AndroidApp) -> Self {
+        let tool_state = persist::load_tool_state(app.internal_data_path().as_deref());
         let mut reader = Self {
             doc: None,
             page: 0,
@@ -109,8 +109,15 @@ impl Reader {
             sheet_id: 0,
             page_badge: None,
             page_badge_id: 0,
-            mode_badge: None,
-            mode_badge_id: 0,
+            toolbar_bitmap: None,
+            toolbar_id: 0,
+            toolbar_collapsed: tool_state.toolbar_collapsed,
+            toolbar_dock: tool_state.toolbar_dock,
+            toolbar_drag: None,
+            recorte: None,
+            toolbar_popover: None,
+            toolbar_popover_bitmap: None,
+            toolbar_popover_id: 0,
             erase_pt: None,
             erase_r_px: 0.0,
             eraser_cursor: None,
@@ -135,16 +142,13 @@ impl Reader {
             toast_id: 0,
             tool: ToolKind::Navigate,
             erase_dirty: false,
+            erase_edit: Default::default(),
+            undo: Default::default(),
             erase_last: None,
-            ink_color: {
-                let ts = persist::load_tool_state(app.internal_data_path().as_deref());
-                ts.ink_color
-            },
-            ink_width: {
-                let ts = persist::load_tool_state(app.internal_data_path().as_deref());
-                ts.ink_width
-            },
-            pen_mode: load_pen_mode(app.internal_data_path().as_deref()),
+            ink_color: tool_state.ink_color,
+            ink_width: tool_state.ink_width,
+            highlight_color: tool_state.highlight_color,
+            pen_mode: tool_state.mode,
             tool_gesture: None,
             ink_overlay: crate::jni::InkOverlay::new(app),
             pending_ink_clear: None,
@@ -371,7 +375,7 @@ impl Reader {
         self.library.lib_header = None;
         self.library.lib_band = None;
         self.page_badge = None;
-        self.mode_badge = None;
+        self.invalidate_toolbar();
         self.sheet_bitmap = None;
         self.list_dirty = true;
         // Nueva ventana → posible nueva escala contain: las páginas de la caché
@@ -385,13 +389,17 @@ impl Reader {
         // Limpiar mientras el host y el renderer wet aún pertenecen a esta
         // ventana, antes de liberar la superficie EGL.
         self.clear_ink_overlay_for_reader_exit();
+        // Perder la superficie descarta la vista previa de Recorte sin
+        // modificar los trazos (ADR-013).
+        self.clear_recorte();
+        self.toolbar_drag = None;
         if let Some(g) = self.gpu.as_mut() {
             g.drop_surface();
         }
         self.window = None;
         self.bitmap = None;
         self.page_badge = None;
-        self.mode_badge = None;
+        self.invalidate_toolbar();
         self.sheet_bitmap = None;
         self.list_dirty = true;
     }

@@ -72,6 +72,8 @@ impl Reader {
             return;
         }
         self.page = page;
+        // La selección de Recorte es de una sola página.
+        self.clear_recorte();
         // La visible no se expulsa (ni su propio lote ni el trim la echan).
         self.cache.set_protected(page);
         // Dirección de viaje (fase B): signo del delta. next/prev/jump y los
@@ -354,6 +356,7 @@ impl Reader {
                 self.tool = ToolKind::Navigate;
                 self.tool_gesture = None;
                 self.session_ids.clear();
+                self.reset_undo_history();
                 // Fase B1: texto del documento nuevo (el del anterior no
                 // sirve). Prefetch de la página visible +-2: el primer
                 // resaltado de esas páginas será un HIT (sin stext en el

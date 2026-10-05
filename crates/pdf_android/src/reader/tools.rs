@@ -8,6 +8,7 @@ use crate::annotations::ERASE_HIT_RADIUS_PT;
 use crate::annotations::ERASE_HL_PAD_PT;
 use crate::annotations::ToolGesture;
 use crate::annotations::ToolKind;
+use crate::undo::AnnotationEdit;
 use log::{error, info};
 use pdf_core::{Annotation, Gesture, Stroke};
 
@@ -148,6 +149,7 @@ fn submit_ink_overlay_segment_for_gesture<O: InkOverlayOps>(
 
 /// Starts a tool gesture from the real Down sample.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn new_tool_gesture(
     page: u32,
     tool: ToolKind,
@@ -156,8 +158,11 @@ fn new_tool_gesture(
     pressure: f32,
     ink_width: f32,
     ink_color: pdf_core::Color,
+    hl_color: pdf_core::Color,
 ) -> Result<ToolGesture, crate::ink::InkError> {
-    ToolGesture::try_new(page, tool, pt, time_ns, pressure, ink_width, ink_color)
+    ToolGesture::try_new(
+        page, tool, pt, time_ns, pressure, ink_width, ink_color, hl_color,
+    )
 }
 
 impl Reader {
@@ -242,6 +247,7 @@ impl Reader {
             pressure,
             self.ink_width,
             self.ink_color,
+            self.highlight_color,
         ) {
             Ok(gesture) => gesture,
             Err(e) => {
@@ -436,6 +442,7 @@ impl Reader {
                         .add(g.page as usize, Annotation::Stroke(stroke))
                 {
                     self.session_ids.push(id);
+                    self.record_annotation_edit(AnnotationEdit::added(g.page as usize, id));
                     self.save_annotations();
                     self.show_toast("ink");
                     if g.ink_overlay_used
@@ -461,13 +468,9 @@ impl Reader {
                         .and_then(|d| self.text_cache.get_or_extract(d, g.page).ok())
                         .map(|t| t.spans.clone())
                         .unwrap_or_default();
-                    pdf_core::highlight_under_gesture(&spans, &gesture, pdf_core::HIGHLIGHT_COLOR)
+                    pdf_core::highlight_under_gesture(&spans, &gesture, g.hl_color)
                 } else {
-                    pdf_core::highlight_under_gesture_sorted(
-                        &g.hl_spans,
-                        &gesture,
-                        pdf_core::HIGHLIGHT_COLOR,
-                    )
+                    pdf_core::highlight_under_gesture_sorted(&g.hl_spans, &gesture, g.hl_color)
                 };
                 if let Some(hl) = hl {
                     if let Some(id) = self
@@ -475,6 +478,7 @@ impl Reader {
                         .add(g.page as usize, Annotation::Highlight(hl))
                     {
                         self.session_ids.push(id);
+                        self.record_annotation_edit(AnnotationEdit::added(g.page as usize, id));
                         self.save_annotations();
                         self.show_toast("highlighted");
                     }
@@ -496,13 +500,14 @@ impl Reader {
                     let rect = pdf_core::Rect::new(min_x, cy, (max_x - min_x).max(1.0), line_h);
                     let hl = pdf_core::Highlight {
                         rects: vec![rect],
-                        color: pdf_core::HIGHLIGHT_COLOR,
+                        color: g.hl_color,
                     };
                     if let Some(id) = self
                         .annotations
                         .add(g.page as usize, Annotation::Highlight(hl))
                     {
                         self.session_ids.push(id);
+                        self.record_annotation_edit(AnnotationEdit::added(g.page as usize, id));
                         self.save_annotations();
                         self.show_toast("highlighted");
                     }
@@ -531,10 +536,10 @@ impl Reader {
 
     // ---------------------------------------------------------------------
     // Borrado con el boli (botón DOWN mantenido + tocar el PDF): control
-    // total SIN menús ([C] de la tarea). El erase nunca coexiste con un
-    // gesto de tinta (`input` solo lo inicia si `tool_gesture` está libre) y
-    // NO entra en el undo de sesión (`session_ids` intacto; decisión:
-    // permanente).
+    // total SIN menús ([C] de la tarea) o modo Goma de la barra. El erase
+    // nunca coexiste con un gesto de tinta (`input` solo lo inicia si
+    // `tool_gesture` está libre). Cada pasada es UNA edición del historial
+    // de deshacer (`erase_edit`).
     // ---------------------------------------------------------------------
     /// Comienza un gesto de borrado (Down del boli con el botón DOWN
     /// pulsado). Devuelve false si no se pudo iniciar (ya hay tinta en curso
@@ -552,6 +557,7 @@ impl Reader {
         }
         self.last_stylus_time = Some(std::time::Instant::now());
         self.erase_dirty = false;
+        self.erase_edit = AnnotationEdit::default();
         self.erase_last = None;
         self.erase_pt = Some((sx, sy));
         self.erase_r_px = self.eraser_radius_px();
@@ -633,14 +639,16 @@ impl Reader {
                         ERASE_HIT_RADIUS_PT,
                         self.erase_last,
                     ) {
+                        let removed = ann.clone();
                         self.annotations.remove(id);
+                        self.erase_edit.record_removed(removed);
                         let mut kept = 0;
                         for part in parts {
-                            if self
+                            if let Some(piece) = self
                                 .annotations
                                 .add(self.page as usize, pdf_core::Annotation::Stroke(part))
-                                .is_some()
                             {
+                                self.erase_edit.record_added(self.page as usize, piece);
                                 kept += 1;
                             }
                         }
@@ -690,7 +698,9 @@ impl Reader {
                         false
                     });
                     if hit {
+                        let removed = ann.clone();
                         self.annotations.remove(id);
+                        self.erase_edit.record_removed(removed);
                         info!("erase: highlight {id} removed");
                         changed = true;
                     }
@@ -714,6 +724,8 @@ impl Reader {
         self.last_stylus_time = Some(std::time::Instant::now());
         self.erase_pt = None;
         self.eraser_cursor = None;
+        let edit = std::mem::take(&mut self.erase_edit);
+        self.record_annotation_edit(edit);
         if self.erase_dirty {
             self.erase_dirty = false;
             self.save_annotations();
@@ -784,6 +796,7 @@ mod ink_overlay_lifecycle_tests {
                 b: 43,
                 a: 255,
             },
+            pdf_core::HIGHLIGHT_COLOR,
         )
         .unwrap()
     }

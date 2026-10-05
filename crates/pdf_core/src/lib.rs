@@ -24,8 +24,9 @@ pub mod zoom;
 
 pub use ai::{AiError, GeminiClient, GroqClient, OllamaClient, chunk_pages};
 pub use annotations::{
-    Annotated, Annotation, AnnotationSet, Color, Highlight, Rect, Stroke, TextNote,
-    simplify_polyline, smooth_polyline,
+    Annotated, Annotation, AnnotationSet, Color, Highlight, MAX_STROKE_SCALE, MIN_STROKE_SCALE,
+    Rect, Stroke, TextNote, TransformError, UniformTransform, simplify_polyline, smooth_polyline,
+    stroke_bounds,
 };
 pub use arxiv::{
     ArxivError, ArxivId, ArxivQuery, arxiv_filename, matches_arxiv_id, parse_arxiv_id,

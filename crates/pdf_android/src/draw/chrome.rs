@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Asier Bóveda
 
 //! Chrome del visor: barras superior e inferior flotantes, indicador de
-//! página, badge del modo del boli y cursor de la goma — bitmaps
+//! página y cursor de la goma — bitmaps
 //! Canvas+JNI cacheados en `Reader` (geometría compartida con `input`).
 
 use crate::reader::{
@@ -11,10 +11,7 @@ use crate::reader::{
 use crate::theme;
 use pdf_core::{Bitmap, Document};
 
-use super::{
-    CanvasRect, CanvasText, TextAlign, draw_button, draw_card_shadow, draw_ink_segment_on_frame,
-    jni_text_bitmap,
-};
+use super::{CanvasRect, CanvasText, TextAlign, draw_button, draw_card_shadow, jni_text_bitmap};
 
 /// Renderiza el indicador de página "N / total" (overlay abajo a la
 /// izquierda, `page_badge_size`): un badge pequeño con el número actual y el
@@ -311,105 +308,6 @@ pub(crate) fn render_viewer_bottom_chrome(reader: &Reader) -> Option<Bitmap> {
     ));
 
     jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts)
-}
-
-/// Tamaño y posición del indicador de MODO del boli (overlay abajo a la
-/// derecha del visor, simétrico al indicador de página): pill pequeña con el
-/// icono minimalista del modo (✏️ / 🖍️).
-pub(crate) fn mode_badge_rect(win_w: i32, win_h: i32) -> (i32, i32, i32, i32) {
-    let (bw, bh) = (56i32, (win_h / 60).max(30));
-    let pad = (win_w / 96).max(8);
-    (win_w - bw - pad, win_h - bh - pad, win_w - pad, win_h - pad)
-}
-
-/// Render del indicador de MODO del boli (pill con el icono ✏️/🖍️). Cacheado
-/// en `Reader::mode_badge`; se invalida al alternar modo, cambiar de ventana
-/// o al abrir/cerrar el chrome del visor.
-pub(crate) fn render_mode_badge(reader: &Reader) -> Option<Bitmap> {
-    let (l, t, r, b) = mode_badge_rect(reader.win_w, reader.win_h);
-    let (bw, bh) = ((r - l) as usize, (b - t) as usize);
-    let p = reader.theme.palette();
-    let (bg, border, text) = (p.badge_bg(), p.badge_border(), p.badge_text());
-    let mut rects = Vec::new();
-    let f = 999.0f32;
-    rects.push(CanvasRect::rounded(
-        0.0, 0.0, bw as f32, bh as f32, f, border,
-    ));
-    rects.push(CanvasRect::rounded(
-        1.0,
-        1.0,
-        bw as f32 - 1.0,
-        bh as f32 - 1.0,
-        f,
-        bg,
-    ));
-    // Símbolo MINIMALISTA lineal (sin emojis): el boli es una PLUMA
-    // diagonal dibujada con el rasterizador de tinta (cuerpo ancho + punta
-    // fina); el resaltador es el símbolo de texto subrayado (barra + dos
-    // patillas finas).
-    match reader.pen_mode {
-        crate::annotations::PenMode::Ink => {
-            // badge_text() es u32 ARGB → Color de tinta del rasterizador.
-            let ink = pdf_core::Color {
-                r: (text >> 16) as u8,
-                g: (text >> 8) as u8,
-                b: text as u8,
-                a: 255,
-            };
-            let mut bmp = jni_text_bitmap(bw as i32, bh as i32, theme::TRANSPARENT, &rects, &[])?;
-            // Cuerpo de la pluma (diagonal) + punta fina.
-            draw_ink_segment_on_frame(
-                &mut bmp,
-                (14.0, bh as f32 - 6.0),
-                (bw as f32 - 20.0, 11.0),
-                4.0,
-                ink,
-                1.0,
-                0,
-                0,
-            );
-            draw_ink_segment_on_frame(
-                &mut bmp,
-                (bw as f32 - 20.0, 11.0),
-                (bw as f32 - 8.0, 5.0),
-                1.2,
-                ink,
-                1.0,
-                0,
-                0,
-            );
-            Some(bmp)
-        }
-        crate::annotations::PenMode::Highlight => {
-            // Barra de subrayado + patillas verticales finas (rotulador
-            // marcando texto).
-            let (bar_y, bar_h) = (bh as f32 / 2.0 - 1.5, 3.0f32);
-            rects.push(CanvasRect::rounded(
-                11.0,
-                bar_y,
-                bw as f32 - 11.0,
-                bar_y + bar_h,
-                1.5,
-                text,
-            ));
-            let (leg_w, leg_h) = (3.0f32, bar_y - 7.0);
-            rects.push(CanvasRect::sharp(
-                13.0,
-                6.0,
-                13.0 + leg_w,
-                6.0 + leg_h,
-                text,
-            ));
-            rects.push(CanvasRect::sharp(
-                bw as f32 - 16.0,
-                6.0,
-                bw as f32 - 16.0 + leg_w,
-                6.0 + leg_h,
-                text,
-            ));
-            jni_text_bitmap(bw as i32, bh as i32, theme::TRANSPARENT, &rects, &[])
-        }
-    }
 }
 
 /// Cursor de la GOMA durante el borrado: círculo del tamaño REAL de la goma

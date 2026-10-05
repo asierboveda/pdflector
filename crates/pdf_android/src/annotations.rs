@@ -17,10 +17,10 @@
 //!   puntos y ancla **en coordenadas de página** (puntos PDF, f32 — el mismo
 //!   espacio que `Document::page_size`), aún NO añadido al `AnnotationSet`.
 //!   Se añade al levantar (`Reader::end_tool_gesture`).
-//! - Paletas: color por defecto del boli (`DEFAULT_INK_COLOR`); el
-//!   resaltador usa `pdf_core::HIGHLIGHT_COLOR` (amarillo rotulador,
-//!   translúcido). Grosor/color del boli: valores persistidos
-//!   (`tool_state.json`); sin controles táctiles (era la barra, eliminada).
+//! - Paletas: colores del boli (`INK_PALETTE`) y del resaltador
+//!   (`HIGHLIGHT_PALETTE`) y grosores del boli (`INK_WIDTHS`) que ofrece la
+//!   barra de herramientas del visor. Color y grosor elegidos se persisten
+//!   en `tool_state.json`.
 //!
 //! # ¿Por qué coordenadas de página?
 //!
@@ -34,17 +34,17 @@
 use android_activity::input::ButtonState;
 use pdf_core::{Color, TextSpan};
 
-/// Botón "UP" del boli: alterna el modo del boli Ink ↔ Highlight
-/// (`Reader::toggle_pen_mode`), también con el boli en el AIRE (los eventos
-/// `MotionAction::ButtonPress` llegan sin contacto).
+/// Botón "UP" del boli: MANTENIDO + boli apoyado = SELECTOR de Recorte
+/// (dibuja un lazo que selecciona trazos para moverlos o escalarlos; ver
+/// `Reader::begin_lasso` y ADR-013), con la barra abierta o cerrada.
 ///
 /// CALIBRACIÓN (Fase A, ver CHANGELOG 2026-08-25): en este boli el botón
-/// SUPERIOR (el del toggle) reporta `AMOTION_EVENT_BUTTON_STYLUS_SECONDARY`
-/// (0x40) y el INFERIOR (el del borrado) `STYLUS_PRIMARY` (0x20) — INVERTIDO
-/// respecto al estándar Android. Verificado en el logcat `pen_buttons` de la
-/// TCL 9469X (ButtonPress en el aire y `button_state` en contacto). Si otro
-/// boli reportara distinto, se intercambian ESTAS dos constantes, no el flujo.
-pub(crate) const PEN_BTN_MODE: ButtonState = ButtonState(0x40);
+/// SUPERIOR reporta `AMOTION_EVENT_BUTTON_STYLUS_SECONDARY` (0x40) y el
+/// INFERIOR (el del borrado) `STYLUS_PRIMARY` (0x20) — INVERTIDO respecto al
+/// estándar Android. Verificado en el logcat `pen_buttons` de la TCL 9469X
+/// (ButtonPress en el aire y `button_state` en contacto). Si otro boli
+/// reportara distinto, se intercambian ESTAS dos constantes, no el flujo.
+pub(crate) const PEN_BTN_SELECT: ButtonState = ButtonState(0x40);
 
 /// Botón "DOWN" del boli: MANTENIDO + boli apoyado = BORRAR con GOMA real
 /// (recorta trazos parcialmente y elimina subrayados completos; ver
@@ -62,27 +62,22 @@ pub(crate) const ERASE_HIT_RADIUS_PT: f32 = 8.0;
 /// highlight_hit`) — un subrayado fino se borra fácil sin tocar exacto.
 pub(crate) const ERASE_HL_PAD_PT: f32 = 4.0;
 
-/// Modo del boli (control total SIN menús: el boli dibuja/subraya según este
-/// modo; el botón UP lo alterna). Se persiste en `tool_state.json` (campo
-/// "mode") — retrocompatible: un fichero viejo sin el campo carga como
-/// `Ink` (`#[serde(default)]` no hace falta porque `load_pen_mode` parsea
-/// con fallback a `Ink`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// Herramienta del lápiz elegida en la barra: el lápiz dibuja, subraya,
+/// borra o selecciona (lazo de Recorte) al tocar la página mientras la barra
+/// está abierta; con la barra cerrada el lápiz navega (ADR-012) y la
+/// elección se conserva. Se persiste en `tool_state.json` (campo "mode"); un
+/// fichero viejo sin el campo carga como `Ink`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PenMode {
     /// Boli: tinta freehand.
+    #[default]
     Ink,
     /// Resaltador: subraya el texto bajo el trazo.
     Highlight,
-}
-
-impl PenMode {
-    /// Etiqueta del modo para el toast del toggle ("✏️ Pen" / "🖍️ Highlighter")
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            PenMode::Ink => "✏️ Pen",
-            PenMode::Highlight => "🖍️ Highlighter",
-        }
-    }
+    /// Goma: borra como el botón DOWN del lápiz, sin mantenerlo pulsado.
+    Eraser,
+    /// Recorte: lazo que selecciona trazos para moverlos o escalarlos.
+    Lasso,
 }
 
 /// Grosor del trazo nuevo del boli en puntos PDF (PDF points, 1/72"). En
@@ -92,6 +87,10 @@ impl PenMode {
 /// porque la anotación es vectorial: un trazo de 2 pt ocupa el mismo área
 /// del papel en cualquier zoom, como la tinta real.
 pub(crate) const STROKE_WIDTH_PT: f32 = 2.0;
+
+/// Grosores del boli que ofrece la barra (fino, medio = por defecto, grueso),
+/// en puntos PDF.
+pub(crate) const INK_WIDTHS: [f32; 3] = [1.2, STROKE_WIDTH_PT, 3.5];
 
 /// Color por defecto del boli: negro azulado cálido (tinta de bolígrafo
 /// sobre papel), opaco (se dibuja tal cual sobre la página; en modo oscuro
@@ -103,6 +102,67 @@ pub(crate) const DEFAULT_INK_COLOR: Color = Color {
     b: 43,
     a: 255,
 };
+
+/// Colores del boli que ofrece la barra (opacos): tinta por defecto, azul,
+/// rojo, verde y morado.
+pub(crate) const INK_PALETTE: [Color; 5] = [
+    DEFAULT_INK_COLOR,
+    Color {
+        r: 25,
+        g: 95,
+        b: 210,
+        a: 255,
+    },
+    Color {
+        r: 214,
+        g: 40,
+        b: 40,
+        a: 255,
+    },
+    Color {
+        r: 30,
+        g: 140,
+        b: 70,
+        a: 255,
+    },
+    Color {
+        r: 125,
+        g: 60,
+        b: 190,
+        a: 255,
+    },
+];
+
+/// Colores del resaltador que ofrece la barra (translúcidos, mismo alfa que
+/// el amarillo por defecto de `pdf_core`): amarillo, verde, azul, rosa y
+/// naranja.
+pub(crate) const HIGHLIGHT_PALETTE: [Color; 5] = [
+    pdf_core::HIGHLIGHT_COLOR,
+    Color {
+        r: 110,
+        g: 230,
+        b: 90,
+        a: 128,
+    },
+    Color {
+        r: 80,
+        g: 180,
+        b: 255,
+        a: 128,
+    },
+    Color {
+        r: 255,
+        g: 110,
+        b: 180,
+        a: 128,
+    },
+    Color {
+        r: 255,
+        g: 160,
+        b: 40,
+        a: 128,
+    },
+];
 
 /// Herramienta de anotación activa en el visor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +201,8 @@ pub(crate) struct ToolGesture {
     /// preview tentativo por present y el cálculo final al soltar.
     /// Vacío si la página no estaba cacheada (fallback a la vía clásica).
     pub(crate) hl_spans: Vec<TextSpan>,
+    /// Color del subrayado (solo resaltador), fijado en el `Down`.
+    pub(crate) hl_color: Color,
     /// Única fuente de muestras Ink; Wet y Stroke final leen estos mismos datos.
     pub(crate) ink_engine: Option<crate::ink::CausalInkEngine>,
     /// Este gesto ya escribió segmentos al overlay nativo y debe confirmarlos
@@ -155,7 +217,9 @@ impl ToolGesture {
     /// Empieza un gesto en `page` con el primer punto (el del `Down`).
     /// `t0_ns`: timestamp NDK del Down (ancla temporal absoluta del gesto);
     /// `pressure`: presión inicial normalizada (0.5 si el driver no la da);
-    /// `w_base`: grosor base del lápiz configurado.
+    /// `w_base`/`color`: grosor y color del boli; `hl_color`: color del
+    /// resaltador.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_new(
         page: u32,
         tool: ToolKind,
@@ -164,6 +228,7 @@ impl ToolGesture {
         pressure: f32,
         w_base: f32,
         color: Color,
+        hl_color: Color,
     ) -> Result<Self, crate::ink::InkError> {
         let sample = crate::ink::InkSample::new(pt.0, pt.1, t0_ns, pressure);
         let ink_engine = if tool == ToolKind::Ink {
@@ -184,6 +249,7 @@ impl ToolGesture {
                 Vec::new()
             },
             hl_spans: Vec::new(),
+            hl_color,
             ink_engine,
             ink_overlay_used: false,
             ink_overlay_route: false,
@@ -229,6 +295,7 @@ mod tests {
             0.5,
             2.0,
             DEFAULT_INK_COLOR,
+            pdf_core::HIGHLIGHT_COLOR,
         )
         .unwrap();
 

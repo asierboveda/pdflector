@@ -40,7 +40,8 @@ use log::{error, info, warn};
 use pdf_core::Color;
 use serde::{Deserialize, Serialize};
 
-use crate::annotations::{DEFAULT_INK_COLOR, STROKE_WIDTH_PT};
+use crate::annotations::{DEFAULT_INK_COLOR, PenMode, STROKE_WIDTH_PT};
+use crate::draw::ToolbarDock;
 
 /// Máximo de entradas de la lista de recientes (los últimos PDFs abiertos).
 pub(crate) const RECENTS_MAX: usize = 10;
@@ -197,21 +198,40 @@ fn default_ink_color() -> Color {
     DEFAULT_INK_COLOR
 }
 
-/// Estado de herramientas (color y grosor del boli), global y persistido
-/// en `tool_state.json` (no por documento). Se carga al arrancar y se guarda
-/// al ciclar color/grosor.
+fn default_highlight_color() -> Color {
+    pdf_core::HIGHLIGHT_COLOR
+}
+
+/// Estado de herramientas (herramienta del lápiz, color y grosor del boli,
+/// color del resaltador, barra cerrada y borde donde está acoplada), global y persistido en
+/// `tool_state.json` (no por documento). Se carga al arrancar y se guarda al
+/// cambiarlo desde la barra o el botón del lápiz. Cada campo tiene valor por
+/// defecto: un fichero de una versión anterior carga sin perder lo que tenía.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct ToolState {
     #[serde(default = "default_ink_color")]
     pub(crate) ink_color: Color,
     #[serde(default = "default_ink_width")]
     pub(crate) ink_width: f32,
+    #[serde(default = "default_highlight_color")]
+    pub(crate) highlight_color: Color,
+    #[serde(default)]
+    pub(crate) mode: PenMode,
+    /// Barra cerrada: el lápiz navega (ADR-012).
+    #[serde(default)]
+    pub(crate) toolbar_collapsed: bool,
+    #[serde(default)]
+    pub(crate) toolbar_dock: ToolbarDock,
 }
 impl Default for ToolState {
     fn default() -> Self {
         Self {
             ink_color: DEFAULT_INK_COLOR,
             ink_width: STROKE_WIDTH_PT,
+            highlight_color: pdf_core::HIGHLIGHT_COLOR,
+            mode: PenMode::Ink,
+            toolbar_collapsed: false,
+            toolbar_dock: ToolbarDock::Left,
         }
     }
 }
@@ -227,6 +247,20 @@ pub(crate) fn load_tool_state(internal_dir: Option<&Path>) -> ToolState {
         Err(_) => return ToolState::default(),
     };
     serde_json::from_str::<ToolState>(&text).unwrap_or_default()
+}
+/// Guarda el estado de herramientas (best-effort, como `save_state`). Solo
+/// se llama al tocar la barra o el botón del lápiz, nunca durante un trazo.
+pub(crate) fn save_tool_state(internal_dir: Option<&Path>, state: &ToolState) {
+    let Some(dir) = internal_dir else {
+        return;
+    };
+    let path = tool_state_path(dir);
+    let Ok(text) = serde_json::to_string_pretty(state) else {
+        return;
+    };
+    if let Err(e) = fs::write(&path, text) {
+        error!("save tool state {}: {e}", path.display());
+    }
 }
 
 use crate::theme::AppTheme;
@@ -531,6 +565,44 @@ pub fn save_discover(internal_dir: Option<&Path>, prefs: &DiscoverPrefs) {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn tool_state_from_an_older_file_keeps_its_fields_and_defaults_the_rest() {
+        let old = r#"{ "ink_color": { "r": 1, "g": 2, "b": 3, "a": 255 },
+                       "ink_width": 3.5, "mode": "Highlight" }"#;
+        let ts: ToolState = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            ts.ink_color,
+            Color {
+                r: 1,
+                g: 2,
+                b: 3,
+                a: 255
+            }
+        );
+        assert_eq!(ts.ink_width, 3.5);
+        assert_eq!(ts.mode, PenMode::Highlight);
+        assert_eq!(ts.highlight_color, pdf_core::HIGHLIGHT_COLOR);
+        assert!(!ts.toolbar_collapsed);
+        assert_eq!(ts.toolbar_dock, ToolbarDock::Left);
+
+        let ts: ToolState = serde_json::from_str("{}").unwrap();
+        assert_eq!(ts, ToolState::default());
+    }
+
+    #[test]
+    fn tool_state_round_trips() {
+        let ts = ToolState {
+            ink_color: crate::annotations::INK_PALETTE[2],
+            ink_width: 1.2,
+            highlight_color: crate::annotations::HIGHLIGHT_PALETTE[3],
+            mode: PenMode::Lasso,
+            toolbar_collapsed: true,
+            toolbar_dock: ToolbarDock::Bottom,
+        };
+        let text = serde_json::to_string(&ts).unwrap();
+        assert_eq!(serde_json::from_str::<ToolState>(&text).unwrap(), ts);
+    }
 
     #[test]
     fn touch_creates_record_with_added_and_last_read() {
