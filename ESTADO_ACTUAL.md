@@ -157,11 +157,19 @@ limpieza de tinta provisional espera la presentación Dry correspondiente.
 La decisión y sus límites están en
 [`ADR-010`](docs/adr/ADR-010-integracion-tinta-causal-producto.md).
 
-**Inferido del código (2026-10-04):** entrar en la biblioteca, abrir con éxito
-otro PDF y terminar la ventana cancelan el gesto activo antes de descartarlo.
-Si el gesto había enviado segmentos al overlay AndroidX, se invoca su
-`cancel()`; la terminación lo hace antes de liberar la superficie EGL. Estos
-tres flujos aún no se han vuelto a comprobar en la TCL para esta corrección.
+Al salir del lector se cancela cualquier gesto activo, se limpia la superficie
+AndroidX y se descarta el acknowledgement Dry pendiente. Así la tinta wet no
+queda superpuesta a la biblioteca ni al documento siguiente; las anotaciones
+consolidadas y su sidecar no se modifican. Al terminar la ventana, la limpieza
+ocurre antes de liberar la superficie EGL.
+
+**Observado en TCL 9469X (2026-10-04):** tras instalar esta corrección, se
+confirmó que volver a la biblioteca desde un PDF ya no deja visible la línea.
+**Inferido del código:** abrir con éxito otro PDF y terminar la ventana usan la
+misma limpieza; esos dos recorridos no se han comprobado manualmente en la TCL.
+La persistencia y el borrado posterior de la anotación consolidada no se
+verificaron en esta sesión: el PDF de prueba usa un sidecar en una ruta sin
+permiso de escritura.
 
 La implementación está en `crates/pdf_android/src/gpu/pipeline.rs:508-514` y
 `crates/pdf_android/src/gpu/pipeline.rs:679-965`. La geometría de tinta se
