@@ -46,4 +46,4 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 notify = "8"
 # Fast streaming XML parser for arXiv Atom feeds (Fase B). default-features=false
 # keeps the binary small (only memchr, no encoding-rs, pure UTF-8). MIT license.
-quick-xml = { version = "0.41", default-features = false }
+quick-xml = { version = "0.42", default-features = false }
