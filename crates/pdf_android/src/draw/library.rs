@@ -7,10 +7,10 @@
 use crate::persist;
 use crate::reader::{
     GRID_CELL_PAD, LibraryCoverFit, Reader, cover_size_multiplier, entry_title, grid_cell_h,
-    grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, header_menu_btn_d,
-    lib_add_btn_w, lib_chip_h, lib_chips, lib_collection_chips, lib_content_y0,
-    lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_search_h, list_row_gap, list_row_h,
-    list_row_rect, picker_row_h, settings_menu_button_rect, truncate_name, view_menu_button_rect,
+    grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, lib_add_btn_w, lib_chip_h,
+    lib_chips, lib_collection_chips, lib_content_y0, lib_empty_state_geom, lib_grid_y0,
+    lib_header_h, lib_search_h, list_row_gap, list_row_h, list_row_rect, picker_row_h,
+    settings_menu_button_rect, truncate_name, view_menu_button_rect,
 };
 use crate::theme;
 use android_activity::ndk::native_window::NativeWindow;
@@ -18,13 +18,156 @@ use log::warn;
 use pdf_core::Bitmap;
 
 use super::{
-    CanvasRect, CanvasText, TextAlign, copy_region, draw_button, draw_card_shadow,
-    draw_settings_menu, draw_view_menu, fill_buffer, jni_text_bitmap,
-    primitives::copy_region_blend, settings_menu_geometry, view_menu_geometry,
+    ButtonRect, ButtonVariant, CanvasRect, CanvasText, Elevation, TextAlign, TextFont, copy_region,
+    draw_astryx_button, draw_inset_ring, draw_settings_menu, draw_surface_card, draw_token_pill,
+    draw_view_menu, fill_buffer, jni_text_bitmap, primitives::copy_region_blend,
+    settings_menu_geometry, view_menu_geometry,
 };
 
-/// Render de la ZONA FIJA de la biblioteca (cabecera editorial + campo de
-/// búsqueda + franja de estado + overlay de menú si está abierto)
+/// Dibuja una portada editorial tipográfica Astryx mientras la miniatura del PDF
+/// todavía no está en caché: lomo lateral sutil, filete de acento, micro-etiqueta
+/// `PDF` monoespaciada y título en serif.
+fn draw_cover_placeholder(
+    rects: &mut Vec<CanvasRect>,
+    texts: &mut Vec<CanvasText>,
+    (x0, y0, w, h): (f32, f32, f32, f32),
+    title: &str,
+    p: &theme::ThemePalette,
+    compact: bool,
+) {
+    // Banda de lomo izquierdo
+    let spine_w = if compact { 4.0 } else { 7.0 };
+    rects.push(CanvasRect::sharp(
+        x0 + 1.0,
+        y0 + 1.0,
+        x0 + 1.0 + spine_w,
+        y0 + h - 1.0,
+        p.bg_muted,
+    ));
+    rects.push(CanvasRect::sharp(
+        x0 + 1.0 + spine_w,
+        y0 + 1.0,
+        x0 + 2.0 + spine_w,
+        y0 + h - 1.0,
+        p.border,
+    ));
+
+    let inner_x = x0 + spine_w + if compact { 6.0 } else { 14.0 };
+    let inner_cx = x0 + spine_w * 0.5 + w * 0.5;
+
+    if compact {
+        rects.push(CanvasRect::rounded(
+            inner_x,
+            y0 + 12.0,
+            (inner_x + 16.0).min(x0 + w - 6.0),
+            y0 + 14.0,
+            1.0,
+            p.accent,
+        ));
+        texts.push(
+            CanvasText::new(
+                inner_cx,
+                y0 + h * 0.58,
+                theme::FONT_MICRO,
+                p.text_secondary,
+                TextAlign::Center,
+                true,
+                truncate_name(title, 7),
+            )
+            .with_font(TextFont::Serif),
+        );
+    } else {
+        // Filete de acento superior + micro-kicker PDF
+        let rule_w = (w * 0.24).clamp(18.0, 34.0);
+        rects.push(CanvasRect::rounded(
+            inner_x,
+            y0 + 18.0,
+            inner_x + rule_w,
+            y0 + 20.5,
+            1.25,
+            p.accent,
+        ));
+        texts.push(
+            CanvasText::new(
+                inner_x,
+                y0 + 36.0,
+                theme::FONT_MICRO,
+                p.text_secondary,
+                TextAlign::Left,
+                true,
+                "PDF",
+            )
+            .with_font(TextFont::Mono)
+            .with_tracking(theme::TRACKING_CAPS),
+        );
+        // Título editorial centrado en Serif
+        let max_chars = ((w - spine_w - 22.0) / (theme::FONT_BODY * 0.56)) as usize;
+        texts.push(
+            CanvasText::new(
+                inner_cx,
+                y0 + h * 0.54 + theme::FONT_BODY * 0.3,
+                theme::FONT_BODY,
+                p.text_primary,
+                TextAlign::Center,
+                true,
+                truncate_name(title, max_chars.clamp(6, 14)),
+            )
+            .with_font(TextFont::Serif)
+            .with_tracking(theme::TRACKING_TIGHT),
+        );
+        // Pequeña línea decorativa inferior
+        rects.push(CanvasRect::rounded(
+            inner_x,
+            y0 + h - 22.0,
+            (x0 + w - 16.0).max(inner_x + 12.0),
+            y0 + h - 20.5,
+            0.75,
+            p.border,
+        ));
+    }
+}
+
+/// Dibuja el token de porcentaje Astryx sobre la esquina inferior derecha de una portada
+/// usando tinta invertida de alto contraste (`bg_inverted` / `on_inverted`) y cifras Mono.
+fn draw_cover_progress_badge(
+    rects: &mut Vec<CanvasRect>,
+    texts: &mut Vec<CanvasText>,
+    cover_rect: ButtonRect,
+    pct: f32,
+    p: &theme::ThemePalette,
+    compact: bool,
+) {
+    let pct_val = (pct * 100.0).round() as u32;
+    if pct_val == 0 {
+        return;
+    }
+    let pct_str = format!("{pct_val}%");
+    let (badge_w, badge_h, inset, ts) = if compact {
+        (38.0f32, 20.0f32, 4.0f32, theme::FONT_MICRO)
+    } else {
+        (46.0f32, 22.0f32, 8.0f32, theme::FONT_MICRO)
+    };
+    let badge_r = cover_rect.2 - inset;
+    let badge_b = cover_rect.3 - inset;
+    let badge_l = badge_r - badge_w;
+    let badge_t = badge_b - badge_h;
+    draw_token_pill(
+        rects,
+        texts,
+        (badge_l, badge_t, badge_r, badge_b),
+        p.bg_inverted,
+        Some(p.border_emphasized),
+        p.on_inverted,
+        ts,
+        TextFont::Mono,
+        0.02,
+        true,
+        &pct_str,
+    );
+}
+
+/// Render de la ZONA FIJA de la biblioteca (cabecera editorial Astryx + campo de
+/// búsqueda + chips de colección/asignatura + franja de estado + overlay de menú si está abierto).
 pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let h_fixed = lib_content_y0(reader);
@@ -53,24 +196,24 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
 
-    // Fondo del bloque fijo + hairline 1 px bajo la zona fija
+    // Superficie elevada de barra superior (`bg_surface`) + hairline `border` 1 px
     rects.push(CanvasRect::sharp(
         0.0,
         0.0,
         w as f32,
         h_fixed as f32,
-        p.base_200,
+        p.bg_surface,
     ));
     rects.push(CanvasRect::sharp(
         0.0,
         h_fixed as f32 - 1.0,
         w as f32,
         h_fixed as f32,
-        p.base_300,
+        p.border,
     ));
 
-    // ---- CABECERA editorial: título "Biblioteca" + "＋ Añadir" ----
-    let top_pad = 36.0f32; // margen seguro para la barra de estado de Android
+    // ---- CABECERA: control segmentado [Biblioteca | Descubrir] + CTA primario "＋ Añadir" ----
+    let top_pad = 36.0f32;
     let btn_w = lib_add_btn_w(w);
     let btn_h = ((header_h - top_pad) * 0.52).clamp(38.0, 46.0);
     let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
@@ -83,139 +226,170 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
         &reader.theme,
         crate::reader::UiMode::Library,
     );
-    draw_button(
+    draw_astryx_button(
         &mut rects,
         &mut texts,
-        btn_x,
-        btn_y,
-        btn_x + btn_w,
-        btn_y + btn_h,
-        p.base_100,
-        p.base_300,
-        p.base_content,
+        (btn_x, btn_y, btn_x + btn_w, btn_y + btn_h),
+        ButtonVariant::Primary,
+        &p,
         theme::FONT_BODY,
         true,
         "＋ Añadir",
     );
 
-    // ---- Botones de MENÚ: View "⋯" y Settings "☰" ----
-    let d = header_menu_btn_d(w);
-    let mut menu_glyph = |open: bool, l: f32, t: f32, r: f32, b: f32, ch: &str| {
-        let (bg, border, fg) = if open {
-            (p.primary, p.primary, p.primary_content)
+    // ---- Botones de MENÚ: Vista "⋯" y Ajustes "☰" (azulejos Astryx `RADIUS_ELEMENT`) ----
+    let mut menu_tile = |open: bool, rect: ButtonRect, ch: &str| {
+        let (l, t, r, b) = rect;
+        if open {
+            draw_inset_ring(
+                &mut rects,
+                rect,
+                theme::RADIUS_ELEMENT,
+                p.accent,
+                p.accent_muted,
+            );
         } else {
-            (p.base_100, p.base_300, p.base_content)
+            draw_surface_card(
+                &mut rects,
+                rect,
+                theme::RADIUS_ELEMENT,
+                p.bg_card,
+                p.border_emphasized,
+                Elevation::None,
+                p.is_dark,
+            );
+        }
+        let fg = if open {
+            p.on_accent_muted
+        } else {
+            p.text_primary
         };
-        rects.push(CanvasRect::rounded(l, t, r, b, d / 2.0, border));
-        rects.push(CanvasRect::rounded(
-            l + 1.0,
-            t + 1.0,
-            r - 1.0,
-            b - 1.0,
-            d / 2.0 - 1.0,
-            bg,
-        ));
         texts.push(CanvasText::new(
-            (l + r) / 2.0,
-            (t + b) / 2.0 + theme::FONT_BODY * 0.35,
+            (l + r) * 0.5,
+            (t + b) * 0.5 + theme::FONT_BODY * 0.35,
             theme::FONT_BODY,
             fg,
             TextAlign::Center,
-            false,
-            ch.to_string(),
+            open,
+            ch,
         ));
     };
-    let (vl, vt, vr, vb) = view_menu_button_rect(w, reader.win_h);
-    menu_glyph(reader.view_menu_open, vl, vt, vr, vb, "⋯");
-    let (sl, st, sr, sb) = settings_menu_button_rect(w, reader.win_h);
-    menu_glyph(reader.settings_menu_open, sl, st, sr, sb, "☰");
+    menu_tile(
+        reader.view_menu_open,
+        view_menu_button_rect(w, reader.win_h),
+        "⋯",
+    );
+    menu_tile(
+        reader.settings_menu_open,
+        settings_menu_button_rect(w, reader.win_h),
+        "☰",
+    );
 
-    // ---- CAMPO de búsqueda ----
+    // ---- CAMPO de búsqueda (input rehundido Astryx `RADIUS_ELEMENT`) ----
     let search_y = header_h + 6.0;
     let search_hh = search_h - 12.0;
     let field_r = w as f32 - pad;
-    rects.push(CanvasRect::rounded(
-        pad,
-        search_y,
-        field_r,
-        search_y + search_hh,
-        search_hh / 2.0,
-        p.base_300,
-    ));
-    rects.push(CanvasRect::rounded(
-        pad + 1.0,
-        search_y + 1.0,
-        field_r - 1.0,
-        search_y + search_hh - 1.0,
-        (search_hh / 2.0 - 1.0).max(0.0),
-        p.base_100,
+    let (summary, has_filter) = search_summary(reader);
+
+    if has_filter {
+        draw_inset_ring(
+            &mut rects,
+            (pad, search_y, field_r, search_y + search_hh),
+            theme::RADIUS_ELEMENT,
+            p.accent,
+            p.bg_card,
+        );
+    } else {
+        draw_surface_card(
+            &mut rects,
+            (pad, search_y, field_r, search_y + search_hh),
+            theme::RADIUS_ELEMENT,
+            p.bg_body,
+            p.border_emphasized,
+            Elevation::None,
+            p.is_dark,
+        );
+    }
+
+    // Glifo discreto de búsqueda a la izquierda
+    texts.push(CanvasText::new(
+        pad + 18.0,
+        search_y + search_hh * 0.65,
+        theme::FONT_BODY,
+        if has_filter {
+            p.text_accent
+        } else {
+            p.text_secondary
+        },
+        TextAlign::Left,
+        false,
+        "⌕",
     ));
 
-    let (summary, has_filter) = search_summary(reader);
     if has_filter {
-        texts.push(CanvasText::new(
-            pad + 18.0,
-            search_y + search_hh * 0.64,
-            theme::FONT_BODY,
-            p.base_content,
-            TextAlign::Left,
-            true,
-            truncate_name(&summary, 28),
-        ));
-        let xw = search_hh - 8.0;
-        let xx = field_r - 14.0 - xw;
-        rects.push(CanvasRect::rounded(
-            xx,
-            search_y + 4.0,
-            xx + xw,
-            search_y + 4.0 + xw,
-            xw / 2.0,
-            p.base_300,
-        ));
-        texts.push(CanvasText::new(
-            xx + xw / 2.0,
-            search_y + 4.0 + xw * 0.64,
+        texts.push(
+            CanvasText::new(
+                pad + 40.0,
+                search_y + search_hh * 0.64,
+                theme::FONT_BODY,
+                p.text_primary,
+                TextAlign::Left,
+                true,
+                truncate_name(&summary, 28),
+            )
+            .with_tracking(theme::TRACKING_TIGHT),
+        );
+        let xw = (search_hh - 10.0).max(22.0);
+        let xx = field_r - 12.0 - xw;
+        let xy = search_y + (search_hh - xw) * 0.5;
+        draw_token_pill(
+            &mut rects,
+            &mut texts,
+            (xx, xy, xx + xw, xy + xw),
+            p.bg_muted,
+            Some(p.border),
+            p.text_secondary,
             theme::FONT_CAPTION,
-            p.neutral_content,
-            TextAlign::Center,
-            false,
+            TextFont::Sans,
+            0.0,
+            true,
             "✕",
-        ));
+        );
     } else {
         texts.push(CanvasText::new(
-            pad + 18.0,
+            pad + 40.0,
             search_y + search_hh * 0.64,
             theme::FONT_BODY,
-            p.neutral_content,
+            p.text_secondary,
             TextAlign::Left,
             false,
-            "Buscar por título o carpeta...",
+            "Buscar por título o carpeta…",
         ));
     }
 
-    for (label, (l, t, r, b), active, _) in lib_collection_chips(reader) {
-        let (bg, fg) = if active {
-            (p.primary, p.primary_content)
+    // ---- CHIPS de colección / asignatura (tokens píldora Astryx `RADIUS_FULL`) ----
+    for (label, rect, active, _) in lib_collection_chips(reader) {
+        let (fill, border, fg) = if active {
+            (p.accent_muted, Some(p.accent), p.on_accent_muted)
         } else {
-            (p.base_100, p.base_content)
+            (p.bg_card, Some(p.border), p.text_secondary)
         };
-        draw_button(
+        draw_token_pill(
             &mut rects,
             &mut texts,
-            l,
-            t,
-            r,
-            b,
-            bg,
-            if active { p.primary } else { p.base_300 },
+            rect,
+            fill,
+            border,
             fg,
-            theme::FONT_BODY,
+            theme::FONT_CAPTION,
+            TextFont::Sans,
+            0.0,
             active,
             &label,
         );
     }
 
-    // ---- FRANJA de estado (si la hay) ----
+    // ---- FRANJA de estado semántica (si la hay) ----
     if let Some(status) = reader.status.as_deref() {
         let row_h = picker_row_h(reader.win_h) as f32;
         let status_top = h_fixed as f32 - row_h;
@@ -225,6 +399,13 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
             w as f32,
             h_fixed as f32,
             p.status_bg(),
+        ));
+        rects.push(CanvasRect::sharp(
+            0.0,
+            status_top,
+            4.0,
+            h_fixed as f32,
+            p.accent,
         ));
         rects.push(CanvasRect::sharp(
             0.0,
@@ -244,7 +425,7 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
         ));
     }
 
-    // Menús dropdown abiertos: dibujar el menú directamente sobre la cabecera
+    // Menús dropdown abiertos: dibujar sobre la cabecera
     if reader.view_menu_open {
         draw_view_menu(reader, &mut rects, &mut texts);
     } else if reader.settings_menu_open {
@@ -254,8 +435,8 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     jni_text_bitmap(w, h_total, theme::TRANSPARENT, &rects, &texts)
 }
 
-/// Render de la BANDA de contenido de la biblioteca (la zona scrolleable:
-/// My Library + rejilla o lista o empty state)
+/// Render de la BANDA de contenido de la biblioteca (zona scrolleable sobre `bg_body`:
+/// rejilla editorial de portadas, lista de tarjetas Astryx o empty state).
 pub(crate) fn render_library_zone(
     reader: &Reader,
     band_origin: i32,
@@ -265,7 +446,7 @@ pub(crate) fn render_library_zone(
     if w <= 0 || band_h <= 0 {
         return None;
     }
-    let yof = -band_origin as f32; // contenido − origen de banda
+    let yof = -band_origin as f32;
     let p = reader.theme.palette();
 
     let mut rects: Vec<CanvasRect> = Vec::new();
@@ -298,102 +479,66 @@ pub(crate) fn render_library_zone(
                     let (cx, cy_rel, _, _) =
                         grid_cell_rect(w, 0, row, col, cols, reader.cover_size);
                     let cy = yof + grid_y0 + cy_rel;
+                    let pct =
+                        persist::progress_for(&reader.library.lib_books, &reader.entry_path(entry))
+                            .map(|bp| bp.pct())
+                            .unwrap_or(0.0);
+
                     if !reader.hide_covers {
                         let cover_x0 = cx + (cell_w - cover_w) / 2.0;
                         let cover_y0 = cy + 4.0;
-                        let cover_r = 12.0f32;
-                        // Sombra visible multicapa detrás del marco 2:3
-                        draw_card_shadow(
+                        let cover_rect =
+                            (cover_x0, cover_y0, cover_x0 + cover_w, cover_y0 + cover_h);
+                        draw_surface_card(
                             &mut rects,
-                            cover_x0,
-                            cover_y0,
-                            cover_x0 + cover_w,
-                            cover_y0 + cover_h,
-                            cover_r,
+                            cover_rect,
+                            theme::RADIUS_CONTAINER,
+                            p.bg_card,
+                            p.border,
+                            Elevation::Low,
                             p.is_dark,
                         );
-                        // Marco 2:3 con fondo base-200 y borde 1px base-300
-                        rects.push(CanvasRect::rounded(
-                            cover_x0,
-                            cover_y0,
-                            cover_x0 + cover_w,
-                            cover_y0 + cover_h,
-                            cover_r,
-                            p.base_300,
-                        ));
-                        rects.push(CanvasRect::rounded(
-                            cover_x0 + 1.0,
-                            cover_y0 + 1.0,
-                            cover_x0 + cover_w - 1.0,
-                            cover_y0 + cover_h - 1.0,
-                            (cover_r - 1.0).max(0.0),
-                            p.base_200,
-                        ));
                         if reader.thumbs.peek(&entry.uri).is_none() {
-                            texts.push(CanvasText::new(
-                                cover_x0 + cover_w / 2.0,
-                                cover_y0 + cover_h / 2.0 + title_ts * 0.35,
-                                title_ts,
-                                p.neutral_content,
-                                TextAlign::Center,
-                                true,
-                                truncate_name(&entry_title(entry), 12),
-                            ));
+                            draw_cover_placeholder(
+                                &mut rects,
+                                &mut texts,
+                                (cover_x0, cover_y0, cover_w, cover_h),
+                                &entry_title(entry),
+                                &p,
+                                false,
+                            );
                         }
-                        // Badge de progreso sobre la portada (SHOW PROGRESS)
-                        let pct = persist::progress_for(
-                            &reader.library.lib_books,
-                            &reader.entry_path(entry),
-                        )
-                        .map(|bp| bp.pct())
-                        .unwrap_or(0.0);
                         if reader.cover_progress && pct > 0.0 {
-                            let pct_val = (pct * 100.0).round() as u32;
-                            if pct_val > 0 {
-                                let pct_str = format!("{pct_val}%");
-                                let badge_w = 42.0f32;
-                                let badge_h = 22.0f32;
-                                let badge_r = cover_x0 + cover_w - 6.0;
-                                let badge_b = cover_y0 + cover_h - 6.0;
-                                let badge_l = badge_r - badge_w;
-                                let badge_t = badge_b - badge_h;
-                                rects.push(CanvasRect::rounded(
-                                    badge_l, badge_t, badge_r, badge_b, 999.0, p.primary,
-                                ));
-                                texts.push(CanvasText::new(
-                                    (badge_l + badge_r) / 2.0,
-                                    badge_t + badge_h * 0.68,
-                                    theme::FONT_CAPTION * 0.85,
-                                    p.primary_content,
-                                    TextAlign::Center,
-                                    true,
-                                    pct_str,
-                                ));
-                            }
+                            draw_cover_progress_badge(
+                                &mut rects, &mut texts, cover_rect, pct, &p, false,
+                            );
                         }
-                        // Título bajo el marco
+                        // Título editorial bajo la portada
                         let text_y0 = cy + 4.0 + cover_h + 10.0;
-                        texts.push(CanvasText::new(
-                            cx + GRID_CELL_PAD,
-                            text_y0 + title_ts * 0.85,
-                            title_ts,
-                            p.base_content,
-                            TextAlign::Left,
-                            true,
-                            truncate_name(&entry_title(entry), max_chars),
-                        ));
-                        // Autor
+                        texts.push(
+                            CanvasText::new(
+                                cx + GRID_CELL_PAD,
+                                text_y0 + title_ts * 0.85,
+                                title_ts,
+                                p.text_primary,
+                                TextAlign::Left,
+                                true,
+                                truncate_name(&entry_title(entry), max_chars),
+                            )
+                            .with_tracking(theme::TRACKING_TIGHT),
+                        );
+                        // Subtítulo (carpeta / asignatura)
                         let author_y0 = text_y0 + 20.0;
                         texts.push(CanvasText::new(
                             cx + GRID_CELL_PAD,
                             author_y0 + theme::FONT_CAPTION * 0.85,
                             theme::FONT_CAPTION,
-                            p.neutral_content,
+                            p.text_secondary,
                             TextAlign::Left,
                             false,
                             truncate_name(&reader.library_caption(entry), max_chars),
                         ));
-                        // Barra de progreso
+                        // Barra de progreso Astryx
                         let bar_y = author_y0 + 20.0;
                         let track_w = cell_w - 2.0 * GRID_CELL_PAD;
                         rects.push(CanvasRect::rounded(
@@ -402,7 +547,7 @@ pub(crate) fn render_library_zone(
                             cx + GRID_CELL_PAD + track_w,
                             bar_y + 4.0,
                             2.0,
-                            p.base_300,
+                            p.track,
                         ));
                         if pct > 0.0 {
                             let fill_w = (track_w * pct).clamp(4.0, track_w);
@@ -412,88 +557,80 @@ pub(crate) fn render_library_zone(
                                 cx + GRID_CELL_PAD + fill_w,
                                 bar_y + 4.0,
                                 2.0,
-                                p.primary,
+                                p.accent,
                             ));
                         }
                     } else {
-                        // Modo Rejilla con hide_covers
-                        let card_r = 12.0f32;
-                        draw_card_shadow(
+                        // Modo Rejilla sin portadas: tarjeta compacta Astryx con indicador lateral
+                        draw_surface_card(
                             &mut rects,
-                            cx,
-                            cy,
-                            cx + cell_w,
-                            cy + 100.0,
-                            card_r,
+                            (cx, cy, cx + cell_w, cy + 100.0),
+                            theme::RADIUS_CONTAINER,
+                            p.bg_card,
+                            p.border,
+                            Elevation::Low,
                             p.is_dark,
                         );
                         rects.push(CanvasRect::rounded(
-                            cx,
-                            cy,
-                            cx + cell_w,
-                            cy + 100.0,
-                            card_r,
-                            p.base_300,
-                        ));
-                        rects.push(CanvasRect::rounded(
                             cx + 1.0,
-                            cy + 1.0,
-                            cx + cell_w - 1.0,
-                            cy + 99.0,
-                            card_r - 1.0,
-                            p.base_100,
+                            cy + 14.0,
+                            cx + 4.5,
+                            cy + 86.0,
+                            1.75,
+                            if pct > 0.0 {
+                                p.accent
+                            } else {
+                                p.border_emphasized
+                            },
                         ));
 
+                        texts.push(
+                            CanvasText::new(
+                                cx + 16.0,
+                                cy + 28.0,
+                                title_ts,
+                                p.text_primary,
+                                TextAlign::Left,
+                                true,
+                                truncate_name(&entry_title(entry), max_chars),
+                            )
+                            .with_tracking(theme::TRACKING_TIGHT),
+                        );
                         texts.push(CanvasText::new(
-                            cx + 12.0,
-                            cy + 28.0,
-                            title_ts,
-                            p.base_content,
-                            TextAlign::Left,
-                            true,
-                            truncate_name(&entry_title(entry), max_chars),
-                        ));
-                        texts.push(CanvasText::new(
-                            cx + 12.0,
+                            cx + 16.0,
                             cy + 52.0,
                             theme::FONT_CAPTION,
-                            p.neutral_content,
+                            p.text_secondary,
                             TextAlign::Left,
                             false,
                             truncate_name(&reader.library_caption(entry), max_chars),
                         ));
                         let bar_y = cy + 72.0;
-                        let track_w = cell_w - 24.0;
-                        let pct = persist::progress_for(
-                            &reader.library.lib_books,
-                            &reader.entry_path(entry),
-                        )
-                        .map(|bp| bp.pct())
-                        .unwrap_or(0.0);
+                        let track_w = cell_w - 32.0;
                         rects.push(CanvasRect::rounded(
-                            cx + 12.0,
+                            cx + 16.0,
                             bar_y,
-                            cx + 12.0 + track_w,
+                            cx + 16.0 + track_w,
                             bar_y + 4.0,
                             2.0,
-                            p.base_300,
+                            p.track,
                         ));
                         if pct > 0.0 {
                             let fill_w = (track_w * pct).clamp(4.0, track_w);
                             rects.push(CanvasRect::rounded(
-                                cx + 12.0,
+                                cx + 16.0,
                                 bar_y,
-                                cx + 12.0 + fill_w,
+                                cx + 16.0 + fill_w,
                                 bar_y + 4.0,
                                 2.0,
-                                p.primary,
+                                p.accent,
                             ));
                         }
                     }
                 }
             }
         } else {
-            // MODO LISTA: 1 columna, fila de ancho total
+            // MODO LISTA: tarjetas horizontales Astryx sobre `bg_body`
             let row_h = list_row_h(reader.win_h, reader.cover_size);
             let row_gap = list_row_gap();
             let total_row_h = row_h + row_gap;
@@ -510,25 +647,16 @@ pub(crate) fn render_library_zone(
                 let (rx, ry_rel, rx2, _ry2) =
                     list_row_rect(w, 0, i, reader.win_h, reader.cover_size);
                 let ry = yof + grid_y0 + ry_rel;
-                let card_r = 14.0f32;
 
-                draw_card_shadow(&mut rects, rx, ry, rx2, ry + row_h, card_r, p.is_dark);
-                rects.push(CanvasRect::rounded(
-                    rx,
-                    ry,
-                    rx2,
-                    ry + row_h,
-                    card_r,
-                    p.base_300,
-                ));
-                rects.push(CanvasRect::rounded(
-                    rx + 1.0,
-                    ry + 1.0,
-                    rx2 - 1.0,
-                    ry + row_h - 1.0,
-                    card_r - 1.0,
-                    p.base_100,
-                ));
+                draw_surface_card(
+                    &mut rects,
+                    (rx, ry, rx2, ry + row_h),
+                    theme::RADIUS_CONTAINER,
+                    p.bg_card,
+                    p.border,
+                    Elevation::Low,
+                    p.is_dark,
+                );
 
                 let pct =
                     persist::progress_for(&reader.library.lib_books, &reader.entry_path(entry))
@@ -540,60 +668,32 @@ pub(crate) fn render_library_zone(
                     let ch = (90.0 * cover_size_multiplier(reader.cover_size)).round();
                     let cx = rx + 12.0;
                     let cy = ry + (row_h - ch) / 2.0;
-                    let cover_r = 8.0f32;
+                    let cover_rect = (cx, cy, cx + cw, cy + ch);
 
-                    draw_card_shadow(&mut rects, cx, cy, cx + cw, cy + ch, cover_r, p.is_dark);
-                    rects.push(CanvasRect::rounded(
-                        cx,
-                        cy,
-                        cx + cw,
-                        cy + ch,
-                        cover_r,
-                        p.base_300,
-                    ));
-                    rects.push(CanvasRect::rounded(
-                        cx + 1.0,
-                        cy + 1.0,
-                        cx + cw - 1.0,
-                        cy + ch - 1.0,
-                        (cover_r - 1.0).max(0.0),
-                        p.base_200,
-                    ));
+                    draw_surface_card(
+                        &mut rects,
+                        cover_rect,
+                        theme::RADIUS_ELEMENT,
+                        p.bg_surface,
+                        p.border,
+                        Elevation::None,
+                        p.is_dark,
+                    );
 
                     if reader.thumbs.peek(&entry.uri).is_none() {
-                        texts.push(CanvasText::new(
-                            cx + cw / 2.0,
-                            cy + ch / 2.0 + theme::FONT_CAPTION * 0.35,
-                            theme::FONT_CAPTION * 0.9,
-                            p.neutral_content,
-                            TextAlign::Center,
+                        draw_cover_placeholder(
+                            &mut rects,
+                            &mut texts,
+                            (cx, cy, cw, ch),
+                            &entry_title(entry),
+                            &p,
                             true,
-                            truncate_name(&entry_title(entry), 8),
-                        ));
+                        );
                     }
                     if reader.cover_progress && pct > 0.0 {
-                        let pct_val = (pct * 100.0).round() as u32;
-                        if pct_val > 0 {
-                            let pct_str = format!("{pct_val}%");
-                            let badge_w = 38.0f32;
-                            let badge_h = 20.0f32;
-                            let badge_r = cx + cw - 4.0;
-                            let badge_b = cy + ch - 4.0;
-                            let badge_l = badge_r - badge_w;
-                            let badge_t = badge_b - badge_h;
-                            rects.push(CanvasRect::rounded(
-                                badge_l, badge_t, badge_r, badge_b, 999.0, p.primary,
-                            ));
-                            texts.push(CanvasText::new(
-                                (badge_l + badge_r) / 2.0,
-                                badge_t + badge_h * 0.68,
-                                theme::FONT_CAPTION * 0.80,
-                                p.primary_content,
-                                TextAlign::Center,
-                                true,
-                                pct_str,
-                            ));
-                        }
+                        draw_cover_progress_badge(
+                            &mut rects, &mut texts, cover_rect, pct, &p, true,
+                        );
                     }
                     cx + cw + 18.0
                 } else {
@@ -604,35 +704,38 @@ pub(crate) fn render_library_zone(
                 let char_w = title_ts * 0.55;
                 let max_chars = (((rx2 - text_x - 120.0) / char_w) as usize).max(8);
 
-                texts.push(CanvasText::new(
-                    text_x,
-                    ry + 32.0,
-                    title_ts,
-                    p.base_content,
-                    TextAlign::Left,
-                    true,
-                    truncate_name(&entry_title(entry), max_chars),
-                ));
+                texts.push(
+                    CanvasText::new(
+                        text_x,
+                        ry + 34.0,
+                        title_ts,
+                        p.text_primary,
+                        TextAlign::Left,
+                        true,
+                        truncate_name(&entry_title(entry), max_chars),
+                    )
+                    .with_tracking(theme::TRACKING_TIGHT),
+                );
 
                 texts.push(CanvasText::new(
                     text_x,
                     ry + 58.0,
                     theme::FONT_CAPTION,
-                    p.neutral_content,
+                    p.text_secondary,
                     TextAlign::Left,
                     false,
                     truncate_name(&reader.library_caption(entry), max_chars),
                 ));
 
                 let bar_y = ry + 82.0;
-                let bar_w = rx2 - text_x - 90.0;
+                let bar_w = rx2 - text_x - 94.0;
                 rects.push(CanvasRect::rounded(
                     text_x,
                     bar_y,
                     text_x + bar_w,
                     bar_y + 4.0,
                     2.0,
-                    p.base_300,
+                    p.track,
                 ));
                 if pct > 0.0 {
                     let fill_w = (bar_w * pct).clamp(4.0, bar_w);
@@ -642,24 +745,30 @@ pub(crate) fn render_library_zone(
                         text_x + fill_w,
                         bar_y + 4.0,
                         2.0,
-                        p.primary,
+                        p.accent,
                     ));
                 }
                 let pct_text = format!("{:.0}%", pct * 100.0);
-                texts.push(CanvasText::new(
-                    rx2 - 20.0,
-                    bar_y + 4.0,
-                    theme::FONT_CAPTION,
-                    p.neutral_content,
-                    TextAlign::Right,
-                    true,
-                    pct_text,
-                ));
+                texts.push(
+                    CanvasText::new(
+                        rx2 - 20.0,
+                        bar_y + 4.0,
+                        theme::FONT_CAPTION,
+                        if pct > 0.0 {
+                            p.text_accent
+                        } else {
+                            p.text_secondary
+                        },
+                        TextAlign::Right,
+                        true,
+                        pct_text,
+                    )
+                    .with_font(TextFont::Mono),
+                );
             }
         }
 
-        // 5. Sin resultados con filtro activo (buscador con teclado o
-        // filtros legacy conservados).
+        // Sin resultados con filtro activo: callout Astryx centrado
         if reader.library.lib_filtered.is_empty()
             && (!reader.library.lib_query.is_empty()
                 || reader.library.lib_letter.is_some()
@@ -667,27 +776,41 @@ pub(crate) fn render_library_zone(
                 || reader.library.lib_status.is_some()
                 || reader.library.lib_master)
         {
+            let pad = grid_pad(w);
+            let box_l = pad.max((w as f32 - 520.0) * 0.5);
+            let box_r = w as f32 - box_l;
+            let box_t = yof + 18.0;
+            let box_b = box_t + 64.0;
+            draw_surface_card(
+                &mut rects,
+                (box_l, box_t, box_r, box_b),
+                theme::RADIUS_CONTAINER,
+                p.bg_card,
+                p.border,
+                Elevation::None,
+                p.is_dark,
+            );
             texts.push(CanvasText::new(
-                w as f32 / 2.0,
-                yof + 24.0,
+                w as f32 * 0.5,
+                box_t + 38.0,
                 theme::FONT_BODY,
-                p.neutral_content,
+                p.text_secondary,
                 TextAlign::Center,
                 false,
                 if !reader.library.lib_query.is_empty() {
-                    "Sin resultados — borra la búsqueda con ✕"
+                    "Sin resultados. Borra la búsqueda con ✕."
                 } else if reader.library.lib_subject.is_some() {
-                    "Sin documentos en esta asignatura — elige Todas"
+                    "Sin documentos en esta asignatura. Elige «Todas»."
                 } else if reader.library.lib_master {
-                    "Aún no hay PDFs del máster — sincroniza la carpeta con FolderSync"
+                    "Aún no hay PDFs del máster. Sincroniza la carpeta con FolderSync."
                 } else {
-                    "Sin resultados — cambia los filtros"
+                    "Sin resultados con los filtros actuales."
                 },
             ));
         }
     }
 
-    jni_text_bitmap(w, band_h, p.base_200, &rects, &texts)
+    jni_text_bitmap(w, band_h, p.bg_body, &rects, &texts)
 }
 
 /// Render de la fila HORIZONTAL de chips del panel de BÚSQUEDA `row`.
@@ -716,27 +839,26 @@ pub(crate) fn render_search_chip_row(reader: &Reader, row: usize) -> Option<Bitm
     let mut texts: Vec<CanvasText> = Vec::new();
     for (label, (l, t, r, b), active) in &chips {
         let (gl, gr) = (l + scroll, r + scroll);
-        let (fill, border, tc) = if *active {
-            (p.primary, p.primary, p.primary_content)
+        let (fill, border, fg) = if *active {
+            (p.accent_muted, Some(p.accent), p.on_accent_muted)
         } else {
-            (p.base_100, p.base_300, p.base_content)
+            (p.bg_card, Some(p.border), p.text_secondary)
         };
-        draw_button(
+        draw_token_pill(
             &mut rects,
             &mut texts,
-            gl,
-            0.0,
-            gr,
-            b - t,
+            (gl, 0.0, gr, b - t),
             fill,
             border,
-            tc,
-            theme::FONT_BODY,
+            fg,
+            theme::FONT_CAPTION,
+            TextFont::Sans,
+            0.0,
             *active,
             label,
         );
     }
-    jni_text_bitmap(row_w, row_h, p.base_200, &rects, &texts)
+    jni_text_bitmap(row_w, row_h, p.bg_body, &rects, &texts)
 }
 
 /// Copia la fila `row` (bitmap) sobre `dst` (zona fija o banda) con su
@@ -905,32 +1027,18 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
                             .map(|bp| bp.pct())
                             .unwrap_or(0.0);
                     if pct > 0.0 {
-                        let pct_val = (pct * 100.0).round() as u32;
-                        if pct_val > 0 {
-                            let (cx, cy_rel, _, _) =
-                                grid_cell_rect(w, 0, row, col, cols, reader.cover_size);
-                            let cover_x0 = cx + (cell_w - cover_w) / 2.0;
-                            let cover_y0 = grid_y0 + cy_rel - band_origin as f32 + 4.0;
-                            let pct_str = format!("{pct_val}%");
-                            let badge_w = 42.0f32;
-                            let badge_h = 22.0f32;
-                            let badge_r = cover_x0 + cover_w - 6.0;
-                            let badge_b = cover_y0 + cover_h - 6.0;
-                            let badge_l = badge_r - badge_w;
-                            let badge_t = badge_b - badge_h;
-                            badge_rects.push(CanvasRect::rounded(
-                                badge_l, badge_t, badge_r, badge_b, 999.0, p.primary,
-                            ));
-                            badge_texts.push(CanvasText::new(
-                                (badge_l + badge_r) / 2.0,
-                                badge_t + badge_h * 0.68,
-                                theme::FONT_CAPTION * 0.85,
-                                p.primary_content,
-                                TextAlign::Center,
-                                true,
-                                pct_str,
-                            ));
-                        }
+                        let (cx, cy_rel, _, _) =
+                            grid_cell_rect(w, 0, row, col, cols, reader.cover_size);
+                        let cover_x0 = cx + (cell_w - cover_w) / 2.0;
+                        let cover_y0 = grid_y0 + cy_rel - band_origin as f32 + 4.0;
+                        draw_cover_progress_badge(
+                            &mut badge_rects,
+                            &mut badge_texts,
+                            (cover_x0, cover_y0, cover_x0 + cover_w, cover_y0 + cover_h),
+                            pct,
+                            &p,
+                            false,
+                        );
                     }
                 }
             }
@@ -955,32 +1063,18 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
                         .map(|bp| bp.pct())
                         .unwrap_or(0.0);
                 if pct > 0.0 {
-                    let pct_val = (pct * 100.0).round() as u32;
-                    if pct_val > 0 {
-                        let (rx, ry_rel, _, _) =
-                            list_row_rect(w, 0, i, reader.win_h, reader.cover_size);
-                        let cx = rx + 12.0;
-                        let cy = grid_y0 + ry_rel - band_origin as f32 + (row_h - ch) / 2.0;
-                        let pct_str = format!("{pct_val}%");
-                        let badge_w = 38.0f32;
-                        let badge_h = 20.0f32;
-                        let badge_r = cx + cw - 4.0;
-                        let badge_b = cy + ch - 4.0;
-                        let badge_l = badge_r - badge_w;
-                        let badge_t = badge_b - badge_h;
-                        badge_rects.push(CanvasRect::rounded(
-                            badge_l, badge_t, badge_r, badge_b, 999.0, p.primary,
-                        ));
-                        badge_texts.push(CanvasText::new(
-                            (badge_l + badge_r) / 2.0,
-                            badge_t + badge_h * 0.68,
-                            theme::FONT_CAPTION * 0.80,
-                            p.primary_content,
-                            TextAlign::Center,
-                            true,
-                            pct_str,
-                        ));
-                    }
+                    let (rx, ry_rel, _, _) =
+                        list_row_rect(w, 0, i, reader.win_h, reader.cover_size);
+                    let cx = rx + 12.0;
+                    let cy = grid_y0 + ry_rel - band_origin as f32 + (row_h - ch) / 2.0;
+                    draw_cover_progress_badge(
+                        &mut badge_rects,
+                        &mut badge_texts,
+                        (cx, cy, cx + cw, cy + ch),
+                        pct,
+                        &p,
+                        true,
+                    );
                 }
             }
         }
@@ -1011,11 +1105,9 @@ pub(crate) fn paste_lib_thumbs(reader: &Reader, band: &mut Bitmap, band_origin: 
 /// Resumen del filtro de BÚSQUEDA activo para el campo ("M" / "Download" /
 /// "M · Download"): texto mostrable + si hay filtro (para el "✕").
 fn search_summary(reader: &Reader) -> (String, bool) {
-    // Buscador con TECLADO: el texto tecleado es el filtro principal.
     if !reader.library.lib_query.is_empty() {
         return (reader.library.lib_query.clone(), true);
     }
-    // Filtros legacy por letra/carpeta (sin UI desde 2026-08-25).
     let mut parts = Vec::new();
     if let Some(l) = reader.library.lib_letter {
         parts.push(l.to_string());
@@ -1030,8 +1122,9 @@ fn search_summary(reader: &Reader) -> (String, bool) {
     }
 }
 
-/// Dibuja el EMPTY STATE de la biblioteca (sin PDFs): ilustración simple de
-/// un libro + título + subtítulo + botón Readest ("Añadir PDF" o "Conceder permiso").
+/// Dibuja el EMPTY STATE editorial de la biblioteca en lenguaje Astryx:
+/// libro arquitectónico elevado con lomo, filete de acento y marcapáginas +
+/// título display + subtítulo conciso + botón primario Astryx.
 fn draw_empty_state(
     reader: &Reader,
     rects: &mut Vec<CanvasRect>,
@@ -1043,34 +1136,60 @@ fn draw_empty_state(
     };
     let p = reader.theme.palette();
     let (bx, by, br, bb) = g.book;
-    // Portada + lomo + líneas de "texto"
+    let book_rect = (bx, by + shift_y, br, bb + shift_y);
+
+    // Lomo arquitectónico izquierdo
+    draw_surface_card(
+        rects,
+        (bx - 10.0, by + 5.0 + shift_y, bx + 2.0, bb - 5.0 + shift_y),
+        4.0,
+        p.accent_muted,
+        p.accent,
+        Elevation::None,
+        p.is_dark,
+    );
+    // Cubierta elevada `bg_card` + `Elevation::Med`
+    draw_surface_card(
+        rects,
+        book_rect,
+        theme::RADIUS_ELEMENT,
+        p.bg_card,
+        p.border_emphasized,
+        Elevation::Med,
+        p.is_dark,
+    );
+    // Cinta marcapáginas de acento en el borde superior derecho
     rects.push(CanvasRect::rounded(
-        bx,
+        br - 20.0,
         by + shift_y,
-        br,
-        bb + shift_y,
-        8.0,
-        p.cover_placeholder(),
+        br - 12.0,
+        by + 24.0 + shift_y,
+        2.0,
+        p.accent,
     ));
-    rects.push(CanvasRect::sharp(
-        bx - 8.0,
-        by + 4.0 + shift_y,
-        bx - 2.0,
-        bb - 4.0 + shift_y,
-        p.base_300,
+    // Filetes tipográficos interiores
+    let line_w = (br - bx) * 0.56;
+    rects.push(CanvasRect::rounded(
+        bx + 14.0,
+        by + 20.0 + shift_y,
+        bx + 14.0 + line_w * 0.45,
+        by + 23.0 + shift_y,
+        1.5,
+        p.accent,
     ));
-    let line_w = (br - bx) * 0.6;
     for i in 0..3 {
-        let ly = by + 18.0 + i as f32 * 18.0 + shift_y;
-        rects.push(CanvasRect::sharp(
-            bx + 12.0,
+        let ly = by + 36.0 + i as f32 * 16.0 + shift_y;
+        let w_mul = if i == 2 { 0.65 } else { 1.0 };
+        rects.push(CanvasRect::rounded(
+            bx + 14.0,
             ly,
-            bx + 12.0 + line_w,
-            ly + 2.0,
-            p.base_300,
+            bx + 14.0 + line_w * w_mul,
+            ly + 2.5,
+            1.25,
+            p.border_emphasized,
         ));
     }
-    // Título + subtítulo + botón
+
     let (title, subtitle, btn_label) = if reader.permission_granted {
         (
             "Tu biblioteca está vacía",
@@ -1084,35 +1203,34 @@ fn draw_empty_state(
             "Conceder acceso",
         )
     };
+    texts.push(
+        CanvasText::new(
+            reader.win_w as f32 * 0.5,
+            g.title_y + shift_y,
+            theme::FONT_DISPLAY,
+            p.text_primary,
+            TextAlign::Center,
+            true,
+            title,
+        )
+        .with_tracking(theme::TRACKING_TIGHT),
+    );
     texts.push(CanvasText::new(
-        reader.win_w as f32 / 2.0,
-        g.title_y + shift_y,
-        theme::FONT_DISPLAY,
-        p.base_content,
-        TextAlign::Center,
-        true,
-        title,
-    ));
-    texts.push(CanvasText::new(
-        reader.win_w as f32 / 2.0,
+        reader.win_w as f32 * 0.5,
         g.subtitle_y + shift_y,
         theme::FONT_BODY,
-        p.neutral_content,
+        p.text_secondary,
         TextAlign::Center,
         false,
         subtitle,
     ));
     let (l, t, r, b) = g.button;
-    draw_button(
+    draw_astryx_button(
         rects,
         texts,
-        l,
-        t + shift_y,
-        r,
-        b + shift_y,
-        p.primary,
-        p.primary,
-        p.primary_content,
+        (l, t + shift_y, r, b + shift_y),
+        ButtonVariant::Primary,
+        &p,
         theme::FONT_BODY,
         true,
         btn_label,

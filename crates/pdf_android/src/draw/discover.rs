@@ -17,14 +17,16 @@ use crate::theme;
 use pdf_core::Bitmap;
 
 use super::{
-    ButtonRect, CanvasRect, CanvasText, TextAlign, draw_button, draw_card_shadow, jni_text_bitmap,
+    ButtonRect, CanvasRect, CanvasText, Elevation, TextAlign, draw_button, draw_card_shadow,
+    draw_surface_card, jni_text_bitmap,
 };
 
 /// Texto de atribución requerido por las condiciones de interoperabilidad abierta de arXiv.
 pub(crate) const ARXIV_ATTRIBUTION: &str =
     "Thank you to arXiv for use of its open access interoperability.";
 
-/// Dibuja las pestañas principales compartidas de la cabecera: [Biblioteca] y [Descubrir].
+/// Dibuja las pestañas principales compartidas de la cabecera: [Biblioteca] y [Descubrir]
+/// como un control segmentado Astryx (`bg_muted` rail + pestaña activa elevada `bg_card`).
 pub(crate) fn draw_header_tabs(
     rects: &mut Vec<CanvasRect>,
     texts: &mut Vec<CanvasText>,
@@ -36,49 +38,67 @@ pub(crate) fn draw_header_tabs(
     let (tab_lib, tab_disc) = lib_tabs_rect(win_w, win_h);
     let p = theme.palette();
 
+    // Rail contenedor segmentado Astryx alrededor de ambas pestañas (conservando los hitboxes exactos)
+    let rail_l = tab_lib.0 - 4.0;
+    let rail_t = tab_lib.1 - 4.0;
+    let rail_r = tab_disc.2 + 4.0;
+    let rail_b = tab_lib.3 + 4.0;
+    draw_surface_card(
+        rects,
+        (rail_l, rail_t, rail_r, rail_b),
+        theme::RADIUS_CONTAINER,
+        p.bg_muted,
+        p.border,
+        Elevation::None,
+        p.is_dark,
+    );
+
     let render_tab = |rects: &mut Vec<CanvasRect>,
                       texts: &mut Vec<CanvasText>,
                       rect: ButtonRect,
                       is_active: bool,
                       label: &str| {
         let (left, top, right, bottom) = rect;
-        let r = ((bottom - top) * 0.5).max(6.0);
-        let cy = top + (bottom - top) * 0.5 + theme::FONT_BODY * 0.35;
+        let cy = top + (bottom - top) * 0.5 + theme::FONT_BODY * 0.34;
         if is_active {
-            draw_card_shadow(rects, left, top, right, bottom, r, p.is_dark);
-            rects.push(CanvasRect::rounded(left, top, right, bottom, r, p.base_300));
+            draw_surface_card(
+                rects,
+                rect,
+                theme::RADIUS_ELEMENT,
+                p.bg_card,
+                p.border,
+                Elevation::Low,
+                p.is_dark,
+            );
+            // Barra de acento inferior centrada de 3 px
+            let bar_w = ((right - left) * 0.34).clamp(24.0, 56.0);
+            let cx = (left + right) * 0.5;
             rects.push(CanvasRect::rounded(
-                left + 1.0,
-                top + 1.0,
-                right - 1.0,
-                bottom - 1.0,
-                r - 1.0,
-                p.base_100,
+                cx - bar_w * 0.5,
+                bottom - 4.5,
+                cx + bar_w * 0.5,
+                bottom - 1.5,
+                1.5,
+                p.accent,
             ));
-            texts.push(CanvasText::new(
-                (left + right) / 2.0,
-                cy,
-                theme::FONT_BODY,
-                p.base_content,
-                TextAlign::Center,
-                true,
-                label,
-            ));
+            texts.push(
+                CanvasText::new(
+                    cx,
+                    cy,
+                    theme::FONT_BODY,
+                    p.text_primary,
+                    TextAlign::Center,
+                    true,
+                    label,
+                )
+                .with_tracking(theme::TRACKING_TIGHT),
+            );
         } else {
-            rects.push(CanvasRect::rounded(left, top, right, bottom, r, p.base_300));
-            rects.push(CanvasRect::rounded(
-                left + 1.0,
-                top + 1.0,
-                right - 1.0,
-                bottom - 1.0,
-                r - 1.0,
-                p.base_200,
-            ));
             texts.push(CanvasText::new(
-                (left + right) / 2.0,
+                (left + right) * 0.5,
                 cy,
                 theme::FONT_BODY,
-                p.neutral_content,
+                p.text_secondary,
                 TextAlign::Center,
                 false,
                 label,

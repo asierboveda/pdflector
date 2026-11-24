@@ -70,14 +70,14 @@ pub(crate) use geometry::{
     disc_card_pad, disc_card_rect, disc_cat_row_h, disc_cat_row_rect, disc_content_y0,
     disc_detail_back_rect, disc_detail_layout, disc_more_btn_rect, disc_search_rect,
     disc_subtabs_rect, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w,
-    grid_gap, grid_pad, header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h, lib_chips,
-    lib_collection_chips, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
-    lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h,
-    lib_search_panel_h, lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect,
-    page_badge_size, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
-    settings_menu_button_rect, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y,
-    sheet_pad, sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect,
-    viewer_bottom_chrome_h, viewer_top_chrome_h, wrap_text_chars,
+    grid_gap, grid_pad, human_size, lib_add_btn_w, lib_chip_h, lib_chips, lib_collection_chips,
+    lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
+    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
+    lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect, page_badge_size,
+    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect,
+    sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad, sheet_theme_btn_w,
+    sheet_theme_y, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
+    viewer_top_chrome_h, wrap_text_chars,
 };
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
