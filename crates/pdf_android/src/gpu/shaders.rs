@@ -171,6 +171,9 @@ pub(crate) fn mat3_scale_translate(sx: f32, sy: f32, tx: f32, ty: f32) -> [f32; 
 }
 
 pub(crate) fn gl_str(ptr: *const u8) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
     unsafe {
         let mut n = 0usize;
         while *ptr.add(n) != 0 {

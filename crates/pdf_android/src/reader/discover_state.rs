@@ -83,8 +83,6 @@ pub struct DiscoverState {
     pub worker: Option<DiscoverWorker>,
     /// Canal de recepción de mensajes desde el worker.
     pub rx: Option<Receiver<DiscoverMsg>>,
-    /// ¿Hay una petición o descarga en curso en el worker?
-    pub worker_busy: bool,
     /// Número de peticiones pendientes en el worker.
     pub pending_requests: usize,
     /// Bitmap cacheado de la cabecera fija de Discover (tabs + subtabs + search bar).
@@ -127,7 +125,6 @@ impl DiscoverState {
             areas_scroll: 0.0,
             worker: None,
             rx: None,
-            worker_busy: false,
             pending_requests: 0,
             header: None,
             header_ver: 0,
@@ -159,7 +156,6 @@ impl DiscoverState {
     pub fn send_cmd(&mut self, cmd: DiscoverCmd) {
         if let Some(w) = self.worker.as_ref() {
             self.pending_requests += 1;
-            self.worker_busy = true;
             w.send(cmd);
         }
     }
@@ -172,15 +168,6 @@ impl DiscoverState {
         self.downloading_id = None;
         self.download_bytes = 0;
         self.pending_requests = 0;
-        self.worker_busy = false;
         self.phase = DiscoverPhase::Idle;
-    }
-
-    /// ¿El worker está procesando una consulta o descarga?
-    pub fn is_busy(&self) -> bool {
-        self.pending_requests > 0
-            || self.worker_busy
-            || self.downloading_id.is_some()
-            || self.phase == DiscoverPhase::Loading
     }
 }

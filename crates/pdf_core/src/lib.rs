@@ -23,7 +23,7 @@ pub mod textcache;
 pub mod theme;
 pub mod zoom;
 
-pub use ai::{AiError, GeminiClient, GroqClient, OllamaClient, chunk_pages};
+pub use ai::{AiError, GeminiClient, OllamaClient, chunk_pages};
 pub use annotations::{
     Annotated, Annotation, AnnotationSet, Color, Highlight, MAX_STROKE_SCALE, MIN_STROKE_SCALE,
     Rect, Stroke, TextNote, TransformError, UniformTransform, simplify_polyline, smooth_polyline,

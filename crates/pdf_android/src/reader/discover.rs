@@ -46,12 +46,6 @@ impl Reader {
         self.discover.rx = Some(rx);
     }
 
-    /// ¿Hay trabajo activo en Discover (consulta o descarga en vuelo)?
-    /// Usado por `needs_tick` para mantener el polling activo en el bucle de eventos.
-    pub(crate) fn discover_busy(&self) -> bool {
-        self.discover.is_busy()
-    }
-
     /// ¿Está el paper de arXiv indicado ya presente en la biblioteca?
     pub(crate) fn is_arxiv_in_library(&self, arxiv_id: &str) -> bool {
         self.find_arxiv_in_library(arxiv_id).is_some()
@@ -117,7 +111,6 @@ impl Reader {
                         self.discover.pending_requests.saturating_sub(1);
                     if self.discover.pending_requests == 0 {
                         self.discover.phase = DiscoverPhase::Idle;
-                        self.discover.worker_busy = false;
                     }
                     self.discover.dirty = true;
                     self.redraw();
@@ -137,7 +130,6 @@ impl Reader {
                         self.discover.pending_requests.saturating_sub(1);
                     if self.discover.pending_requests == 0 {
                         self.discover.phase = DiscoverPhase::Idle;
-                        self.discover.worker_busy = false;
                     }
                     self.discover.dirty = true;
                     self.redraw();
@@ -166,7 +158,6 @@ impl Reader {
                         self.discover.pending_requests.saturating_sub(1);
                     if self.discover.pending_requests == 0 {
                         self.discover.phase = DiscoverPhase::Idle;
-                        self.discover.worker_busy = false;
                     }
                     self.discover.dirty = true;
                     self.redraw();
@@ -176,9 +167,6 @@ impl Reader {
                     self.discover.phase = DiscoverPhase::Error(error);
                     self.discover.pending_requests =
                         self.discover.pending_requests.saturating_sub(1);
-                    if self.discover.pending_requests == 0 {
-                        self.discover.worker_busy = false;
-                    }
                     self.discover.dirty = true;
                     self.redraw();
                 }
@@ -195,9 +183,6 @@ impl Reader {
                     self.discover.download_bytes = 0;
                     self.discover.pending_requests =
                         self.discover.pending_requests.saturating_sub(1);
-                    if self.discover.pending_requests == 0 {
-                        self.discover.worker_busy = false;
-                    }
                     self.library_add_entry(app, &path, entry.as_ref());
                     let display_name = entry
                         .as_ref()
@@ -214,9 +199,6 @@ impl Reader {
                     self.discover.download_bytes = 0;
                     self.discover.pending_requests =
                         self.discover.pending_requests.saturating_sub(1);
-                    if self.discover.pending_requests == 0 {
-                        self.discover.worker_busy = false;
-                    }
                     if error != "Descarga cancelada" {
                         self.show_toast(&format!("Fallo descarga {id}: {error}"));
                     }

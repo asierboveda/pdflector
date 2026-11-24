@@ -22,8 +22,8 @@ use std::time::Instant;
 /// sobre el documento durante `LONG_PRESS_MS` fija el ancla en ese punto y
 /// muestra el rect de selección (un punto, aún sin arrastrar). Valor estándar
 /// de long-press en Android (~400 ms); `tick_gestures` lo mide desde el Down
-/// con `press_at` (el poll con timeout de `needs_tick` mantiene el bucle vivo
-/// mientras el dedo esté abajo).
+/// con `press_at` (el poll con timeout del bucle mantiene `tick` activo
+/// mientras haya ventana).
 pub(crate) const LONG_PRESS_MS: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Modo del gesto de dos dedos (discriminación robusta pan vs pinch).
@@ -142,8 +142,8 @@ pub(crate) struct GestureState {
     pub(crate) kind: GestureKind,
     /// Long-press: `Instant` del Down del dedo que está en `Tap` sin moverse
     /// más de `TAP_SLOP`. Some mientras el dedo esté abajo y el gesto siga
-    /// siendo un tap potencial; `Reader::needs_tick` mantiene el poll con
-    /// timeout para que `tick_gestures` dispare la selección al superar
+    /// siendo un tap potencial; el poll con timeout del bucle mantiene `tick`
+    /// activo para que `tick_gestures` dispare la selección al superar
     /// `LONG_PRESS_MS` aunque no llegue más input. Se desarma al moverse >
     /// `TAP_SLOP`, al entrar en el pinch o al levantar/cancelar el dedo.
     pub(crate) press_at: Option<Instant>,
@@ -156,14 +156,6 @@ impl GestureState {
             kind: GestureKind::None,
             press_at: None,
         }
-    }
-
-    /// ¿Temporizador de long-press activo (dedo quieto en `Tap`)? El bucle de
-    /// eventos mantiene el poll con timeout mientras tanto para que el modo
-    /// selección entre aunque el dedo no se mueva.
-    #[allow(dead_code)] // long-press aún activo vía tick_gestures
-    pub(crate) fn press_pending(&self) -> bool {
-        self.press_at.is_some()
     }
 }
 

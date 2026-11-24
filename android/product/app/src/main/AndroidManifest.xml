@@ -12,7 +12,6 @@
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|layoutDirection|density|fontScale"
             android:exported="true">
             <meta-data android:name="android.app.lib_name" android:value="pdf_android" />
-            <meta-data android:name="android.app.func_name" android:value="android_main" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

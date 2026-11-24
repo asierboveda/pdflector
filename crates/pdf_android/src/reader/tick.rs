@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Tick del bucle de eventos: `tick` y su predicado `needs_tick`, visibilidad de filas (`lib_visible_grid_rows`/`lib_visible_list_rows`), pump de portadas (`thumbs_pending`, `ensure_thumb_worker`, `pump_thumbs`), la evicción diferida del pagecache en ticks idle (`trim_to_budget`, fix p95 — ver `crate::cache`) y accesores de frame del bucle (`take_repaint`, `has_window`).
+//! Tick del bucle de eventos: `tick`, visibilidad de filas (`lib_visible_grid_rows`/`lib_visible_list_rows`), pump de portadas (`ensure_thumb_worker`, `pump_thumbs`), la evicción diferida del pagecache en ticks idle (`trim_to_budget`, fix p95 — ver `crate::cache`) y accesores de frame del bucle (`take_repaint`, `has_window`).
 
 use super::AiPhase;
 use super::Reader;
@@ -21,45 +21,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 impl Reader {
-    /// ¿Trabajo diferido pendiente en el bucle de eventos? (poll con timeout
-    /// de 16 ms → `tick`): animación del sheet, portadas de la biblioteca,
-    /// long-press del dedo en el documento (modo selección) o aviso breve
-    /// visible. En reposo el poll bloquea sin gastar batería.
-    #[allow(dead_code)] // el bucle usa `has_window()` (timeout fijo)
-    pub(crate) fn needs_tick(&mut self) -> bool {
-        self.repaint
-            // Buscador con teclado: mientras el IME esté abierto, `tick`
-            // hace polling del texto tecleado (re-filtra la rejilla en vivo).
-            || self.ime_active
-            || self.tool_gesture.is_some()
-            || self.sheet_anim
-            || (self.chrome_visible && self.chrome_hide_at.is_some())
-            || self.thumbs_pending()
-            || self.toast.is_some()
-            || self.gesture.press_pending()
-            // Transición al abrir un libro: el tick expira el fade.
-            || self.library.lib_fade.is_some()
-            // Consulta de IA en vuelo: `tick` sondea el canal del hilo de
-            // fondo (sin esto el poll bloquearía y la respuesta tardaría en
-            // aparecer hasta el siguiente evento de input).
-            || self.ai_rx.is_some()
-            // Render asíncrono en vuelo (zoom sharp / cambio de página):
-            // sondear hasta que el worker termine.
-            || self.render_rx.is_some()
-            // Debounce del pinch (F3.2): los dedos llevan quietos < 350 ms
-            // o el render nítido aún no llegó — `tick` decide el disparo.
-            || self.last_pinch_move.is_some()
-            // Operación de Discover en curso (feed, búsqueda o descarga de paper):
-            // sondear canal del DiscoverWorker sin bloquear.
-            || self.discover_busy()
-    }
-
-    /// Tick del bucle de eventos (timeout ~16 ms): avanza la animación del
-    /// sheet, detecta el long-press del dedo en el documento (entra en modo
-    /// selección), expira el aviso breve (toast) y renderiza un lote de
-    /// portadas pendientes de la biblioteca. `lib::android_main` lo invoca en
-    /// los eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
-    /// despertar el loop en reposo).
+    /// Tick del bucle de eventos (timeout ~8 ms mientras haya ventana): avanza
+    /// la animación del sheet, detecta el long-press del dedo en el documento
+    /// (entra en modo selección), expira el aviso breve (toast) y bombea el
+    /// worker de portadas y Discover. `lib::android_main` lo invoca en los
+    /// eventos Wake/Timeout mientras `has_window()`.
     pub(crate) fn tick(&mut self, app: &AndroidApp) {
         self.poll_folder_sync();
         // Persistencia diferida (A1): si el estado lleva >2 s sucio (cambio
@@ -109,8 +75,7 @@ impl Reader {
         }
         // Resultado del hilo de IA (si hay una consulta en vuelo): `try_recv`
         // sondea el canal SIN bloquear; al llegar el mensaje se actualiza el
-        // panel (fase Answer/Error) y se libera el receptor. Mientras tanto el
-        // poll con timeout se mantiene vivo vía `needs_tick` (ai_rx.is_some).
+        // panel (fase Answer/Error) y se libera el receptor.
         if let Some(rx) = self.ai_rx.as_ref() {
             let outcome = {
                 match rx.try_recv() {
@@ -187,42 +152,6 @@ impl Reader {
     // ---------------------------------------------------------------------
     // Portadas de la biblioteca (perezosas, bajo demanda — ver `thumbs`)
     // ---------------------------------------------------------------------
-    /// ¿Hay portadas pendientes entre las celdas VISIBLES de la biblioteca
-    /// (rejilla / lista)? El bucle de eventos la usa para mantener el poll
-    /// con timeout mientras `pump_thumbs` tiene trabajo.
-    pub(crate) fn thumbs_pending(&mut self) -> bool {
-        if self.mode != UiMode::Library || self.win_w <= 0 || self.win_h <= 0 {
-            return false;
-        }
-        // Portadas de la rejilla / lista (clave = content:// URI), solo filas visibles.
-        if !self.hide_covers {
-            if self.is_grid() {
-                let cols = self.effective_grid_cols();
-                let (row0, rows) = self.lib_visible_grid_rows();
-                for row in row0..row0 + rows {
-                    for col in 0..cols {
-                        let Some(uri) = self.grid_entry_at(row, col).map(|e| e.uri.clone()) else {
-                            continue;
-                        };
-                        if self.thumbs.get(&uri).is_none() && !self.thumb_failed.contains(&uri) {
-                            return true;
-                        }
-                    }
-                }
-            } else {
-                let (idx0, count) = self.lib_visible_list_rows();
-                for idx in idx0..idx0 + count {
-                    let Some(uri) = self.list_entry_at(idx).map(|e| e.uri.clone()) else {
-                        continue;
-                    };
-                    if self.thumbs.get(&uri).is_none() && !self.thumb_failed.contains(&uri) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
 
     /// Rango de filas de la rejilla VISIBLES (o a punto de serlo) con el
     /// scroll vertical actual: (primera fila, nº de filas con 1 de margen de

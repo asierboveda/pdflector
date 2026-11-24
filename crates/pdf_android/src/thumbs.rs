@@ -83,23 +83,13 @@ impl ThumbCache {
         }
     }
 
-    /// Lookup que PROMUEVE la entrada (recencia LRU). Lo usa `pump_thumbs`:
-    /// un hit evita re-renderizar la portada y marca la recencia.
-    pub(crate) fn get(&mut self, key: &str) -> Option<&Bitmap> {
-        if self.map.contains_key(key) {
-            self.promote(key);
-        }
-        self.map.get(key)
-    }
-
-    /// Lookup SIN promoción: el render de la rejilla lee las portadas de
-    /// cada frame sin reordenar la recencia (el orden lo fija `pump_thumbs`).
+    /// Lookup de portada en caché sin reordenar la cola de expulsión.
     pub(crate) fn peek(&self, key: &str) -> Option<&Bitmap> {
         self.map.get(key)
     }
 
-    /// Inserta (o reemplaza) la portada de `key`, expulsando LRU hasta caber
-    /// en `byte_budget` y `max_entries`.
+    /// Inserta (o reemplaza) la portada de `key`, expulsando las más antiguas
+    /// hasta caber en `byte_budget` y `max_entries`.
     pub(crate) fn insert(&mut self, key: String, bitmap: Bitmap) {
         let incoming = bitmap_bytes(&bitmap);
         if let Some(old) = self.map.remove(&key) {
@@ -118,19 +108,13 @@ impl ThumbCache {
         self.map.insert(key.clone(), bitmap);
         self.lru.push_back(key);
     }
+
     /// Descarta todo (cambio de documento o al volver al visor: las portadas
     /// de otra biblioteca ya no se reutilizarían).
     pub(crate) fn clear(&mut self) {
         self.map.clear();
         self.lru.clear();
         self.bytes = 0;
-    }
-
-    fn promote(&mut self, key: &str) {
-        if let Some(pos) = self.lru.iter().position(|k| k == key) {
-            self.lru.remove(pos);
-            self.lru.push_back(key.to_string());
-        }
     }
 
     fn evict_lru(&mut self) {

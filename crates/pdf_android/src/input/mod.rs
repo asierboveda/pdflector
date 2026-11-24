@@ -36,8 +36,8 @@
 //!
 //! Mantener un dedo QUIETO (sin levantarlo y sin moverse más de `TAP_SLOP`)
 //! sobre el documento durante `LONG_PRESS_MS` (400 ms) entra en MODO
-//! SELECCIÓN — `tick_gestures` (desde `Reader::tick`, poll con timeout de
-//! `Reader::needs_tick` mientras el dedo esté abajo) fija el ancla en el
+//! SELECCIÓN — `tick_gestures` (desde `Reader::tick`, invocado por el poll
+//! con timeout del bucle mientras haya ventana) fija el ancla en el
 //! punto del dedo y materializa el rect como PUNTO en `Reader::sel`
 //! (`begin_sel`); al arrastrar (manteniendo pulsado, > `SELECT_SLOP` desde
 //! el ancla) el rect sigue al dedo (`update_sel`); al levantar, `end_sel`

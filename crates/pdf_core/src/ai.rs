@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Consulta a un LLM — local vía Ollama o en la nube vía Groq/Gemini.
+//! Consulta a un LLM — local vía Ollama o en la nube vía Gemini.
 //!
-//! Four pieces, all UI-independent (pdf_core rules §4):
+//! Three pieces, all UI-independent (pdf_core rules §4):
 //!
 //! 1. `chunk_pages` — pure text chunking: turns lazy page text into
 //!    LLM-friendly chunks, each carrying a page-range prefix so the answer
@@ -11,18 +11,14 @@
 //! 2. `OllamaClient` — a minimal HTTP client for Ollama's `/api/chat`
 //!    endpoint built on `std::net::TcpStream` only (no new dependencies,
 //!    no TLS: Ollama runs on the same LAN, plain HTTP).
-//! 3. `GroqClient` — an OpenAI-compatible client for Groq's cloud API
-//!    (`https://api.groq.com/openai/v1`), the tablet's cloud path (no PC on
-//!    the LAN needed; free tier). HTTPS via `reqwest` + rustls, so it can't
-//!    share Ollama's raw-TCP transport.
-//! 4. `GeminiClient` — Google's vision path (`generativelanguage.googleapis.com`):
-//!    Groq has no vision models anymore, so explaining a page region rendered
-//!    to PNG (equations, figures) goes to Gemini. Same `reqwest` + rustls
-//!    transport as Groq, no new dependencies.
+//! 3. `GeminiClient` — Google's cloud text & vision client
+//!    (`generativelanguage.googleapis.com`): explains selected text or a
+//!    cropped page region rendered to PNG (equations, figures). HTTPS via
+//!    `reqwest` + rustls.
 //!
-//! The app never runs models: it sends the (chunked) text over HTTP and
-//! reads back the assistant's reply. `pdf_app` (Ollama) and `pdf_android`
-//! (Groq) call `chat` from a background task (generation can take minutes).
+//! The app never runs models: it sends the text or cropped image over HTTP and
+//! reads back the assistant's reply. Callers (`pdf_android`, etc.) invoke
+//! requests from a background thread so the UI never blocks.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -58,16 +54,16 @@ pub enum AiError {
     Text(crate::Error),
     /// Invalid arguments to an ai API (e.g. `max_chars == 0`).
     InvalidArgument(String),
-    /// The response body was not valid JSON / lacked `message.content`.
+    /// The response body was not valid JSON / lacked expected fields.
     Json(serde_json::Error),
     /// I/O failure mid-request (write or read, including read timeouts).
     Io(std::io::Error),
-    /// The Groq request failed before an HTTP response: DNS, TLS handshake,
+    /// The HTTP request failed before a response: DNS, TLS handshake,
     /// connect, timeout, ... Carries the underlying reqwest error (its
     /// Display includes the URL that failed).
     Request(reqwest::Error),
-    /// The server answered 200 but the body was not a chat completion we
-    /// understand (e.g. no `choices`).
+    /// The server answered 200 but the body did not match the expected
+    /// completion schema (e.g. no `candidates`).
     UnexpectedResponse(String),
 }
 
@@ -83,7 +79,7 @@ impl std::fmt::Display for AiError {
             AiError::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
             AiError::Json(e) => write!(f, "invalid llm response: {e}"),
             AiError::Io(e) => write!(f, "ollama request failed: {e}"),
-            AiError::Request(e) => write!(f, "groq request failed: {e}"),
+            AiError::Request(e) => write!(f, "http request failed: {e}"),
             AiError::UnexpectedResponse(msg) => write!(f, "unexpected llm response: {msg}"),
         }
     }
@@ -446,209 +442,13 @@ fn parse_content_length(headers: &str) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Groq HTTP client (OpenAI-compatible, cloud)
-// ---------------------------------------------------------------------------
-
-/// How long a single Groq request may take before we give up. Groq runs on
-/// fast cloud GPUs, but a long prompt can still take tens of seconds, so
-/// the timeout stays generous and mirrors `REQUEST_TIMEOUT`. Callers must
-/// run `chat` off the UI thread (see module docs).
-const GROQ_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// OpenAI-compatible client for Groq (`https://api.groq.com/openai/v1`).
-///
-/// Groq is the cloud path for Fase 5 (tablet → internet, no local PC
-/// needed, free tier). Unlike `OllamaClient` it speaks HTTPS, so it uses
-/// `reqwest` with rustls instead of a raw `TcpStream`.
-///
-/// Wire contract is OpenAI's: `POST <base>/chat/completions` with
-/// `Authorization: Bearer <api_key>` and a JSON body
-/// `{"model", "messages":[{system},{user}], "stream":false}`; the reply
-/// is `choices[0].message.content`. `chat_vision` extends that with the
-/// OpenAI multimodal content array (text + image_url) for vision models.
-/// pdf_android builds against exactly these methods — do not change the
-/// public signatures.
-pub struct GroqClient {
-    base_url: String,
-    api_key: String,
-    model: String,
-    /// Model used by `chat_vision` (multimodal: text + image).
-    vision_model: String,
-}
-
-/// Default vision model for `chat_vision`. Groq's llama-3.2 vision preview
-/// (accepts text + image input) as of the Fase 5 implementation.
-const DEFAULT_VISION_MODEL: &str = "llama-3.2-90b-vision-preview";
-
-impl GroqClient {
-    /// Groq with the default model `llama-3.3-70b-versatile` and the
-    /// default vision model `llama-3.2-90b-vision-preview`.
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self::with_model(api_key, "llama-3.3-70b-versatile")
-    }
-
-    /// Groq with a specific text model (any OpenAI-compatible model id Groq
-    /// serves, e.g. `llama-3.3-70b-versatile` or `llama-3.1-8b-instant`).
-    /// `chat_vision` keeps the default vision model (see `DEFAULT_VISION_MODEL`).
-    pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self {
-            base_url: "https://api.groq.com/openai/v1".to_string(),
-            api_key: api_key.into(),
-            model: model.into(),
-            vision_model: DEFAULT_VISION_MODEL.to_string(),
-        }
-    }
-
-    /// Test-only constructor: overrides the base URL so integration tests
-    /// can point the client at a local `TcpListener` (plain HTTP, no TLS).
-    /// `#[doc(hidden)]` on purpose — not part of the public contract. It
-    /// must be `pub` (not `pub(crate)`) because tests/ai.rs is a separate
-    /// crate and only sees the public surface.
-    #[doc(hidden)]
-    pub fn with_base_url(
-        api_key: impl Into<String>,
-        base_url: impl Into<String>,
-        model: impl Into<String>,
-    ) -> Self {
-        Self {
-            base_url: base_url.into(),
-            api_key: api_key.into(),
-            model: model.into(),
-            vision_model: DEFAULT_VISION_MODEL.to_string(),
-        }
-    }
-
-    /// Sends a single-turn chat request and returns the assistant's reply.
-    ///
-    /// POSTs the OpenAI chat-completions payload to `<base>/chat/completions`
-    /// with `Authorization: Bearer <api_key>` and parses
-    /// `choices[0].message.content` from the JSON response. Network/TLS
-    /// failures surface as `AiError::Request` (Display includes the failing
-    /// URL); non-200 responses as `AiError::Http` (the body, usually Groq's
-    /// `{"error":{...}}`, is kept as diagnostic text). May block for up to
-    /// `GROQ_REQUEST_TIMEOUT` — call off the UI thread.
-    pub fn chat(&self, system: &str, prompt: &str) -> Result<String> {
-        let payload = serde_json::json!({
-            "model": self.model,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user", "content": prompt },
-            ],
-            "stream": false,
-        });
-        self.post_chat_completion(payload)
-    }
-
-    /// Envía una petición multimodal: prompt de texto + UNA imagen PNG.
-    /// `image_png_base64` es el base64 del PNG SIN el prefijo "data:image/png;base64,".
-    /// Usa un modelo de visión (por defecto "llama-3.2-90b-vision-preview").
-    ///
-    /// POSTs the OpenAI chat-completions payload with the user message as a
-    /// **content array**: `[{"type":"text","text":prompt},
-    /// {"type":"image_url","image_url":{"url":"data:image/png;base64,<b64>"}}]`
-    /// to `<base>/chat/completions` and parses `choices[0].message.content`
-    /// exactly like `chat` (same error mapping, same timeout). Use it to ask
-    /// about a cropped page region (equations, figures) rendered to PNG at
-    /// screen resolution. May block for up to `GROQ_REQUEST_TIMEOUT` — call
-    /// off the UI thread.
-    pub fn chat_vision(
-        &self,
-        system: &str,
-        prompt: &str,
-        image_png_base64: &str,
-    ) -> Result<String> {
-        let image_url = format!("data:image/png;base64,{image_png_base64}");
-        let payload = serde_json::json!({
-            "model": self.vision_model,
-            "messages": [
-                { "role": "system", "content": system },
-                {
-                    "role": "user",
-                    "content": [
-                        { "type": "text", "text": prompt },
-                        { "type": "image_url", "image_url": { "url": image_url } },
-                    ],
-                },
-            ],
-            "stream": false,
-        });
-        self.post_chat_completion(payload)
-    }
-
-    /// Shared request plumbing for `chat` and `chat_vision`: POSTs an OpenAI
-    /// chat-completions payload to `<base>/chat/completions` with
-    /// `Authorization: Bearer <api_key>` and parses `choices[0].message.content`
-    /// from the JSON response. Network/TLS failures surface as
-    /// `AiError::Request` (Display includes the failing URL); non-200 responses
-    /// as `AiError::Http` (the body, usually Groq's `{"error":{...}}`, is kept
-    /// as diagnostic text). May block for up to `GROQ_REQUEST_TIMEOUT` — call
-    /// off the UI thread.
-    ///
-    /// A fresh `reqwest::blocking::Client` is built per call: the public
-    /// constructors must stay infallible, and the ~ms runtime setup is
-    /// negligible next to a multi-second LLM round-trip.
-    fn post_chat_completion(&self, payload: serde_json::Value) -> Result<String> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(GROQ_REQUEST_TIMEOUT)
-            .build()?;
-
-        let response = client
-            .post(format!(
-                "{}/chat/completions",
-                self.base_url.trim_end_matches('/')
-            ))
-            .bearer_auth(&self.api_key)
-            .json(&payload)
-            .send()?;
-
-        let status = response.status().as_u16();
-        // `charset` is not enabled in our reqwest features; bytes + lossy
-        // utf-8 is exactly what a JSON API response needs.
-        let response_body = String::from_utf8_lossy(&response.bytes()?).into_owned();
-        if status != 200 {
-            return Err(AiError::Http {
-                status,
-                body: response_body,
-            });
-        }
-        parse_groq_response(&response_body)
-    }
-}
-
-/// Parses a Groq (OpenAI chat-completions) response body into the
-/// assistant's message content. Error cases are explicit: invalid JSON →
-/// `AiError::Json`, missing `choices` → `AiError::UnexpectedResponse`.
-fn parse_groq_response(body: &str) -> Result<String> {
-    #[derive(serde::Deserialize)]
-    struct ChatResponse {
-        choices: Vec<ChatChoice>,
-    }
-    #[derive(serde::Deserialize)]
-    struct ChatChoice {
-        message: ChatMessage,
-    }
-    #[derive(serde::Deserialize)]
-    struct ChatMessage {
-        content: String,
-    }
-
-    let parsed: ChatResponse = serde_json::from_str(body)?;
-    parsed
-        .choices
-        .into_iter()
-        .next()
-        .map(|choice| choice.message.content)
-        .ok_or_else(|| AiError::UnexpectedResponse("response has no choices".to_string()))
-}
-
-// ---------------------------------------------------------------------------
-// Gemini HTTP client (Google, vision)
+// Gemini HTTP client (Google, text & vision)
 // ---------------------------------------------------------------------------
 
 /// How long a single Gemini request may take before we give up. Image +
-/// prompt round-trips run on Google's servers and can take tens of seconds;
-/// the timeout mirrors `GROQ_REQUEST_TIMEOUT` (same rationale). Callers must
-/// run `explain_image` off the UI thread (see module docs).
+/// prompt round-trips run on Google's servers and can take tens of seconds.
+/// Callers must run `explain_image` / `explain_text` off the UI thread (see
+/// module docs).
 const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Tokens máximos de salida: la explicación debe ser breve; acotar la
@@ -659,11 +459,10 @@ const GEMINI_MAX_OUTPUT_TOKENS: u32 = 600;
 /// (Google keeps the alias pointing at the latest flash generation).
 const DEFAULT_GEMINI_MODEL: &str = "gemini-flash-latest";
 
-/// Vision client for Google Gemini (`generativelanguage.googleapis.com`).
+/// Cloud text & vision client for Google Gemini (`generativelanguage.googleapis.com`).
 ///
-/// Groq no longer serves vision models, so explaining a cropped page region
-/// rendered to PNG (equations, figures) goes to Gemini. Like `GroqClient` it
-/// speaks HTTPS via `reqwest` + rustls — no new dependencies.
+/// Explains selected text or a cropped page region rendered to PNG (equations,
+/// figures). Speaks HTTPS via `reqwest` + rustls.
 ///
 /// Wire contract: `POST
 /// https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
@@ -777,7 +576,7 @@ impl GeminiClient {
 
         let status = response.status().as_u16();
         // `charset` is not enabled in our reqwest features; bytes + lossy
-        // utf-8 is exactly what a JSON API response needs (same as Groq).
+        // utf-8 is exactly what a JSON API response needs.
         let response_body = String::from_utf8_lossy(&response.bytes()?).into_owned();
         if status == 503 {
             // Gemini's "high demand" answer: the model is overloaded right

@@ -676,8 +676,7 @@ pub(crate) struct Reader {
     /// presupuesto (estados mutuamente exclusivos: biblioteca vs visor).
     pub(crate) thumbs: ThumbCache,
     /// URIs cuya portada falló al renderizar (PDF corrupto, fd no abrible,
-    /// página 1 vacía): no se reintentan — evita un bucle de timeout del
-    /// bucle de eventos (`thumbs_pending` las excluye).
+    /// página 1 vacía): no se reintentan en `pump_thumbs`.
     thumb_failed: HashSet<String>,
     /// Estado del arrastre de las listas (picker y biblioteca): punto del
     /// Down + scrolls de partida + zona de la biblioteca (qué arrastra en
