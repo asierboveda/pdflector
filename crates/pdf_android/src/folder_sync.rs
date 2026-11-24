@@ -268,29 +268,33 @@ fn run_actor(
             FolderSyncEvent::Status(format!("Cannot inspect pending annotations: {error}")),
         ),
     }
-    let mut retry_at: Option<Instant> = None;
+    let mut local_retry_at: Option<Instant> = None;
+    let mut export_retry_at: Option<Instant> = None;
     let mut next_scan = Instant::now();
 
     loop {
         let (lock, wake) = &*shared;
         let Ok(state) = lock.lock() else { return };
         let mut state = state;
+        let now = Instant::now();
         let export_ready = state.flush_requested
             || state
                 .last_save_enqueued
                 .is_none_or(|at| at.elapsed() >= EXPORT_IDLE_DELAY);
-        let front_is_export = state.pending.front().is_some_and(|job| job.persisted);
+        let local_ready = local_retry_at.is_none_or(|at| now >= at)
+            && state.pending.iter().any(|job| !job.persisted);
+        let export_job_ready = export_ready
+            && export_retry_at.is_none_or(|at| now >= at)
+            && state.pending.iter().any(|job| job.persisted);
         let timeout = next_wake_delay(
             &state,
             export_ready,
-            retry_at,
+            local_retry_at,
+            export_retry_at,
             next_scan,
             config.is_active(),
         );
-        let save_waiting = !state.pending.is_empty()
-            && ((front_is_export && !export_ready)
-                || retry_at.is_some_and(|at| Instant::now() < at));
-        if (state.pending.is_empty() || save_waiting) && !state.scan_requested && !state.stopped {
+        if !local_ready && !export_job_ready && !state.scan_requested && !state.stopped {
             state = match wake.wait_timeout(state, timeout) {
                 Ok((state, _)) => state,
                 Err(_) => return,
@@ -299,30 +303,24 @@ fn run_actor(
         if state.stopped && state.pending.is_empty() {
             return;
         }
-        let scan_now = config.is_active() && (state.scan_requested || Instant::now() >= next_scan);
+        let now = Instant::now();
+        let scan_now = config.is_active() && (state.scan_requested || now >= next_scan);
         state.scan_requested = false;
-        let front_is_export = state.pending.front().is_some_and(|job| job.persisted);
         let idle_ready = state.flush_requested
             || state
                 .last_save_enqueued
                 .is_none_or(|at| at.elapsed() >= EXPORT_IDLE_DELAY);
-        let save_ready = !front_is_export || idle_ready;
-        let save = if save_ready && retry_at.is_none_or(|at| Instant::now() >= at) {
-            let job = state.pending.pop_front();
-            if job.is_some() {
-                state.generation = state.generation.wrapping_add(1);
-                state.in_flight = job.clone();
-            }
-            job
-        } else {
-            None
-        };
+        let save = take_ready_job(&mut state, now, idle_ready, local_retry_at, export_retry_at);
+        if state.stopped && save.is_none() {
+            return;
+        }
         drop(state);
 
         if let Some(job) = save {
+            let was_export = job.persisted;
             match save_job(&journal, &shared, &mut library, job.clone()) {
                 Ok(Some(path)) => {
-                    retry_at = None;
+                    export_retry_at = None;
                     clear_in_flight(&shared);
                     emit(
                         &events,
@@ -332,7 +330,7 @@ fn run_actor(
                     clear_flush_if_idle(&shared);
                 }
                 Ok(None) => {
-                    retry_at = None;
+                    local_retry_at = None;
                     clear_in_flight(&shared);
                     let status = if job.publish {
                         "Annotations saved locally; publication pending"
@@ -350,12 +348,19 @@ fn run_actor(
                     if let Ok(mut state) = lock.lock() {
                         state.in_flight = None;
                         requeue_failed_job(&mut state, job);
-                        if state.stopped {
+                        if state.stopped
+                            && (!was_export || !state.pending.iter().any(|job| !job.persisted))
+                        {
                             return;
                         }
                     }
                     emit(&events, &latest_status, FolderSyncEvent::Status(error));
-                    retry_at = Some(Instant::now() + RETRY_DELAY);
+                    let retry_at = Some(Instant::now() + RETRY_DELAY);
+                    if was_export {
+                        export_retry_at = retry_at;
+                    } else {
+                        local_retry_at = retry_at;
+                    }
                 }
             }
         }
@@ -438,13 +443,38 @@ fn clear_in_flight(shared: &Arc<(Mutex<ActorState>, Condvar)>) {
     }
 }
 
+fn take_ready_job(
+    state: &mut ActorState,
+    now: Instant,
+    export_ready: bool,
+    local_retry_at: Option<Instant>,
+    export_retry_at: Option<Instant>,
+) -> Option<PendingSave> {
+    let index = if local_retry_at.is_none_or(|at| now >= at) {
+        state.pending.iter().position(|job| !job.persisted)
+    } else {
+        None
+    }
+    .or_else(|| {
+        if export_ready && export_retry_at.is_none_or(|at| now >= at) {
+            state.pending.iter().position(|job| job.persisted)
+        } else {
+            None
+        }
+    })?;
+    let job = state.pending.remove(index)?;
+    state.generation = state.generation.wrapping_add(1);
+    state.in_flight = Some(job.clone());
+    Some(job)
+}
+
 fn requeue_failed_job(state: &mut ActorState, job: PendingSave) {
     if !state
         .pending
         .iter()
         .any(|newer| newer.sidecar == job.sidecar)
     {
-        state.pending.push_front(job);
+        state.pending.push_back(job);
     }
     state.generation = state.generation.wrapping_add(1);
 }
@@ -479,31 +509,44 @@ fn retain_deferred(
 fn next_wake_delay(
     state: &ActorState,
     export_ready: bool,
-    retry_at: Option<Instant>,
+    local_retry_at: Option<Instant>,
+    export_retry_at: Option<Instant>,
     next_scan: Instant,
     scan_enabled: bool,
 ) -> Duration {
-    let save_ready_in = if state.pending.is_empty() {
-        Duration::from_secs(24 * 60 * 60)
-    } else if state.pending.front().is_some_and(|job| job.persisted) && !export_ready {
-        EXPORT_IDLE_DELAY.saturating_sub(
-            state
-                .last_save_enqueued
-                .map(|at| at.elapsed())
-                .unwrap_or(EXPORT_IDLE_DELAY),
-        )
+    let now = Instant::now();
+    let day = Duration::from_secs(24 * 60 * 60);
+    let local_in = if state.pending.iter().any(|job| !job.persisted) {
+        local_retry_at
+            .map(|at| at.saturating_duration_since(now))
+            .unwrap_or(Duration::ZERO)
     } else {
-        Duration::ZERO
+        day
     };
-    let retry_in = retry_at
-        .map(|at| at.saturating_duration_since(Instant::now()))
-        .unwrap_or(Duration::ZERO);
+    let export_in = if state.pending.iter().any(|job| job.persisted) {
+        let idle_in = if export_ready {
+            Duration::ZERO
+        } else {
+            EXPORT_IDLE_DELAY.saturating_sub(
+                state
+                    .last_save_enqueued
+                    .map(|at| at.elapsed())
+                    .unwrap_or(EXPORT_IDLE_DELAY),
+            )
+        };
+        let retry_in = export_retry_at
+            .map(|at| at.saturating_duration_since(now))
+            .unwrap_or(Duration::ZERO);
+        idle_in.max(retry_in)
+    } else {
+        day
+    };
     let scan_in = if scan_enabled {
-        next_scan.saturating_duration_since(Instant::now())
+        next_scan.saturating_duration_since(now)
     } else {
-        Duration::from_secs(24 * 60 * 60)
+        day
     };
-    save_ready_in.max(retry_in).min(scan_in)
+    local_in.min(export_in).min(scan_in)
 }
 
 fn save_job(
@@ -548,7 +591,7 @@ fn save_job(
             .iter()
             .any(|newer| newer.sidecar == export.sidecar)
         {
-            state.pending.push_front(export);
+            state.pending.push_back(export);
         }
         state.generation = state.generation.wrapping_add(1);
         drop(state);
@@ -1065,11 +1108,103 @@ mod tests {
             &state,
             false,
             Some(retry_at),
+            None,
             Instant::now() + Duration::from_secs(30),
             false,
         );
         assert!(delay <= Duration::from_secs(5));
         assert!(delay > Duration::from_secs(4));
+    }
+
+    #[test]
+    fn failed_export_does_not_block_local_sqlite_save_for_another_pdf() {
+        let base = std::env::temp_dir().join(format!(
+            "pdflector-sync-export-priority-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let worker = FolderSyncWorker::start(base.clone(), FolderSyncConfig::default());
+
+        let mut note_a = AnnotationSet::new();
+        note_a.add(
+            0,
+            Annotation::TextNote(TextNote {
+                anchor: (1.0, 1.0),
+                text: "export-fails".into(),
+            }),
+        );
+        let sidecar_a = base.join("a.db");
+        worker
+            .save(PendingSave {
+                pdf_path: base.join("a.pdf"),
+                sidecar: sidecar_a.clone(),
+                annotations: note_a,
+                publish: true,
+                persisted: false,
+            })
+            .unwrap();
+        worker.flush();
+
+        // Wait until PDF A's export fails and enters export backoff.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut export_failed = false;
+        while Instant::now() < deadline {
+            if let Some(super::FolderSyncEvent::Status(status)) = worker.try_event()
+                && status.contains("unavailable")
+            {
+                export_failed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(export_failed, "expected export attempt to fail");
+
+        let mut note_b = AnnotationSet::new();
+        note_b.add(
+            0,
+            Annotation::TextNote(TextNote {
+                anchor: (2.0, 2.0),
+                text: "saved-despite-export-backoff".into(),
+            }),
+        );
+        let sidecar_b = base.join("b.db");
+        let start = Instant::now();
+        worker
+            .save(PendingSave {
+                pdf_path: base.join("b.pdf"),
+                sidecar: sidecar_b.clone(),
+                annotations: note_b.clone(),
+                publish: false,
+                persisted: false,
+            })
+            .unwrap();
+        worker.flush();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut saved_b = false;
+        while Instant::now() < deadline {
+            let _ = worker.try_event();
+            if sidecar_b.is_file()
+                && AnnotationStore::open(&sidecar_b)
+                    .and_then(|store| store.load())
+                    .is_ok_and(|loaded| loaded == note_b)
+            {
+                saved_b = true;
+                assert!(
+                    start.elapsed() < Duration::from_secs(1),
+                    "local SQLite save waited on export retry backoff"
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            saved_b,
+            "PDF B was not saved to SQLite while PDF A export was failing"
+        );
+        drop(worker);
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
