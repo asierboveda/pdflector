@@ -25,31 +25,115 @@ pub struct MupdfEngine;
 
 const PAGE_GEOMETRY_CACHE_CAPACITY: usize = 5;
 
-/// Keep PDF's standard fonts on MuPDF's bundled Base14 path. Android's
-/// generic Noto substitutes do not preserve custom Type 1 encodings/metrics.
+/// Matches MuPDF's `base_font_names` table (`source/pdf/pdf-font.c`), ignoring
+/// ASCII spaces and case just like `pdf_clean_font_name` / `strcmp_ignore_space`.
+#[cfg(any(target_os = "android", test))]
+fn is_mupdf_base14_font(name: &str) -> bool {
+    const BASE14_ALIASES: &[&str] = &[
+        // Courier
+        "Courier",
+        "CourierNew",
+        "CourierNewPSMT",
+        // Courier-Bold
+        "Courier-Bold",
+        "CourierNew,Bold",
+        "Courier,Bold",
+        "CourierNewPS-BoldMT",
+        "CourierNew-Bold",
+        // Courier-Oblique
+        "Courier-Oblique",
+        "CourierNew,Italic",
+        "Courier,Italic",
+        "CourierNewPS-ItalicMT",
+        "CourierNew-Italic",
+        // Courier-BoldOblique
+        "Courier-BoldOblique",
+        "CourierNew,BoldItalic",
+        "Courier,BoldItalic",
+        "CourierNewPS-BoldItalicMT",
+        "CourierNew-BoldItalic",
+        // Helvetica
+        "Helvetica",
+        "ArialMT",
+        "Arial",
+        // Helvetica-Bold
+        "Helvetica-Bold",
+        "Arial-BoldMT",
+        "Arial,Bold",
+        "Arial-Bold",
+        "Helvetica,Bold",
+        // Helvetica-Oblique
+        "Helvetica-Oblique",
+        "Arial-ItalicMT",
+        "Arial,Italic",
+        "Arial-Italic",
+        "Helvetica,Italic",
+        "Helvetica-Italic",
+        // Helvetica-BoldOblique
+        "Helvetica-BoldOblique",
+        "Arial-BoldItalicMT",
+        "Arial,BoldItalic",
+        "Arial-BoldItalic",
+        "Helvetica,BoldItalic",
+        "Helvetica-BoldItalic",
+        // Times-Roman
+        "Times-Roman",
+        "TimesNewRomanPSMT",
+        "TimesNewRoman",
+        "TimesNewRomanPS",
+        // Times-Bold
+        "Times-Bold",
+        "TimesNewRomanPS-BoldMT",
+        "TimesNewRoman,Bold",
+        "TimesNewRomanPS-Bold",
+        "TimesNewRoman-Bold",
+        // Times-Italic
+        "Times-Italic",
+        "TimesNewRomanPS-ItalicMT",
+        "TimesNewRoman,Italic",
+        "TimesNewRomanPS-Italic",
+        "TimesNewRoman-Italic",
+        // Times-BoldItalic
+        "Times-BoldItalic",
+        "TimesNewRomanPS-BoldItalicMT",
+        "TimesNewRoman,BoldItalic",
+        "TimesNewRomanPS-BoldItalic",
+        "TimesNewRoman-BoldItalic",
+        // Symbol
+        "Symbol",
+        "Symbol,Italic",
+        "Symbol,Bold",
+        "Symbol,BoldItalic",
+        "SymbolMT",
+        "SymbolMT,Italic",
+        "SymbolMT,Bold",
+        "SymbolMT,BoldItalic",
+        // ZapfDingbats
+        "ZapfDingbats",
+    ];
+    BASE14_ALIASES.iter().any(|alias| {
+        let mut a = name.bytes().filter(|&b| b != b' ');
+        let mut b = alias.bytes().filter(|&b| b != b' ');
+        loop {
+            match (a.next(), b.next()) {
+                (Some(x), Some(y)) if x.eq_ignore_ascii_case(&y) => continue,
+                (None, None) => return true,
+                _ => return false,
+            }
+        }
+    })
+}
+
+/// Keep PDF's standard fonts (and all MuPDF Base14 aliases) on MuPDF's bundled
+/// Base14 path. Android's generic Noto substitutes do not preserve custom
+/// Type 1 encodings/metrics.
 #[cfg(target_os = "android")]
 struct PdfAndroidFontLoader;
 
 #[cfg(target_os = "android")]
 impl mupdf::FontLoader for PdfAndroidFontLoader {
     fn load_font(&self, name: &str, hints: mupdf::FontHints) -> Option<mupdf::Font> {
-        const BASE14: [&str; 14] = [
-            "Courier",
-            "Courier-Bold",
-            "Courier-Oblique",
-            "Courier-BoldOblique",
-            "Helvetica",
-            "Helvetica-Bold",
-            "Helvetica-Oblique",
-            "Helvetica-BoldOblique",
-            "Times-Roman",
-            "Times-Bold",
-            "Times-Italic",
-            "Times-BoldItalic",
-            "Symbol",
-            "ZapfDingbats",
-        ];
-        if BASE14.iter().any(|font| name.eq_ignore_ascii_case(font)) {
+        if is_mupdf_base14_font(name) {
             return None;
         }
         mupdf::FontLoader::load_font(&mupdf::AndroidFontLoader, name, hints)
@@ -453,5 +537,118 @@ mod geometry_cache_tests {
             .map(|(page, _)| *page)
             .collect::<Vec<_>>();
         assert_eq!(cached_pages, vec![5, 0, 4, 3, 2]);
+    }
+
+    fn single_page_text_pdf(font_dict: &str, text: &str) -> TempPdf {
+        let stream = format!("BT /F1 24 Tf 36 100 Td ({text}) Tj ET");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+                .to_string(),
+            font_dict.to_string(),
+            format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+        ];
+
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::with_capacity(objects.len());
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref_offset = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+
+        let path = std::env::temp_dir().join(format!(
+            "pdflector-base14-{}-{}.pdf",
+            std::process::id(),
+            NEXT_TEMP_PDF.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, pdf).unwrap();
+        TempPdf(path)
+    }
+
+    #[test]
+    fn base14_alias_matcher_covers_mupdf_aliases_and_spaces() {
+        for name in [
+            "Times-Roman",
+            "Helvetica-Bold",
+            "Courier-Oblique",
+            "Symbol",
+            "ZapfDingbats",
+            "TimesNewRomanPSMT",
+            "TimesNewRomanPS-BoldMT",
+            "TimesNewRoman,Italic",
+            "Times New Roman",
+            "Times New Roman, Bold",
+            "ArialMT",
+            "Arial-BoldMT",
+            "Arial,BoldItalic",
+            "CourierNewPSMT",
+            "Courier New",
+            "CourierNew,Bold",
+            "SymbolMT",
+            "SymbolMT,BoldItalic",
+            "timesnewromanpsmt",
+            "arialmt",
+        ] {
+            assert!(
+                super::is_mupdf_base14_font(name),
+                "expected Base14 alias match for {name:?}"
+            );
+        }
+        for non_base14 in [
+            "",
+            "Roboto",
+            "NotoSans-Regular",
+            "LiberationSerif",
+            "TimesNewRomanExtra",
+            "ArialUnicodeMS",
+        ] {
+            assert!(
+                !super::is_mupdf_base14_font(non_base14),
+                "did not expect Base14 match for {non_base14:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn base14_alias_custom_encoding_preserves_glyphs_and_text() {
+        let aliased = single_page_text_pdf(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /TimesNewRomanPSMT /Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [65 /B] >> >>",
+            "A",
+        );
+        let reference = single_page_text_pdf(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>",
+            "B",
+        );
+
+        let engine = MupdfEngine::new().unwrap();
+        let aliased_doc = engine.open(&aliased.0).unwrap();
+        let reference_doc = engine.open(&reference.0).unwrap();
+
+        let extracted: String = aliased_doc
+            .text(0)
+            .unwrap()
+            .spans
+            .into_iter()
+            .map(|span| span.text)
+            .collect();
+        assert_eq!(extracted.trim(), "B");
+
+        let aliased_bmp = aliased_doc.render_page(0, 1.0).unwrap();
+        let reference_bmp = reference_doc.render_page(0, 1.0).unwrap();
+        assert_eq!(aliased_bmp.data, reference_bmp.data);
     }
 }
