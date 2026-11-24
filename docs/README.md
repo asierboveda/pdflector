@@ -43,6 +43,19 @@ Snapshots inmutables con `Estado` y `Fecha`. No se reescriben; se sustituyen con
 | [`ADR-008`](adr/ADR-008-integracion-zoom-ux-stylus.md) | Integración de zoom + UI/UX sobre el stack de stylus |
 | [`ADR-009`](adr/ADR-009-evaluacion-tinta-causal-front-buffer.md) | Evaluación aislada de tinta causal y front buffer (experimento) |
 | [`ADR-010`](adr/ADR-010-integracion-tinta-causal-producto.md) | Integración de la tinta causal en el producto Android — **sustituye ADR-009 para el producto** |
+| [`ADR-011`](adr/011-geometria-y-margenes-pdf.md) | Geometría visible y márgenes de PDF heterogéneos |
+| [`ADR-012`](adr/012-menu-de-anotacion.md) | Menú de anotación del visor (sustituida en parte por ADR-022) |
+| [`ADR-013`](adr/013-recorte-de-tinta.md) | Seleccionar, mover y escalar tinta manuscrita (Recorte) |
+| [`ADR-014`](adr/014-modo-tap-y-scroll-continuo.md) | Selector Tap / Scroll y lectura continua |
+| [`ADR-015`](adr/015-gemini-explicacion-formulas.md) | Explicar fórmulas seleccionadas con Gemini |
+| [`ADR-016`](adr/016-tarjetas-anki-por-documento.md) | Tarjeta Anki desde una selección |
+| [`ADR-017`](adr/017-cuaderno-de-notas-generales.md) | Cuaderno de notas generales por documento |
+| [`ADR-018`](adr/018-desborde-del-margen-a-notas.md) | Enviar apuntes al cuaderno cuando el margen no cabe |
+| [`ADR-019`](adr/019-pan-con-un-dedo.md) | Desplazar la página con un dedo |
+| [`ADR-020`](adr/020-vista-previa-de-figuras.md) | Abrir referencias a figuras en una vista previa |
+| [`ADR-021`](adr/021-zoom-dos-dedos-inmediato.md) | Respuesta inmediata del zoom con dos dedos |
+| [`ADR-022`](adr/022-barra-acoplable.md) | Barra de herramientas acoplable y botones del lápiz |
+| [`ADR-023`](adr/023-sincronizacion-carpetas-y-apuntes.md) | Sincronización de carpetas y publicación de apuntes |
 
 ### Evidencia y registro
 
@@ -56,4 +69,5 @@ Snapshots inmutables con `Estado` y `Fecha`. No se reescriben; se sustituyen con
 
 | Documento | Contenido |
 |---|---|
-| [`../.opencode/skills/pdflector-rendimiento/SKILL.md`](../.opencode/skills/pdflector-rendimiento/SKILL.md) | Despliegue en la tablet y medición de rendimiento (harness `adb`) |
+| [`../.agents/skills/pdflector-rendimiento/SKILL.md`](../.agents/skills/pdflector-rendimiento/SKILL.md) | Despliegue en la tablet y medición de rendimiento (harness `adb`) |
+| [`../.agents/skills/master-sync/SKILL.md`](../.agents/skills/master-sync/SKILL.md) | Sincronización de carpeta universitaria con pCloud, FolderSync y PDFLector |

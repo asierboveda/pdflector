@@ -11,7 +11,7 @@
 #
 # NO inyecta keystrokes (no requiere hyprctl dispatch); la baseline de Evince
 # medida con este script está en docs/benchmark-results.md (2026-08-10); para
-# frame time p95 ver .opencode/skills/pdflector-rendimiento/SKILL.md.
+# frame time p95 ver .agents/skills/pdflector-rendimiento/SKILL.md.
 #
 # Uso:
 #   ./tools/bench-evince/bench_evince.sh <ruta-evince-binario> <directorio-corpus> [N segundos]

@@ -4,8 +4,8 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 
 ## Prioridades (lo que más valora el autor)
 
-1. **Rapidez y fluidez total** — que no se trabe en ningún gesto. Objetivo declarado: mínimo sostenido de 60 fps (tiempo de frame p95 < 16,6 ms) y meta de 120 fps para aprovechar la pantalla de 120 Hz de la TCL (tiempo de frame p95 < 8,33 ms).
-2. **Consumo mínimo de RAM** — optimizado, sin desperdicio. Métrica de producto: PSS vía `dumpsys meminfo` (objetivo <150 MB en tablet).
+1. **Rapidez y fluidez total** — que no se trabe en ningún gesto. Objetivo declarado: mínimo sostenido de 60 fps (tiempo de frame p95 < 16,6 ms) y meta de 120 fps para aprovechar la pantalla de 120 Hz de la TCL (tiempo de frame p95 ≤ 8,33 ms; ver presupuestos en `AGENTS.md` §9).
+2. **Consumo mínimo de RAM** — optimizado, sin desperdicio. Métrica de producto: PSS vía `dumpsys meminfo` (presupuesto estable ≤ 250 MB y pico de estrés ≤ 350 MB en tablet; ver `AGENTS.md` §9).
 3. Gratis y sin anuncios.
 4. Aprendizaje: primer proyecto real en Rust.
 
@@ -14,28 +14,25 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 - **Tablet objetivo**: TCL NXTPaper 11 Plus (modelo 9469X, Android 15, MediaTek
   MT8781 8× Cortex-A55, pantalla 1440×2200 @ 320 dpi, 120 Hz, con lápiz). Hardware real
   desde la Fase 1 (spike 2026-08-12, ver `docs/benchmark-results.md`).
-- Plataforma final: **Android nativo (`crates/pdf_android`)** — decisión vigente ADR-005 (sustituye a ADR-004/Slint).
+- Plataforma final: **Android nativo (`crates/pdf_android`)** — decisión vigente ADR-005/ADR-010 (sustituye a ADR-004/Slint).
   El escritorio `egui` (`crates/pdf_app`) es únicamente un banco de pruebas del core para iteración rápida en Linux; NO es producto ni plataforma soportada.
-- Stack ya instalado: Rust 1.97.1 (rustup), cargo, Python 3.14.6, uv; toolchain
-  Android: adb, JDK 17, Android SDK en `~/Android/Sdk` (NDK r28, platform 35).
+- Toolchain de desarrollo: Rust estable (`rustup` + target `aarch64-linux-android`), `cargo`, Python 3, `adb`, JDK 17 y Android SDK en `~/Android/Sdk` (NDK r28, platform 35).
 
 ## Funciones
 
 ### Alcance de producto (la app Android nativa `crates/pdf_android`)
 
-- **Biblioteca curada local**: añadir PDFs mediante selector de carpetas (SAF / MediaStore); persistencia en SQLite; nunca borra automáticamente (solo el usuario borra).
-- **Lectura fluida**: paginado, pan continuo y zoom con swap EGL/GLES y caché LRU de texturas (evita re-renderizar la página en cada frame de desplazamiento).
+- **Biblioteca curada local**: añadir PDFs mediante selector de carpetas (SAF / MediaStore) o sincronización de carpeta local (ADR-023); persistencia en SQLite/JSON; nunca borra automáticamente (solo el usuario borra).
+- **Lectura fluida**: paginado, pan continuo y zoom con swap EGL/GLES y caché de texturas (evita re-renderizar la página en cada frame de desplazamiento).
 - **Zoom continuo**: pinch-to-zoom con preservación del foco y límites de escala.
 - **Lápiz y anotaciones vectoriales**:
   - Subrayador con detección de texto y alineación en orden de lectura.
-  - Tinta libre con baja latencia y predicción de trazo (Kalman y masa-resorte).
-  - Goma de borrar vectorial que elimina trazos completos.
+  - Tinta libre causal de baja latencia (`ink::causal`, ADR-009/ADR-010) con overlay front-buffered AndroidX (`GLFrontBufferedRenderer`): solo dibuja muestras reales del lápiz, sin extrapolación futura.
+  - Goma de borrar vectorial que elimina trazos completos y herramienta de Recorte (mover/escalar tinta, ADR-013).
   - Persistencia asíncrona a SQLite en hilo de fondo.
 - **Discover / arXiv**: búsqueda integrada de papers en arXiv, visualización de metadatos y resúmenes, descarga en segundo plano y handoff directo al visor.
-- **Asistente de IA integrado**: panel interactivo en la app con backend híbrido:
-  - Groq (`llama-3.3-70b-versatile`) para explicación contextual del texto seleccionado.
-  - Google Gemini (`gemini-flash-latest`) para análisis visual multimodal de ecuaciones y figuras recortadas.
-  - Utiliza claves de API del usuario. La APK compila con claves placeholder y no se incluyen secretos en Git.
+- **Asistente de IA integrado**: panel interactivo en la app impulsado por Google Gemini (`gemini-flash-lite-latest`, con fallback a `gemini-3.5-flash-lite`) para explicación de texto seleccionado y análisis visual multimodal de ecuaciones y figuras recortadas.
+  - Utiliza la clave de API del usuario (`crates/pdf_android/google_key.txt`, gitignored). La APK compila en limpio con una clave placeholder y no se incluyen secretos en Git.
 - **Modo oscuro y temas**: 4 temas disponibles (DefaultLight, SepiaLight, DefaultDark, SepiaDark).
 - **Búsqueda en el documento**: búsqueda de texto con teclado IME nativo de Android.
 
@@ -47,7 +44,7 @@ Lector de PDFs rápido y ligero para tablet Android con lápiz. Gratis, sin anun
 
 ### Explícitamente fuera de alcance / congelado
 
-- **Sincronización entre dispositivos**: congelada.
+- **Sincronización directa con APIs cloud en la app**: la sincronización de carpetas se limita al almacenamiento local (ADR-023); el transporte externo queda en herramientas de terceros (`FolderSync` / pCloud).
 
 ## Stack — decisiones con pros y contras
 
@@ -71,11 +68,12 @@ La tabla siguiente es la comparativa que motivó la decisión (contexto históri
 | PDFium | Apache-2.0 | Media-alta | El de Chrome, muy probado, crate `pdfium-render` fácil | Más pesado que MuPDF; descartado en ADR-001 |
 | poppler | LGPL | Media | Muy usado en Linux | Más pesado, enlazado C/C++ más incómodo en Rust |
 
-### UI (decidida: **`pdf_android` nativa** — ADR-005)
+### UI (decidida: **`pdf_android` nativa** — ADR-005 / ADR-010)
 
-> **Decisión vigente (2026-08-23, ADR-005)**: la plataforma final es `pdf_android`
-> (NativeActivity + JNI + render propio a `ANativeWindow` con EGL/GLES). Sustituye la
-> vía anterior de Slint (ADR-004, Superseded). Opciones descartadas: Slint, Tauri y Qt.
+> **Decisión vigente (ADR-005, actualizada en ADR-010)**: la plataforma final es `pdf_android`
+> (host Gradle/Kotlin `GameActivity` + JNI + render propio a `ANativeWindow` con EGL/GLES +
+> overlay wet AndroidX `GLFrontBufferedRenderer`). Sustituye la vía anterior de Slint
+> (ADR-004, Superseded). Opciones descartadas: Slint, Tauri y Qt.
 
 Contexto histórico (opciones evaluadas en su día, ya cerradas):
 
@@ -94,7 +92,7 @@ Contexto histórico (opciones evaluadas en su día, ya cerradas):
 
 ```
 crates/pdf_core/     # Biblioteca Rust: motor MuPDF, renderizado, anotaciones, caché, arXiv, clientes IA. Sin UI.
-crates/pdf_android/  # Plataforma y producto final Android nativo (ADR-005, NativeActivity + EGL/GLES).
+crates/pdf_android/  # Plataforma y producto final Android nativo (ADR-005/ADR-010, GameActivity + EGL/GLES).
 crates/pdf_app/      # Banco de pruebas egui: prototipo desktop para iteración del core, NO producto.
 crates/pdf_bench/    # Benchmarks (criterion) y barridos de rendimiento en escritorio y tablet.
 ```
@@ -104,11 +102,11 @@ Separar núcleo y UI = poder mantener y optimizar el motor y la lógica de negoc
 ## Optimización de RAM y velocidad (plan concreto)
 
 - Renderizar páginas a la resolución de pantalla, **no** a resolución máxima.
-- **Caché LRU** de páginas: solo las visibles + colindantes; expulsar al hacer scroll.
+- **Caché de páginas acotada por bytes**: solo las visibles + colindantes; expulsar al cambiar de página.
 - No conservar todas las páginas como texturas en memoria.
 - Extracción de texto perezosa (solo cuando se necesita).
-- Métrica de producto Android: **PSS** vía `dumpsys meminfo` (objetivo <150 MB en tablet).
-- Procedimiento repetible: `.opencode/skills/pdflector-rendimiento/SKILL.md`.
+- Métrica de producto Android: **PSS** vía `dumpsys meminfo` (presupuesto estable ≤ 250 MB; ver `AGENTS.md` §9).
+- Procedimiento repetible: `.agents/skills/pdflector-rendimiento/SKILL.md`.
   Ninguna afirmación de rendimiento sin fecha + flujo medido + hardware + métrica.
 
 ## Trabajo pendiente
@@ -134,9 +132,9 @@ Todas las dependencias de terceros emplean licencias permisivas totalmente compa
 
 ## Decisiones pendientes
 
-1. **Migración de claves embebidas**: actualmente `crates/pdf_android` utiliza `include_str!` hacia ficheros locales (`groq_key.txt` y `google_key.txt`). La compilación funciona en limpio con claves placeholder (ver `CONTRIBUTING.md`), pero la solución definitiva para distribución debe mover la configuración de claves a un diálogo de ajustes en la app o almacenamiento seguro en tiempo de ejecución.
+1. **Migración de clave embebida**: actualmente `crates/pdf_android` utiliza `include_str!` hacia un fichero local (`google_key.txt`). La compilación funciona en limpio con una clave placeholder (ver `CONTRIBUTING.md`), pero la solución definitiva para distribución debe mover la configuración de la clave a un diálogo de ajustes en la app o almacenamiento seguro en tiempo de ejecución.
 2. **Pantalla de créditos/licencias en la app**: incluir vista "Acerca de" que exponga el texto AGPL y `NOTICE` en la interfaz de Android para cumplir los requisitos de distribución de binarios.
 
-**Resueltas** (ADR-001 / ADR-005): motor PDF = MuPDF (AGPL-3.0-or-later); presión del
-lápiz = no necesaria; exportación = Markdown + PDF con anotaciones incrustadas (en prototipo desktop);
-plataforma final = `pdf_android` nativa (ADR-005 sustituye a ADR-004).
+**Resueltas** (ADR-001 / ADR-005 / ADR-010): motor PDF = MuPDF (AGPL-3.0-or-later); presión del
+lápiz = no necesaria; exportación = Markdown + PDF con anotaciones incrustadas;
+plataforma final = `pdf_android` nativa sobre `GameActivity` + overlay AndroidX.

@@ -90,8 +90,8 @@ en `crates/pdf_core/src/lib.rs:9-50` y contiene:
   (`crates/pdf_core/src/export.rs:62-326`).
 - Transformaciones de zoom, recorte, escalado e inversión de bitmap.
 - Métricas de frames y RSS.
-- Clientes síncronos para Ollama, Groq y Gemini
-  (`crates/pdf_core/src/ai.rs:236-820`). El consumidor debe sacarlos del hilo
+- Clientes síncronos para Ollama y Gemini
+  (`crates/pdf_core/src/ai.rs`). El consumidor debe sacarlos del hilo
   de UI.
 - Cliente arXiv con construcción de consultas, parsing Atom, limitación de
   frecuencia, reintentos y descarga
@@ -406,8 +406,8 @@ símbolos como ∑ o α, ecuaciones centradas). **Observado en la TCL
 (2026-11-02):** explicación correcta y legible de un párrafo con la
 ecuación de Eigenfaces, sin marcas Markdown crudas.
 
-Las claves se incorporan durante la compilación desde ficheros locales
-referenciados con `include_str!` (`crates/pdf_android/src/lib.rs:361-366`). El
+La clave de Gemini se incorpora durante la compilación desde `crates/pdf_android/google_key.txt`
+referenciado con `include_str!` (`crates/pdf_android/src/lib.rs:98`). El
 código no muestra telemetría, pero las consultas de IA y arXiv sí realizan
 peticiones de red.
 
@@ -560,36 +560,30 @@ latencia de la APK integrada. Los detalles se registran en
 Estos puntos describen el código actual y deben resolverse antes de convertir
 afirmaciones históricas en documentación normativa:
 
-1. Hay comentarios extensos en `crates/pdf_android/src/lib.rs` que dicen que la
-   creación de tinta y resaltados fue eliminada de la UI. Sin embargo, el input,
-   `Reader::begin_tool_gesture`, `update_tool_gesture`, `end_tool_gesture`, el
-   render Wet y la persistencia siguen conectados. El estado verificable es que
-   el código de esas funciones está activo; su accesibilidad y UX final deben
-   comprobarse en el dispositivo.
-2. `pdf_core` se presenta como núcleo independiente de UI, pero también expone
+1. `pdf_core` se presenta como núcleo independiente de UI, pero también expone
    `theme::DesignTokens`. Es una dependencia conceptual de presentación, aunque
    no introduce una dependencia técnica de egui o Android.
-3. El modelador de tinta mantiene estado O(1) por muestra, pero el gesto completo
-   acumula puntos en varios `Vec`; no es correcto describir todo el recorrido de
-   tinta como libre de asignaciones (`crates/pdf_android/src/annotations.rs:132-224`).
-4. Los clientes de IA de `pdf_core` son síncronos y pueden esperar hasta cinco
-   minutos. Android los desplaza a workers; otros consumidores deben hacer lo
-   mismo (`crates/pdf_core/src/ai.rs:34-38`).
-5. Algunos fallos de render/prefetch se descartan de forma best-effort y no
+2. El motor de tinta causal (`CausalInkEngine`) mantiene estado acotado por
+   muestra, pero el gesto completo acumula puntos en varios `Vec`; no es
+   correcto describir todo el recorrido de tinta como libre de asignaciones
+   (`crates/pdf_android/src/annotations.rs:132-224`).
+3. Los clientes de IA de `pdf_core` son síncronos (`OllamaClient` con timeout
+   de hasta cinco minutos; `GeminiClient` de 60 s). Android desplaza la
+   consulta a un hilo de fondo; otros consumidores deben hacer lo mismo
+   (`crates/pdf_core/src/ai.rs`).
+4. Algunos fallos de render/prefetch se descartan de forma best-effort y no
    llegan como error estructurado a la UI
    (`crates/pdf_core/src/prefetch.rs:106-118`,
    `crates/pdf_android/src/reader/redraw.rs:100-180`).
-6. La ruta manual HTTP de Ollama depende de cierre de conexión o
+5. La ruta manual HTTP de Ollama depende de cierre de conexión o
    `Content-Length`; no implementa respuestas chunked
    (`crates/pdf_core/src/ai.rs:378-423`).
-7. Las escrituras JSON de estado Android y la exportación a un PDF de salida no
+6. Las escrituras JSON de estado Android y la exportación a un PDF de salida no
    son transacciones atómicas observables en el código inspeccionado.
-8. `gl_str` recorre el puntero devuelto por `glGetString` sin una guarda nula
-   (`crates/pdf_android/src/gpu/shaders.rs:173-180`). Esto es un riesgo técnico,
-   no evidencia de un fallo observado.
-9. `PageCache::clear` vacía páginas y contadores, pero conserva los campos
-   históricos `protected` e `insert_seq`
-   (`crates/pdf_android/src/cache.rs:229-235`). No se observó un fallo asociado.
+7. `PageCache::clear` vacía páginas y contadores conservando `protected` e
+   `insert_seq` (`crates/pdf_android/src/cache.rs:229-235`); los llamadores
+   (`reader/life.rs`, `reader/navigation.rs`) dependen de ello fijando
+   `set_protected` antes de `clear`.
 
 ## 6. Qué no puede afirmarse desde este estado
 

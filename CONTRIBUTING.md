@@ -17,11 +17,10 @@ cargo test -p pdf_core
 cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings
 
 # 3. Verificación de compilación Android (NDK r28, ver README.md)
-# crates/pdf_android/src/lib.rs:420,422 incluye claves mediante include_str!.
-# En un clon limpio, es imprescindible crear ficheros placeholder (igual que hace el CI en .github/workflows/ci.yml):
-echo "placeholder" > crates/pdf_android/groq_key.txt
+# crates/pdf_android/src/lib.rs:98 incluye la clave de Gemini mediante include_str!.
+# En un clon limpio, es imprescindible crear el fichero placeholder (igual que hace el CI en .github/workflows/ci.yml):
 echo "placeholder" > crates/pdf_android/google_key.txt
-cargo check -p pdf_android --target aarch64-linux-android
+cargo check -p pdf_android --target aarch64-linux-android --all-targets
 ```
 
 ## Medición y despliegue en hardware real
@@ -29,4 +28,4 @@ cargo check -p pdf_android --target aarch64-linux-android
 Para compilar la APK, desplegar en la tablet TCL NXTPaper 11 Plus vía `adb`, ejecutar
 benchmarks con `pdf_bench` y medir métricas reales de producto (PSS con `dumpsys meminfo`,
 frame time p95 de `gl_present`, etc.), sigue el procedimiento documentado en:
-- [Skill de rendimiento y medición](.opencode/skills/pdflector-rendimiento/SKILL.md)
+- [Skill de rendimiento y medición](.agents/skills/pdflector-rendimiento/SKILL.md)

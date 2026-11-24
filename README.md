@@ -19,7 +19,7 @@ not the final product. Pending work is tracked in GitHub Issues.
 - **Curated Library**: Folder selection via Android SAF / MediaStore; retains files without automatic deletion.
 - **In-Document Search**: Interactive text search with real Android native IME keyboard support.
 - **Themes**: 4 color schemes (Default Light, Sepia Light, Default Dark, Sepia Dark).
-- **AI Assistant**: Built-in panel powered by Groq (`llama-3.3-70b-versatile`) for text explanations and Google Gemini (`gemini-flash-latest`) for equation and figure crop analysis (requires user API keys).
+- **AI Assistant**: Built-in panel powered by Google Gemini (`gemini-flash-lite-latest`, with fallback to `gemini-3.5-flash-lite`) for text explanations and cropped equation/figure analysis (requires user API key).
 - **Export**: Notes export to Markdown and PDF with embedded vector annotations (available in desktop testbed).
 
 ## Docs
@@ -60,8 +60,7 @@ export ANDROID_NDK_HOME=$HOME/Android/Sdk/ndk/android-ndk-r28
 export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 
-# Create placeholder API keys if not present (required by crates/pdf_android/src/lib.rs):
-echo "placeholder" > crates/pdf_android/groq_key.txt
+# Create placeholder API key if not present (required by crates/pdf_android/src/lib.rs):
 echo "placeholder" > crates/pdf_android/google_key.txt
 
 cargo check -p pdf_android --target aarch64-linux-android                  # quick check
@@ -76,7 +75,7 @@ Signing keys live in `android/product/signing.local.properties` (gitignored),
 never in the manifest.
 
 See also: `docs/README.md` (documentation index), `docs/adr/` (architectural decision records),
-`docs/benchmark-results.md` (benchmark measurements), and `.opencode/skills/` (operational skills).
+`docs/benchmark-results.md` (benchmark measurements), and `.agents/skills/` (operational skills).
 
 ## License
 

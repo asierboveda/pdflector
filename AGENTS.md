@@ -260,7 +260,7 @@ Ejecutar pruebas específicas adicionales si se modifica su comportamiento.
 ### Cambios Android
 
 ```bash
-export ANDROID_NDK_HOME=/home/asierboveda/Android/Sdk/ndk/android-ndk-r28
+export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/android-ndk-r28"
 export PATH="$HOME/.cargo/bin:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 cargo check -p pdf_android --target aarch64-linux-android --all-targets

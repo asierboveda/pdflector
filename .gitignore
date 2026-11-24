@@ -1,17 +1,21 @@
 /target
 /vendor
 /corpus
+/.worktrees/
+/.venv/
 docs/.obsidian/workspace.json
 # TCL benchmark JSON runs (generados por tools/adb-bench.sh)
 /bench-results-TCL-*.json
 
 # Ecosystem agent skills (installed via `npx skills add`; reproducible from
-# skills-lock.json). Project-authored skills go in .opencode/skills/ (tracked).
+# skills-lock.json). Project-authored skills live in .agents/skills/ and are
+# explicitly whitelisted below (canonical path per AGENTS.md §3).
 /.agents/skills/*
 !/.agents/skills/master-sync/
+!/.agents/skills/pdflector-rendimiento/
 /.claude/skills/
 
-# API key de Groq (uso personal, NO commitear)
+# API keys locales de IA (uso personal, NO commitear)
 crates/pdf_android/groq_key.txt
 crates/pdf_android/google_key.txt
 

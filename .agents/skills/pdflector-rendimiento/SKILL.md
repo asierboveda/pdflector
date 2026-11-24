@@ -86,15 +86,14 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HO
 - `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android` es obligatoria para compilar `mupdf-sys`: bindgen no invoca el wrapper clang del NDK y, sin esta sysroot, intentaría leer cabeceras del host fallando con errores como `pthreadtypes-arch.h`.
 - `PATH` debe incluir el directorio de binarios LLVM del NDK para que `aarch64-linux-android26-clang` esté accesible.
 
-### Ficheros de claves API (requisito indispensable de build)
-`crates/pdf_android/src/lib.rs` incluye dos claves mediante `include_str!("../groq_key.txt")` y `include_str!("../google_key.txt")`. En un clon limpio o entorno sin claves configuradas, `cargo apk build` o `cargo check -p pdf_android` **fallará** si no existen estos ficheros.
+### Fichero de clave API (requisito indispensable de build)
+`crates/pdf_android/src/lib.rs` incluye la clave de Gemini mediante `include_str!("../google_key.txt")`. En un clon limpio o entorno sin clave configurada, `./gradlew assembleProductDebug` o `cargo check -p pdf_android` **fallará** si no existe este fichero.
 
-Para compilar, crear los placeholders (igual que hace el CI en `.github/workflows/ci.yml`):
+Para compilar, crear el placeholder (igual que hace el CI en `.github/workflows/ci.yml`):
 ```bash
-echo placeholder > crates/pdf_android/groq_key.txt
 echo placeholder > crates/pdf_android/google_key.txt
 ```
-*(Nota: ambos ficheros están en `.gitignore` y jamás deben commitearse claves reales).*
+*(Nota: el fichero está en `.gitignore` y jamás deben commitearse claves reales).*
 
 ## 3. Harness automatizado en la TCL (`tools/adb-bench.sh`)
 
@@ -159,8 +158,7 @@ Crate `crates/pdf_android` (cdylib, `android-activity` 0.6 con backend
 ### Compilación e instalación
 
 ```bash
-# Asegurar placeholders de claves si es necesario
-echo placeholder > crates/pdf_android/groq_key.txt
+# Asegurar placeholder de clave si es necesario
 echo placeholder > crates/pdf_android/google_key.txt
 
 # ANDROID_NDK_HOME y las variables de la sección 2 deben estar exportadas:
@@ -168,7 +166,7 @@ echo placeholder > crates/pdf_android/google_key.txt
 # `cargo build -p pdf_android --lib --release --target aarch64-linux-android`
 # (ver android/product/app/build.gradle.kts) y empaqueta el .so resultante.
 cd android/product
-gradle assembleProductDebug
+./gradlew assembleProductDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -250,7 +248,7 @@ adb shell rm -rf /data/local/tmp/pdflector
 
 - **Error `pthreadtypes-arch.h` al compilar `mupdf-sys`**: falta la variable `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android` apuntando al sysroot del NDK.
 - **Error "file in wrong format" al linkear**: el ejecutable `aarch64-linux-android26-clang` no está en el `PATH`.
-- **Fallo de compilación con `include_str!` de claves**: faltan `crates/pdf_android/groq_key.txt` y `google_key.txt`. Crear placeholders con `echo placeholder > ...`.
+- **Fallo de compilación con `include_str!` de clave**: falta `crates/pdf_android/google_key.txt`. Crear placeholder con `echo placeholder > crates/pdf_android/google_key.txt`.
 - **`run-as: package not debuggable`**: `run-as` solo funciona en compilaciones debug. Para release, colocar el PDF en `/sdcard/Download/` y abrirlo vía Intent o MediaStore.
 - **Resultados de latencia anómalos o muy dispersos**: la pantalla se apagó o entró en ahorro de energía. Ejecutar siempre `adb shell svc power stayon true` antes de la prueba.
-- **Valores de PSS/RSS disparados (>200 MB en reposo)**: verificar que el APK desplegado sea `target/release/apk/pdf_android.apk` y no una versión de debug.
+- **Valores de PSS/RSS disparados (>200 MB en reposo)**: verificar que el APK desplegado se haya compilado con `./gradlew assembleProductDebug` (que incluye `libpdf_android.so` en perfil `--release`) y no con una librería Rust debug.
