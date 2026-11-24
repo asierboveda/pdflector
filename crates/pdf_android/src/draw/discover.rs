@@ -17,8 +17,9 @@ use crate::theme;
 use pdf_core::Bitmap;
 
 use super::{
-    ButtonRect, CanvasRect, CanvasText, Elevation, TextAlign, draw_button, draw_card_shadow,
-    draw_surface_card, jni_text_bitmap,
+    ButtonRect, ButtonVariant, CanvasRect, CanvasText, Elevation, TextAlign, TextFont,
+    draw_astryx_button, draw_elevation_shadow, draw_inset_ring, draw_surface_card, draw_token_pill,
+    jni_text_bitmap,
 };
 
 /// Texto de atribución requerido por las condiciones de interoperabilidad abierta de arXiv.
@@ -122,8 +123,181 @@ pub(crate) fn draw_header_tabs(
     );
 }
 
-/// Render de la ZONA FIJA de Discover: cabecera editorial + sub-pestañas (Feed, Buscar, Áreas)
-/// + barra de búsqueda si está en `DiscoverScreen::Search`, o cabecera con [← Volver] si está en `Detail`.
+/// Dibuja la fila de insignias semánticas Astryx de un paper:
+/// `PREPRINT` (neutro `bg_muted`), `OPEN ACCESS` (semántico Teal) y categoría primaria (semántico Purple).
+fn draw_paper_badges(
+    rects: &mut Vec<CanvasRect>,
+    texts: &mut Vec<CanvasText>,
+    start_x: f32,
+    badge_y: f32,
+    max_right: f32,
+    primary_category: &str,
+    p: &theme::ThemePalette,
+) {
+    let badge_h = 22.0f32;
+    let mut bx = start_x;
+
+    // 1. PREPRINT (neutro)
+    let bw_prep = 72.0f32;
+    draw_token_pill(
+        rects,
+        texts,
+        (bx, badge_y, bx + bw_prep, badge_y + badge_h),
+        p.bg_muted,
+        Some(p.border),
+        p.text_secondary,
+        theme::FONT_MICRO,
+        TextFont::Sans,
+        theme::TRACKING_CAPS,
+        true,
+        "PREPRINT",
+    );
+    bx += bw_prep + 8.0;
+
+    // 2. OPEN ACCESS (Astryx Teal semántico)
+    let bw_oa = 96.0f32;
+    draw_token_pill(
+        rects,
+        texts,
+        (bx, badge_y, bx + bw_oa, badge_y + badge_h),
+        p.teal_bg,
+        None,
+        p.teal_text,
+        theme::FONT_MICRO,
+        TextFont::Sans,
+        theme::TRACKING_CAPS,
+        true,
+        "OPEN ACCESS",
+    );
+    bx += bw_oa + 8.0;
+
+    // 3. Categoría primaria (Astryx Purple semántico)
+    if !primary_category.is_empty() {
+        let full_label = category_label(primary_category);
+        let label_candidate = (full_label.chars().count() as f32 * 7.2 + 18.0).max(50.0);
+        let (cat_str, bw_cat) = if bx + label_candidate <= max_right {
+            (full_label, label_candidate)
+        } else {
+            let code_w = (primary_category.chars().count() as f32 * 7.8 + 18.0).max(46.0);
+            (primary_category, code_w)
+        };
+        if bx + bw_cat <= max_right + 4.0 {
+            draw_token_pill(
+                rects,
+                texts,
+                (bx, badge_y, bx + bw_cat, badge_y + badge_h),
+                p.purple_bg,
+                None,
+                p.purple_text,
+                theme::FONT_MICRO,
+                TextFont::Sans,
+                0.02,
+                true,
+                cat_str,
+            );
+        }
+    }
+}
+
+/// Dibuja una tarjeta de estado centrada (error, carga o vacío) en lenguaje Astryx.
+#[allow(clippy::too_many_arguments)]
+fn draw_discover_callout(
+    rects: &mut Vec<CanvasRect>,
+    texts: &mut Vec<CanvasText>,
+    win_w: i32,
+    top_y: f32,
+    tag: &str,
+    tag_bg: u32,
+    tag_fg: u32,
+    border_col: u32,
+    title: &str,
+    body: &str,
+    hint: Option<&str>,
+    p: &theme::ThemePalette,
+) {
+    let center_x = win_w as f32 * 0.5;
+    let card_w = (win_w as f32 - 2.0 * grid_pad(win_w)).clamp(260.0, 580.0);
+    let card_l = center_x - card_w * 0.5;
+    let card_r = center_x + card_w * 0.5;
+    let card_h = if hint.is_some() { 196.0 } else { 166.0 };
+    let card_b = top_y + card_h;
+
+    draw_surface_card(
+        rects,
+        (card_l, top_y, card_r, card_b),
+        theme::RADIUS_CONTAINER,
+        p.bg_card,
+        border_col,
+        Elevation::Low,
+        p.is_dark,
+    );
+
+    let tag_w = (tag.chars().count() as f32 * 8.2 + 24.0).max(76.0);
+    draw_token_pill(
+        rects,
+        texts,
+        (
+            center_x - tag_w * 0.5,
+            top_y + 22.0,
+            center_x + tag_w * 0.5,
+            top_y + 44.0,
+        ),
+        tag_bg,
+        None,
+        tag_fg,
+        theme::FONT_MICRO,
+        TextFont::Sans,
+        theme::TRACKING_CAPS,
+        true,
+        tag,
+    );
+
+    texts.push(
+        CanvasText::new(
+            center_x,
+            top_y + 84.0,
+            theme::FONT_H1,
+            p.text_primary,
+            TextAlign::Center,
+            true,
+            title,
+        )
+        .with_tracking(theme::TRACKING_TIGHT),
+    );
+    texts.push(CanvasText::new(
+        center_x,
+        top_y + 116.0,
+        theme::FONT_BODY,
+        p.text_secondary,
+        TextAlign::Center,
+        false,
+        body,
+    ));
+    if let Some(h) = hint {
+        texts.push(CanvasText::new(
+            center_x,
+            top_y + 146.0,
+            theme::FONT_CAPTION,
+            p.text_secondary,
+            TextAlign::Center,
+            false,
+            h,
+        ));
+    }
+
+    texts.push(CanvasText::new(
+        center_x,
+        card_b + 30.0,
+        theme::FONT_CAPTION,
+        p.text_secondary,
+        TextAlign::Center,
+        false,
+        ARXIV_ATTRIBUTION,
+    ));
+}
+
+/// Render de la ZONA FIJA de Discover: cabecera Astryx (`bg_surface`) + sub-pestañas
+/// tonales (Feed, Buscar, Áreas) + buscador rehundido o cabecera de ficha `[← Volver]`.
 pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let h_fixed = disc_content_y0(
@@ -139,45 +313,31 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
 
-    // Fondo del bloque fijo + línea divisoria inferior
+    // Superficie elevada de barra superior (`bg_surface`) + hairline `border` 1 px
     rects.push(CanvasRect::sharp(
         0.0,
         0.0,
         w as f32,
         h_fixed as f32,
-        p.base_200,
+        p.bg_surface,
     ));
     rects.push(CanvasRect::sharp(
         0.0,
         h_fixed as f32 - 1.0,
         w as f32,
         h_fixed as f32,
-        p.base_300,
+        p.border,
     ));
 
     match reader.discover.screen {
         DiscoverScreen::Detail => {
-            // Cabecera de Ficha: botón [← Volver] y título
             let back_rect = disc_detail_back_rect(w, reader.win_h);
-            draw_card_shadow(
-                &mut rects,
-                back_rect.0,
-                back_rect.1,
-                back_rect.2,
-                back_rect.3,
-                8.0,
-                p.is_dark,
-            );
-            draw_button(
+            draw_astryx_button(
                 &mut rects,
                 &mut texts,
-                back_rect.0,
-                back_rect.1,
-                back_rect.2,
-                back_rect.3,
-                p.base_100,
-                p.base_300,
-                p.base_content,
+                back_rect,
+                ButtonVariant::Ghost,
+                &p,
                 theme::FONT_BODY,
                 true,
                 "← Volver",
@@ -185,18 +345,20 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
 
             let title_y =
                 back_rect.1 + (back_rect.3 - back_rect.1) * 0.5 + theme::FONT_TITLE * 0.35;
-            texts.push(CanvasText::new(
-                back_rect.2 + 20.0,
-                title_y,
-                theme::FONT_TITLE,
-                p.base_content,
-                TextAlign::Left,
-                true,
-                "Ficha del paper",
-            ));
+            texts.push(
+                CanvasText::new(
+                    back_rect.2 + 20.0,
+                    title_y,
+                    theme::FONT_TITLE,
+                    p.text_primary,
+                    TextAlign::Left,
+                    true,
+                    "Ficha del paper",
+                )
+                .with_tracking(theme::TRACKING_TIGHT),
+            );
         }
         DiscoverScreen::Feed | DiscoverScreen::Search | DiscoverScreen::Areas => {
-            // Pestañas principales de cabecera: [Biblioteca] y [Descubrir]
             draw_header_tabs(
                 &mut rects,
                 &mut texts,
@@ -206,130 +368,114 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
                 UiMode::Discover,
             );
 
-            // Sub-pestañas: [Feed] [Buscar] [Áreas]
-            let subtabs = disc_subtabs_rect(w, reader.win_h);
-            for (tab, rect) in subtabs {
+            // Sub-pestañas Astryx: tokens píldora tonales [Feed] [Buscar] [Áreas]
+            for (tab, rect) in disc_subtabs_rect(w, reader.win_h) {
                 let is_active = tab == reader.discover.active_tab;
                 let label = match tab {
                     DiscoverTab::Feed => "Feed",
                     DiscoverTab::Search => "Buscar",
                     DiscoverTab::Areas => "Áreas",
                 };
-
-                let (l, t, r, b) = rect;
-                let rad = ((b - t) * 0.5).max(4.0);
-                if is_active {
-                    draw_card_shadow(&mut rects, l, t, r, b, rad, p.is_dark);
-                    draw_button(
-                        &mut rects,
-                        &mut texts,
-                        l,
-                        t,
-                        r,
-                        b,
-                        p.primary,
-                        p.primary,
-                        p.primary_content,
-                        theme::FONT_BODY,
-                        true,
-                        label,
-                    );
+                let (fill, border, fg) = if is_active {
+                    (p.accent_muted, Some(p.accent), p.on_accent_muted)
                 } else {
-                    draw_button(
-                        &mut rects,
-                        &mut texts,
-                        l,
-                        t,
-                        r,
-                        b,
-                        p.base_100,
-                        p.base_300,
-                        p.base_content,
-                        theme::FONT_BODY,
-                        false,
-                        label,
-                    );
-                }
+                    (p.bg_card, Some(p.border), p.text_secondary)
+                };
+                draw_token_pill(
+                    &mut rects,
+                    &mut texts,
+                    rect,
+                    fill,
+                    border,
+                    fg,
+                    theme::FONT_BODY,
+                    TextFont::Sans,
+                    0.0,
+                    is_active,
+                    label,
+                );
             }
 
-            // Barra de búsqueda en pantalla Search
+            // Barra de búsqueda Astryx en pantalla Search
             if reader.discover.screen == DiscoverScreen::Search {
                 let (input_r, clear_r, search_btn_r) = disc_search_rect(w, reader.win_h);
-                let rad = ((input_r.3 - input_r.1) * 0.5).min(10.0);
-                rects.push(CanvasRect::rounded(
-                    input_r.0, input_r.1, input_r.2, input_r.3, rad, p.base_300,
-                ));
-                rects.push(CanvasRect::rounded(
-                    input_r.0 + 1.0,
-                    input_r.1 + 1.0,
-                    input_r.2 - 1.0,
-                    input_r.3 - 1.0,
-                    rad - 1.0,
-                    p.base_100,
-                ));
-
-                let query_text = if reader.discover.query.is_empty() {
-                    "Buscar por título, autor o id (ej. 2401.12345)…"
+                let has_query = !reader.discover.query.is_empty();
+                if has_query {
+                    draw_inset_ring(
+                        &mut rects,
+                        input_r,
+                        theme::RADIUS_ELEMENT,
+                        p.accent,
+                        p.bg_card,
+                    );
                 } else {
-                    &reader.discover.query
-                };
-                let query_color = if reader.discover.query.is_empty() {
-                    p.neutral_content
-                } else {
-                    p.base_content
-                };
+                    draw_surface_card(
+                        &mut rects,
+                        input_r,
+                        theme::RADIUS_ELEMENT,
+                        p.bg_body,
+                        p.border_emphasized,
+                        Elevation::None,
+                        p.is_dark,
+                    );
+                }
 
                 let input_cy = input_r.1 + (input_r.3 - input_r.1) * 0.5 + theme::FONT_BODY * 0.35;
                 texts.push(CanvasText::new(
                     input_r.0 + 14.0,
                     input_cy,
                     theme::FONT_BODY,
-                    query_color,
+                    if has_query {
+                        p.text_accent
+                    } else {
+                        p.text_secondary
+                    },
                     TextAlign::Left,
                     false,
+                    "⌕",
+                ));
+
+                let query_text = if has_query {
+                    reader.discover.query.as_str()
+                } else {
+                    "Buscar por título, autor o ID (ej. 2401.12345)…"
+                };
+                texts.push(CanvasText::new(
+                    input_r.0 + 36.0,
+                    input_cy,
+                    theme::FONT_BODY,
+                    if has_query {
+                        p.text_primary
+                    } else {
+                        p.text_secondary
+                    },
+                    TextAlign::Left,
+                    has_query,
                     query_text,
                 ));
 
-                // Botón limpiar '✕' si hay consulta
-                if !reader.discover.query.is_empty() {
-                    let cw = clear_r.2 - clear_r.0;
-                    let ch = clear_r.3 - clear_r.1;
-                    let crad = ((ch * 0.5).min(cw * 0.5)).max(4.0);
-                    rects.push(CanvasRect::rounded(
-                        clear_r.0, clear_r.1, clear_r.2, clear_r.3, crad, p.base_200,
-                    ));
-                    let clear_cy = clear_r.1 + ch * 0.5 + theme::FONT_CAPTION * 0.35;
-                    texts.push(CanvasText::new(
-                        (clear_r.0 + clear_r.2) / 2.0,
-                        clear_cy,
+                if has_query {
+                    draw_token_pill(
+                        &mut rects,
+                        &mut texts,
+                        clear_r,
+                        p.bg_muted,
+                        Some(p.border),
+                        p.text_secondary,
                         theme::FONT_CAPTION,
-                        p.neutral_content,
-                        TextAlign::Center,
+                        TextFont::Sans,
+                        0.0,
                         true,
                         "✕",
-                    ));
+                    );
                 }
 
-                // Botón Buscar
-                draw_card_shadow(
-                    &mut rects,
-                    search_btn_r.0,
-                    search_btn_r.1,
-                    search_btn_r.2,
-                    search_btn_r.3,
-                    rad,
-                    p.is_dark,
-                );
-                draw_button(
+                draw_astryx_button(
                     &mut rects,
                     &mut texts,
-                    search_btn_r.0,
-                    search_btn_r.1,
-                    search_btn_r.2,
-                    search_btn_r.3,
-                    p.primary,
-                    p.primary,
-                    p.primary_content,
+                    search_btn_r,
+                    ButtonVariant::Primary,
+                    &p,
                     theme::FONT_BODY,
                     true,
                     "Buscar",
@@ -338,7 +484,7 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
         }
     }
 
-    // Franja de status opcional abajo
+    // Franja de estado opcional
     let status = reader
         .status
         .as_deref()
@@ -349,18 +495,18 @@ pub(crate) fn render_discover_header(reader: &Reader) -> Option<Bitmap> {
             grid_pad(w),
             status_y,
             theme::FONT_CAPTION,
-            p.primary,
+            p.text_accent,
             TextAlign::Left,
             true,
             msg,
         ));
     }
 
-    jni_text_bitmap(w, h_fixed, p.base_200, &rects, &texts)
+    jni_text_bitmap(w, h_fixed, p.bg_surface, &rects, &texts)
 }
 
-/// Render de la BANDA SCROLLEABLE de Discover: feed de papers, resultados de búsqueda,
-/// lista de áreas / categorías o ficha detallada del paper seleccionado.
+/// Render de la BANDA SCROLLEABLE de Discover sobre `bg_body`: feed de papers,
+/// resultados de búsqueda, lista de áreas temáticas o ficha detallada.
 pub(crate) fn render_discover_zone(
     reader: &Reader,
     band_origin: i32,
@@ -386,193 +532,97 @@ pub(crate) fn render_discover_zone(
             let is_loading = reader.discover.phase == DiscoverPhase::Loading;
 
             if entries.is_empty() {
-                // Estado vacío / cargando / error
-                let center_x = w as f32 / 2.0;
-                let center_y = (band_h as f32 * 0.35).clamp(80.0, 200.0);
+                let top_y = (band_h as f32 * 0.24).clamp(36.0, 140.0);
 
                 if let DiscoverPhase::Error(err) = &reader.discover.phase {
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y,
-                        theme::FONT_DISPLAY,
-                        p.base_content,
-                        TextAlign::Center,
-                        true,
+                    draw_discover_callout(
+                        &mut rects,
+                        &mut texts,
+                        w,
+                        top_y,
+                        "ERROR DE RED",
+                        p.error_bg,
+                        p.error_text,
+                        p.error_border,
                         "No se pudo conectar con arXiv",
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 36.0,
-                        theme::FONT_BODY,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
                         err,
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 64.0,
-                        theme::FONT_CAPTION,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
-                        "Comprueba tu conexión a internet e inténtalo de nuevo.",
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 110.0,
-                        theme::FONT_CAPTION,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
-                        ARXIV_ATTRIBUTION,
-                    ));
+                        Some("Comprueba tu conexión a internet e inténtalo de nuevo."),
+                        &p,
+                    );
                 } else if is_loading {
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y,
-                        theme::FONT_DISPLAY,
-                        p.base_content,
-                        TextAlign::Center,
-                        true,
-                        if reader.discover.screen == DiscoverScreen::Feed {
-                            "Cargando papers de arXiv…"
-                        } else {
-                            "Buscando en arXiv…"
-                        },
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 36.0,
-                        theme::FONT_BODY,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
-                        "Consultando export.arxiv.org/api/query",
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 64.0,
-                        theme::FONT_CAPTION,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
-                        "Descargando resúmenes y metadatos de preprints",
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 110.0,
-                        theme::FONT_CAPTION,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
-                        ARXIV_ATTRIBUTION,
-                    ));
-                } else if reader.discover.screen == DiscoverScreen::Feed {
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y,
-                        theme::FONT_DISPLAY,
-                        p.base_content,
-                        TextAlign::Center,
-                        true,
-                        "Tu feed de arXiv está vacío",
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 36.0,
-                        theme::FONT_BODY,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
-                        "Selecciona áreas de interés en la pestaña Áreas para ver novedades.",
-                    ));
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 90.0,
-                        theme::FONT_CAPTION,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
-                        ARXIV_ATTRIBUTION,
-                    ));
-                } else {
-                    if reader.discover.query.is_empty() {
-                        texts.push(CanvasText::new(
-                            center_x,
-                            center_y,
-                            theme::FONT_DISPLAY,
-                            p.base_content,
-                            TextAlign::Center,
-                            true,
-                            "Explora millones de papers en arXiv",
-                        ));
-                        texts.push(CanvasText::new(
-                            center_x,
-                            center_y + 36.0,
-                            theme::FONT_BODY,
-                            p.neutral_content,
-                            TextAlign::Center,
-                            false,
-                            "Busca por término, autor o identificador de arXiv.",
-                        ));
-                        texts.push(CanvasText::new(
-                            center_x,
-                            center_y + 64.0,
-                            theme::FONT_CAPTION,
-                            p.neutral_content,
-                            TextAlign::Center,
-                            false,
-                            "Ejemplos: 2401.12345, attention, vaswani, cs.AI",
-                        ));
+                    let title = if reader.discover.screen == DiscoverScreen::Feed {
+                        "Cargando novedades de arXiv…"
                     } else {
-                        texts.push(CanvasText::new(
-                            center_x,
-                            center_y,
-                            theme::FONT_DISPLAY,
-                            p.base_content,
-                            TextAlign::Center,
-                            true,
-                            "Sin resultados encontrados",
-                        ));
-                        texts.push(CanvasText::new(
-                            center_x,
-                            center_y + 36.0,
-                            theme::FONT_BODY,
-                            p.neutral_content,
-                            TextAlign::Center,
-                            false,
-                            format!("No se encontraron papers para «{}»", reader.discover.query),
-                        ));
-                        texts.push(CanvasText::new(
-                            center_x,
-                            center_y + 64.0,
-                            theme::FONT_CAPTION,
-                            p.neutral_content,
-                            TextAlign::Center,
-                            false,
-                            "Intenta con términos más generales o un identificador arXiv directo.",
-                        ));
-                    }
-
-                    texts.push(CanvasText::new(
-                        center_x,
-                        center_y + 100.0,
-                        theme::FONT_CAPTION,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        false,
-                        ARXIV_ATTRIBUTION,
-                    ));
+                        "Buscando en arXiv…"
+                    };
+                    draw_discover_callout(
+                        &mut rects,
+                        &mut texts,
+                        w,
+                        top_y,
+                        "SINCRONIZANDO",
+                        p.accent_muted,
+                        p.on_accent_muted,
+                        p.border,
+                        title,
+                        "Obteniendo resúmenes y metadatos de preprints.",
+                        None,
+                        &p,
+                    );
+                } else if reader.discover.screen == DiscoverScreen::Feed {
+                    draw_discover_callout(
+                        &mut rects,
+                        &mut texts,
+                        w,
+                        top_y,
+                        "ARXIV FEED",
+                        p.teal_bg,
+                        p.teal_text,
+                        p.border,
+                        "Tu feed de arXiv está vacío",
+                        "Elige tus disciplinas en la pestaña Áreas para recibir novedades.",
+                        None,
+                        &p,
+                    );
+                } else if reader.discover.query.is_empty() {
+                    draw_discover_callout(
+                        &mut rects,
+                        &mut texts,
+                        w,
+                        top_y,
+                        "ARXIV BUSCAR",
+                        p.purple_bg,
+                        p.purple_text,
+                        p.border,
+                        "Explora millones de papers en arXiv",
+                        "Busca por tema, autor o identificador de arXiv.",
+                        Some("Ejemplos: 2401.12345 · attention · vaswani · cs.AI"),
+                        &p,
+                    );
+                } else {
+                    let msg = format!("No hay resultados para «{}».", reader.discover.query);
+                    draw_discover_callout(
+                        &mut rects,
+                        &mut texts,
+                        w,
+                        top_y,
+                        "SIN RESULTADOS",
+                        p.bg_muted,
+                        p.text_secondary,
+                        p.border,
+                        "Sin coincidencias",
+                        &msg,
+                        Some("Prueba con términos más amplios o un identificador de arXiv."),
+                        &p,
+                    );
                 }
             } else {
-                // Lista de tarjetas de papers
+                // Lista de tarjetas de papers Astryx
                 for (idx, entry) in entries.iter().enumerate() {
                     let card_rect = disc_card_rect(w, idx);
                     let top_in_band = card_rect.1 - band_origin as f32;
                     let bot_in_band = card_rect.3 - band_origin as f32;
 
-                    // Salto si la tarjeta está fuera de la banda visible
                     if bot_in_band < 0.0 || top_in_band > band_h as f32 {
                         continue;
                     }
@@ -580,180 +630,78 @@ pub(crate) fn render_discover_zone(
                     let card_l = card_rect.0;
                     let card_r = card_rect.2;
                     let card_w = card_r - card_l;
-                    let r = 12.0f32;
+                    let card_band = (card_l, top_in_band, card_r, bot_in_band);
 
-                    // Sombra visible multicapa + fondo y borde redondeado
-                    draw_card_shadow(
+                    draw_surface_card(
                         &mut rects,
-                        card_l,
-                        top_in_band,
-                        card_r,
-                        bot_in_band,
-                        r,
+                        card_band,
+                        theme::RADIUS_CONTAINER,
+                        p.bg_card,
+                        p.border,
+                        Elevation::Low,
                         p.is_dark,
                     );
-                    rects.push(CanvasRect::rounded(
-                        card_l,
-                        top_in_band,
-                        card_r,
-                        bot_in_band,
-                        r,
-                        p.base_300,
-                    ));
-                    rects.push(CanvasRect::rounded(
-                        card_l + 1.0,
-                        top_in_band + 1.0,
-                        card_r - 1.0,
-                        bot_in_band - 1.0,
-                        r - 1.0,
-                        p.base_100,
-                    ));
 
-                    // Fila de insignias (Preprint / Open Access / Categoría)
-                    let badge_y = top_in_band + 14.0;
-                    let badge_h = 22.0f32;
-                    let badge_rad = badge_h * 0.5;
-                    let badge_text_cy = badge_y + badge_h * 0.5 + theme::FONT_LABEL_CAPS * 0.35;
+                    // Fila de badges semánticos Astryx
+                    draw_paper_badges(
+                        &mut rects,
+                        &mut texts,
+                        card_l + 16.0,
+                        top_in_band + 14.0,
+                        card_r - 16.0,
+                        &entry.primary_category,
+                        &p,
+                    );
 
-                    // Badge [Preprint]
-                    let mut bx = card_l + 16.0;
-                    let bw_prep = 68.0f32;
-                    rects.push(CanvasRect::rounded(
-                        bx,
-                        badge_y,
-                        bx + bw_prep,
-                        badge_y + badge_h,
-                        badge_rad,
-                        p.base_300,
-                    ));
-                    rects.push(CanvasRect::rounded(
-                        bx + 1.0,
-                        badge_y + 1.0,
-                        bx + bw_prep - 1.0,
-                        badge_y + badge_h - 1.0,
-                        badge_rad - 1.0,
-                        p.base_200,
-                    ));
-                    texts.push(CanvasText::new(
-                        bx + bw_prep / 2.0,
-                        badge_text_cy,
-                        theme::FONT_LABEL_CAPS,
-                        p.neutral_content,
-                        TextAlign::Center,
-                        true,
-                        "PREPRINT",
-                    ));
-                    bx += bw_prep + 8.0;
-
-                    // Badge [Open Access]
-                    let bw_oa = 88.0f32;
-                    rects.push(CanvasRect::rounded(
-                        bx,
-                        badge_y,
-                        bx + bw_oa,
-                        badge_y + badge_h,
-                        badge_rad,
-                        p.base_300,
-                    ));
-                    rects.push(CanvasRect::rounded(
-                        bx + 1.0,
-                        badge_y + 1.0,
-                        bx + bw_oa - 1.0,
-                        badge_y + badge_h - 1.0,
-                        badge_rad - 1.0,
-                        p.base_200,
-                    ));
-                    texts.push(CanvasText::new(
-                        bx + bw_oa / 2.0,
-                        badge_text_cy,
-                        theme::FONT_LABEL_CAPS,
-                        p.primary,
-                        TextAlign::Center,
-                        true,
-                        "OPEN ACCESS",
-                    ));
-                    bx += bw_oa + 8.0;
-
-                    // Badge categoría primaria
-                    if !entry.primary_category.is_empty() {
-                        let full_label = category_label(&entry.primary_category);
-                        let label_candidate =
-                            (full_label.chars().count() as f32 * 7.5 + 16.0).max(46.0);
-                        let (cat_str, bw_cat) = if bx + label_candidate <= card_r - 16.0 {
-                            (full_label, label_candidate)
-                        } else {
-                            let code_w = (entry.primary_category.chars().count() as f32 * 8.0
-                                + 16.0)
-                                .max(44.0);
-                            (entry.primary_category.as_str(), code_w)
-                        };
-                        rects.push(CanvasRect::rounded(
-                            bx,
-                            badge_y,
-                            bx + bw_cat,
-                            badge_y + badge_h,
-                            badge_rad,
-                            p.base_300,
-                        ));
-                        rects.push(CanvasRect::rounded(
-                            bx + 1.0,
-                            badge_y + 1.0,
-                            bx + bw_cat - 1.0,
-                            badge_y + badge_h - 1.0,
-                            badge_rad - 1.0,
-                            p.base_200,
-                        ));
-                        texts.push(CanvasText::new(
-                            bx + bw_cat / 2.0,
-                            badge_text_cy,
-                            theme::FONT_LABEL_CAPS,
-                            p.base_content,
-                            TextAlign::Center,
-                            true,
-                            cat_str,
-                        ));
-                    }
-
-                    // Título adaptativo (1 o 2 líneas)
+                    // Título adaptativo (1 o 2 líneas) con tracking ajustado
                     let title_max_chars =
                         (((card_w - 32.0) / (theme::FONT_TITLE * 0.52)).floor() as usize).max(20);
                     let title_lines = wrap_text_chars(&entry.title, title_max_chars);
                     let has_two_title_lines = title_lines.len() > 1;
 
                     if has_two_title_lines {
-                        texts.push(CanvasText::new(
-                            card_l + 16.0,
-                            top_in_band + 58.0,
-                            theme::FONT_TITLE,
-                            p.base_content,
-                            TextAlign::Left,
-                            true,
-                            &title_lines[0],
-                        ));
+                        texts.push(
+                            CanvasText::new(
+                                card_l + 16.0,
+                                top_in_band + 58.0,
+                                theme::FONT_TITLE,
+                                p.text_primary,
+                                TextAlign::Left,
+                                true,
+                                &title_lines[0],
+                            )
+                            .with_tracking(theme::TRACKING_TIGHT),
+                        );
                         let line1_text = if title_lines.len() > 2 {
                             format!("{}…", title_lines[1].trim_end())
                         } else {
                             title_lines[1].clone()
                         };
-                        texts.push(CanvasText::new(
-                            card_l + 16.0,
-                            top_in_band + 78.0,
-                            theme::FONT_TITLE,
-                            p.base_content,
-                            TextAlign::Left,
-                            true,
-                            line1_text,
-                        ));
+                        texts.push(
+                            CanvasText::new(
+                                card_l + 16.0,
+                                top_in_band + 78.0,
+                                theme::FONT_TITLE,
+                                p.text_primary,
+                                TextAlign::Left,
+                                true,
+                                line1_text,
+                            )
+                            .with_tracking(theme::TRACKING_TIGHT),
+                        );
                     } else if let Some(first_line) = title_lines.first() {
-                        texts.push(CanvasText::new(
-                            card_l + 16.0,
-                            top_in_band + 60.0,
-                            theme::FONT_TITLE,
-                            p.base_content,
-                            TextAlign::Left,
-                            true,
-                            first_line,
-                        ));
+                        texts.push(
+                            CanvasText::new(
+                                card_l + 16.0,
+                                top_in_band + 60.0,
+                                theme::FONT_TITLE,
+                                p.text_primary,
+                                TextAlign::Left,
+                                true,
+                                first_line,
+                            )
+                            .with_tracking(theme::TRACKING_TIGHT),
+                        );
                     }
 
                     // Autores
@@ -780,13 +728,13 @@ pub(crate) fn render_discover_zone(
                         card_l + 16.0,
                         authors_y,
                         theme::FONT_BODY,
-                        p.neutral_content,
+                        p.text_secondary,
                         TextAlign::Left,
                         false,
                         authors_display,
                     ));
 
-                    // Resumen / snippet
+                    // Snippet del resumen
                     let summary_clean: String = entry
                         .summary
                         .split_whitespace()
@@ -807,7 +755,7 @@ pub(crate) fn render_discover_zone(
                                 card_l + 16.0,
                                 top_in_band + 122.0,
                                 theme::FONT_CAPTION,
-                                p.base_content,
+                                p.text_primary,
                                 TextAlign::Left,
                                 false,
                                 text,
@@ -819,7 +767,7 @@ pub(crate) fn render_discover_zone(
                                 card_l + 16.0,
                                 top_in_band + 108.0,
                                 theme::FONT_CAPTION,
-                                p.base_content,
+                                p.text_primary,
                                 TextAlign::Left,
                                 false,
                                 line0,
@@ -835,7 +783,7 @@ pub(crate) fn render_discover_zone(
                                 card_l + 16.0,
                                 top_in_band + 126.0,
                                 theme::FONT_CAPTION,
-                                p.base_content,
+                                p.text_primary,
                                 TextAlign::Left,
                                 false,
                                 line1,
@@ -843,39 +791,31 @@ pub(crate) fn render_discover_zone(
                         }
                     }
 
-                    // Fecha publicada y ID en la parte inferior izquierda
+                    // Metadatos monoespaciados en la esquina inferior izquierda
                     let pub_date = entry
                         .published
                         .split('T')
                         .next()
                         .unwrap_or(&entry.published);
-                    texts.push(CanvasText::new(
-                        card_l + 16.0,
-                        bot_in_band - 26.0,
-                        theme::FONT_CAPTION,
-                        p.neutral_content,
-                        TextAlign::Left,
-                        false,
-                        format!("{pub_date}  •  arXiv:{}", entry.id),
-                    ));
+                    texts.push(
+                        CanvasText::new(
+                            card_l + 16.0,
+                            bot_in_band - 26.0,
+                            theme::FONT_CAPTION,
+                            p.text_secondary,
+                            TextAlign::Left,
+                            false,
+                            format!("{pub_date}  ·  arXiv:{}", entry.id),
+                        )
+                        .with_font(TextFont::Mono),
+                    );
 
-                    // Botón de acción en la esquina inferior derecha
-                    let action_rect =
-                        disc_card_action_rect((card_l, top_in_band, card_r, bot_in_band));
-
+                    // Botón de acción semántico Astryx en la esquina inferior derecha
+                    let action_rect = disc_card_action_rect(card_band);
                     let is_downloading =
                         reader.discover.downloading_id.as_deref() == Some(entry.id.as_str());
                     let is_in_library = reader.is_arxiv_in_library(&entry.id);
 
-                    draw_card_shadow(
-                        &mut rects,
-                        action_rect.0,
-                        action_rect.1,
-                        action_rect.2,
-                        action_rect.3,
-                        6.0,
-                        p.is_dark,
-                    );
                     if is_downloading {
                         let dl_label = if reader.discover.download_bytes > 0 {
                             format!(
@@ -885,46 +825,34 @@ pub(crate) fn render_discover_zone(
                         } else {
                             "Descargando…".to_string()
                         };
-                        draw_button(
+                        draw_astryx_button(
                             &mut rects,
                             &mut texts,
-                            action_rect.0,
-                            action_rect.1,
-                            action_rect.2,
-                            action_rect.3,
-                            p.base_200,
-                            p.primary,
-                            p.primary,
+                            action_rect,
+                            ButtonVariant::Tonal,
+                            &p,
                             theme::FONT_BODY,
                             true,
                             &dl_label,
                         );
                     } else if is_in_library {
-                        draw_button(
+                        draw_astryx_button(
                             &mut rects,
                             &mut texts,
-                            action_rect.0,
-                            action_rect.1,
-                            action_rect.2,
-                            action_rect.3,
-                            p.primary,
-                            p.primary,
-                            p.primary_content,
+                            action_rect,
+                            ButtonVariant::Primary,
+                            &p,
                             theme::FONT_BODY,
                             true,
                             "Leer",
                         );
                     } else {
-                        draw_button(
+                        draw_astryx_button(
                             &mut rects,
                             &mut texts,
-                            action_rect.0,
-                            action_rect.1,
-                            action_rect.2,
-                            action_rect.3,
-                            p.base_100,
-                            p.base_300,
-                            p.base_content,
+                            action_rect,
+                            ButtonVariant::Secondary,
+                            &p,
                             theme::FONT_BODY,
                             true,
                             "Ver ficha →",
@@ -944,25 +872,12 @@ pub(crate) fn render_discover_zone(
 
                 if has_more && more_y > -50.0 && more_y < band_h as f32 + 50.0 {
                     let more_rect = disc_more_btn_rect(w, more_y);
-                    draw_card_shadow(
-                        &mut rects,
-                        more_rect.0,
-                        more_rect.1,
-                        more_rect.2,
-                        more_rect.3,
-                        10.0,
-                        p.is_dark,
-                    );
-                    draw_button(
+                    draw_astryx_button(
                         &mut rects,
                         &mut texts,
-                        more_rect.0,
-                        more_rect.1,
-                        more_rect.2,
-                        more_rect.3,
-                        p.base_100,
-                        p.base_300,
-                        p.base_content,
+                        more_rect,
+                        ButtonVariant::Secondary,
+                        &p,
                         theme::FONT_BODY,
                         true,
                         if is_loading {
@@ -973,14 +888,14 @@ pub(crate) fn render_discover_zone(
                     );
                 }
 
-                // Atribución de interoperabilidad arXiv al final
+                // Atribución requerida por arXiv
                 let attr_y = more_y + 80.0;
                 if attr_y > 0.0 && attr_y < band_h as f32 + 40.0 {
                     texts.push(CanvasText::new(
-                        w as f32 / 2.0,
+                        w as f32 * 0.5,
                         attr_y,
                         theme::FONT_CAPTION,
-                        p.neutral_content,
+                        p.text_secondary,
                         TextAlign::Center,
                         false,
                         ARXIV_ATTRIBUTION,
@@ -989,7 +904,6 @@ pub(crate) fn render_discover_zone(
             }
         }
         DiscoverScreen::Areas => {
-            // Lista de áreas / categorías temáticas de arXiv con selector
             for (idx, cat) in ARXIV_CATEGORIES.iter().enumerate() {
                 let row_rect = disc_cat_row_rect(w, idx);
                 let top_in_band = row_rect.1 - band_origin as f32;
@@ -1001,145 +915,130 @@ pub(crate) fn render_discover_zone(
 
                 let row_l = row_rect.0;
                 let row_r = row_rect.2;
-                let r = 10.0f32;
-
+                let row_band = (row_l, top_in_band, row_r, bot_in_band);
                 let is_selected = reader.discover.selected_cats.iter().any(|c| c == cat.code);
 
-                // Sombra y tarjeta de la fila
-                draw_card_shadow(
-                    &mut rects,
-                    row_l,
-                    top_in_band,
-                    row_r,
-                    bot_in_band,
-                    r,
-                    p.is_dark,
-                );
-                let border_col = if is_selected { p.primary } else { p.base_300 };
-                rects.push(CanvasRect::rounded(
-                    row_l,
-                    top_in_band,
-                    row_r,
-                    bot_in_band,
-                    r,
-                    border_col,
-                ));
-                rects.push(CanvasRect::rounded(
-                    row_l + 1.0,
-                    top_in_band + 1.0,
-                    row_r - 1.0,
-                    bot_in_band - 1.0,
-                    r - 1.0,
-                    p.base_100,
-                ));
+                if is_selected {
+                    draw_elevation_shadow(
+                        &mut rects,
+                        row_band,
+                        theme::RADIUS_CONTAINER,
+                        Elevation::Low,
+                        p.is_dark,
+                    );
+                    draw_inset_ring(
+                        &mut rects,
+                        row_band,
+                        theme::RADIUS_CONTAINER,
+                        p.accent,
+                        p.bg_card,
+                    );
+                } else {
+                    draw_surface_card(
+                        &mut rects,
+                        row_band,
+                        theme::RADIUS_CONTAINER,
+                        p.bg_card,
+                        p.border,
+                        Elevation::None,
+                        p.is_dark,
+                    );
+                }
 
-                // Pastilla / pill con el código de categoría a la izquierda
+                // Token monoespaciado del código de categoría
                 let code_h = 26.0f32;
-                let code_w = (cat.code.chars().count() as f32 * 8.0 + 16.0).max(52.0);
-                let code_t = top_in_band + (bot_in_band - top_in_band - code_h) / 2.0;
-                let code_b = code_t + code_h;
+                let code_w = (cat.code.chars().count() as f32 * 8.2 + 18.0).max(56.0);
+                let code_t = top_in_band + (bot_in_band - top_in_band - code_h) * 0.5;
                 let code_l = row_l + 14.0;
                 let code_r = code_l + code_w;
-                let code_rad = code_h * 0.5;
 
-                rects.push(CanvasRect::rounded(
-                    code_l, code_t, code_r, code_b, code_rad, border_col,
-                ));
-                rects.push(CanvasRect::rounded(
-                    code_l + 1.0,
-                    code_t + 1.0,
-                    code_r - 1.0,
-                    code_b - 1.0,
-                    code_rad - 1.0,
-                    p.base_200,
-                ));
-                let code_text_color = if is_selected {
-                    p.primary
-                } else {
-                    p.base_content
-                };
-                let code_cy = code_t + code_h * 0.5 + theme::FONT_LABEL_CAPS * 0.35;
-                texts.push(CanvasText::new(
-                    (code_l + code_r) / 2.0,
-                    code_cy,
+                draw_token_pill(
+                    &mut rects,
+                    &mut texts,
+                    (code_l, code_t, code_r, code_t + code_h),
+                    if is_selected {
+                        p.accent_muted
+                    } else {
+                        p.bg_muted
+                    },
+                    if is_selected { None } else { Some(p.border) },
+                    if is_selected {
+                        p.on_accent_muted
+                    } else {
+                        p.text_secondary
+                    },
                     theme::FONT_LABEL_CAPS,
-                    code_text_color,
-                    TextAlign::Center,
+                    TextFont::Mono,
+                    0.0,
                     true,
                     cat.code,
-                ));
+                );
 
                 // Nombre y grupo temático
                 let label_x = code_r + 14.0;
+                texts.push(
+                    CanvasText::new(
+                        label_x,
+                        top_in_band + 22.0,
+                        theme::FONT_BODY,
+                        p.text_primary,
+                        TextAlign::Left,
+                        is_selected,
+                        cat.label_es,
+                    )
+                    .with_tracking(theme::TRACKING_TIGHT),
+                );
                 texts.push(CanvasText::new(
                     label_x,
-                    top_in_band + 21.0,
-                    theme::FONT_BODY,
-                    p.base_content,
-                    TextAlign::Left,
-                    is_selected,
-                    cat.label_es,
-                ));
-                texts.push(CanvasText::new(
-                    label_x,
-                    top_in_band + 39.0,
+                    top_in_band + 40.0,
                     theme::FONT_CAPTION,
-                    p.neutral_content,
+                    p.text_secondary,
                     TextAlign::Left,
                     false,
                     cat.group,
                 ));
 
-                // Chip de estado de selección a la derecha
-                let chip_w = 94.0f32;
+                // Acción derecha Astryx
+                let chip_w = 96.0f32;
                 let chip_h = 32.0f32;
                 let chip_r = row_r - 14.0;
                 let chip_l = chip_r - chip_w;
-                let chip_t = top_in_band + (bot_in_band - top_in_band - chip_h) / 2.0;
-                let chip_b = chip_t + chip_h;
+                let chip_t = top_in_band + (bot_in_band - top_in_band - chip_h) * 0.5;
+                let chip_rect = (chip_l, chip_t, chip_r, chip_t + chip_h);
 
                 if is_selected {
-                    draw_button(
+                    draw_astryx_button(
                         &mut rects,
                         &mut texts,
-                        chip_l,
-                        chip_t,
-                        chip_r,
-                        chip_b,
-                        p.primary,
-                        p.primary,
-                        p.primary_content,
-                        theme::FONT_LABEL_CAPS,
+                        chip_rect,
+                        ButtonVariant::Tonal,
+                        &p,
+                        theme::FONT_CAPTION,
                         true,
-                        "✓ ACTIVA",
+                        "✓ Activa",
                     );
                 } else {
-                    draw_button(
+                    draw_astryx_button(
                         &mut rects,
                         &mut texts,
-                        chip_l,
-                        chip_t,
-                        chip_r,
-                        chip_b,
-                        p.base_100,
-                        p.base_300,
-                        p.neutral_content,
-                        theme::FONT_LABEL_CAPS,
+                        chip_rect,
+                        ButtonVariant::Secondary,
+                        &p,
+                        theme::FONT_CAPTION,
                         false,
-                        "+ AÑADIR",
+                        "+ Añadir",
                     );
                 }
             }
 
-            // Atribución al final de categorías
             let total_cats_h = 14.0 + ARXIV_CATEGORIES.len() as f32 * disc_cat_row_h();
             let attr_y = total_cats_h - band_origin as f32 + 30.0;
             if attr_y > 0.0 && attr_y < band_h as f32 + 40.0 {
                 texts.push(CanvasText::new(
-                    w as f32 / 2.0,
+                    w as f32 * 0.5,
                     attr_y,
                     theme::FONT_CAPTION,
-                    p.neutral_content,
+                    p.text_secondary,
                     TextAlign::Center,
                     false,
                     ARXIV_ATTRIBUTION,
@@ -1147,7 +1046,6 @@ pub(crate) fn render_discover_zone(
             }
         }
         DiscoverScreen::Detail => {
-            // Pantalla de Ficha detallada de un paper
             if let Some(entry) = &reader.discover.selected_entry {
                 let pad = disc_card_pad(w);
                 let card_w = (w as f32 - 2.0 * pad).max(200.0);
@@ -1175,158 +1073,51 @@ pub(crate) fn render_discover_zone(
                 );
                 let hero_bot = action_btn.3 + 20.0;
 
-                let r = 14.0f32;
-
-                // Tarjeta 1: Metadatos y acción (Hero card)
-                draw_card_shadow(
+                // Tarjeta 1: Metadatos y CTA (Hero Astryx)
+                draw_surface_card(
                     &mut rects,
-                    pad,
-                    hero_top,
-                    pad + card_w,
-                    hero_bot,
-                    r,
+                    (pad, hero_top, pad + card_w, hero_bot),
+                    theme::RADIUS_CONTAINER,
+                    p.bg_card,
+                    p.border,
+                    Elevation::Low,
                     p.is_dark,
                 );
-                rects.push(CanvasRect::rounded(
-                    pad,
-                    hero_top,
-                    pad + card_w,
-                    hero_bot,
-                    r,
-                    p.base_300,
-                ));
-                rects.push(CanvasRect::rounded(
-                    pad + 1.0,
-                    hero_top + 1.0,
-                    pad + card_w - 1.0,
-                    hero_bot - 1.0,
-                    r - 1.0,
-                    p.base_100,
-                ));
 
-                // Fila de insignias dentro de la tarjeta hero
-                let badge_h = 22.0f32;
-                let badge_rad = badge_h * 0.5;
-                let badge_text_cy = badge_y + badge_h * 0.5 + theme::FONT_LABEL_CAPS * 0.35;
-                let mut bx = pad + inner_pad;
-
-                let bw_prep = 68.0f32;
-                rects.push(CanvasRect::rounded(
-                    bx,
+                draw_paper_badges(
+                    &mut rects,
+                    &mut texts,
+                    pad + inner_pad,
                     badge_y,
-                    bx + bw_prep,
-                    badge_y + badge_h,
-                    badge_rad,
-                    p.base_300,
-                ));
-                rects.push(CanvasRect::rounded(
-                    bx + 1.0,
-                    badge_y + 1.0,
-                    bx + bw_prep - 1.0,
-                    badge_y + badge_h - 1.0,
-                    badge_rad - 1.0,
-                    p.base_200,
-                ));
-                texts.push(CanvasText::new(
-                    bx + bw_prep / 2.0,
-                    badge_text_cy,
-                    theme::FONT_LABEL_CAPS,
-                    p.neutral_content,
-                    TextAlign::Center,
-                    true,
-                    "PREPRINT",
-                ));
-                bx += bw_prep + 8.0;
+                    pad + card_w - inner_pad,
+                    &entry.primary_category,
+                    &p,
+                );
 
-                let bw_oa = 88.0f32;
-                rects.push(CanvasRect::rounded(
-                    bx,
-                    badge_y,
-                    bx + bw_oa,
-                    badge_y + badge_h,
-                    badge_rad,
-                    p.base_300,
-                ));
-                rects.push(CanvasRect::rounded(
-                    bx + 1.0,
-                    badge_y + 1.0,
-                    bx + bw_oa - 1.0,
-                    badge_y + badge_h - 1.0,
-                    badge_rad - 1.0,
-                    p.base_200,
-                ));
-                texts.push(CanvasText::new(
-                    bx + bw_oa / 2.0,
-                    badge_text_cy,
-                    theme::FONT_LABEL_CAPS,
-                    p.primary,
-                    TextAlign::Center,
-                    true,
-                    "OPEN ACCESS",
-                ));
-                bx += bw_oa + 8.0;
-
-                if !entry.primary_category.is_empty() {
-                    let full_label = category_label(&entry.primary_category);
-                    let label_candidate =
-                        (full_label.chars().count() as f32 * 7.5 + 16.0).max(46.0);
-                    let (cat_str, bw_cat) = if bx + label_candidate <= pad + card_w - inner_pad {
-                        (full_label, label_candidate)
-                    } else {
-                        let code_w =
-                            (entry.primary_category.chars().count() as f32 * 8.0 + 16.0).max(44.0);
-                        (entry.primary_category.as_str(), code_w)
-                    };
-                    rects.push(CanvasRect::rounded(
-                        bx,
-                        badge_y,
-                        bx + bw_cat,
-                        badge_y + badge_h,
-                        badge_rad,
-                        p.base_300,
-                    ));
-                    rects.push(CanvasRect::rounded(
-                        bx + 1.0,
-                        badge_y + 1.0,
-                        bx + bw_cat - 1.0,
-                        badge_y + badge_h - 1.0,
-                        badge_rad - 1.0,
-                        p.base_200,
-                    ));
-                    texts.push(CanvasText::new(
-                        bx + bw_cat / 2.0,
-                        badge_text_cy,
-                        theme::FONT_LABEL_CAPS,
-                        p.base_content,
-                        TextAlign::Center,
-                        true,
-                        cat_str,
-                    ));
-                }
-
-                // Título multilínea
                 let mut cur_y = title_y;
                 for line in &title_lines {
-                    texts.push(CanvasText::new(
-                        pad + inner_pad,
-                        cur_y,
-                        theme::FONT_TITLE,
-                        p.base_content,
-                        TextAlign::Left,
-                        true,
-                        line,
-                    ));
+                    texts.push(
+                        CanvasText::new(
+                            pad + inner_pad,
+                            cur_y,
+                            theme::FONT_TITLE,
+                            p.text_primary,
+                            TextAlign::Left,
+                            true,
+                            line,
+                        )
+                        .with_tracking(theme::TRACKING_TIGHT),
+                    );
                     cur_y += 26.0;
                 }
 
-                // Autores multilínea
                 cur_y = authors_y;
                 for line in &authors_lines {
                     texts.push(CanvasText::new(
                         pad + inner_pad,
                         cur_y,
                         theme::FONT_BODY,
-                        p.neutral_content,
+                        p.text_secondary,
                         TextAlign::Left,
                         false,
                         line,
@@ -1334,16 +1125,14 @@ pub(crate) fn render_discover_zone(
                     cur_y += 22.0;
                 }
 
-                // Hairline divisoria
                 rects.push(CanvasRect::sharp(
                     pad + inner_pad,
                     divider_y,
                     pad + card_w - inner_pad,
                     divider_y + 1.0,
-                    p.base_300,
+                    p.border,
                 ));
 
-                // Metadatos
                 let pub_date = entry
                     .published
                     .split('T')
@@ -1351,33 +1140,26 @@ pub(crate) fn render_discover_zone(
                     .unwrap_or(&entry.published);
                 let up_date = entry.updated.split('T').next().unwrap_or(&entry.updated);
                 let meta_str = format!(
-                    "ID: arXiv:{}  •  Publicado: {}  •  Actualizado: {}",
+                    "arXiv:{}  ·  Publicado {}  ·  Actualizado {}",
                     entry.id, pub_date, up_date
                 );
-                texts.push(CanvasText::new(
-                    pad + inner_pad,
-                    meta_y,
-                    theme::FONT_CAPTION,
-                    p.neutral_content,
-                    TextAlign::Left,
-                    false,
-                    meta_str,
-                ));
+                texts.push(
+                    CanvasText::new(
+                        pad + inner_pad,
+                        meta_y,
+                        theme::FONT_CAPTION,
+                        p.text_secondary,
+                        TextAlign::Left,
+                        false,
+                        meta_str,
+                    )
+                    .with_font(TextFont::Mono),
+                );
 
-                // Botón de acción (Descargar / Descargando / Leer) usando el layout unificado
                 let is_downloading =
                     reader.discover.downloading_id.as_deref() == Some(entry.id.as_str());
                 let is_in_library = reader.is_arxiv_in_library(&entry.id);
 
-                draw_card_shadow(
-                    &mut rects,
-                    action_btn.0,
-                    action_btn.1,
-                    action_btn.2,
-                    action_btn.3,
-                    10.0,
-                    p.is_dark,
-                );
                 if is_downloading {
                     let dl_label = if reader.discover.download_bytes > 0 {
                         format!(
@@ -1387,100 +1169,75 @@ pub(crate) fn render_discover_zone(
                     } else {
                         "Descargando PDF…".to_string()
                     };
-                    draw_button(
+                    draw_astryx_button(
                         &mut rects,
                         &mut texts,
-                        action_btn.0,
-                        action_btn.1,
-                        action_btn.2,
-                        action_btn.3,
-                        p.base_200,
-                        p.primary,
-                        p.primary,
+                        action_btn,
+                        ButtonVariant::Tonal,
+                        &p,
                         theme::FONT_BODY,
                         true,
                         &dl_label,
                     );
                 } else if is_in_library {
-                    draw_button(
+                    draw_astryx_button(
                         &mut rects,
                         &mut texts,
-                        action_btn.0,
-                        action_btn.1,
-                        action_btn.2,
-                        action_btn.3,
-                        p.primary,
-                        p.primary,
-                        p.primary_content,
+                        action_btn,
+                        ButtonVariant::Primary,
+                        &p,
                         theme::FONT_BODY,
                         true,
                         "Abrir en el lector",
                     );
                 } else {
-                    draw_button(
+                    draw_astryx_button(
                         &mut rects,
                         &mut texts,
-                        action_btn.0,
-                        action_btn.1,
-                        action_btn.2,
-                        action_btn.3,
-                        p.primary,
-                        p.primary,
-                        p.primary_content,
+                        action_btn,
+                        ButtonVariant::Primary,
+                        &p,
                         theme::FONT_BODY,
                         true,
                         "⬇ Descargar PDF",
                     );
                 }
 
-                // Tarjeta 2: Resumen / Abstract
+                // Tarjeta 2: Resumen con kicker uppercase Astryx
                 let abstract_top = hero_bot + 16.0;
-                let abstract_header_y = abstract_top + 28.0;
-                let abstract_body_y = abstract_header_y + 24.0;
+                let abstract_header_y = abstract_top + 26.0;
+                let abstract_body_y = abstract_header_y + 26.0;
                 let abstract_bot = abstract_body_y + abstract_lines.len() as f32 * 22.0 + 20.0;
 
-                draw_card_shadow(
+                draw_surface_card(
                     &mut rects,
-                    pad,
-                    abstract_top,
-                    pad + card_w,
-                    abstract_bot,
-                    r,
+                    (pad, abstract_top, pad + card_w, abstract_bot),
+                    theme::RADIUS_CONTAINER,
+                    p.bg_card,
+                    p.border,
+                    Elevation::Low,
                     p.is_dark,
                 );
-                rects.push(CanvasRect::rounded(
-                    pad,
-                    abstract_top,
-                    pad + card_w,
-                    abstract_bot,
-                    r,
-                    p.base_300,
-                ));
-                rects.push(CanvasRect::rounded(
-                    pad + 1.0,
-                    abstract_top + 1.0,
-                    pad + card_w - 1.0,
-                    abstract_bot - 1.0,
-                    r - 1.0,
-                    p.base_100,
-                ));
 
-                texts.push(CanvasText::new(
-                    pad + inner_pad,
-                    abstract_header_y,
-                    theme::FONT_TITLE,
-                    p.base_content,
-                    TextAlign::Left,
-                    true,
-                    "Resumen (Abstract)",
-                ));
+                texts.push(
+                    CanvasText::new(
+                        pad + inner_pad,
+                        abstract_header_y,
+                        theme::FONT_LABEL_CAPS,
+                        p.text_secondary,
+                        TextAlign::Left,
+                        true,
+                        "RESUMEN",
+                    )
+                    .with_tracking(theme::TRACKING_CAPS),
+                );
 
                 rects.push(CanvasRect::sharp(
                     pad + inner_pad,
                     abstract_header_y + 10.0,
                     pad + card_w - inner_pad,
                     abstract_header_y + 11.0,
-                    p.base_300,
+                    p.border,
                 ));
 
                 cur_y = abstract_body_y;
@@ -1489,7 +1246,7 @@ pub(crate) fn render_discover_zone(
                         pad + inner_pad,
                         cur_y,
                         theme::FONT_BODY,
-                        p.base_content,
+                        p.text_primary,
                         TextAlign::Left,
                         false,
                         line,
@@ -1497,30 +1254,29 @@ pub(crate) fn render_discover_zone(
                     cur_y += 22.0;
                 }
 
-                // Atribución requerida por arXiv
                 let attr_y = abstract_bot + 36.0;
                 texts.push(CanvasText::new(
-                    w as f32 / 2.0,
+                    w as f32 * 0.5,
                     attr_y,
                     theme::FONT_CAPTION,
-                    p.neutral_content,
+                    p.text_secondary,
                     TextAlign::Center,
                     false,
                     ARXIV_ATTRIBUTION,
                 ));
             } else {
                 texts.push(CanvasText::new(
-                    w as f32 / 2.0,
+                    w as f32 * 0.5,
                     60.0,
                     theme::FONT_BODY,
-                    p.neutral_content,
+                    p.text_secondary,
                     TextAlign::Center,
                     false,
-                    "Ningún paper seleccionado",
+                    "Ningún paper seleccionado.",
                 ));
             }
         }
     }
 
-    jni_text_bitmap(w, band_h, p.base_200, &rects, &texts)
+    jni_text_bitmap(w, band_h, p.bg_body, &rects, &texts)
 }
