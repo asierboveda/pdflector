@@ -448,19 +448,16 @@ fn resolve_entity_ref(raw: &str) -> Option<char> {
     }
 }
 fn handle_element_attributes(e: &quick_xml::events::BytesStart<'_>, cur: &mut Option<ArxivEntry>) {
-    let n = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-    match n.as_str() {
+    match e.local_name().as_ref() {
         "link" => {
             let mut href = String::new();
             let mut rel = String::new();
             let mut title = String::new();
             for a in e.attributes().flatten() {
-                let key = String::from_utf8_lossy(a.key.as_ref());
-                let val = String::from_utf8_lossy(&a.value).into_owned();
-                match key.as_ref() {
-                    "href" => href = val,
-                    "rel" => rel = val,
-                    "title" => title = val,
+                match a.key.as_ref() {
+                    "href" => href = a.value.into_owned(),
+                    "rel" => rel = a.value.into_owned(),
+                    "title" => title = a.value.into_owned(),
                     _ => {}
                 }
             }
@@ -475,9 +472,8 @@ fn handle_element_attributes(e: &quick_xml::events::BytesStart<'_>, cur: &mut Op
         "category" => {
             if let Some(c) = cur.as_mut() {
                 for a in e.attributes().flatten() {
-                    if a.key.as_ref() == b"term" {
-                        let term = String::from_utf8_lossy(&a.value).into_owned();
-                        c.categories.push(term);
+                    if a.key.as_ref() == "term" {
+                        c.categories.push(a.value.into_owned());
                     }
                 }
             }
@@ -485,9 +481,8 @@ fn handle_element_attributes(e: &quick_xml::events::BytesStart<'_>, cur: &mut Op
         "primary_category" => {
             if let Some(c) = cur.as_mut() {
                 for a in e.attributes().flatten() {
-                    if a.key.as_ref() == b"term" {
-                        let term = String::from_utf8_lossy(&a.value).into_owned();
-                        c.primary_category = term;
+                    if a.key.as_ref() == "term" {
+                        c.primary_category = a.value.into_owned();
                     }
                 }
             }
@@ -499,7 +494,6 @@ fn handle_element_attributes(e: &quick_xml::events::BytesStart<'_>, cur: &mut Op
 /// Parses an Atom XML response body from arXiv into a vector of [`ArxivEntry`].
 pub fn parse_atom_body(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
     let mut r = quick_xml::Reader::from_str(body);
-    let mut buf = Vec::new();
     let mut out = Vec::new();
     let mut cur: Option<ArxivEntry> = None;
     let mut field = String::new();
@@ -508,18 +502,19 @@ pub fn parse_atom_body(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
 
     loop {
         match r
-            .read_event_into(&mut buf)
+            .read_event()
             .map_err(|e| ArxivError::XmlParse(e.to_string()))?
         {
             quick_xml::events::Event::Start(e) => {
-                let n = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                match n.as_str() {
+                let n = e.local_name();
+                match n.as_ref() {
                     "entry" => cur = Some(ArxivEntry::default()),
                     "title" | "summary" | "id" | "published" | "updated" | "name" | "doi" => {
-                        field = n.clone();
-                        if n == "name" {
+                        field.clear();
+                        field.push_str(n.as_ref());
+                        if n.as_ref() == "name" {
                             author_name.clear();
-                        } else if n == "doi" {
+                        } else if n.as_ref() == "doi" {
                             doi_buf.clear();
                         }
                     }
@@ -531,9 +526,7 @@ pub fn parse_atom_body(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
                 handle_element_attributes(&e, &mut cur);
             }
             quick_xml::events::Event::GeneralRef(r) => {
-                let raw = std::str::from_utf8(r.as_ref())
-                    .map_err(|e| ArxivError::XmlParse(e.to_string()))?;
-                if let (Some(ch), Some(c)) = (resolve_entity_ref(raw), cur.as_mut()) {
+                if let (Some(ch), Some(c)) = (resolve_entity_ref(r.as_ref()), cur.as_mut()) {
                     match field.as_str() {
                         "title" => c.title.push(ch),
                         "summary" => c.summary.push(ch),
@@ -543,9 +536,7 @@ pub fn parse_atom_body(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
                 }
             }
             quick_xml::events::Event::Text(t) => {
-                let raw = std::str::from_utf8(t.as_ref())
-                    .map_err(|e| ArxivError::XmlParse(e.to_string()))?;
-                let v = quick_xml::escape::unescape(raw)
+                let v = quick_xml::escape::unescape(t.as_ref())
                     .map_err(|e| ArxivError::XmlParse(e.to_string()))?;
                 if let Some(c) = cur.as_mut() {
                     match field.as_str() {
@@ -563,8 +554,7 @@ pub fn parse_atom_body(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
                 }
             }
             quick_xml::events::Event::End(e) => {
-                let n = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
-                match n.as_str() {
+                match e.local_name().as_ref() {
                     "entry" => {
                         if let Some(mut c) = cur.take() {
                             c.title = collapse_whitespace(&c.title);
@@ -617,7 +607,6 @@ pub fn parse_atom_body(body: &str) -> Result<Vec<ArxivEntry>, ArxivError> {
             quick_xml::events::Event::Eof => break,
             _ => {}
         }
-        buf.clear();
     }
     Ok(out)
 }

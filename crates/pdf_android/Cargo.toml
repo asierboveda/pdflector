@@ -44,4 +44,4 @@ serde_json = "1"
 png = "0.18"
 # Base64 del PNG (sin prefijo data:) para enviar recortes a `GeminiClient::explain_image`.
 # Crate estándar, puro Rust, sin dependencias. MIT/Apache-2.0.
-base64 = "0.22"
+base64 = "0.23"
