@@ -185,11 +185,21 @@ impl Reader {
         (self.pan_x, self.pan_y)
     }
 
-    /// Fija el pan (px) del documento y marca repintado — el blit por vsync
-    /// aplicará el desplazamiento del frame al `ANativeWindow`.
+    /// Fija el pan (px) del documento, clampado a los bordes de la hoja
+    /// (un borde nunca entra dentro de la ventana), y marca repintado.
     pub(crate) fn set_pan(&mut self, x: f32, y: f32) {
-        self.pan_x = x;
-        self.pan_y = y;
+        let (dw, dh) = self.page_doc_size_px(self.page);
+        if dw > 0.0 && dh > 0.0 {
+            (self.pan_x, self.pan_y) = Self::clamped_pan(
+                (x, y),
+                (dw, dh),
+                self.zoom,
+                (self.win_w as f32, self.win_h as f32),
+            );
+        } else {
+            self.pan_x = x;
+            self.pan_y = y;
+        }
         self.mark_repaint();
     }
 
@@ -197,12 +207,7 @@ impl Reader {
     /// pinch): suma el delta al pan actual y lo clampa a los bordes de la
     /// hoja (igual que el anclaje; sin clamp el contenido dejaría huecos).
     pub(crate) fn pan_by(&mut self, dx: f32, dy: f32) {
-        let (dw, dh) = self.page_doc_size_px(self.page);
-        if dw > 0.0 && dh > 0.0 {
-            self.pan_x = Self::clamp_pan(self.pan_x + dx, dw * self.zoom, self.win_w as f32, false);
-            self.pan_y = Self::clamp_pan(self.pan_y + dy, dh * self.zoom, self.win_h as f32, false);
-            self.mark_repaint();
-        }
+        self.set_pan(self.pan_x + dx, self.pan_y + dy);
     }
 
     /// ¿Debe ignorarse el táctil del dedo/palma por haber escrito hace poco con el stylus?

@@ -233,10 +233,10 @@
 //!   defecto como antes (`PDFLECTOR_PDF` → internal/demo.pdf → fallback); si
 //!   no hay ninguno, la app arranca directamente en el picker.
 
-//! ## Selección de texto: long-press + arrastre, copiar y subrayar (2026-08-XX)
+//! ## Selección: long-press + arrastre, siempre IA
 //!
-//! Selección de texto con long-press (mantener pulsado) + arrastre, con menú
-//! flotante Copiar/Subrayar/IA (la Parte 2 —IA— la añadirá otro agente):
+//! Selección con long-press (mantener pulsado) + arrastre: al soltar se
+//! pide directamente la explicación a la IA, sin menú:
 //!
 //! - **Gesto** (`input.rs`): mantener un dedo QUIETO (sin levantarlo y sin
 //!   moverse más de `TAP_SLOP`) sobre el documento durante `LONG_PRESS_MS`
@@ -244,34 +244,26 @@
 //!   `Reader::tick` con el poll con timeout de `needs_tick` mientras el dedo
 //!   esté abajo) fija el ancla en el punto del dedo y materializa el rect
 //!   como punto (`begin_sel`); al arrastrar (> `SELECT_SLOP`) el rect sigue
-//!   al dedo (`update_sel`); al levantar, `end_sel` fija la selección y abre
-//!   el menú Copiar/Subrayar/IA (un long-press sin arrastre se descarta). El
+//!   al dedo (`update_sel`); al levantar, `end_sel` pide la explicación a
+//!   la IA (un long-press sin arrastre se descarta). El
 //!   tap simple de página es INMEDIATO (sin ventana de doble-tap: un doble-
 //!   tap rápido son dos cambios de página) y NO se dispara nunca mientras
-//!   haya selección/menú abierto.
+//!   haya selección activa.
 //! - **Estado** (`reader/`): `Reader::sel` guarda la selección en coords de
 //!   PANTALLA (px de ventana, `anchor`/`cur`) — decisión documentada: el
-//!   gesto, el render del rect y el menú viven en pantalla; la conversión a
-//!   página se hace UNA sola vez al extraer texto (`sel_text`) o subrayar
-//!   (`highlight_sel`) con `Reader::screen_to_page`, la INVERSA exacta del
+//!   gesto y el render del rect viven en pantalla; la conversión a
+//!   página se hace UNA sola vez al extraer texto (`sel_text`) con
+//!   `Reader::screen_to_page`, la INVERSA exacta del
 //!   mapeo del blit a través de `PageScreenTransform`.
 //! - **Render** (`draw/`): el rect de selección se dibuja translúcido con
 //!   borde sobre la página, RECORTADO a los bordes de la hoja
-//!   (`Reader::sel_screen_rect`); el menú flotante se renderiza con el
-//!   Canvas+JNI como overlay cacheado (`Reader::sel_menu`).
-//! - **Copiar** (`jni.rs`): `ClipboardManager.setPrimaryClip(
-//!   ClipData.newPlainText("text", sel))` con el contexto de la Activity;
-//!   aviso breve "copied" en un toast sobre el indicador (`Reader::toast`).
-//! - **Subrayar** (`reader/`): añade un `Annotation::Highlight` con el rect
-//!   de selección en página (amarillo) al `AnnotationSet` y PERSISTE con
-//!   `AnnotationStore::save` (sidecar SQLite); el render de highlights ya
-//!   existente (`draw::draw_highlight`, relleno translúcido bajo los trazos)
-//!   lo muestra al re-redibujar.
+//!   (`Reader::sel_screen_rect`); la respuesta de la IA se muestra en el
+//!   panel flotante (`Reader::ai_panel`) renderizado con Canvas+JNI.
 //!
 //! La extracción de texto (`sel_text`) llama a `doc.text(page)` UNA vez y
 //! concatena el texto de los spans cuyo bbox INTERSECTA el rect de selección,
 //! ordenados por (y, luego x) — orden de lectura; si no hay texto (PDF
-//! escaneado) devuelve cadena vacía y "Copiar" avisa "no text".
+//! escaneado) devuelve cadena vacía y la IA explica solo con la imagen.
 
 //!
 //! ## Partición en módulos (2026-08-13)
@@ -342,6 +334,7 @@ use log::info;
 mod annotations;
 mod cache;
 mod draw;
+mod folder_sync;
 mod gpu;
 pub mod ink;
 mod input;
@@ -377,8 +370,8 @@ pub(crate) const TWO_FINGER_PAN_TO_ZOOM_MIN_PX: f32 = 12.0;
 /// (los micro-drags no extienden la selección); un long-press sin arrastre
 /// no fija selección.
 pub(crate) const SELECT_SLOP: f32 = 8.0;
-/// Tamaño mínimo (px) del rect de selección para fijarla y mostrar el menú
-/// Copiar/Subrayar/IA: un rect degenerado (long-press sin arrastre) se descarta.
+/// Tamaño mínimo (px) del rect de selección para pedir la explicación:
+/// un rect degenerado (long-press sin arrastre) se descarta.
 pub(crate) const SEL_MIN_PX: f32 = 2.0;
 /// Umbral (px de pantalla) que separa un "toque" (sin gesto) de un gesto de
 /// herramienta real (boli/resaltador): si el gesto no recorre al menos esto,
@@ -399,34 +392,26 @@ pub(crate) const TOAST_MS: std::time::Duration = std::time::Duration::from_milli
 pub(crate) const LIB_FADE_MS: f32 = 0.18;
 
 // ---------------------------------------------------------------------------
-// Configuración de "Preguntar a la IA" (Fase 5): Groq (texto) + Gemini (imagen)
+// Configuración de "Preguntar a la IA": Gemini (texto e imagen)
 // ---------------------------------------------------------------------------
 //
-// Las API keys van EMBEBIDAS en el APK: es una app de USO PERSONAL (sin
+// La API key va EMBEBIDA en el APK: es una app de USO PERSONAL (sin
 // telemetría ni servidores propios) y la consulta va directa del dispositivo
-// al proveedor por HTTPS. Obtenlas gratis en https://console.groq.com/keys
-// (plan free) y en https://aistudio.google.com/apikey. PRIVACIDAD: las keys
-// viajan en el binario — no publiques el APK ni el repo con keys reales; los
-// placeholders de abajo compilan y muestran el error "no hay red / key
-// inválida" en el panel.
-//
-// HÍBRIDO (2026-08-XX): TEXTO → Groq con llama-3.3-70b-versatile (buen
-// equilibrio de calidad/velocidad: el usuario del panel es "explícame este
-// párrafo", así que la latencia importa); IMAGEN → Gemini con
-// gemini-flash-latest (el modelo de visión de Groq fue RETIRADO y devuelve
-// 403 — ver `GEMINI_MODEL`).
-pub(crate) const GROQ_API_KEY: &str = include_str!("../groq_key.txt");
-pub(crate) const GROQ_MODEL: &str = "llama-3.3-70b-versatile";
+// a Google por HTTPS. Se obtiene en https://aistudio.google.com/apikey.
+// PRIVACIDAD: la key viaja en el binario — no publiques el APK ni el repo
+// con la key real; el fichero está ignorado por Git y un placeholder
+// compila pero el panel avisa de que falta la clave.
 pub(crate) const GOOGLE_API_KEY: &str = include_str!("../google_key.txt");
-/// Modelo de GEMINI para "Preguntar a la IA" cuando la selección es una
-/// ecuación/gráfico (Fase 5): en ese caso se manda el PNG del crop de la
-/// selección a `GeminiClient::explain_image` (pdf_core::ai), que usa ESTE
-/// modelo (multimodal, texto + imagen). Coincide con el default de pdf_core;
-/// se declara aquí para que la llamada de `Reader::ask_ai` no lleve el
-/// literal suelto (mismo patrón que `GROQ_MODEL`). El modelo de visión de
-/// Groq (`llama-3.2-90b-vision-preview`) se retiró del servicio y devuelve
-/// 403, de ahí el cambio a Gemini.
-pub(crate) const GEMINI_MODEL: &str = "gemini-flash-latest";
+/// Modelo de GEMINI para "Preguntar a la IA": multimodal (texto + imagen),
+/// así que la misma llamada explica texto, ecuaciones y gráficos a partir
+/// del crop de la selección y del contexto de la hoja. Es la variante Lite:
+/// medida en el escritorio con la misma clave, responde en ~1 s, mientras
+/// `gemini-flash-latest` devolvía 503 por alta demanda (y en la tablet la
+/// consulta tardaba decenas de segundos antes de fallar).
+pub(crate) const GEMINI_MODEL: &str = "gemini-flash-lite-latest";
+/// Respaldo si el modelo principal responde ocupado (503): otro Lite,
+/// también medido a ~1 s con texto e imagen.
+pub(crate) const GEMINI_FALLBACK_MODEL: &str = "gemini-3.5-flash-lite";
 /// Límites del factor de zoom continuo (1.0 = página completa a pantalla).
 /// `PINCH_MIN = 1.0`: SIN zoom hacia fuera — la página no se puede ver más
 /// pequeña que el encuadre inicial contain; el pan queda limitado a los
@@ -725,6 +710,7 @@ pub fn android_main(app: AndroidApp) {
                 // marca "pendiente de conceder permiso" — el selector de
                 // añadir re-comprueba el permiso por sí mismo al invocarse.
                 reader.grant_pending = false;
+                reader.folder_sync.request_scan();
             }
             PollEvent::Main(MainEvent::Pause) => {
                 info!("Pause");
@@ -732,6 +718,7 @@ pub fn android_main(app: AndroidApp) {
                 // cambio de app): el proceso puede morir en segundo plano
                 // antes de que `tick` cumpla los 2 s del flush periódico.
                 reader.flush_state();
+                reader.flush_annotation_publication();
             }
             PollEvent::Main(MainEvent::Destroy) => {
                 info!("Destroy: saliendo del bucle");

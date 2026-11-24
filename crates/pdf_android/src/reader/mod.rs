@@ -5,7 +5,7 @@
 //!
 //! `reader/mod.rs` conserva el MODELO DE DATOS — tipos de lista (`PdfEntry`,
 //! `LibraryEntry`, `LibraryScan`, `BookStatus`, `LibSort`, `LibraryViewMode`, …),
-//! estado de selección/IA (`SelState`, `SelMenu`, `AiPhase`, `AiPanel`, `ListDrag`,
+//! estado de selección/IA (`SelState`, `AiPhase`, `AiPanel`, `ListDrag`,
 //! `EmptyStateGeom`), el `struct Reader` con sus campos (los de la biblioteca,
 //! `lib_*`, viven en `LibraryState` — ver `library_state.rs`), los helpers
 //! libres del modelo (`title_from_name`, `scan_pdfs`, …), dos métodos transversales
@@ -23,6 +23,7 @@ use std::time::Instant;
 use android_activity::AndroidApp;
 use android_activity::ndk::native_window::NativeWindow;
 use pdf_core::engine::mupdf::MupdfDocument;
+use pdf_core::folder_sync::ImportedDocument;
 use pdf_core::{AnnotationSet, Bitmap, Color, PageTextCache};
 
 use crate::annotations::PenMode;
@@ -70,13 +71,13 @@ pub(crate) use geometry::{
     disc_detail_back_rect, disc_detail_layout, disc_more_btn_rect, disc_search_rect,
     disc_subtabs_rect, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w,
     grid_gap, grid_pad, header_menu_btn_d, human_size, lib_add_btn_w, lib_chip_h, lib_chips,
-    lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
-    lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
-    lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect, page_badge_size,
-    picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect,
-    sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad, sheet_theme_btn_w,
-    sheet_theme_y, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
-    viewer_top_chrome_h, wrap_text_chars,
+    lib_collection_chips, lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h,
+    lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h,
+    lib_search_panel_h, lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect,
+    page_badge_size, picker_btn_h, picker_btn_w, picker_header_h, picker_row_h,
+    settings_menu_button_rect, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y,
+    sheet_pad, sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect,
+    viewer_bottom_chrome_h, viewer_top_chrome_h, wrap_text_chars,
 };
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
@@ -351,26 +352,6 @@ pub(crate) struct SelState {
     pub(crate) cur: (f32, f32),
 }
 
-/// Menú flotante de la selección fijada (Copiar / Subrayar / IA): tarjeta
-/// pequeña cerca del rect de selección con sus botones (etiqueta + rect en px
-/// de ventana — geometría COMPARTIDA por el render y el tap de `input`). Se
-/// muestra al soltar el arrastre (`end_sel`); tocar fuera lo cierra y
-/// descarta la selección. "IA" es un hueco visual para la Parte 2 (otro
-/// agente): se dibuja atenuado y su tap solo avisa.
-pub(crate) struct SelMenu {
-    /// Esquina superior izquierda del menú en px de ventana.
-    pub(crate) x: i32,
-    pub(crate) y: i32,
-    /// Tamaño del menú en px (el del bitmap cacheado).
-    pub(crate) w: i32,
-    pub(crate) h: i32,
-    /// Bitmap del menú (Canvas+JNI, fondo transparente), cacheado mientras
-    /// el menú esté abierto.
-    pub(crate) bitmap: Bitmap,
-    /// Botones (etiqueta + rect en px de ventana), compartidos con el tap.
-    pub(crate) buttons: Vec<(&'static str, ButtonRect)>,
-}
-
 /// Fase del panel de "Preguntar a la IA" (Parte 2): decide el título, el
 /// color del cuerpo y qué muestra el panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,14 +366,14 @@ pub(crate) enum AiPhase {
     Error,
 }
 
-/// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta tipo `SelMenu`
+/// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta flotante
 /// con cabecera (título + botones ✕/▲/▼) y cuerpo de texto envuelto en
 /// varias líneas; si el texto desborda el cuerpo, el scroll (▲/▼) muestra
 /// solo una ventana de líneas (`scroll..scroll+visible`) — el render
 /// (`draw::render_ai_panel`) salta las líneas fuera de la ventana, así que
 /// el recorte es gratis. Geometría y bitmaps cacheados mientras esté
 /// abierto; el tap vive en `input::ai_panel_tap` (misma geometría
-/// compartida que `SelMenu`).
+/// compartida del panel).
 pub(crate) struct AiPanel {
     /// Esquina superior izquierda del panel en px de ventana.
     pub(crate) x: i32,
@@ -590,6 +571,19 @@ pub(crate) struct Reader {
     pub(crate) doc_path: Option<String>,
     /// Directorio interno de la app (para `state.json`; ver `persist`).
     pub(crate) internal_dir: Option<PathBuf>,
+    /// Serialized annotation persistence and optional folder import/publication actor.
+    pub(crate) folder_sync: crate::folder_sync::FolderSyncWorker,
+    pub(crate) sync_root_label: String,
+    /// Imported source versions currently known to the background folder actor.
+    pub(crate) synced_documents: Vec<ImportedDocument>,
+    /// Portable annotation snapshots recovered from published backups, by source id.
+    pub(crate) synced_annotations: std::collections::HashMap<String, AnnotationSet>,
+    /// Snapshots rejected by the actor's bounded mailbox are retained here and retried.
+    pub(crate) deferred_annotation_saves:
+        std::collections::VecDeque<crate::folder_sync::PendingSave>,
+    /// One active-document snapshot kept outside the retry queue if that queue is saturated.
+    pub(crate) unqueueable_annotation_save: Option<crate::folder_sync::PendingSave>,
+    pub(crate) deferred_status_shown: bool,
     /// Tema activo de la interfaz (DefaultLight, SepiaLight, DefaultDark, SepiaDark).
     pub(crate) theme: theme::AppTheme,
     /// Modo oscuro activo (página invertida + fondo oscuro).
@@ -693,6 +687,7 @@ pub(crate) struct Reader {
     /// abrir (`load_annotations`) y se guardan al añadir/quitar un trazo
     /// (`save_annotations`). El modelo vive en pdf_core (AGENTS.md §4.3).
     pub(crate) annotations: AnnotationSet,
+    pub(crate) annotation_backup_restore_allowed: bool,
     /// Ruta del sidecar del documento abierto (`store::sidecar_path`:
     /// `<pdf-dir>/annotations/<stem>.db`); None sin documento. El sidecar de
     /// un PDF abierto por content:// (biblioteca o "abrir con") queda junto
@@ -703,22 +698,15 @@ pub(crate) struct Reader {
     /// el hilo UI). Prefetcheada al abrir el PDF (página visible ±2) y
     /// limpiada al cambiar de documento.
     text_cache: PageTextCache,
-    annot_sidecar: Option<PathBuf>,
-    /// Selección de texto en curso (long-press + arrastre) en px de ventana
-    /// (ver `SelState`): Some durante el arrastre Y mientras está fijada con
-    /// su menú abierto (`sel_menu`); se descarta al tocar fuera del menú o al
-    /// ejecutar Copiar/Subrayar. None = sin selección activa.
+    pub(crate) annot_sidecar: Option<PathBuf>,
+    /// Selección en curso (long-press + arrastre) en px de ventana
+    /// (ver `SelState`): Some durante el arrastre; al soltar se pide la
+    /// explicación a la IA y se descarta. None = sin selección activa.
     pub(crate) sel: Option<SelState>,
-    /// Menú flotante de la selección fijada (Copiar/Subrayar/IA): bitmap +
-    /// posición/geometría en px de ventana (ver `SelMenu`). Some mientras el
-    /// menú esté abierto; tocar fuera lo cierra y descarta la selección.
-    pub(crate) sel_menu: Option<SelMenu>,
-    /// Id de generación del bitmap de `sel_menu` (caché GPU; ver `ovl_seq`).
-    pub(crate) sel_menu_id: u64,
-    /// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta tipo
-    /// `SelMenu` con cabecera (título + ✕/▲/▼) y cuerpo de texto envuelto
+    /// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta con
+    /// cabecera (título + ✕/▲/▼) y cuerpo de texto envuelto
     /// con scroll (ver `AiPanel`). Some mientras esté abierto (fase
-    /// Asking/Answer/Error); se abre al tocar "IA" en el menú de selección
+    /// Asking/Answer/Error); se abre al soltar la selección
     /// (`ask_ai`) y se cierra con ✕ o tap fuera (`close_ai_panel`).
     pub(crate) ai_panel: Option<AiPanel>,
     /// Id de generación del bitmap de `ai_panel` (caché GPU; ver `ovl_seq`).

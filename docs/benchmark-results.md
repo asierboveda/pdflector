@@ -1102,3 +1102,173 @@ A continuación se transcriben los datos brutos de ambas mediciones:
 | `cache_8mb_pass2_50p_1x` (hit sobre residentes) | **0.35 ms** | 21 184 KB (~20.7 MB) |
 
 - **Conclusión**: La caché LRU limitada a 8 MB reduce la memoria RAM pico en un factor de 5× (de 105 MB a 20.6 MB). El camino de acierto en caché insume 0.35 ms frente a los 74 ms del recorrido con renderizado.
+
+
+---
+
+## 2026-10-06 — Sincronización de carpetas y publicación de apuntes
+
+Validación funcional del diseño [ADR-023](adr/023-sincronizacion-carpetas-y-apuntes.md).
+No es una medición de rendimiento ni de latencia de red.
+
+- Base Git: `c402b1f` más los cambios sin commit de esta tarea. Build personal
+  `assembleProductDebug`, instalada con `adb install -r`, sin borrar datos.
+  SHA-256 APK: `7dbf4852e26243e11fcc1162b59f843f693370b346c02cb18d04d43a51b4febd`.
+- Dispositivo: TCL 9469X, Android 16, build
+  `TCL/9469X_EEA/Bellona_WF_GL:16/BP2A.250605.031.A3/2HB2:user/release-keys`.
+  Pantalla 1440×2200 en vertical; refresco observado 60 Hz.
+- Estado térmico antes/después: status 0; CPU 52,93 °C, GPU 52,899 °C en
+  ambas lecturas de `dumpsys thermalservice`. No se atribuyen percentiles a este
+  ensayo; no hubo captura de frames ni medición externa del lápiz.
+- Transporte: pCloud montado en Linux y FolderSync 4.13.0 en Android, misma
+  cuenta verificada sin registrar credenciales. Dos pares de un sentido,
+  revisión cada cinco minutos, subida con Instant sync, temporales excluidos,
+  transferencia mediante temporal y propagación de borrados desactivada.
+
+### Flujo y resultados observados
+
+1. El servicio de usuario copia solo PDFs de un árbol universitario visible.
+   Descargados e importados en TCL 34 PDFs (489.124.312 bytes), conservando
+   subcarpetas. No se registran nombres ni contenidos del corpus personal.
+2. Añadir `tests/assets/simple.pdf` del núcleo como documento sintético adicional
+   al origen. El servicio lo copia a pCloud; FolderSync lo descarga y PDFLector
+   lo incorpora con nombre y carpeta relativa. El manifest contiene 35 documentos.
+3. Abrir el sintético en biblioteca. Seleccionar bolígrafo y ejecutar
+   `adb shell input stylus swipe 360 650 850 680 400`. Tras el reposo, se crean
+   un PDF en `Apuntes` y un respaldo JSON en `Respaldo`.
+4. Seleccionar subrayador y ejecutar
+   `adb shell input stylus swipe 204 428 730 428 450`. El respaldo contiene
+   un `Stroke` y un `Highlight`. La nueva publicación conserva una anotación
+   PDF `/Ink` y una `/Highlight`, sin duplicar la primera.
+5. FolderSync sube ambos archivos y el servicio los devuelve al origen. Los
+   SHA-256 del PDF en tablet, pCloud y ordenador coinciden. El original sintético
+   conserva exactamente sus bytes. `pdfinfo` abre la publicación y `pdftoppm`
+   muestra la línea azul y el subrayado amarillo.
+6. Reiniciar el proceso de PDFLector: se conservan los 35 documentos, una
+   publicación propia y ambas anotaciones del sintético visibles en el visor.
+
+La primera prueba detectó que validar todos los ancestros rechazaba un alias
+legítimo de Android y que los hard links fallaban en almacenamiento emulado.
+Se canonicalizan las raíces configuradas y se usa `renameat2` con
+`RENAME_NOREPLACE` mediante syscall para instalar sin sobrescribir archivos
+ajenos. El flujo anterior se repitió con ambas correcciones.
+
+### Validación automatizada
+
+- `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
+  `cargo test -p pdf_core --locked` y `cargo check -p pdf_app --locked`: correctos.
+- Check y Clippy Android ARM64 con `--all-targets --locked`: correctos.
+- TCL: 103 pruebas unitarias Android, 0 fallos; incluyen 11 del worker
+  (SQLite, replay del journal, reintentos, orden de estados y límites de cola).
+- TCL: las 14 pruebas de integración `pdf_core/tests/folder_sync.rs`, 0 fallos;
+  cubren identidad, versiones, originales borrados, respaldo, reintento, límites
+  y alias/symlinks. Los ensayos automatizados usan `/data/local/tmp`; la
+  publicación funcional anterior usa el almacenamiento compartido real.
+- Ordenador: 4 pruebas de la automatización Python, 0 fallos; selección PDF,
+  árbol relativo, conflictos, conservación tras borrado remoto y symlinks.
+- `git diff --check`: correcto.
+
+### Límites de la evidencia
+
+No se ha evaluado el tacto del lápiz físico, orientación horizontal, accesibilidad,
+páginas rotadas, estrés de memoria, percentiles interactivos, transporte durante
+Doze ni una interrupción de red real. Los reintentos y recuperación están
+cubiertos por pruebas; no equivalen a medir su latencia en una sesión real.
+El render del ordenador se comprobó con Poppler, sin interacción manual con
+un lector gráfico. La sesión usó dispositivos conectados; la independencia de
+la red local se deduce del transporte mediante pCloud, no de un ensayo con redes
+distintas.
+
+## 2026-10-06 — Acceso al máster en la biblioteca
+
+Comprobación funcional, sin medición de rendimiento. Baseline `c402b1f` con
+cambios locales de sincronización y biblioteca, sin commit. TCL 9469X con
+Android 16, resolución 1440×2200, orientación vertical; misma unidad que en el
+ensayo de sincronización anterior. APK personal `assembleProductDebug`, SHA256
+`b8e62179537a3eabdc6b1106e43bd32454759723197ba972ef03a142a86aeecc`.
+
+### Flujo observado
+
+- Biblioteca → Máster → Todas: solo PDFs del origen sincronizado.
+- Seleccionar CI, ML, NLP, PR, SMA y VC muestra documentos de la asignatura;
+  las tarjetas indican también `books` o `lectures` cuando existe subcarpeta.
+- Buscar `Master_IA_UPC` devuelve documentos por su carpeta: esa cadena no
+  forma parte de sus títulos. Buscar `zzzNoExistePdf` muestra el mensaje
+  de ausencia de resultados; ✕ restablece los documentos.
+- Todos recupera los documentos añadidos manualmente y oculta la fila de
+  asignaturas. Tras la petición de reducir los controles, se reinstaló la APK
+  final y se repitieron Todos → Máster → NLP → Todas y apertura del PDF de
+  comprobación: conserva el trazo azul y el subrayado amarillo.
+- Los controles finales están a la derecha de Descubrir, encima del buscador.
+  Cabecera de colección de 48 px; asignaturas de 64 px, frente a 96 px del
+  primer diseño. Dibujo y toques comparten rectángulos.
+
+### Validación y límites
+
+`cargo fmt --all -- --check`, check y clippy Android ARM64 con all-targets y
+warnings como errores, build Gradle e instalación con `adb install -r`:
+correctos. Las 103 pruebas Android existentes se ejecutaron en la TCL contra
+el código final: 103 correctas, 0 fallos. `git diff --check`: correcto.
+No se borraron documentos ni se modificaron anotaciones durante este ensayo.
+No verificados: horizontal, ventanas estrechas, TalkBack, colección sin PDFs
+y asignatura sin documentos. Los dos últimos mensajes se infieren del código;
+el estado de búsqueda sin resultados sí se observó. Las pruebas existentes
+no sustituyen la comprobación manual de los nuevos controles.
+
+## 2026-10-25 — Diagnóstico de sustitución de Times en Android
+
+Baseline `c402b1f` más cambios locales sin commit; APK instalada 0.2.0,
+versionCode 16777473, actualización 2026-10-06 23:28:19. TCL 9469X, Android 16,
+1440×2200, vertical. Diagnóstico funcional sin medidas de frames, latencia,
+memoria o refresco efectivo. PDF del propietario de 30 páginas, no incorporado
+al repositorio ni a estos artefactos.
+
+- SHA-256 de original y copia privada Android coincide. Se observa texto
+  superpuesto y glifos incorrectos en la primera página del visor.
+- `pdffonts` identifica Times-Roman, Times-Bold y Times-Italic no incrustadas
+  con codificación Custom. Poppler presenta la página correctamente.
+- `mupdf::AndroidFontLoader::load_font` resuelve nombres Times a Noto Serif;
+  `pdf_load_builtin_font` de MuPDF consulta primero ese callback y solo usa
+  las fuentes Base14 incluidas cuando no obtiene una fuente del sistema.
+- Un ejecutable C temporal enlazado con los archivos estáticos ARM64 existentes
+  de MuPDF renderiza correctamente la primera página en la TCL sin callback.
+  Registrar un callback Times → `/system/fonts/NotoSerif-Regular.ttf` reproduce
+  los solapamientos y caracteres incorrectos observados en la aplicación.
+- Esto aísla la causa a la sustitución de fuentes, sin EGL, caché del visor,
+  anotaciones ni transporte de nube en el diagnóstico nativo.
+
+No se modificó el PDF, las anotaciones ni el código del producto. No existe
+corrección instalada todavía. No se evaluaron las otras páginas ni otros PDFs;
+la comparación diagnóstica no acredita una solución general. Ejecutables y
+renders temporales se eliminaron tras observarlos.
+
+### Corrección integrada y comprobación posterior
+
+El propietario autorizó la corrección en la conversación. El cambio queda en
+`crates/pdf_core/src/engine/mupdf.rs`, sin dependencias adicionales. Al inicializar
+el motor o abrir un documento en Android se registra, mediante `Once`, un
+cargador que devuelve ausencia de sustituto para los 14 nombres Base14 y delega
+las otras fuentes, CJK y fallback por script al cargador Android existente.
+MuPDF utiliza así las fuentes estándar que ya se incluían en la compilación.
+
+APK `assembleProductDebug`, instalada con `adb install -r` conservando los datos,
+SHA-256 `9e7045089ad8653bbd82af1cb44d40642352bf67885a410f36c5d4f856353c68`.
+La aplicación reabre el documento en la TCL y la página 1 ya no presenta los
+solapamientos, glifos ausentes ni pérdida de negritas/cursivas. También se
+observaron correctamente las páginas 2, 4 y 5; la página 4 incluye una tabla.
+La comprobación se realizó con la aplicación instalada, no con el ejecutable
+diagnóstico. No se modificó el original ni se hicieron anotaciones durante el
+ensayo. La pantalla queda en la primera página para revisión del propietario.
+
+Validación: formato correcto; clippy host all-targets con `-D warnings`, todas
+las pruebas de `pdf_core`, check y clippy Android ARM64 all-targets estrictos,
+build Gradle e instalación correctos. Las 103 pruebas Android existentes se
+compilaron y ejecutaron en la TCL. La primera ejecución dio 102 correctas y un
+fallo; su detalle no se conservó al limitar la salida. Una repetición inmediata
+y otras tres ejecuciones completas, sin cambios de código, dieron 103 correctas
+y 0 fallos cada una. El fallo aislado no se pudo identificar ni reproducir y no
+se considera demostrado que la suite esté libre de intermitencias.
+
+No se ha comprobado manualmente todo el documento, horizontal, CJK/otros scripts
+ni la interacción física de selección/subrayado tras esta corrección. No se
+atribuyen mejoras de rendimiento a esta comprobación funcional.

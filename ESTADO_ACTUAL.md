@@ -130,6 +130,17 @@ y lista, búsqueda, ordenación, filtros de estado y portadas generadas en un
 worker (`crates/pdf_android/src/reader/library_state.rs:1-189`,
 `crates/pdf_android/src/thumbs.rs:197-306`).
 
+La biblioteca incluye «Todos / Máster» a la derecha de «Descubrir», encima
+del buscador. «Máster» muestra los PDFs importados de la carpeta sincronizada;
+permite elegir Todas, CI, ML, NLP, PR, SMA o VC. Las tarjetas y la lista muestran
+la asignatura y subcarpeta; la búsqueda consulta nombre y carpeta sin distinguir
+mayúsculas. Los filtros de colección son estado de sesión, sin migración de
+datos. En ventanas estrechas los controles de colección pasan bajo el buscador.
+**Observado en la TCL en vertical:** acceso, filtros, búsqueda por carpeta,
+ausencia de resultados y apertura del PDF con sus anotaciones. Horizontal,
+ventanas estrechas y TalkBack siguen **no verificados**. Evidencia en
+[benchmark-results](docs/benchmark-results.md#2026-10-06--acceso-al-máster-en-la-biblioteca).
+
 #### Visor y render
 
 El visor presenta una página actual. Mantiene la actual y páginas vecinas en
@@ -199,6 +210,32 @@ En `PointerUp`, levantar el stylus finaliza el gesto de herramienta; levantar
 otro puntero mientras el dibujo está activo lo cancela y limpia el estado del
 gesto. La cobertura unitaria de ambas decisiones está en
 `crates/pdf_android/src/input/motion.rs`.
+
+Con la hoja ampliada (zoom > 1), el arrastre con un dedo también la desplaza
+en modo Navegar: el gesto empieza como tap y pasa a pan al superar el slop,
+con el pan clampado a los bordes de la hoja. A zoom 1 el arrastre sigue sin
+desplazar ni cambiar de página; el tap, la selección por pulsación larga, el
+arrastre del sheet y el pinch de dos dedos no cambian. **Verificado:** las
+pruebas unitarias de clasificación del arrastre y del clamp pasan en la TCL
+(110 pruebas, 0 fallos). La fluidez del gesto con el dedo queda **no
+verificada** hasta probarlo manualmente en la tablet.
+
+#### Fuentes estándar en Android
+
+`MupdfEngine` registra una vez, antes de abrir documentos, un cargador Android
+que deja las 14 fuentes estándar PDF al fallback Base14 incluido en MuPDF.
+Esto evita que Times, Helvetica, Courier, Symbol y ZapfDingbats se sustituyan
+por fuentes del sistema con otras métricas o codificación. Las fuentes no
+estándar y los fallbacks CJK/por script conservan el cargador Android existente;
+no se añaden fuentes, dependencias ni formatos persistentes.
+
+**Observado el 2026-10-25 en la TCL:** la actualización conserva los datos y
+corrige palabras superpuestas, glifos incorrectos y estilos perdidos en un PDF
+con Times no incrustada y codificación personalizada. Se observaron las páginas
+1, 2, 4 y 5, con texto, negritas, cursivas y tabla legibles. Horizontal y el
+conjunto de idiomas/fuentes restantes siguen sin validación manual específica.
+Diagnóstico y corrección en
+[benchmark-results](docs/benchmark-results.md#2026-10-25--diagnóstico-de-sustitución-de-times-en-android).
 
 #### Barra de herramientas del visor
 
@@ -339,13 +376,35 @@ y [`docs/benchmark-results.md`](docs/benchmark-results.md).
 
 #### Selección e IA
 
-Una selección permite copiar, resaltar o preguntar a la IA. La consulta se
-ejecuta en un hilo de fondo y el hilo de UI sondea el canal sin bloquear
-(`crates/pdf_android/src/reader/toast_ia.rs:25-151`):
+Al soltar una selección se pide directamente la explicación a la IA: no
+hay menú Copiar/Subrayar/IA. La consulta se ejecuta en un hilo de fondo y
+el hilo de UI sondea el canal sin bloquear
+(`crates/pdf_android/src/reader/toast_ia.rs`):
 
-- Si hay una imagen recortada de la selección, se envía a Gemini junto con el
-  texto extraído como contexto adicional.
-- Si no hay imagen y sí texto, se usa Groq.
+- Siempre responde Gemini (`gemini-flash-lite-latest`; si responde
+  ocupado, se prueba con `gemini-3.5-flash-lite`). Si hay una imagen
+  recortada de la selección, se envía como fuente principal (ecuaciones y
+  gráficos) junto con el texto extraído de la selección y el texto de la
+  hoja completa como contexto (recortado a 6 000 caracteres). La salida se
+  acota a 600 tokens y el timeout de red es de 60 s.
+- Si no hay imagen, la explicación va solo con texto mediante
+  `GeminiClient::explain_text` (`crates/pdf_core/src/ai.rs`).
+- Sin clave válida en `google_key.txt`, el panel avisa de que falta la clave
+  en vez de mostrar el error del proveedor.
+
+**Medido en el escritorio con la misma clave (2026-11-02):**
+`gemini-flash-latest` devolvió 503 por alta demanda tras ~10 s (el error
+observado en la tablet), mientras `gemini-flash-lite-latest` y
+`gemini-3.5-flash-lite` respondieron en ~1 s con texto y con imagen.
+
+El panel de respuesta es una tarjeta grande (hasta 1080 px de ancho y
+~78 % del alto), con cuerpo a 18 px, encabezados a 21 px, scroll por
+arrastre y botones ▲/▼. La respuesta se formatea antes de dibujarla
+(`draw::ai_text`): negritas y viñetas Markdown reales, y el LaTeX se
+convierte a texto Unicode legible (fracciones como a/b, super/subíndices,
+símbolos como ∑ o α, ecuaciones centradas). **Observado en la TCL
+(2026-11-02):** explicación correcta y legible de un párrafo con la
+ecuación de Eigenfaces, sin marcas Markdown crudas.
 
 Las claves se incorporan durante la compilación desde ficheros locales
 referenciados con `include_str!` (`crates/pdf_android/src/lib.rs:361-366`). El
@@ -366,10 +425,47 @@ La aplicación guarda estado interno en varios JSON: progreso de biblioteca,
 estado del visor, recientes, papers descargados, preferencias de Discover y
 estado de herramientas (`crates/pdf_android/src/persist.rs:109-529`). Las
 anotaciones usan el sidecar SQLite de `pdf_core` y se guardan fuera del hilo de
-UI (`crates/pdf_android/src/reader/anotaciones.rs:16-79`).
+UI mediante el worker de `crates/pdf_android/src/folder_sync.rs`.
 
-Las escrituras JSON inspeccionadas son best-effort y no usan un patrón temporal
-más rename; un error o JSON inválido suele degradar a valores por defecto.
+Los JSON de progreso, preferencias y estado del visor siguen siendo best-effort;
+un error o JSON inválido suele degradar a valores por defecto. Los journals,
+respaldos y manifests de sincronización usan temporal, sync y rename.
+
+#### Sincronización de carpetas y publicación de apuntes
+
+Implementa el diseño aprobado en [ADR-023](docs/adr/023-sincronizacion-carpetas-y-apuntes.md).
+`pdf_core::folder_sync::FolderLibrary` importa PDFs de un árbol local por lotes,
+valida su apertura con MuPDF y conserva copias privadas por ruta relativa y
+SHA-256. Excluye `_PDFLector` y symlinks; cambiar el contenido crea otra versión
+sin eliminar la anterior. Publica copias con anotaciones PDF estándar en
+`_PDFLector/Apuntes` y respaldos JSON en `_PDFLector/Respaldo`, con journals
+privados para reintento. Los archivos sin cambios de metadata no se recopian.
+
+Android tiene configuración opt-in en `internal/folder_sync.json` con
+`enabled`, `incoming_root` y `outgoing_root`; las raíces son absolutas y el
+núcleo añade `_PDFLector` a la de salida. Un worker serializa el guardado SQLite,
+agrupa instantáneas pendientes por documento y separa el guardado local de la
+exportación diferida. La biblioteca incorpora las copias importadas y muestra
+su ruta relativa; Pause y los cambios de documento solicitan flush sin esperar
+I/O. La aplicación no conecta directamente con pCloud.
+
+`tools/master-cloud-sync.py` copia únicamente PDFs de una carpeta universitaria
+al disco montado de pCloud y devuelve las publicaciones al origen, conservando
+el árbol. Excluye carpetas ocultas y entornos de desarrollo; nunca propaga
+borrados. Su configuración personal y el estado de transferencia viven fuera
+del repositorio. FolderSync realiza el transporte en la tablet mediante dos
+pares en un sentido. La configuración repetible está en
+[la skill master-sync](.agents/skills/master-sync/SKILL.md).
+
+**Verificado:** compilación y Clippy para host y ARM64, pruebas del núcleo y
+103 pruebas Android ejecutadas en la TCL. **Observado en TCL:** descarga e
+importación de 34 PDFs y un documento sintético, escritura y subrayado mediante
+input ADB, publicación en almacenamiento compartido, retorno por pCloud al
+ordenador y persistencia al reiniciar. Poppler muestra tinta y subrayado de la
+copia publicada sin duplicarlos. La evidencia y los límites están en
+[benchmark-results](docs/benchmark-results.md#2026-10-06--sincronización-de-carpetas-y-publicación-de-apuntes).
+No se ha medido latencia ni validado el transporte en Doze; la edición con otro
+lector del ordenador no se incorpora al modelo de PDFLector.
 
 ### 3.3 `pdf_app`
 

@@ -269,6 +269,18 @@ impl Reader {
     /// si no a la página 1. Devuelve false (y deja el estado intacto) si no
     /// se pudo abrir.
     pub(crate) fn open_pdf_at(&mut self, path: &str, start_page: Option<u32>) -> bool {
+        if self
+            .unqueueable_annotation_save
+            .as_ref()
+            .is_some_and(|pending| pending.pdf_path != Path::new(path))
+        {
+            self.status = Some(
+                "Cannot switch documents yet: the current annotation save is waiting for storage."
+                    .to_string(),
+            );
+            self.redraw();
+            return false;
+        }
         let engine = match MupdfEngine::new() {
             Ok(e) => e,
             Err(e) => {

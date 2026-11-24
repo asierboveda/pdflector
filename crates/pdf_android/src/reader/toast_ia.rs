@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Toast y panel de IA: aviso breve (`show_toast`) y "Preguntar a la IA" — `ask_ai` (hilo de fondo híbrido Gemini/Groq con imagen), `ai_answer`, `rebuild_ai_panel`, `close_ai_panel`, `ai_scroll`.
+//! Toast y panel de IA: aviso breve (`show_toast`) y "Preguntar a la IA" — `ask_ai` (hilo de fondo Gemini con imagen y contexto de la hoja), `ai_answer`, `rebuild_ai_panel`, `close_ai_panel`, `ai_scroll`.
 
 use super::AiPanel;
 use super::AiPhase;
@@ -25,7 +25,7 @@ impl Reader {
     // "Preguntar a la IA" (Parte 2): hilo de fondo + IA híbrida + panel
     // ---------------------------------------------------------------------
     //
-    // El tap en "IA" del menú de selección (`input::sel_menu_tap`) llama a
+    // Al soltar la selección (`Reader::end_sel`) se llama a
     // `ask_ai`: se cierra el menú, se abre el panel en fase Asking
     // ("preguntando…") y se lanza un hilo de fondo (std::thread + mpsc, el
     // mismo patrón de `pdf_core::prefetch`) que llama a la IA y envía el
@@ -34,23 +34,21 @@ impl Reader {
     // Answer (texto envuelto con scroll) o Error (mensaje claro en el mismo
     // panel). Decisiones:
     //
-    // - HÍBRIDO (2026-08-XX): con IMAGEN de la selección (crop del bitmap
+    // - GEMINI SIEMPRE: con IMAGEN de la selección (crop del bitmap
     //   cacheado, `sel_image_png_base64`) se llama a
-    //   `GeminiClient::explain_image` (pdf_core::ai) con `GEMINI_MODEL`: el
-    //   modelo de visión de Groq fue RETIRADO (403), así que la imagen va a
-    //   Gemini; la imagen es la fuente principal para ecuaciones/gráficos y
-    //   el texto extraído va como contexto adicional en el prompt (puede ser
-    //   "" en un PDF escaneado). Sin imagen, se cae a `GroqClient::chat`
-    //   solo-texto con `GROQ_MODEL` (el flujo de siempre).
-    // - Reintento: si Gemini falla (p. ej. 503/busy), se intenta UNA vez más
-    //   tras ~1 s DENTRO del hilo de fondo (nunca bloquea el hilo de UI); si
-    //   sigue fallando, el panel muestra un error claro ("modelo ocupado,
-    //   reintenta") con el detalle del error original.
+    //   `GeminiClient::explain_image` con `GEMINI_MODEL`; la imagen es la
+    //   fuente principal para ecuaciones/gráficos (el texto extraído de una
+    //   ecuación es parcial o nulo). El prompt incluye además el texto de
+    //   la selección y el de la hoja completa como contexto. Sin imagen, la
+    //   misma explicación va solo con texto (`explain_text`).
+    // - Respaldo: solo si Gemini responde ocupado (503/Busy), se prueba al
+    //   momento con `GEMINI_FALLBACK_MODEL` DENTRO del hilo de fondo (nunca
+    //   bloquea el hilo de UI); cualquier otro error se muestra en el panel.
     // - La key va EMBEBIDA en el APK (uso personal, sin telemetría; ver
     //   `lib.rs`). Una consulta no se cancela al cerrar el panel: el hilo
     //   termina solo y el resultado se descarta al soltar el receptor.
     // - El hilo de fondo evita bloquear el hilo de UI durante la red
-    /// "IA": lanza la consulta a la IA (Gemini con imagen / Groq solo-texto)
+    /// "IA": lanza la consulta a Gemini (imagen y contexto, o solo texto)
     /// en un hilo de fondo y abre el panel en fase "preguntando…". Si no hay
     /// ni texto ni imagen aprovechable avisa "no text" y no abre el panel
     /// (mismo comportamiento que Copiar; con imagen — PDF escaneado — sí
@@ -61,20 +59,44 @@ impl Reader {
         let text = self.sel_text();
         // Imagen de la selección (ecuaciones/gráficos): PNG base64 del crop
         // del bitmap cacheado. None si el crop no es posible (sin bitmap,
-        // rect vacío) — en ese caso se cae al envío solo-texto de siempre.
+        // rect vacío) — en ese caso la explicación va solo con texto.
         let image = self.sel_image_png_base64();
-        self.clear_selection(); // el panel sustituye al menú de selección
+        // Contexto: el texto de la hoja completa sitúa la selección (un
+        // párrafo o una ecuación se entienden dentro de su hoja).
+        let page_context = self.page_context_text();
+        self.clear_selection(); // el panel sustituye a la selección
         if text.is_empty() && image.is_none() {
             self.show_toast("no text");
             return;
         }
+        if crate::GOOGLE_API_KEY.trim().len() < 20 {
+            self.ai_text =
+                "Falta tu clave de Gemini: pégala en crates/pdf_android/google_key.txt y reinstala la app."
+                    .to_string();
+            self.ai_phase = AiPhase::Error;
+            self.rebuild_ai_panel();
+            self.redraw();
+            return;
+        }
         info!(
-            "ask_ai: {} chars, image {} B PNG -> text Groq ({}), image Gemini ({})",
+            "ask_ai: {} chars, image {} B PNG, context {} chars -> Gemini ({})",
             text.chars().count(),
             image.as_ref().map_or(0, String::len),
-            crate::GROQ_MODEL,
+            page_context.chars().count(),
             crate::GEMINI_MODEL
         );
+        let mut prompt = "Eres un asistente de estudio. Explica de forma clara y concisa, en español, el contenido seleccionado por el estudiante dentro del contexto de su hoja. Si es una ecuación o un gráfico, explica qué significa y para qué sirve. No te limites a repetir el texto: explícalo. Escribe las fórmulas en notación sencilla y legible sin LaTeX complejo (por ejemplo x^2, a/b, raíz(x)) y usa párrafos cortos.".to_string();
+        if !text.is_empty() {
+            prompt.push_str("\n\nTexto de la selección:\n");
+            prompt.push_str(&text);
+        }
+        if !page_context.is_empty() && page_context != text {
+            prompt.push_str("\n\nTexto de la hoja (contexto):\n");
+            prompt.push_str(&page_context);
+        }
+        if image.is_some() {
+            prompt.push_str("\n\nLa imagen adjunta es la selección exacta del estudiante: es la fuente principal de lo que hay que explicar.");
+        }
         // Panel en fase Asking ("preguntando…") y hilo de fondo con la
         // llamada HTTP: el UI nunca espera por la red.
         self.ai_text = "preguntando…".to_string();
@@ -82,53 +104,25 @@ impl Reader {
         self.rebuild_ai_panel();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result = match image {
-                // Con imagen (ecuación/gráfico): Gemini con `explain_image`;
-                // el prompt es la instrucción + el texto extraído como
-                // contexto adicional (puede ser "" en un PDF escaneado — la
-                // imagen es la fuente principal). El modelo de visión de
-                // Groq está retirado (403), por eso la imagen va a Gemini.
-                Some(b64) => {
-                    let client = pdf_core::ai::GeminiClient::with_model(
+            let client =
+                pdf_core::ai::GeminiClient::with_model(crate::GOOGLE_API_KEY, crate::GEMINI_MODEL);
+            let attempt = |client: &pdf_core::ai::GeminiClient| match &image {
+                Some(b64) => client.explain_image(&prompt, b64),
+                None => client.explain_text(&prompt),
+            };
+            let result = match attempt(&client) {
+                Ok(answer) => Ok(answer),
+                // Si el modelo principal está ocupado (503), se prueba al
+                // momento con el modelo de respaldo; esperar y repetir con
+                // el mismo modelo saturado solo añade latencia.
+                Err(pdf_core::AiError::Busy(_)) => {
+                    let fallback = pdf_core::ai::GeminiClient::with_model(
                         crate::GOOGLE_API_KEY,
-                        crate::GEMINI_MODEL,
+                        crate::GEMINI_FALLBACK_MODEL,
                     );
-                    let mut prompt =
-                        "Explica de forma clara y concisa lo que se ve en la imagen (ecuación, gráfico o texto)."
-                            .to_string();
-                    if !text.is_empty() {
-                        prompt.push_str("\n\nTexto extraído de la página (contexto adicional):\n");
-                        prompt.push_str(&text);
-                    }
-                    match client.explain_image(&prompt, &b64) {
-                        Ok(answer) => Ok(answer),
-                        Err(first_err) => {
-                            // Reintento ÚNICO tras ~1 s: Gemini devuelve
-                            // 503/busy en picos de carga y el segundo intento
-                            // suele pasar. El sleep va en el hilo de fondo
-                            // (el hilo de UI nunca se bloquea).
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            match client.explain_image(&prompt, &b64) {
-                                Ok(answer) => Ok(answer),
-                                Err(second_err) => Err(pdf_core::AiError::Http {
-                                    status: 503,
-                                    body: format!(
-                                        "modelo ocupado, reintenta — error original: {first_err}; tras reintento: {second_err}"
-                                    ),
-                                }),
-                            }
-                        }
-                    }
+                    attempt(&fallback)
                 }
-                // Sin imagen: el chat solo-texto de Groq de siempre.
-                None => {
-                    let client = pdf_core::ai::GroqClient::with_model(
-                        crate::GROQ_API_KEY,
-                        crate::GROQ_MODEL,
-                    );
-                    let system = "Eres un asistente de estudio. Explica de forma clara y concisa el texto que te dan.";
-                    client.chat(system, &text)
-                }
+                Err(e) => Err(e),
             };
             // El error también viaja por el canal (`AiError` implementa
             // Display): el hilo de UI decide si es respuesta o error.

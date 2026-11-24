@@ -372,11 +372,7 @@ impl Reader {
     /// al rebuild completo. El render es Canvas+JNI UNA vez por banda; el
     /// scroll dentro de la banda es memcpy.
     fn rebuild_library_band(&mut self) {
-        let content_y0 = lib_content_y0(
-            self.win_h,
-            self.library.lib_search_open,
-            self.status.is_some(),
-        );
+        let content_y0 = lib_content_y0(self);
         let viewport = (self.win_h - content_y0).max(0);
         let content_h = self.lib_content_h() as i32;
         let margin = if self.is_grid() {
@@ -409,11 +405,7 @@ impl Reader {
         match &self.library.lib_band {
             None => false,
             Some((bmp, origin)) => {
-                let content_y0 = lib_content_y0(
-                    self.win_h,
-                    self.library.lib_search_open,
-                    self.status.is_some(),
-                );
+                let content_y0 = lib_content_y0(self);
                 let viewport = (self.win_h - content_y0).max(0);
                 let s = self.library.lib_scroll as i32;
                 s >= *origin && s + viewport <= *origin + bmp.height as i32
@@ -612,11 +604,7 @@ impl Reader {
                 // renderizados (Canvas+JNI UNA vez por cambio estructural o
                 // re-band; el scroll solo reposiciona la banda), NO un
                 // re-render por frame.
-                let content_y0 = lib_content_y0(
-                    self.win_h,
-                    self.library.lib_search_open,
-                    self.status.is_some(),
-                );
+                let content_y0 = lib_content_y0(self);
                 // Aviso breve (toast) integrado en el MISMO present que la
                 // biblioteca (antes: un segundo present por frame durante
                 // ~1,5 s — innecesario). Materialización común a los dos

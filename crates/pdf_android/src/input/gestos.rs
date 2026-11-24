@@ -4,7 +4,7 @@
 //! Máquina de gestos del visor: el estado
 //! de la máquina (`GestureState` + `GestureKind`), el temporizador de
 //! long-press (`LONG_PRESS_MS`) y los TAPS del visor — página, chrome del
-//! visor, sheet de ajustes, menú de selección y panel de IA — resueltos por
+//! visor, sheet de ajustes y panel de IA — resueltos por
 //! `fire_tap_action`. El procesamiento de eventos (`handle_motion`,
 //! `tick_gestures`) vive en `motion`; `dispatch` (handle_input) y `stylus`
 //! (USI 2.0) son los otros submódulos de `input`.
@@ -82,7 +82,7 @@ pub(crate) enum GestureKind {
     /// dedo al superar `LONG_PRESS_MS` (`tick_gestures` materializa el rect
     /// como punto con `Reader::begin_sel`); al moverse > `SELECT_SLOP` el
     /// rect sigue al dedo (`Reader::update_sel`); al soltar se fija
-    /// (`Reader::end_sel`) y se abre el menú Copiar/Subrayar/IA (un
+    /// (`Reader::end_sel`) y se pide la explicación a la IA (un
     /// long-press sin arrastre se descarta). Un segundo dedo cancela la
     /// selección en curso y pasa al pinch.
     Selecting {
@@ -102,14 +102,21 @@ pub(crate) enum GestureKind {
     /// en vivo (ver `Reader::{begin,update,end}_erase_gesture`); al levantar
     /// se persiste UNA vez. No crea anotaciones ni entra en el undo.
     Erase,
-    /// Un dedo (DEDO, con herramienta activa): mover la página (pan) — "los
-    /// gestos con la mano son para mover/zoom". `start` es la posición del
-    /// Down y `pan0` el pan de partida; cada Move fija
-    /// `pan = pan0 + (cur − start)` del documento. Dos dedos lo convierten
-    /// en `Pinch`.
+    /// Un dedo (DEDO): mover la página (pan) — "los gestos con la mano son
+    /// para mover/zoom". Entra al bajar el dedo con herramienta activa, o
+    /// desde un `Tap` que supera `TAP_SLOP` con la hoja ampliada (zoom > 1)
+    /// en modo Navegar. `start` es la posición del Down y `pan0` el pan de
+    /// partida; cada Move fija `pan = pan0 + (cur − start)`. Dos dedos lo
+    /// convierten en `Pinch`.
     Pan {
         start: (f32, f32),
         pan0: (f32, f32),
+    },
+    /// Arrastre sobre el panel de IA: desplaza su scroll línea a línea.
+    /// `last_y` es la Y del Move anterior y `accum` el resto sin consumir.
+    AiScroll {
+        last_y: f32,
+        accum: f32,
     },
     /// Dedo o lápiz sobre la barra de herramientas (o con su popover
     /// abierto): al levantar sin moverse es un tap de la barra; mantenido
@@ -246,32 +253,6 @@ fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 }
 
-/// Tap con el menú de selección abierto.
-fn sel_menu_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
-    let Some(menu) = &reader.sel_menu else {
-        return;
-    };
-    let inside = x >= menu.x as f32
-        && x < (menu.x + menu.w) as f32
-        && y >= menu.y as f32
-        && y < (menu.y + menu.h) as f32;
-    if !inside {
-        reader.clear_selection();
-        return;
-    }
-    let hit: Option<&'static str> = menu
-        .buttons
-        .iter()
-        .find(|(_, (l, t, r, b))| x >= *l && x < *r && y >= *t && y < *b)
-        .map(|(label, _)| *label);
-    match hit {
-        Some("Copiar") => reader.copy_sel(app),
-        Some("Subrayar") => reader.highlight_sel(),
-        Some("IA") => reader.ask_ai(),
-        Some(_) | None => reader.clear_selection(),
-    }
-}
-
 /// Tap con el panel de "Preguntar a la IA" abierto.
 fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
     let Some(panel) = &reader.ai_panel else {
@@ -304,10 +285,6 @@ pub(crate) fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: 
     // de anotación activa: el dedo debe poder ir a Biblioteca o abrir ajustes
     // sin cambiar antes a navegación. Solo el tap sobre la PÁGINA queda
     // supeditado a la herramienta.
-    if reader.sel_menu.is_some() {
-        sel_menu_tap(reader, app, x, y);
-        return;
-    }
     if reader.ai_panel.is_some() {
         ai_panel_tap(reader, x, y);
         return;

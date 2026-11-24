@@ -7,7 +7,8 @@ docs/.obsidian/workspace.json
 
 # Ecosystem agent skills (installed via `npx skills add`; reproducible from
 # skills-lock.json). Project-authored skills go in .opencode/skills/ (tracked).
-/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/master-sync/
 /.claude/skills/
 
 # API key de Groq (uso personal, NO commitear)
@@ -20,3 +21,7 @@ tools/ime/out/
 # Logs de herramientas de desarrollo en la raíz del repo (p. ej. snowflake.log
 # que escribe Positron al abrir el proyecto): no son parte del producto.
 *.log
+
+# Cachés generadas por las herramientas Python.
+__pycache__/
+*.pyc

@@ -554,7 +554,7 @@ impl Gpu {
     /// Renderiza la capa base persistente (Dry FBO): página + anotaciones SOLO.
     /// Se invoca ÚNICAMENTE cuando cambia la página, el zoom, las anotaciones o
     /// el dark (campos reales de la `DryKey` reducida). Los overlays de UI
-    /// (chrome, sheet, toast, sel_menu, ai_panel, lib_fade, badges, cursor de
+    /// (chrome, sheet, toast, ai_panel, lib_fade, badges, cursor de
     /// goma) NO viven aquí: se dibujan por frame en `present_viewer` directos
     /// a fb0 (Fase 2).
     fn render_dry(&mut self, reader: &Reader) -> bool {
@@ -975,7 +975,7 @@ impl Gpu {
         }
 
         // 3b. Overlays de UI directamente a fb0 (por frame): chrome, sheet,
-        // toast, sel_menu, ai_panel, lib_fade, badges, cursor de goma. Nunca
+        // toast, ai_panel, lib_fade, badges, cursor de goma. Nunca
         // invalidan la dry (Fase 2): la dry cachea página + anotaciones, esto
         // es UI viva.
         // Cada (bitmap, id) lleva el id de generación que el Reader asignó en
@@ -1295,10 +1295,6 @@ impl<'a> OverlayList<'a> {
         }
         if let Some((pb, x, y)) = reader.toolbar_popover_bitmap.as_ref() {
             out.items.push((pb, reader.toolbar_popover_id, *x, *y));
-        }
-        if let Some(menu) = reader.sel_menu.as_ref() {
-            out.items
-                .push((&menu.bitmap, reader.sel_menu_id, menu.x, menu.y));
         }
         if let Some(panel) = reader.ai_panel.as_ref() {
             out.items

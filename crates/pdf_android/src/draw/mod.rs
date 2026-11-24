@@ -13,7 +13,7 @@
 //! - `sheet`: panel de ajustes deslizante.
 //! - `menus`: picker de PDFs y menús ⋯/☰.
 //! - `library`: pantalla de biblioteca (cabecera, zona, portadas).
-//! - `overlays`: menú de selección, toast, panel IA, snapshot de fade.
+//! - `overlays`: toast, panel IA, snapshot de fade.
 //!
 //! Los paths `crate::draw::X` del código previo se conservan con los
 //! re-exports de abajo (consumidores: `reader`, `input`, `zoom`, `gpu`).
@@ -23,6 +23,7 @@ use jni::{JavaVM, jni_sig, jni_str};
 use log::error;
 use pdf_core::Bitmap;
 
+mod ai_text;
 mod chrome;
 mod discover;
 mod library;
@@ -31,6 +32,7 @@ mod overlays;
 mod primitives;
 mod sheet;
 mod toolbar;
+pub(crate) use ai_text::{AiLine, AiLineKind, format_ai_response};
 pub(crate) use chrome::ButtonRect;
 pub(crate) use chrome::render_eraser_cursor;
 pub(crate) use chrome::render_page_badge;
@@ -53,12 +55,11 @@ pub(crate) use menus::draw_view_menu;
 pub(crate) use menus::render_picker_list;
 pub(crate) use menus::settings_menu_geometry;
 pub(crate) use menus::view_menu_geometry;
+pub(crate) use overlays::AI_LINE_H;
 pub(crate) use overlays::ai_panel_layout;
 pub(crate) use overlays::compose_library_snapshot;
 pub(crate) use overlays::render_ai_panel;
-pub(crate) use overlays::render_sel_menu;
 pub(crate) use overlays::render_toast;
-pub(crate) use overlays::sel_menu_layout;
 pub(crate) use primitives::copy_region;
 pub(crate) use primitives::fill_buffer;
 pub(crate) use sheet::render_sheet;

@@ -28,8 +28,13 @@ impl Reader {
     /// impide abrir el PDF ni se rompe la app); `AnnotationStore::open` crea
     /// el directorio y el esquema al primer guardado.
     pub(crate) fn load_annotations(&mut self, path: &str) {
+        // Complete the previous document's queued snapshot before changing its
+        // target sidecar; this only signals the actor and never waits for I/O.
+        self.folder_sync.flush();
         let sidecar = sidecar_path(Path::new(path));
-        let set = match AnnotationStore::open(&sidecar) {
+        let sidecar_existed = sidecar.is_file();
+        let latest_snapshot = self.folder_sync.latest_snapshot(&sidecar);
+        let mut set = match AnnotationStore::open(&sidecar) {
             Ok(store) => match store.load() {
                 Ok(set) => {
                     info!(
@@ -49,6 +54,22 @@ impl Reader {
                 AnnotationSet::new()
             }
         };
+        if let Some(latest) = latest_snapshot {
+            set = latest;
+        } else if !sidecar_existed
+            && let Some(imported) = self
+                .synced_documents
+                .iter()
+                .find(|document| document.local_path == Path::new(path))
+            && let Some(restored) = self.synced_annotations.get(&imported.id)
+        {
+            set = restored.clone();
+            info!(
+                "annotations: restored {} from portable folder backup",
+                set.len()
+            );
+        }
+        self.annotation_backup_restore_allowed = !sidecar_existed;
         self.annotations = set;
         self.annot_sidecar = Some(sidecar);
     }
@@ -58,26 +79,49 @@ impl Reader {
     /// n = nº de anotaciones; se llama solo en acciones de usuario, nunca por
     /// frame). Best-effort: un fallo solo se loguea, no rompe el dibujo.
     ///
-    /// Caller actual: `highlight_sel` (subrayar la selección). El camino de
+    /// Lo llaman las rutas de anotación (tinta, subrayador, goma). El camino de
     /// guardado es el mismo que usaba el modo dibujo eliminado; el modelo de
     /// anotaciones sigue siendo persistible y exportable.
-    pub(crate) fn save_annotations(&self) {
+    pub(crate) fn save_annotations(&mut self) {
+        self.annotation_backup_restore_allowed = false;
         let Some(sidecar) = self.annot_sidecar.clone() else {
             return;
         };
-        let annotations = self.annotations.clone();
-        let len = annotations.len();
-        // Guardado en hilo de fondo: con 276+ trazos, la serialización JSON +
-        // SQLite bloqueaba el hilo UI ~50-200ms al soltar, causando
-        // "parpadeo"/ANR al escribir encima de tinta existente. El hilo de
-        // fondo evita el bloqueo; best-effort (un fallo solo se loguea).
-        std::thread::spawn(move || match AnnotationStore::open(&sidecar) {
-            Ok(store) => match store.save(&annotations) {
-                Ok(()) => info!("annotations saved ({} total) to {}", len, sidecar.display()),
-                Err(e) => error!("annotations save {}: {e}", sidecar.display()),
-            },
-            Err(e) => error!("annotations open {}: {e}", sidecar.display()),
-        });
+        let Some(pdf_path) = self.doc_path.as_ref().map(Path::new) else {
+            error!("annotations save skipped: current PDF path unavailable");
+            return;
+        };
+        let publish = self
+            .synced_documents
+            .iter()
+            .any(|document| document.local_path == pdf_path);
+        let count = self.annotations.len();
+        let job = crate::folder_sync::PendingSave {
+            pdf_path: pdf_path.to_path_buf(),
+            sidecar,
+            annotations: self.annotations.clone(),
+            publish,
+            persisted: false,
+        };
+        if let Err(reason) = self.folder_sync.save(job.clone()) {
+            error!("annotations save queue rejected snapshot: {reason}");
+            let detail = self.defer_annotation_save(job);
+            self.status = Some(format!("Annotations pending: {detail}"));
+            self.list_dirty = true;
+            self.redraw();
+        } else {
+            info!("annotations queued ({} total) for serialized save", count);
+            let label = self
+                .synced_documents
+                .iter()
+                .find(|document| document.local_path == pdf_path)
+                .map(|document| document.relative_path.display().to_string());
+            self.status = Some(match label {
+                Some(path) => format!("Saving annotations: {path}"),
+                None => "Saving annotations…".to_string(),
+            });
+            self.redraw();
+        }
     }
 
     /// Fija la herramienta del lápiz (barra), la persiste y refresca la

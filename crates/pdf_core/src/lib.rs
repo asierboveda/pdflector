@@ -12,6 +12,7 @@ pub mod cache;
 pub mod dark;
 pub mod engine;
 pub mod export;
+pub mod folder_sync;
 pub mod metrics;
 pub mod prefetch;
 pub mod scroll;

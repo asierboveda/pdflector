@@ -1,27 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Selección de texto: máquina de la selección por long-press + arrastre (`begin_sel`…`end_sel`, `clear_selection`), transformaciones pantalla↔página (`screen_to_page`, `page_screen_rect`, `sel_screen_rect`, `sel_page_rect`), extracción de texto e imagen (`sel_text`, `sel_image_png_base64`) y las acciones Copiar/Subrayar/menú (`copy_sel`, `highlight_sel`, `open_sel_menu`).
+//! Selección: máquina de la selección por long-press + arrastre (`begin_sel`…`end_sel`, `clear_selection`), transformaciones pantalla↔página (`screen_to_page`, `page_screen_rect`, `sel_screen_rect`, `sel_page_rect`) y extracción de texto e imagen (`sel_text`, `page_context_text`, `sel_image_png_base64`) para pedir la explicación a la IA al soltar.
 
 use super::Reader;
-use super::SelMenu;
 use super::SelState;
 use crate::SEL_MIN_PX;
-use crate::draw::render_sel_menu;
-use crate::draw::sel_menu_layout;
-use android_activity::AndroidApp;
 use base64::Engine;
-use pdf_core::{Annotation, Highlight, Rect, TextSpan};
+use pdf_core::{Rect, TextSpan};
+
+/// Caracteres máximos del texto de la hoja que viajan como contexto a la IA.
+const PAGE_CONTEXT_MAX_CHARS: usize = 6_000;
 
 // ---------------------------------------------------------------------
 // Selección de texto: long-press + arrastre, copiar y subrayar (Parte 1)
 // ---------------------------------------------------------------------
 //
 // El gesto vive en `input/` (long-press + arrastre); aquí
-// el estado (`sel`/`sel_menu`), las transformaciones de coords, la
-// extracción de texto y las acciones Copiar/Subrayar. Decisiones
-// documentadas en `SelState` (coords de pantalla) y en el doc de la
-// cabecera de `lib.rs`.
+// el estado (`sel`), las transformaciones de coords y la extracción de
+// texto e imagen para la IA. Decisiones documentadas en `SelState`
+// (coords de pantalla) y en el doc de la cabecera de `lib.rs`.
 impl Reader {
     /// Comienza el modo selección: ancla = punto del LONG-PRESS y punto
     /// actual = el mismo (el rect, un PUNTO aún sin arrastrar, crece con
@@ -50,9 +48,10 @@ impl Reader {
         }
     }
 
-    /// Fija la selección al levantar el dedo: si el rect es significativo
-    /// (≥ `SEL_MIN_PX` por lado) abre el menú Copiar/Subrayar/IA; un
-    /// long-press sin arrastre (rect degenerado, el punto) se descarta.
+    /// Al levantar el dedo con un rect significativo (≥ `SEL_MIN_PX` por
+    /// lado) pide directamente la explicación a la IA: no hay menú
+    /// explicación a la IA. Un long-press sin arrastre (rect degenerado, el
+    /// punto) se descarta.
     pub(crate) fn end_sel(&mut self) {
         let Some((l, t, r, b)) = self.sel_screen_rect() else {
             self.clear_selection(); // no hubo arrastre
@@ -62,20 +61,15 @@ impl Reader {
             self.clear_selection(); // long-press sin arrastre: nada que fijar
             return;
         }
-        self.open_sel_menu();
-        if self.window.is_some() {
-            self.blit();
-        }
+        self.ask_ai();
     }
 
-    /// Descarta la selección y su menú (si los hay) y redibuja solo si había
-    /// algo visible que quitar. Es la acción de "tocar fuera del menú" y la
-    /// limpieza de cualquier transición (cambio de página/documento, gesto
-    /// cancelado, segundo dedo).
+    /// Descarta la selección y redibuja solo si había algo visible que
+    /// quitar. Es la limpieza de cualquier transición (cambio de
+    /// página/documento, gesto cancelado, segundo dedo).
     pub(crate) fn clear_selection(&mut self) {
-        let had = self.sel.is_some() || self.sel_menu.is_some();
+        let had = self.sel.is_some();
         self.sel = None;
-        self.sel_menu = None;
         if had && self.window.is_some() {
             self.blit();
         }
@@ -119,9 +113,8 @@ impl Reader {
     }
 
     /// Rect de la selección en coordenadas de PÁGINA (puntos PDF): convierte
-    /// las dos esquinas del rect de pantalla con `screen_to_page`. Lo usan
-    /// la extracción de texto (`sel_text`) y el subrayado
-    /// (`highlight_sel`) — la ÚNICA conversión a página que se hace.
+    /// las dos esquinas del rect de pantalla con `screen_to_page`. Lo usa
+    /// la extracción de texto (`sel_text`) — la ÚNICA conversión a página.
     pub(crate) fn sel_page_rect(&self) -> Option<Rect> {
         let (l, t, r, b) = self.sel_screen_rect()?;
         let a = self.screen_to_page(l, t)?;
@@ -176,6 +169,31 @@ impl Reader {
             .map(|s| s.text.as_str())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Texto completo de la hoja actual como CONTEXTO para la IA: todos los
+    /// spans en orden de lectura, unidos por líneas y recortados a
+    /// `PAGE_CONTEXT_MAX_CHARS` caracteres. Cadena vacía si la hoja no tiene
+    /// texto extraíble (PDF escaneado).
+    pub(crate) fn page_context_text(&mut self) -> String {
+        let Some(doc) = self.doc.as_ref() else {
+            return String::new();
+        };
+        let Ok(pt) = self.text_cache.get_or_extract(doc, self.page) else {
+            return String::new();
+        };
+        let mut spans: Vec<&TextSpan> = pt.spans.iter().collect();
+        spans.sort_by(|a, b| {
+            a.y.partial_cmp(&b.y)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        let full = spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        full.chars().take(PAGE_CONTEXT_MAX_CHARS).collect()
     }
 
     /// PNG base64 de la REGIÓN seleccionada (para "Preguntar a la IA" con
@@ -244,74 +262,5 @@ impl Reader {
             writer.write_image_data(&rgba).ok()?;
         }
         Some(base64::engine::general_purpose::STANDARD.encode(&png_bytes))
-    }
-
-    /// "Copiar": copia el texto de la selección al portapapeles de Android
-    /// (`jni::copy_to_clipboard`) y muestra "copied"; si no hay texto (PDF
-    /// escaneado) avisa "no text". En ambos casos cierra el menú y descarta
-    /// la selección.
-    pub(crate) fn copy_sel(&mut self, app: &AndroidApp) {
-        let text = self.sel_text();
-        if text.is_empty() {
-            self.show_toast("no text");
-        } else {
-            crate::jni::copy_to_clipboard(app, &text);
-            self.show_toast("copied");
-        }
-        self.clear_selection();
-    }
-
-    /// "Subrayar": añade al `AnnotationSet` un `Annotation::Highlight` con
-    /// el rect de selección en página (amarillo por defecto) y lo PERSISTE
-    /// en el sidecar SQLite (`AnnotationStore::save`). El render de
-    /// highlights ya existente (`draw::draw_annotations`, relleno
-    /// translúcido bajo los trazos) lo muestra al redibujar; el frame
-    /// compuesto del sheet se invalida para que lo recoja. Cierra el menú y
-    /// descarta la selección.
-    pub(crate) fn highlight_sel(&mut self) {
-        let Some(rect) = self.sel_page_rect() else {
-            self.clear_selection();
-            return;
-        };
-        let ann = Annotation::Highlight(Highlight {
-            // El rect de selección completo como un único rect (el modelo
-            // permite varios rects por línea; aquí basta con la caja).
-            rects: vec![rect],
-            // Color actual del resaltador de la barra de herramientas.
-            color: self.highlight_color,
-        });
-        if let Some(id) = self.annotations.add(self.page as usize, ann) {
-            // El "↶" de la barra de herramientas deshace también los
-            // subrayados hechos con la selección de texto.
-            self.session_ids.push(id);
-            self.record_annotation_edit(crate::undo::AnnotationEdit::added(self.page as usize, id));
-            self.save_annotations();
-            self.show_toast("highlighted");
-        } else {
-            self.show_toast("highlight failed");
-        }
-        self.clear_selection();
-    }
-
-    /// Abre el menú flotante de la selección fijada: calcula la geometría
-    /// (`draw::sel_menu_layout`, cerca del rect, dentro de la ventana),
-    /// renderiza el bitmap (Canvas+JNI) y guarda ambos en `sel_menu`.
-    fn open_sel_menu(&mut self) {
-        let Some(layout) = sel_menu_layout(self) else {
-            return;
-        };
-        let Some(bitmap) = render_sel_menu(self) else {
-            return;
-        };
-        let (mx, my, mrx, mry) = layout.rect;
-        self.sel_menu = Some(SelMenu {
-            x: mx as i32,
-            y: my as i32,
-            w: (mrx - mx) as i32,
-            h: (mry - my) as i32,
-            bitmap,
-            buttons: layout.buttons,
-        });
-        self.sel_menu_id = self.next_ovl_id(); // menú nuevo → textura nueva
     }
 }

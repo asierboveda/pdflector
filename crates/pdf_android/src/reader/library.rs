@@ -123,13 +123,72 @@ impl Reader {
             if !p.is_file() {
                 continue;
             }
-            let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            let Some(file_name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
                 continue;
+            };
+            let synced = self
+                .synced_documents
+                .iter()
+                .find(|document| document.local_path == p);
+            let (name, folder) = if let Some(document) = synced {
+                let relative = document.relative_path.display().to_string();
+                let versions = self
+                    .synced_documents
+                    .iter()
+                    .filter(|other| other.relative_path == document.relative_path)
+                    .count();
+                let title = if versions > 1 {
+                    let short_hash: String = document.source_hash.chars().take(8).collect();
+                    format!("{relative} · {short_hash}")
+                } else {
+                    relative
+                };
+                let folder = document
+                    .relative_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(|parent| format!("{}/{}", self.sync_root_label, parent.display()))
+                    .unwrap_or_else(|| self.sync_root_label.clone());
+                (title, folder)
+            } else {
+                (file_name, "PDF".to_string())
             };
             entries.push(LibraryEntry {
                 name,
-                folder: "PDF".to_string(),
+                folder,
                 uri: b.path.clone(),
+                size: 0,
+            });
+        }
+        for document in &self.synced_documents {
+            let path = document.local_path.display().to_string();
+            if entries.iter().any(|entry| entry.uri == path) {
+                continue;
+            }
+            let relative = document.relative_path.display().to_string();
+            let versions = self
+                .synced_documents
+                .iter()
+                .filter(|other| other.relative_path == document.relative_path)
+                .count();
+            let name = if versions > 1 {
+                format!(
+                    "{relative} · {}",
+                    document.source_hash.chars().take(8).collect::<String>()
+                )
+            } else {
+                relative
+            };
+            let parent = document
+                .relative_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| format!("{}/{}", self.sync_root_label, p.display()))
+                .unwrap_or_else(|| self.sync_root_label.clone());
+            entries.push(LibraryEntry {
+                name,
+                folder: parent,
+                uri: path,
                 size: 0,
             });
         }
@@ -418,7 +477,16 @@ impl Reader {
             .library_list
             .iter()
             .enumerate()
-            .filter(|(_, e)| self.library.entry_passes(e))
+            .filter(|(_, e)| {
+                self.library.entry_passes(e)
+                    && (!self.library.lib_master
+                        || self.master_folder(e).is_some_and(|folder| {
+                            self.library
+                                .lib_subject
+                                .as_deref()
+                                .is_none_or(|subject| folder.split('/').next() == Some(subject))
+                        }))
+            })
             .map(|(i, _)| i)
             .collect();
         // Filtro de ESTADO (derivado del registro de progreso).
@@ -520,6 +588,36 @@ impl Reader {
         self.redraw();
     }
 
+    /// Carpeta relativa de una entrada sincronizada; las entradas locales no
+    /// pertenecen a la colección aunque su nombre contenga “Máster”.
+    pub(crate) fn master_folder<'a>(&self, entry: &'a LibraryEntry) -> Option<&'a str> {
+        if entry.folder == self.sync_root_label {
+            Some("")
+        } else {
+            entry
+                .folder
+                .strip_prefix(&self.sync_root_label)?
+                .strip_prefix('/')
+        }
+    }
+
+    pub(crate) fn library_caption(&self, entry: &LibraryEntry) -> String {
+        match self.master_folder(entry) {
+            Some("") => "Máster".to_string(),
+            Some(folder) => folder.replace('/', " · "),
+            None => entry_author(entry),
+        }
+    }
+
+    pub(crate) fn lib_select_master(&mut self, master: bool, subject: Option<String>) {
+        self.library.lib_master = master;
+        self.library.lib_subject = subject;
+        self.library.lib_scroll = 0.0;
+        self.library.lib_letter = None;
+        self.library.lib_folder = None;
+        self.apply_filter();
+    }
+
     /// Fija el filtro de letra inicial del panel de búsqueda (None = todas;
     /// chip "All"). Al elegir, el panel se cierra: el campo de búsqueda
     /// muestra el resumen del filtro activo (ver `draw::search_summary`).
@@ -599,12 +697,7 @@ impl Reader {
 
     /// Scroll vertical máximo (px) del contenido de la biblioteca.
     pub(crate) fn lib_max_scroll(&self) -> f32 {
-        let viewport = (self.win_h
-            - lib_content_y0(
-                self.win_h,
-                self.library.lib_search_open,
-                self.status.is_some(),
-            )) as f32;
+        let viewport = (self.win_h - lib_content_y0(self)) as f32;
         (self.lib_content_h() - viewport).max(0.0)
     }
 

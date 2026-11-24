@@ -486,10 +486,86 @@ pub(crate) fn lib_search_chips_y1(reader: &Reader) -> f32 {
 
 /// Y (px) del borde superior del contenido scrolleable (cabecera + campo de
 /// búsqueda + panel de chips si está abierto + franja de estado si la hay).
-pub(crate) fn lib_content_y0(win_h: i32, search_open: bool, has_status: bool) -> i32 {
-    let status_h = if has_status { picker_row_h(win_h) } else { 0 };
-    (lib_header_h(win_h) + lib_search_h() + lib_search_panel_h(win_h, search_open)) as i32
+pub(crate) fn lib_content_y0(reader: &Reader) -> i32 {
+    let status_h = if reader.status.is_some() {
+        picker_row_h(reader.win_h)
+    } else {
+        0
+    };
+    let collection_h = if lib_collection_in_header(reader) {
+        0.0
+    } else {
+        72.0
+    };
+    let subject_h = if reader.library.lib_master { 72.0 } else { 0.0 };
+    (lib_header_h(reader.win_h)
+        + lib_search_h()
+        + lib_search_panel_h(reader.win_h, reader.library.lib_search_open)
+        + collection_h
+        + subject_h) as i32
         + status_h
+}
+
+fn lib_collection_in_header(reader: &Reader) -> bool {
+    let (_, discover) = lib_tabs_rect(reader.win_w, reader.win_h);
+    let menu_left = view_menu_button_rect(reader.win_w, reader.win_h).0;
+    menu_left - discover.2 >= 232.0
+}
+
+/// Rectángulos compartidos por dibujo y toques. Las colecciones se alinean
+/// a la derecha de Descubrir; en ventanas estrechas pasan bajo el buscador.
+type CollectionChip = (String, (f32, f32, f32, f32), bool, bool);
+
+pub(crate) fn lib_collection_chips(reader: &Reader) -> Vec<CollectionChip> {
+    let pad = grid_pad(reader.win_w);
+    let search_bottom = lib_header_h(reader.win_h)
+        + lib_search_h()
+        + lib_search_panel_h(reader.win_h, reader.library.lib_search_open);
+    let in_header = lib_collection_in_header(reader);
+    let (_, discover) = lib_tabs_rect(reader.win_w, reader.win_h);
+    let (left, top, height, width) = if in_header {
+        let available = view_menu_button_rect(reader.win_w, reader.win_h).0 - discover.2 - 40.0;
+        (
+            discover.2 + 24.0,
+            discover.1,
+            discover.3 - discover.1,
+            ((available - 12.0) / 2.0).min(132.0),
+        )
+    } else {
+        (pad, search_bottom + 4.0, 64.0, 132.0)
+    };
+    let mut chips = Vec::new();
+    for (i, label) in ["Todos", "Máster"].iter().enumerate() {
+        let x = left + i as f32 * (width + 12.0);
+        chips.push((
+            label.to_string(),
+            (x, top, x + width, top + height),
+            reader.library.lib_master == (i == 1),
+            false,
+        ));
+    }
+    if reader.library.lib_master {
+        let subject_top = search_bottom + if in_header { 4.0 } else { 76.0 };
+        let width = ((reader.win_w as f32 - 2.0 * pad - 6.0 * 8.0) / 7.0).min(112.0);
+        for (i, label) in ["Todas", "CI", "ML", "NLP", "PR", "SMA", "VC"]
+            .iter()
+            .enumerate()
+        {
+            let left = pad + i as f32 * (width + 8.0);
+            let active = if i == 0 {
+                reader.library.lib_subject.is_none()
+            } else {
+                reader.library.lib_subject.as_deref() == Some(*label)
+            };
+            chips.push((
+                label.to_string(),
+                (left, subject_top, left + width, subject_top + 64.0),
+                active,
+                true,
+            ));
+        }
+    }
+    chips
 }
 
 /// --- Organización de "My Library" (sort + filter, chips discretos) ---
@@ -635,11 +711,7 @@ pub(crate) fn lib_org_chips(reader: &Reader, row: usize) -> Vec<(String, ButtonR
     } else {
         reader.library.lib_filter_x
     };
-    let content_y0 = lib_content_y0(
-        reader.win_h,
-        reader.library.lib_search_open,
-        reader.status.is_some(),
-    ) as f32;
+    let content_y0 = lib_content_y0(reader) as f32;
     let y0 = content_y0 - reader.library.lib_scroll + lib_org_y(win_w, reader.win_h, row);
     let chip_h = lib_org_chip_h(reader.win_h);
     let mut out = Vec::new();
@@ -698,11 +770,7 @@ pub(crate) fn lib_empty_state_geom(reader: &Reader) -> Option<EmptyStateGeom> {
     if !reader.library_list.is_empty() {
         return None;
     }
-    let content_y0 = lib_content_y0(
-        reader.win_h,
-        reader.library.lib_search_open,
-        reader.status.is_some(),
-    ) as f32;
+    let content_y0 = lib_content_y0(reader) as f32;
     let ctop = content_y0 - reader.library.lib_scroll;
     let h = reader.win_h as f32;
     let cy = ctop + (h - ctop) * 0.40;

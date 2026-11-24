@@ -46,9 +46,8 @@
 //! long-press NO dispara el tap de página: el tap simple es INMEDIATO (sin
 //! ventana de doble-tap, `fire_tap_action` en el propio Up), así que un
 //! doble-tap rápido son DOS cambios de página. El tap izq/der de página NO
-//! se dispara nunca mientras hay selección/menú abierto (`sel_menu_tap`
-//! consume esos taps); tocar fuera del menú lo cierra y descarta la
-//! selección. El long-press solo aplica con el sheet cerrado.
+//! se dispara nunca mientras hay selección activa. El long-press solo
+//! aplica con el sheet cerrado.
 
 // Máquina de gestos del visor: `GestureState`/`GestureKind`, temporizador de
 // long-press y los taps del visor (página, chrome, sheet, menús).

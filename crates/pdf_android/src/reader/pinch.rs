@@ -80,6 +80,19 @@ impl Reader {
         }
     }
 
+    /// Clamp de un pan por ejes para una página `doc` a un zoom dado.
+    pub(crate) fn clamped_pan(
+        pan: (f32, f32),
+        doc: (f32, f32),
+        zoom: f32,
+        win: (f32, f32),
+    ) -> (f32, f32) {
+        (
+            Self::clamp_pan(pan.0, doc.0 * zoom, win.0, false),
+            Self::clamp_pan(pan.1, doc.1 * zoom, win.1, false),
+        )
+    }
+
     /// Blit EFECTIVO del bitmap residente de la página actual (fix salto-pinch):
     /// escala del bitmap que HAY en caché (`full_w` frente al tamaño contain) en
     /// vez de `zoom / rendered_zoom`. El campo `rendered_zoom` sigue al último
@@ -144,9 +157,8 @@ impl Reader {
         // natural (centrada en ambos ejes). BUG: sin este
         // reset, un pan residual de un zoom previo dejaba la vista
         // "colgada" en un offset (p. ej. el tercio inferior de la página,
-        // pan_y ≈ −400 px con la página ampliada más alta que la ventana) sin
-        // forma de corregirlo — la app NO tiene gesto de pan (el arrastre
-        // se eliminó), así que el único "home" posible es el centrado. El
+        // pan_y ≈ −400 px con la página ampliada más alta que la ventana);
+        // volver a zoom 1 la recentra siempre como posición de referencia. El
         // pan residual puede dejar la página fuera de su posición natural;
         // por eso el reset es explícito en ambos ejes.
         if zoom <= PINCH_MIN + 1e-4 {
@@ -297,5 +309,36 @@ impl Reader {
         info!("zoom {:.3}", self.zoom);
         self.save_state();
         self.mark_repaint();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reader;
+
+    #[test]
+    fn clamped_pan_keeps_page_covering_window() {
+        // Página de 1000x1400 a zoom 2 en ventana 1000x1000: el pan no puede
+        // descubrir fondo por ningún borde.
+        let (x, y) = Reader::clamped_pan((9999.0, 9999.0), (1000.0, 1400.0), 2.0, (1000.0, 1000.0));
+        assert_eq!(x, 500.0);
+        assert_eq!(y, 900.0);
+        let (x, y) =
+            Reader::clamped_pan((-9999.0, -9999.0), (1000.0, 1400.0), 2.0, (1000.0, 1000.0));
+        assert_eq!(x, -500.0);
+        assert_eq!(y, -900.0);
+    }
+
+    #[test]
+    fn clamped_pan_centres_page_smaller_than_window() {
+        // A zoom 1 la página encaja (o es menor): sin desplazamiento.
+        let pan = Reader::clamped_pan((120.0, -80.0), (800.0, 900.0), 1.0, (1000.0, 1000.0));
+        assert_eq!(pan, (0.0, 0.0));
+    }
+
+    #[test]
+    fn clamped_pan_passes_through_valid_pan() {
+        let pan = Reader::clamped_pan((-100.0, 200.0), (1000.0, 1400.0), 2.0, (1000.0, 1000.0));
+        assert_eq!(pan, (-100.0, 200.0));
     }
 }

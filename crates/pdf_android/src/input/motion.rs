@@ -12,7 +12,9 @@
 
 use super::gestos::{GestureKind, LONG_PRESS_MS, TwoFingerMode, fire_tap_action};
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_SELECT, PenMode, ToolKind};
-use crate::draw::{SettingsMenuItem, ViewMenuItem, settings_menu_geometry, view_menu_geometry};
+use crate::draw::{
+    AI_LINE_H, SettingsMenuItem, ViewMenuItem, settings_menu_geometry, view_menu_geometry,
+};
 use crate::jni::launch_all_files_settings;
 use crate::reader::discover_categories::ARXIV_CATEGORIES;
 use crate::reader::discover_state::{DiscoverScreen, DiscoverTab};
@@ -21,10 +23,11 @@ use crate::reader::{
     PickerKind, Reader, UiMode, disc_card_action_rect, disc_card_gap, disc_card_h, disc_card_rect,
     disc_cat_row_rect, disc_content_y0, disc_detail_back_rect, disc_detail_layout,
     disc_more_btn_rect, disc_search_rect, disc_subtabs_rect, grid_cell_h, grid_cell_w, grid_gap,
-    grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_content_y0, lib_empty_state_geom,
-    lib_grid_y0, lib_header_h, lib_org_block_h, lib_org_chip_h, lib_org_chips, lib_search_chips_y0,
-    lib_search_h, lib_search_panel_h, lib_tabs_rect, list_row_gap, list_row_h, picker_btn_w,
-    picker_header_h, picker_row_h, settings_menu_button_rect, view_menu_button_rect,
+    grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_collection_chips, lib_content_y0,
+    lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h, lib_org_chip_h,
+    lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h, lib_tabs_rect,
+    list_row_gap, list_row_h, picker_btn_w, picker_header_h, picker_row_h,
+    settings_menu_button_rect, view_menu_button_rect,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 use android_activity::AndroidApp;
@@ -100,6 +103,34 @@ pub(crate) fn tick_gestures(reader: &mut Reader, _app: &AndroidApp) {
 /// nunca es 0 (mínimo 1 px), así que un toque con los dedos casi juntos no
 /// divide por cero en el Move y, si no hay separación, `set_zoom_sharp`
 /// resulta un no-op (zoom sin cambios).
+/// Qué hace un arrastre que empezó como `Tap` al superar `TAP_SLOP`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TapDrag {
+    /// Aún dentro del slop: sigue siendo un tap (o long-press) potencial.
+    Stay,
+    /// Arrastre vertical del sheet ya visible.
+    PullSheet,
+    /// Desplazar la hoja con un dedo (solo con la hoja ampliada).
+    Pan,
+    /// Cancelar el tap sin desplazar (zoom 1: la hoja encaja en pantalla).
+    Cancel,
+}
+
+/// Clasifica el arrastre de un dedo que empezó como tap: el sheet visible
+/// manda; con zoom por encima del mínimo la hoja se desplaza con un dedo;
+/// a zoom 1 el arrastre solo cancela el tap.
+pub(crate) fn classify_tap_drag(moved: f32, zoom: f32, sheet_pull: bool) -> TapDrag {
+    if moved <= TAP_SLOP {
+        TapDrag::Stay
+    } else if sheet_pull {
+        TapDrag::PullSheet
+    } else if zoom > PINCH_MIN + 1e-4 {
+        TapDrag::Pan
+    } else {
+        TapDrag::Cancel
+    }
+}
+
 fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {
     let (_, ax, ay) = pts[0];
     let (_, bx, by) = pts[1];
@@ -134,10 +165,11 @@ fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {
 ///   pinch);
 /// - mantener un dedo quieto durante `LONG_PRESS_MS` = entrar en MODO
 ///   SELECCIÓN (ancla en el punto del dedo; arrastrar extiende el rect,
-///   soltar fija y abre el menú Copiar/Subrayar/IA; sin arrastre se
+///   soltar pide la explicación a la IA; sin arrastre se
 ///   descarta);
-/// - un dedo que se desliza más de `TAP_SLOP` cancela el tap (sin scroll:
-///   el arrastre se eliminó por decisión del autor).
+/// - un dedo que se desliza más de `TAP_SLOP` cancela el tap; con la hoja
+///   ampliada (zoom > 1) ese arrastre la desplaza con un dedo, y a zoom 1
+///   no desplaza ni cambia de página.
 ///
 /// Botones del boli en un MotionEvent (state=botones pulsados, action=boton del evento).
 #[derive(Clone, Copy, Debug)]
@@ -392,28 +424,72 @@ pub(crate) fn handle_motion(
                     let moved = ((cx - start_x).powi(2) + (cy - start_y).powi(2)).sqrt();
                     if moved > TAP_SLOP {
                         // El dedo se movió: el long-press muere (se exige un
-                        // dedo quieto) y el gesto pasa a arrastre del sheet
+                        // dedo quieto).
                         reader.gesture.press_at = None;
+                        // Arrastre sobre el panel de IA: scroll de su texto.
+                        let on_ai_panel = reader.ai_panel.as_ref().is_some_and(|panel| {
+                            panel.scrollable
+                                && start_x >= panel.x as f32
+                                && start_x < (panel.x + panel.w) as f32
+                                && start_y >= panel.y as f32
+                                && start_y < (panel.y + panel.h) as f32
+                        });
+                        if on_ai_panel {
+                            reader.gesture.kind = GestureKind::AiScroll {
+                                last_y: cy,
+                                accum: 0.0,
+                            };
+                            return;
+                        }
                         let (dx, dy) = (cx - start_x, cy - start_y);
-                        let sheet_visible = reader.sheet_progress > 0.0;
                         // ¿Arrastre del sheet? Solo con el sheet YA visible:
                         // moverlo (bajar = mantener/abrir, subir = cerrar).
                         // El pull-down con el sheet cerrado se eliminó: los
                         // ajustes se abren con tap en la barra superior.
-                        let pull = sheet_visible && dy.abs() > dx.abs();
-                        if pull {
-                            reader.begin_sheet_drag();
-                            reader.gesture.kind = GestureKind::Pull { start_y };
-                        } else {
-                            // Deslizamiento que no es del sheet: cancela el
-                            // tap (sin scroll; arrastre eliminado).
-                            reader.gesture.kind = GestureKind::None;
+                        let pull = reader.sheet_progress > 0.0 && dy.abs() > dx.abs();
+                        match classify_tap_drag(moved, reader.zoom, pull) {
+                            TapDrag::PullSheet => {
+                                reader.begin_sheet_drag();
+                                reader.gesture.kind = GestureKind::Pull { start_y };
+                            }
+                            TapDrag::Pan if !reader.should_ignore_touch() => {
+                                // Hoja ampliada: desplazar con un dedo desde
+                                // el punto del Down (sin salto: el pan usa la
+                                // distancia total al origen del gesto).
+                                let pan0 = reader.begin_pan();
+                                reader.gesture.kind = GestureKind::Pan {
+                                    start: (start_x, start_y),
+                                    pan0,
+                                };
+                                reader.set_pan(pan0.0 + (cx - start_x), pan0.1 + (cy - start_y));
+                            }
+                            _ => {
+                                // A zoom 1 (o tacto ignorado tras escribir):
+                                // cancela el tap sin desplazar la hoja.
+                                reader.gesture.kind = GestureKind::None;
+                            }
                         }
                     }
                 }
                 GestureKind::Pull { start_y, .. } if reader.gesture.pointers.len() == 1 => {
                     let (_, _, cy) = reader.gesture.pointers[0];
                     reader.drag_sheet(cy - start_y);
+                }
+                GestureKind::AiScroll { last_y, accum } if reader.gesture.pointers.len() == 1 => {
+                    let (_, _, cy) = reader.gesture.pointers[0];
+                    let mut rest = accum + (last_y - cy);
+                    while rest >= AI_LINE_H {
+                        reader.ai_scroll(1);
+                        rest -= AI_LINE_H;
+                    }
+                    while rest <= -AI_LINE_H {
+                        reader.ai_scroll(-1);
+                        rest += AI_LINE_H;
+                    }
+                    reader.gesture.kind = GestureKind::AiScroll {
+                        last_y: cy,
+                        accum: rest,
+                    };
                 }
                 GestureKind::Pinch {
                     mut start_dist,
@@ -591,7 +667,7 @@ pub(crate) fn handle_motion(
                 }
                 GestureKind::Selecting { .. } => {
                     // Fin del arrastre de selección: fija la selección y abre
-                    // el menú Copiar/Subrayar/IA (un long-press sin arrastre
+                    // la explicación a la IA (un long-press sin arrastre
                     // no fija nada: `end_sel` descarta los rects degenerados).
                     reader.end_sel();
                 }
@@ -643,6 +719,9 @@ pub(crate) fn handle_motion(
                 GestureKind::Pan { .. } => {
                     // Fin del pan con dedo: no hay nada que asentar (el pan
                     // ya quedó aplicado en cada Move).
+                }
+                GestureKind::AiScroll { .. } => {
+                    // Fin del scroll del panel: ya quedó aplicado en cada Move.
                 }
                 GestureKind::Pinch { .. } => {
                     // Defensa: si los DOS dedos se levantan en un único
@@ -999,6 +1078,18 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
         reader.redraw();
         return;
     }
+    for (label, (l, t, r, b), _, subject_row) in lib_collection_chips(reader) {
+        if x >= l && x < r && y >= t && y < b {
+            reader.lib_close_ime(app);
+            if subject_row {
+                reader.lib_select_master(true, if label == "Todas" { None } else { Some(label) });
+            } else {
+                reader.lib_select_master(label == "Máster", None);
+            }
+            return;
+        }
+    }
+
     if y < header_h {
         // "⋯" View: alterna su dropdown y cierra el de Settings.
         if hit_view {
@@ -1080,11 +1171,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
     }
 
     // Franja de estado: no es seleccionable.
-    let content_y0 = lib_content_y0(
-        reader.win_h,
-        reader.library.lib_search_open,
-        reader.status.is_some(),
-    ) as f32;
+    let content_y0 = lib_content_y0(reader) as f32;
     if y < content_y0 {
         return;
     }
@@ -1096,7 +1183,7 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
 
     // EMPTY STATE: botón "Add PDF"/"Grant access" (misma geometría que el
     // render).
-    if reader.library_list.is_empty() {
+    if reader.library_list.is_empty() && !reader.library.lib_master {
         if let Some(g) = lib_empty_state_geom(reader) {
             let (l, t, r, b) = g.button;
             if x >= l && x < r && y >= t && y < b {
@@ -1288,11 +1375,7 @@ fn library_down_zone(reader: &Reader, y: f32) -> u8 {
         }
     }
     // Contenido
-    let content_y0 = lib_content_y0(
-        reader.win_h,
-        reader.library.lib_search_open,
-        reader.status.is_some(),
-    ) as f32;
+    let content_y0 = lib_content_y0(reader) as f32;
     let yc = y - content_y0 + reader.library.lib_scroll;
     // Organización: fila SORT (4) / FILTER (5).
     let grid_y0 = lib_grid_y0(reader.win_w, reader.win_h);
@@ -1814,6 +1897,34 @@ mod tests {
         };
         let next = discriminate_two_finger_mode(TwoFingerMode::Undecided, &k);
         assert_eq!(next, TwoFingerMode::Zoom);
+    }
+
+    #[test]
+    fn tap_drag_stays_tap_within_slop_even_when_zoomed() {
+        assert_eq!(classify_tap_drag(TAP_SLOP, 2.0, false), TapDrag::Stay);
+        assert_eq!(classify_tap_drag(0.0, 2.0, false), TapDrag::Stay);
+    }
+
+    #[test]
+    fn tap_drag_becomes_one_finger_pan_when_zoomed() {
+        assert_eq!(classify_tap_drag(TAP_SLOP + 1.0, 2.0, false), TapDrag::Pan);
+        assert_eq!(classify_tap_drag(TAP_SLOP + 1.0, 1.01, false), TapDrag::Pan);
+    }
+
+    #[test]
+    fn tap_drag_cancels_at_zoom_one() {
+        assert_eq!(
+            classify_tap_drag(TAP_SLOP + 1.0, PINCH_MIN, false),
+            TapDrag::Cancel
+        );
+    }
+
+    #[test]
+    fn tap_drag_sheet_pull_wins_over_pan() {
+        assert_eq!(
+            classify_tap_drag(TAP_SLOP + 1.0, 2.0, true),
+            TapDrag::PullSheet
+        );
     }
 
     #[test]

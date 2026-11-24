@@ -6,11 +6,11 @@
 
 use crate::persist;
 use crate::reader::{
-    GRID_CELL_PAD, LibraryCoverFit, Reader, cover_size_multiplier, entry_author, entry_title,
-    grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad,
-    header_menu_btn_d, lib_add_btn_w, lib_chip_h, lib_chips, lib_content_y0, lib_empty_state_geom,
-    lib_grid_y0, lib_header_h, lib_search_h, list_row_gap, list_row_h, list_row_rect, picker_row_h,
-    settings_menu_button_rect, truncate_name, view_menu_button_rect,
+    GRID_CELL_PAD, LibraryCoverFit, Reader, cover_size_multiplier, entry_title, grid_cell_h,
+    grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, header_menu_btn_d,
+    lib_add_btn_w, lib_chip_h, lib_chips, lib_collection_chips, lib_content_y0,
+    lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_search_h, list_row_gap, list_row_h,
+    list_row_rect, picker_row_h, settings_menu_button_rect, truncate_name, view_menu_button_rect,
 };
 use crate::theme;
 use android_activity::ndk::native_window::NativeWindow;
@@ -27,11 +27,7 @@ use super::{
 /// búsqueda + franja de estado + overlay de menú si está abierto)
 pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
-    let h_fixed = lib_content_y0(
-        reader.win_h,
-        reader.library.lib_search_open,
-        reader.status.is_some(),
-    );
+    let h_fixed = lib_content_y0(reader);
     if w <= 0 || h_fixed <= 0 {
         return None;
     }
@@ -197,6 +193,28 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
         ));
     }
 
+    for (label, (l, t, r, b), active, _) in lib_collection_chips(reader) {
+        let (bg, fg) = if active {
+            (p.primary, p.primary_content)
+        } else {
+            (p.base_100, p.base_content)
+        };
+        draw_button(
+            &mut rects,
+            &mut texts,
+            l,
+            t,
+            r,
+            b,
+            bg,
+            if active { p.primary } else { p.base_300 },
+            fg,
+            theme::FONT_BODY,
+            active,
+            &label,
+        );
+    }
+
     // ---- FRANJA de estado (si la hay) ----
     if let Some(status) = reader.status.as_deref() {
         let row_h = picker_row_h(reader.win_h) as f32;
@@ -253,12 +271,8 @@ pub(crate) fn render_library_zone(
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
 
-    if reader.library_list.is_empty() {
-        let content_y0 = lib_content_y0(
-            reader.win_h,
-            reader.library.lib_search_open,
-            reader.status.is_some(),
-        );
+    if reader.library_list.is_empty() && !reader.library.lib_master {
+        let content_y0 = lib_content_y0(reader);
         let shift = -(content_y0 as f32 + band_origin as f32);
         draw_empty_state(reader, &mut rects, &mut texts, shift);
     } else {
@@ -377,7 +391,7 @@ pub(crate) fn render_library_zone(
                             p.neutral_content,
                             TextAlign::Left,
                             false,
-                            truncate_name(&entry_author(entry), max_chars),
+                            truncate_name(&reader.library_caption(entry), max_chars),
                         ));
                         // Barra de progreso
                         let bar_y = author_y0 + 20.0;
@@ -446,7 +460,7 @@ pub(crate) fn render_library_zone(
                             p.neutral_content,
                             TextAlign::Left,
                             false,
-                            truncate_name(&entry_author(entry), max_chars),
+                            truncate_name(&reader.library_caption(entry), max_chars),
                         ));
                         let bar_y = cy + 72.0;
                         let track_w = cell_w - 24.0;
@@ -607,7 +621,7 @@ pub(crate) fn render_library_zone(
                     p.neutral_content,
                     TextAlign::Left,
                     false,
-                    truncate_name(&entry_author(entry), max_chars),
+                    truncate_name(&reader.library_caption(entry), max_chars),
                 ));
 
                 let bar_y = ry + 82.0;
@@ -650,7 +664,8 @@ pub(crate) fn render_library_zone(
             && (!reader.library.lib_query.is_empty()
                 || reader.library.lib_letter.is_some()
                 || reader.library.lib_folder.is_some()
-                || reader.library.lib_status.is_some())
+                || reader.library.lib_status.is_some()
+                || reader.library.lib_master)
         {
             texts.push(CanvasText::new(
                 w as f32 / 2.0,
@@ -659,7 +674,15 @@ pub(crate) fn render_library_zone(
                 p.neutral_content,
                 TextAlign::Center,
                 false,
-                "Sin resultados — toca ✕ para limpiar",
+                if !reader.library.lib_query.is_empty() {
+                    "Sin resultados — borra la búsqueda con ✕"
+                } else if reader.library.lib_subject.is_some() {
+                    "Sin documentos en esta asignatura — elige Todas"
+                } else if reader.library.lib_master {
+                    "Aún no hay PDFs del máster — sincroniza la carpeta con FolderSync"
+                } else {
+                    "Sin resultados — cambia los filtros"
+                },
             ));
         }
     }

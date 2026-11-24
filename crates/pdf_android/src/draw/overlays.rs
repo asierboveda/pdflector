@@ -1,122 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Asier Bóveda
 
-//! Overlays flotantes del visor y la biblioteca: menú de selección de
-//! texto, aviso breve (toast), panel "Preguntar a la IA" y snapshot de
-//! la biblioteca para el fade al abrir un libro.
+//! Overlays flotantes del visor y la biblioteca: aviso breve (toast),
+//! panel "Preguntar a la IA" y snapshot de la biblioteca para el fade al
+//! abrir un libro.
 
 use crate::reader::{AiPhase, Reader, lib_content_y0};
 use crate::theme;
 use pdf_core::Bitmap;
 
 use super::{
-    ButtonRect, CanvasRect, CanvasText, TextAlign, copy_region, draw_button, fill_buffer,
-    jni_text_bitmap,
+    AiLine, AiLineKind, ButtonRect, CanvasRect, CanvasText, TextAlign, copy_region, draw_button,
+    fill_buffer, format_ai_response, jni_text_bitmap,
 };
 
+/// Tipografía del panel de IA (px): cuerpo, encabezado y ecuación, con su
+/// interlineado. Compartida por layout, render y el scroll por arrastre.
+pub(crate) const AI_BODY_SIZE: f32 = 18.0;
+pub(crate) const AI_HEADING_SIZE: f32 = 21.0;
+pub(crate) const AI_EQUATION_SIZE: f32 = 19.0;
+pub(crate) const AI_LINE_H: f32 = 28.0;
+
 // ---------------------------------------------------------------------
-// Selección de texto: menú flotante (Copiar/Subrayar/IA) y aviso breve
+// Aviso breve (toast)
 // ---------------------------------------------------------------------
-//
-// Geometría COMPARTIDA entre el render (Canvas+JNI) y el tap de `input`
-// (`Reader::sel_menu.buttons`): el menú se coloca cerca del rect de
-// selección (centrado en su x, encima si hay sitio y si no debajo), siempre
-// dentro de la ventana.
-
-/// Layout del menú de selección calculado por `sel_menu_layout`: rect del
-/// menú en px de ventana (left, top, right, bottom) + botones (etiqueta +
-/// rect en px de ventana). Lo consumen `render_sel_menu` (dibujo) y
-/// `Reader::open_sel_menu` (estado para el tap de `input`).
-pub(crate) struct SelMenuLayout {
-    pub(crate) rect: (f32, f32, f32, f32),
-    pub(crate) buttons: Vec<(&'static str, ButtonRect)>,
-}
-
-/// Layout del menú de selección: rectángulo del menú en px de ventana
-/// (`rect`) + botones (etiqueta + rect en px de ventana), compartido por
-/// `render_sel_menu` y el tap de `input::sel_menu_tap`. `None` sin selección
-/// fijada. Decisión documentada: el menú "flota" cerca del rect (anclado a
-/// su centro x), arriba si cabe y si no debajo — nunca tapa el rect si se
-/// puede evitar, y nunca se sale de la ventana.
-pub(crate) fn sel_menu_layout(reader: &Reader) -> Option<SelMenuLayout> {
-    let (sl, st, sr, sb) = reader.sel_screen_rect()?;
-    let win_w = reader.win_w as f32;
-    let win_h = reader.win_h as f32;
-    let pad = 10.0f32;
-    let gap = 8.0f32;
-    let bw = (win_w / 6.0).clamp(64.0, 120.0);
-    let bh = (win_h / 28.0).clamp(36.0, 48.0);
-    let menu_w = 3.0 * bw + 2.0 * gap + 2.0 * pad;
-    let menu_h = bh + 2.0 * pad;
-    let cx = (sl + sr) / 2.0;
-    let x = (cx - menu_w / 2.0).clamp(8.0, (win_w - menu_w - 8.0).max(8.0));
-    // Encima del rect si cabe (margen de 12 px); si no, debajo.
-    let mut y = st - menu_h - 12.0;
-    if y < 8.0 {
-        y = sb + 12.0;
-    }
-    let y = y.clamp(8.0, (win_h - menu_h - 8.0).max(8.0));
-    let mut buttons = Vec::with_capacity(3);
-    for (i, label) in ["Copiar", "Subrayar", "IA"].into_iter().enumerate() {
-        let bx = x + pad + i as f32 * (bw + gap);
-        buttons.push((label, (bx, y + pad, bx + bw, y + pad + bh)));
-    }
-    Some(SelMenuLayout {
-        rect: (x, y, x + menu_w, y + menu_h),
-        buttons,
-    })
-}
-
-/// Renderiza el menú de selección (tarjeta flotante + 3 botones: Copiar, Subrayar, IA).
-pub(crate) fn render_sel_menu(reader: &Reader) -> Option<Bitmap> {
-    let layout = sel_menu_layout(reader)?;
-    let (mx, my, mrx, mry) = layout.rect;
-    let w = (mrx - mx) as i32;
-    let h = (mry - my) as i32;
-    if w <= 0 || h <= 0 {
-        return None;
-    }
-    let p = reader.theme.palette();
-    let mut rects: Vec<CanvasRect> = Vec::new();
-    let mut texts: Vec<CanvasText> = Vec::new();
-    // Tarjeta: rect redondeado (borde + relleno)
-    let r = (h as f32) * 0.5;
-    rects.push(CanvasRect::rounded(
-        0.0, 0.0, w as f32, h as f32, r, p.base_300,
-    ));
-    rects.push(CanvasRect::rounded(
-        1.0,
-        1.0,
-        w as f32 - 1.0,
-        h as f32 - 1.0,
-        r,
-        p.base_100,
-    ));
-    for (label, (l, t, rr, b)) in &layout.buttons {
-        let (fill, border, text_color) = match *label {
-            "Subrayar" => (p.primary, p.primary, p.primary_content),
-            "IA" => (p.base_200, p.base_300, p.neutral_content),
-            _ => (p.base_200, p.base_300, p.base_content),
-        };
-        draw_button(
-            &mut rects,
-            &mut texts,
-            *l - mx,
-            *t - my,
-            *rr - mx,
-            *b - my,
-            fill,
-            border,
-            text_color,
-            theme::FONT_CAPTION,
-            true,
-            label,
-        );
-    }
-    jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts)
-}
-
-/// Renderiza el aviso breve (toast) con el tema activo.
 pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
     let msg = reader.toast.as_ref()?.0.clone();
     let (bw, bh) = ((reader.win_w / 6).max(140), (reader.win_h / 60).max(30));
@@ -153,7 +60,7 @@ pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
 // Panel de "Preguntar a la IA" (Parte 2): tarjeta flotante con respuesta
 // ---------------------------------------------------------------------
 //
-// Misma filosofía que el menú de selección: geometría COMPARTIDA entre el
+// Geometría COMPARTIDA entre el
 // render (Canvas+JNI) y el tap de `input` (`Reader::ai_panel.buttons`). El
 // panel es una tarjeta centrada (horizontal y verticalmente) con cabecera
 // (título + botones ✕/▲/▼) y cuerpo de texto envuelto en líneas. El texto
@@ -178,69 +85,20 @@ pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
 pub(crate) struct AiLayout {
     pub(crate) rect: (f32, f32, f32, f32),
     pub(crate) buttons: Vec<(&'static str, ButtonRect)>,
-    pub(crate) lines: Vec<String>,
+    pub(crate) lines: Vec<AiLine>,
     pub(crate) scroll: usize,
     pub(crate) visible: usize,
     pub(crate) scrollable: bool,
 }
 
-/// Envuelve un texto en líneas de ≤ `max_chars` caracteres, respetando los
-/// saltos de línea del texto (párrafos) y cortando palabras más largas que
-/// la línea. `max_chars` es una ESTIMACIÓN (caracteres por línea, latino):
-/// suficiente para un panel de lectura; la medición real de glifos exigiría
-/// JNI (`Paint.measureText`), que se evita a propósito (cambios mínimos).
-fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    for para in text.split('\n') {
-        if para.trim().is_empty() {
-            out.push(String::new()); // línea en blanco: separa párrafos
-            continue;
-        }
-        let mut cur = String::new();
-        for word in para.split(' ') {
-            if word.chars().count() > max_chars {
-                // Palabra más larga que la línea: cortar en pedazos.
-                if !cur.is_empty() {
-                    out.push(std::mem::take(&mut cur));
-                }
-                let mut rest = word;
-                while rest.chars().count() > max_chars {
-                    let cut = rest
-                        .char_indices()
-                        .nth(max_chars)
-                        .map(|(i, _)| i)
-                        .unwrap_or(rest.len());
-                    let (a, b) = rest.split_at(cut);
-                    out.push(a.to_string());
-                    rest = b;
-                }
-                if !rest.is_empty() {
-                    cur = rest.to_string();
-                }
-                continue;
-            }
-            if cur.is_empty() {
-                cur = word.to_string();
-            } else if cur.chars().count() + 1 + word.chars().count() <= max_chars {
-                cur.push(' ');
-                cur.push_str(word);
-            } else {
-                out.push(std::mem::take(&mut cur));
-                cur = word.to_string();
-            }
-        }
-        out.push(cur);
-    }
-    out
-}
-
-/// Layout del panel de IA: tarjeta centrada (margen 16 px, ancho ≤ 560 px),
-/// cabecera fija de 44 px (título + botones a la derecha) y cuerpo cuyo alto
-/// se ajusta al texto: si cabe entero, panel corto SIN scroll; si desborda,
-/// cuerpo limitado a ~55 % de la ventana y botones ▲/▼. El scroll actual se
-/// lee de `Reader::ai_panel` (0 al abrir) y se devuelve recortado al rango
-/// válido para que `Reader::rebuild_ai_panel` lo guarde. None si la ventana
-/// es demasiado pequeña para un panel.
+/// Layout del panel de IA: tarjeta grande centrada (margen 16 px, ancho
+/// hasta 1080 px), cabecera de 52 px (título + botones a la derecha) y
+/// cuerpo cuyo alto se ajusta al texto: si cabe entero, panel corto SIN
+/// scroll; si desborda, cuerpo limitado al ~78 % de la ventana, con scroll
+/// por arrastre y botones ▲/▼. El scroll actual se lee de `Reader::ai_panel`
+/// (0 al abrir) y se devuelve recortado al rango válido para que
+/// `Reader::rebuild_ai_panel` lo guarde. None si la ventana es demasiado
+/// pequeña para un panel.
 pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
     let win_w = reader.win_w as f32;
     let win_h = reader.win_h as f32;
@@ -248,22 +106,19 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
         return None;
     }
     // Constantes del panel (las MISMAS en layout y render).
-    let ts = 13.0f32; // cuerpo
-    let line_h = (ts * 1.5).round(); // 20 px
-    let pad = 14.0f32;
-    let header_h = 44.0f32;
-    let btn = 30.0f32;
+    let ts = AI_BODY_SIZE;
+    let line_h = AI_LINE_H;
+    let pad = 20.0f32;
+    let header_h = 52.0f32;
+    let btn = 34.0f32;
     let gap = 6.0f32;
     let margin = 16.0f32;
-    let panel_w = (win_w - 2.0 * margin).clamp(200.0, 560.0);
-    let max_body_h = (win_h * 0.55).clamp(120.0, 340.0);
-    // Envolver el texto (estimación de caracteres por línea para latino).
+    let panel_w = (win_w - 2.0 * margin).clamp(200.0, 1080.0);
+    let max_body_h = (win_h * 0.78).clamp(160.0, (win_h - 120.0).max(160.0));
+    // Formatear y envolver (estimación de caracteres por línea, latino).
     let content_w = panel_w - 2.0 * pad;
     let max_chars = ((content_w / (ts * 0.52)).floor() as usize).max(8);
-    let mut lines = wrap_text(&reader.ai_text, max_chars);
-    if lines.is_empty() {
-        lines.push("…".to_string()); // defensa: texto vacío
-    }
+    let lines = format_ai_response(&reader.ai_text, max_chars);
     let total = lines.len();
     let visible = ((max_body_h / line_h).floor() as usize).max(1);
     let scrollable = total > visible;
@@ -321,10 +176,10 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
         return None;
     }
     let p = reader.theme.palette();
-    let ts = theme::FONT_BODY;
-    let line_h = (ts * 1.5).round();
-    let pad = 14.0f32;
-    let header_h = 44.0f32;
+    let ts = AI_BODY_SIZE;
+    let line_h = AI_LINE_H;
+    let pad = 20.0f32;
+    let header_h = 52.0f32;
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
     // Tarjeta: rect redondeado (borde + relleno)
@@ -384,7 +239,9 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
             label,
         );
     }
-    // Cuerpo: solo las líneas visibles [scroll, scroll+visible)
+    // Cuerpo: solo las líneas visibles [scroll, scroll+visible). Cada
+    // línea dibuja sus segmentos (normal/negrita) en orden; las ecuaciones
+    // van centradas y los encabezados, más grandes.
     let body_top = header_h + pad;
     for (i, line) in layout
         .lines
@@ -393,16 +250,41 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
         .skip(layout.scroll)
         .take(layout.visible)
     {
-        let y = body_top + (i - layout.scroll) as f32 * line_h + ts * 0.9;
-        texts.push(CanvasText::new(
-            pad,
-            y,
-            ts,
-            body_color,
-            TextAlign::Left,
-            false,
-            line.clone(),
-        ));
+        let size = match line.kind {
+            AiLineKind::Heading => AI_HEADING_SIZE,
+            AiLineKind::Equation => AI_EQUATION_SIZE,
+            AiLineKind::Body => ts,
+        };
+        let y = body_top + (i - layout.scroll) as f32 * line_h + size * 0.9;
+        // Avance estimado por carácter (el espacio es más estrecho que la
+        // media; contarlo igual dejaba huecos alrededor de las negritas).
+        let advance = |text: &str| -> f32 {
+            text.chars()
+                .map(|c| if c == ' ' { 0.30 } else { 0.52 })
+                .sum::<f32>()
+                * size
+        };
+        let plain_w: f32 = line.segs.iter().map(|s| advance(&s.text)).sum();
+        let mut x = if line.kind == AiLineKind::Equation {
+            ((w as f32 - plain_w) / 2.0).max(pad)
+        } else {
+            pad
+        };
+        for seg in &line.segs {
+            if seg.text.is_empty() {
+                continue;
+            }
+            texts.push(CanvasText::new(
+                x,
+                y,
+                size,
+                body_color,
+                TextAlign::Left,
+                seg.bold,
+                seg.text.clone(),
+            ));
+            x += advance(&seg.text);
+        }
     }
     jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts)
 }
@@ -417,11 +299,7 @@ pub(crate) fn compose_library_snapshot(reader: &Reader) -> Option<Bitmap> {
     if w <= 0 || h <= 0 {
         return None;
     }
-    let content_y0 = lib_content_y0(
-        reader.win_h,
-        reader.library.lib_search_open,
-        reader.status.is_some(),
-    );
+    let content_y0 = lib_content_y0(reader);
     let mut out = Bitmap {
         width: w as u32,
         height: h as u32,

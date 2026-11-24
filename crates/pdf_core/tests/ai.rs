@@ -743,6 +743,44 @@ fn gemini_explain_image_concatenates_candidate_parts() {
     server.join().expect("server thread");
 }
 
+/// `explain_text` sends a single text part (no `inline_data`) to the same
+/// `generateContent` endpoint and returns the concatenated reply.
+#[test]
+fn gemini_explain_text_sends_text_only_and_parses_reply() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    let server = serve_once(listener, GEMINI_RESPONSE);
+
+    let client = GeminiClient::with_base_url(
+        "test-api-key",
+        format!("http://127.0.0.1:{port}"),
+        "test-model",
+    );
+    let reply = client
+        .explain_text("Explica este texto")
+        .expect("explain_text succeeds");
+    assert_eq!(reply, "La función es f(x) = x². Su derivada es 2x.");
+
+    let request = server.join().expect("server thread");
+    assert!(
+        request.starts_with("POST /models/test-model:generateContent HTTP/1.1"),
+        "wrong request line: {request}"
+    );
+    assert!(
+        request.contains(r#""text":"Explica este texto""#),
+        "request: {request}"
+    );
+    assert!(
+        !request.contains("inline_data"),
+        "text-only request must not carry an image: {request}"
+    );
+    // La respuesta viene acotada: una explicación breve tarda menos.
+    assert!(
+        request.contains(r#""maxOutputTokens":600"#),
+        "request must cap output tokens: {request}"
+    );
+}
+
 /// Gemini answers overload with HTTP 503 "high demand"; `explain_image`
 /// maps it to a dedicated retryable error (`AiError::Busy`) so the app can
 /// tell "busy" apart from real failures and offer a retry.

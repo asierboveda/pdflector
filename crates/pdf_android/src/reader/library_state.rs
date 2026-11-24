@@ -55,9 +55,12 @@ pub(crate) struct LibraryState {
     /// de la UI; el código se conserva por compatibilidad.
     pub(crate) lib_search_open: bool,
     /// Texto del BUSCADOR CON TECLADO: filtro por subcadena (case-
-    /// insensitive) sobre el TÍTULO del libro, según lo que el usuario teclea
+    /// insensitive) sobre nombre y carpeta del libro, según lo que el usuario teclea
     /// en el IME (`jni::ime_*`). Vacío = sin filtro.
     pub(crate) lib_query: String,
+    /// Colección del máster y asignatura seleccionadas (estado de sesión).
+    pub(crate) lib_master: bool,
+    pub(crate) lib_subject: Option<String>,
     /// Orden de "My Library" (chips de sort: Recently Added / Recently Read /
     /// Title / Author).
     pub(crate) lib_sort: LibSort,
@@ -137,6 +140,8 @@ impl LibraryState {
             lib_folder: None,
             lib_search_open: false,
             lib_query: String::new(),
+            lib_master: false,
+            lib_subject: None,
             lib_sort: LibSort::RecentlyAdded,
             lib_status: None,
             lib_books: persist::load_progress(internal_dir),
@@ -153,10 +158,10 @@ impl LibraryState {
 
     /// ¿La entrada pasa el filtro de BÚSQUEDA activo (carpeta + letra inicial)?
     pub(crate) fn entry_passes(&self, e: &LibraryEntry) -> bool {
-        // Buscador CON TECLADO: subcadena case-insensitive sobre el título.
+        // Buscador con teclado: subcadena case-insensitive sobre nombre y carpeta.
         if !self.lib_query.is_empty() {
             let q = self.lib_query.to_lowercase();
-            if !e.name.to_lowercase().contains(&q) {
+            if !e.name.to_lowercase().contains(&q) && !e.folder.to_lowercase().contains(&q) {
                 return false;
             }
         }

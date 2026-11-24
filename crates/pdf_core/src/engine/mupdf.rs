@@ -25,12 +25,70 @@ pub struct MupdfEngine;
 
 const PAGE_GEOMETRY_CACHE_CAPACITY: usize = 5;
 
+/// Keep PDF's standard fonts on MuPDF's bundled Base14 path. Android's
+/// generic Noto substitutes do not preserve custom Type 1 encodings/metrics.
+#[cfg(target_os = "android")]
+struct PdfAndroidFontLoader;
+
+#[cfg(target_os = "android")]
+impl mupdf::FontLoader for PdfAndroidFontLoader {
+    fn load_font(&self, name: &str, hints: mupdf::FontHints) -> Option<mupdf::Font> {
+        const BASE14: [&str; 14] = [
+            "Courier",
+            "Courier-Bold",
+            "Courier-Oblique",
+            "Courier-BoldOblique",
+            "Helvetica",
+            "Helvetica-Bold",
+            "Helvetica-Oblique",
+            "Helvetica-BoldOblique",
+            "Times-Roman",
+            "Times-Bold",
+            "Times-Italic",
+            "Times-BoldItalic",
+            "Symbol",
+            "ZapfDingbats",
+        ];
+        if BASE14.iter().any(|font| name.eq_ignore_ascii_case(font)) {
+            return None;
+        }
+        mupdf::FontLoader::load_font(&mupdf::AndroidFontLoader, name, hints)
+    }
+
+    fn load_cjk_font(
+        &self,
+        name: &str,
+        ordering: mupdf::CjkFontOrdering,
+        serif: bool,
+    ) -> Option<mupdf::Font> {
+        mupdf::FontLoader::load_cjk_font(&mupdf::AndroidFontLoader, name, ordering, serif)
+    }
+
+    fn load_fallback_font(
+        &self,
+        script: u32,
+        language: u32,
+        hints: mupdf::FontHints,
+    ) -> Option<mupdf::Font> {
+        mupdf::FontLoader::load_fallback_font(&mupdf::AndroidFontLoader, script, language, hints)
+    }
+}
+
+fn initialize_font_loader() {
+    #[cfg(target_os = "android")]
+    {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| mupdf::set_font_loader(PdfAndroidFontLoader));
+    }
+}
+
 impl MupdfEngine {
     /// MuPDF links statically and bootstraps its context on first use, so
     /// there is nothing to bind. `new` exists to mirror the engine creation
     /// pattern (the single place where init errors surface) and to force the
     /// one-time context initialization early.
     pub fn new() -> Result<Self> {
+        initialize_font_loader();
         // Touches the lazily-initialized global base context; panics (not
         // errors) only on catastrophic allocator failure.
         let _ctx = mupdf::Context::get();
@@ -51,6 +109,7 @@ impl RenderEngine for MupdfEngine {
     type Document = MupdfDocument;
 
     fn open(&self, path: &Path) -> Result<Self::Document> {
+        initialize_font_loader();
         let doc = mupdf::Document::open(path)
             .map_err(|e| Error::Engine(format!("open {}: {e}", path.display())))?;
         Ok(MupdfDocument {

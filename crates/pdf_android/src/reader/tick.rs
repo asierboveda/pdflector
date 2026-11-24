@@ -61,6 +61,7 @@ impl Reader {
     /// los eventos Wake/Timeout, que solo ocurren mientras `needs_tick()` (sin
     /// despertar el loop en reposo).
     pub(crate) fn tick(&mut self, app: &AndroidApp) {
+        self.poll_folder_sync();
         // Persistencia diferida (A1): si el estado lleva >2 s sucio (cambio
         // de página reciente) se escribe aquí — el tap de página no hace I/O.
         self.flush_state_if_due();
@@ -227,11 +228,7 @@ impl Reader {
     /// scroll vertical actual: (primera fila, nº de filas con 1 de margen de
     /// prefetch por abajo). Coords compartidas con el render y el tap.
     pub(crate) fn lib_visible_grid_rows(&self) -> (usize, usize) {
-        let content_y0 = lib_content_y0(
-            self.win_h,
-            self.library.lib_search_open,
-            self.status.is_some(),
-        ) as f32;
+        let content_y0 = lib_content_y0(self) as f32;
         let grid_y0_screen =
             content_y0 + lib_grid_y0(self.win_w, self.win_h) - self.library.lib_scroll;
         if grid_y0_screen >= self.win_h as f32 {
@@ -246,11 +243,7 @@ impl Reader {
 
     /// Rango de filas de la lista VISIBLES con el scroll vertical actual.
     pub(crate) fn lib_visible_list_rows(&self) -> (usize, usize) {
-        let content_y0 = lib_content_y0(
-            self.win_h,
-            self.library.lib_search_open,
-            self.status.is_some(),
-        ) as f32;
+        let content_y0 = lib_content_y0(self) as f32;
         let grid_y0_screen =
             content_y0 + lib_grid_y0(self.win_w, self.win_h) - self.library.lib_scroll;
         if grid_y0_screen >= self.win_h as f32 {

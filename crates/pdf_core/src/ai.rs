@@ -649,7 +649,11 @@ fn parse_groq_response(body: &str) -> Result<String> {
 /// prompt round-trips run on Google's servers and can take tens of seconds;
 /// the timeout mirrors `GROQ_REQUEST_TIMEOUT` (same rationale). Callers must
 /// run `explain_image` off the UI thread (see module docs).
-const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const GEMINI_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Tokens máximos de salida: la explicación debe ser breve; acotar la
+/// generación acorta la espera del usuario.
+const GEMINI_MAX_OUTPUT_TOKENS: u32 = 600;
 
 /// Default Gemini model: alias of the current flash model with vision
 /// (Google keeps the alias pointing at the latest flash generation).
@@ -689,7 +693,7 @@ impl GeminiClient {
     pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
-            api_key: api_key.into(),
+            api_key: api_key.into().trim().to_string(),
             model: model.into(),
         }
     }
@@ -726,20 +730,35 @@ impl GeminiClient {
     /// `AiError::UnexpectedResponse`. May block for up to
     /// `GEMINI_REQUEST_TIMEOUT` — call off the UI thread.
     pub fn explain_image(&self, prompt: &str, image_png_base64: &str) -> Result<String> {
+        let parts = vec![
+            serde_json::json!({ "text": prompt }),
+            serde_json::json!({
+                "inline_data": {
+                    "mime_type": "image/png",
+                    "data": image_png_base64,
+                },
+            }),
+        ];
+        self.generate_content(parts)
+    }
+
+    /// Explica un texto (sin imagen): una sola parte de texto al mismo
+    /// endpoint `generateContent`. Mismo mapeo de errores que
+    /// `explain_image`. Llamar fuera del hilo de UI.
+    pub fn explain_text(&self, prompt: &str) -> Result<String> {
+        self.generate_content(vec![serde_json::json!({ "text": prompt })])
+    }
+
+    fn generate_content(&self, parts: Vec<serde_json::Value>) -> Result<String> {
         let payload = serde_json::json!({
             "contents": [
                 {
-                    "parts": [
-                        { "text": prompt },
-                        {
-                            "inline_data": {
-                                "mime_type": "image/png",
-                                "data": image_png_base64,
-                            },
-                        },
-                    ],
+                    "parts": parts,
                 },
             ],
+            "generationConfig": {
+                "maxOutputTokens": GEMINI_MAX_OUTPUT_TOKENS,
+            },
         });
 
         let client = reqwest::blocking::Client::builder()

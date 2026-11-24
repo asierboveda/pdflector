@@ -44,6 +44,16 @@ use std::path::Path;
 impl Reader {
     pub(crate) fn new(app: &AndroidApp) -> Self {
         let tool_state = persist::load_tool_state(app.internal_data_path().as_deref());
+        let internal_root = app.internal_data_path();
+        let folder_sync_config = crate::folder_sync::FolderSyncConfig::load(
+            internal_root.as_deref().unwrap_or(Path::new(".")),
+        );
+        let sync_root_label = folder_sync_config
+            .incoming_root
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Master".to_string());
         let mut reader = Self {
             doc: None,
             page: 0,
@@ -93,6 +103,16 @@ impl Reader {
             status: None,
             doc_path: None,
             internal_dir: app.internal_data_path(),
+            folder_sync: crate::folder_sync::FolderSyncWorker::start(
+                internal_root.unwrap_or_default(),
+                folder_sync_config,
+            ),
+            sync_root_label,
+            synced_documents: Vec::new(),
+            synced_annotations: std::collections::HashMap::new(),
+            deferred_annotation_saves: std::collections::VecDeque::new(),
+            unqueueable_annotation_save: None,
+            deferred_status_shown: false,
             theme: theme::AppTheme::DefaultLight,
             dark: false,
             chrome_visible: false,
@@ -126,12 +146,11 @@ impl Reader {
             thumb_failed: HashSet::new(),
             list_drag: None,
             annotations: AnnotationSet::new(),
+            annotation_backup_restore_allowed: false,
             annot_sidecar: None,
             text_cache: PageTextCache::default(),
             status_bar_top: 0, // se fija en runtime (content_rect top)
             sel: None,
-            sel_menu: None,
-            sel_menu_id: 0,
             ai_panel: None,
             ai_panel_id: 0,
             ai_text: String::new(),
