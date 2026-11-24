@@ -278,11 +278,7 @@ pub(crate) fn latex_to_text(input: &str) -> String {
     for delim in ["$$", "\\(", "\\)", "\\[", "\\]"] {
         s = s.replace(delim, "");
     }
-    s = s
-        .replace('$', "")
-        .replace("\\left", "")
-        .replace("\\right", "")
-        .replace("\\displaystyle", "")
+    s = strip_layout_commands(&s.replace('$', ""))
         .replace("\\,", " ")
         .replace("\\;", " ")
         .replace("\\ ", " ");
@@ -296,6 +292,57 @@ pub(crate) fn latex_to_text(input: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Strips layout-only commands (`\left`, `\right`, `\displaystyle`) only on
+/// full command boundaries so commands like `\leftarrow` and `\rightarrow` stay intact.
+fn strip_layout_commands(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            let name_len = s[i + 1..]
+                .bytes()
+                .take_while(|b| b.is_ascii_alphabetic())
+                .count();
+            let cmd = &s[i..i + 1 + name_len];
+            if matches!(cmd, "\\left" | "\\right" | "\\displaystyle") {
+                i += cmd.len();
+                if matches!(cmd, "\\left" | "\\right") && bytes.get(i) == Some(&b'.') {
+                    i += 1;
+                }
+                continue;
+            }
+            out.push_str(cmd);
+            i += cmd.len();
+            continue;
+        }
+        let ch_len = utf8_len(bytes[i]);
+        out.push_str(&s[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+fn is_parenthesized(t: &str) -> bool {
+    if !(t.starts_with('(') && t.ends_with(')')) {
+        return false;
+    }
+    let mut depth = 0usize;
+    for (i, ch) in t.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 && i + ch.len_utf8() < t.len() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 /// Lee un grupo `{...}` a partir de `start` (índice tras '{'). Devuelve
@@ -351,7 +398,10 @@ fn replace_frac(s: &str) -> String {
                 let num_t = latex_to_text(num);
                 let den_t = latex_to_text(den);
                 let wrap = |t: &str| {
-                    if t.chars().count() > 1 && t.contains(['+', '-', ' ']) {
+                    if !is_parenthesized(t)
+                        && t.chars().count() > 1
+                        && t.contains(['+', '-', '/', '*', '·', '×', '÷', '±', '=', ' '])
+                    {
                         format!("({t})")
                     } else {
                         t.to_string()
@@ -433,17 +483,20 @@ const SUBSCRIPT: &[(char, char)] = &[
 ];
 
 fn map_script(text: &str, table: &[(char, char)], marker: char) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match table.iter().find(|(k, _)| *k == c) {
-            Some((_, v)) => out.push(*v),
-            None => {
-                out.push(marker);
-                out.push(c);
-            }
-        }
+    if text.is_empty() {
+        return String::new();
     }
-    out
+    if text.chars().all(|c| table.iter().any(|(k, _)| *k == c)) {
+        return text
+            .chars()
+            .filter_map(|c| table.iter().find(|(k, _)| *k == c).map(|(_, v)| *v))
+            .collect();
+    }
+    if text.chars().count() == 1 || is_parenthesized(text) {
+        format!("{marker}{text}")
+    } else {
+        format!("{marker}({text})")
+    }
 }
 
 fn replace_scripts(s: &str) -> String {
@@ -456,7 +509,8 @@ fn replace_scripts(s: &str) -> String {
             let table = if c == '^' { SUPERSCRIPT } else { SUBSCRIPT };
             if bytes[i + 1] == b'{' {
                 if let Some((inner, next)) = read_group(s, i + 2) {
-                    out.push_str(&map_script(inner, table, c));
+                    let rendered = latex_to_text(inner);
+                    out.push_str(&map_script(&rendered, table, c));
                     i = next;
                     continue;
                 }
@@ -631,6 +685,25 @@ mod tests {
     fn latex_symbols_and_delimiters() {
         assert_eq!(latex_to_text(r"$\alpha \leq \sum x_i$"), "α ≤ ∑ xᵢ");
         assert_eq!(latex_to_text(r"\(E = mc^{2}\)"), "E = mc²");
+    }
+
+    #[test]
+    fn latex_arrows_and_layout_delimiters_do_not_collide() {
+        assert_eq!(latex_to_text(r"x \leftarrow y"), "x ← y");
+        assert_eq!(latex_to_text(r"x \rightarrow y"), "x → y");
+        assert_eq!(latex_to_text(r"\left(\frac{1}{2}\right)"), "(1/2)");
+        assert_eq!(latex_to_text(r"\displaystyle \frac{a+b}{2}"), "(a+b)/2");
+    }
+
+    #[test]
+    fn latex_nested_fractions_and_scripts_preserve_grouping() {
+        assert_eq!(latex_to_text(r"\frac{1}{\frac{2}{3}}"), "1/(2/3)");
+        assert_eq!(latex_to_text(r"\frac{\frac{1}{2}}{3}"), "(1/2)/3");
+        assert_eq!(latex_to_text(r"\frac{(a+b)}{2}"), "(a+b)/2");
+        assert_eq!(latex_to_text(r"x^{2k}"), "x^(2k)");
+        assert_eq!(latex_to_text(r"x^{\alpha}"), "x^α");
+        assert_eq!(latex_to_text(r"e^{-\frac{x^2}{2}}"), "e^(-x²/2)");
+        assert_eq!(latex_to_text(r"a_{i,j}"), "a_(i,j)");
     }
 
     #[test]
