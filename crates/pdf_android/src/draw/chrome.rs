@@ -11,25 +11,29 @@ use crate::reader::{
 use crate::theme;
 use pdf_core::{Bitmap, Document};
 
-use super::{CanvasRect, CanvasText, TextAlign, draw_button, draw_card_shadow, jni_text_bitmap};
+use super::{
+    ButtonVariant, CanvasRect, CanvasText, Elevation, TextAlign, TextFont, draw_astryx_button,
+    draw_surface_card, draw_token_pill, jni_text_bitmap,
+};
 
 /// Renderiza el indicador de página "N / total" (overlay abajo a la
-/// izquierda, `page_badge_size`): un badge pequeño con el número actual y el
-/// total. Cacheado en `Reader::page_badge` (se invalida al cambiar ventana,
-/// página o modo oscuro); el tap en él avanza a la página siguiente
-/// (`input::page_badge_tap` — decisión documentada: el indicador se puede
-/// tocar como acceso rápido a la página siguiente).
+/// izquierda, `page_badge_size`): token flotante Astryx con numeración
+/// monoespaciada tabular y punto indicador de acento.
 pub(crate) fn render_page_badge(reader: &Reader) -> Option<Bitmap> {
     let (bw, bh) = page_badge_size(reader.win_w, reader.win_h);
     let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
     let label = format!("{} / {}", reader.page + 1, pages);
     let p = reader.theme.palette();
-    let (bg, border, text) = (p.badge_bg(), p.badge_border(), p.badge_text());
     let mut rects = Vec::new();
     let mut texts = Vec::new();
-    let r = 999.0f32;
+    let r = theme::RADIUS_FULL;
     rects.push(CanvasRect::rounded(
-        0.0, 0.0, bw as f32, bh as f32, r, border,
+        0.0,
+        0.0,
+        bw as f32,
+        bh as f32,
+        r,
+        p.badge_border(),
     ));
     rects.push(CanvasRect::rounded(
         1.0,
@@ -37,18 +41,33 @@ pub(crate) fn render_page_badge(reader: &Reader) -> Option<Bitmap> {
         bw as f32 - 1.0,
         bh as f32 - 1.0,
         r,
-        bg,
+        p.badge_bg(),
+    ));
+    // Punto semántico sutil de estado activo a la izquierda
+    let dot_r = 3.0f32;
+    let dot_cx = 12.0f32;
+    let dot_cy = bh as f32 * 0.5;
+    rects.push(CanvasRect::rounded(
+        dot_cx - dot_r,
+        dot_cy - dot_r,
+        dot_cx + dot_r,
+        dot_cy + dot_r,
+        dot_r,
+        p.accent,
     ));
     let ts = theme::FONT_CAPTION;
-    texts.push(CanvasText::new(
-        bw as f32 / 2.0,
-        bh as f32 * 0.5 + ts * 0.35,
-        ts,
-        text,
-        TextAlign::Center,
-        true,
-        label,
-    ));
+    texts.push(
+        CanvasText::new(
+            bw as f32 * 0.5 + 4.0,
+            bh as f32 * 0.5 + ts * 0.35,
+            ts,
+            p.badge_text(),
+            TextAlign::Center,
+            true,
+            label,
+        )
+        .with_font(TextFont::Mono),
+    );
     jni_text_bitmap(bw, bh, theme::TRANSPARENT, &rects, &texts)
 }
 
@@ -64,7 +83,7 @@ pub(crate) fn viewer_top_chrome_buttons(win_w: f32, win_h: f32) -> [(&'static st
     let btn_y = margin_y + (card_h - btn_h) / 2.0;
     let back_w = 138.0f32;
     let theme_btn_size = 48.0f32;
-    let pad_inner = 18.0f32; // [A2] Padding >= 16 px dentro de la tarjeta
+    let pad_inner = 18.0f32;
     [
         (
             "Back",
@@ -87,7 +106,7 @@ pub(crate) fn viewer_top_chrome_buttons(win_w: f32, win_h: f32) -> [(&'static st
     ]
 }
 
-/// Renderiza la barra superior flotante de chrome del visor (V1, V2, V4).
+/// Renderiza la barra superior flotante Astryx del visor.
 pub(crate) fn render_viewer_top_chrome(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let win_h = reader.win_h as f32;
@@ -99,101 +118,105 @@ pub(crate) fn render_viewer_top_chrome(reader: &Reader) -> Option<Bitmap> {
     let margin_x = (w as f32 * 0.03).clamp(24.0, 48.0);
     let margin_y = (win_h * 0.02).clamp(28.0, 48.0);
     let card_h = 68.0f32;
+    let card_rect = (margin_x, margin_y, w as f32 - margin_x, margin_y + card_h);
 
-    // Sombra flotante de la barra superior (V1, G1)
-    draw_card_shadow(
+    // Superficie flotante Astryx (`bg_popover` + hairline enfatizado + Elevation::Med)
+    draw_surface_card(
         &mut rects,
-        margin_x,
-        margin_y,
-        w as f32 - margin_x,
-        margin_y + card_h,
-        24.0,
+        card_rect,
+        theme::RADIUS_CARD,
+        p.bg_popover,
+        p.border_emphasized,
+        Elevation::Med,
         p.is_dark,
     );
 
-    // Tarjeta redondeada radio 24 px (V1)
-    rects.push(CanvasRect::rounded(
-        margin_x,
-        margin_y,
-        w as f32 - margin_x,
-        margin_y + card_h,
-        24.0,
-        p.base_300,
-    ));
-    rects.push(CanvasRect::rounded(
-        margin_x + 1.0,
-        margin_y + 1.0,
-        w as f32 - margin_x - 1.0,
-        margin_y + card_h - 1.0,
-        23.0,
-        p.base_100,
-    ));
-
-    // Botones (Atrás y Swatch Tema)
+    // Botones (← Biblioteca y selector de tema)
     let btns = viewer_top_chrome_buttons(w as f32, win_h);
-    let (back_l, back_t, back_r, back_b) = btns[0].1;
-    draw_button(
+    draw_astryx_button(
         &mut rects,
         &mut texts,
-        back_l,
-        back_t,
-        back_r,
-        back_b,
-        p.base_200,
-        p.base_300,
-        p.base_content,
+        btns[0].1,
+        ButtonVariant::Ghost,
+        &p,
         theme::FONT_BODY,
         true,
         "← Biblioteca",
     );
 
-    // Swatch circular (26 px) del color primary del tema activo como botón de ciclo de tema (V4)
-    let (theme_l, theme_t, theme_r, theme_b) = btns[1].1;
-    let swatch_cx = (theme_l + theme_r) / 2.0;
-    let swatch_cy = (theme_t + theme_b) / 2.0;
-    let swatch_r = 13.0f32;
+    // Botón de ciclo de tema: contenedor Astryx RADIUS_ELEMENT con muestra bicolor (superficie + acento)
+    let (tl, tt, tr, tb) = btns[1].1;
     rects.push(CanvasRect::rounded(
-        theme_l, theme_t, theme_r, theme_b, 24.0, p.base_200,
+        tl,
+        tt,
+        tr,
+        tb,
+        theme::RADIUS_ELEMENT,
+        p.border_emphasized,
     ));
     rects.push(CanvasRect::rounded(
-        swatch_cx - swatch_r - 2.0,
-        swatch_cy - swatch_r - 2.0,
-        swatch_cx + swatch_r + 2.0,
-        swatch_cy + swatch_r + 2.0,
-        swatch_r + 2.0,
-        p.base_300,
+        tl + 1.0,
+        tt + 1.0,
+        tr - 1.0,
+        tb - 1.0,
+        theme::RADIUS_ELEMENT - 1.0,
+        p.bg_muted,
+    ));
+    let sw_l = tl + 10.0;
+    let sw_t = tt + 10.0;
+    let sw_r = tr - 10.0;
+    let sw_b = tb - 10.0;
+    rects.push(CanvasRect::rounded(
+        sw_l,
+        sw_t,
+        sw_r,
+        sw_b,
+        theme::RADIUS_INNER + 2.0,
+        p.border_emphasized,
     ));
     rects.push(CanvasRect::rounded(
-        swatch_cx - swatch_r,
-        swatch_cy - swatch_r,
-        swatch_cx + swatch_r,
-        swatch_cy + swatch_r,
-        swatch_r,
-        p.primary,
+        sw_l + 1.0,
+        sw_t + 1.0,
+        sw_r - 1.0,
+        sw_b - 1.0,
+        theme::RADIUS_INNER + 1.0,
+        p.bg_body,
+    ));
+    // Franja inferior de acento dentro de la muestra del tema
+    rects.push(CanvasRect::rounded(
+        sw_l + 4.0,
+        sw_b - 9.0,
+        sw_r - 4.0,
+        sw_b - 4.0,
+        2.5,
+        p.accent,
     ));
 
-    // Título centrado del libro (16 sp peso 600 base-content, V4)
-    let title = reader
+    // Título editorial limpio (sin extensión .pdf)
+    let raw_title = reader
         .doc_path
         .as_deref()
-        .and_then(|path| std::path::Path::new(path).file_name())
+        .and_then(|path| std::path::Path::new(path).file_stem())
         .and_then(|s| s.to_str())
-        .map(|s| truncate_name(s, 26))
-        .unwrap_or_else(|| "PDFLector".to_string());
-    texts.push(CanvasText::new(
-        w as f32 / 2.0,
-        margin_y + card_h * 0.5 + theme::FONT_TITLE * 0.35,
-        theme::FONT_TITLE,
-        p.base_content,
-        TextAlign::Center,
-        true,
-        title,
-    ));
+        .unwrap_or("PDFLector");
+    let title = truncate_name(raw_title, 32);
+    texts.push(
+        CanvasText::new(
+            w as f32 / 2.0,
+            margin_y + card_h * 0.5 + theme::FONT_TITLE * 0.34,
+            theme::FONT_TITLE,
+            p.text_primary,
+            TextAlign::Center,
+            true,
+            title,
+        )
+        .with_tracking(theme::TRACKING_TIGHT),
+    );
 
     jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts)
 }
 
-/// Renderiza la barra inferior de progreso del visor con SLIDER estilo Readest (V1, V3).
+/// Renderiza la barra inferior flotante Astryx con scrubber y pill tabular de progreso.
 pub(crate) fn render_viewer_bottom_chrome(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
     let h = viewer_bottom_chrome_h(reader.win_h) as i32;
@@ -204,35 +227,17 @@ pub(crate) fn render_viewer_bottom_chrome(reader: &Reader) -> Option<Bitmap> {
     let margin_x = (w as f32 * 0.03).clamp(24.0, 48.0);
     let card_top = 8.0f32;
     let card_h = 76.0f32;
+    let card_rect = (margin_x, card_top, w as f32 - margin_x, card_top + card_h);
 
-    // Sombra flotante de la barra inferior (V1, G1)
-    draw_card_shadow(
+    draw_surface_card(
         &mut rects,
-        margin_x,
-        card_top,
-        w as f32 - margin_x,
-        card_top + card_h,
-        24.0,
+        card_rect,
+        theme::RADIUS_CARD,
+        p.bg_popover,
+        p.border_emphasized,
+        Elevation::Med,
         p.is_dark,
     );
-
-    // Tarjeta redondeada radio 24 px (V1)
-    rects.push(CanvasRect::rounded(
-        margin_x,
-        card_top,
-        w as f32 - margin_x,
-        card_top + card_h,
-        24.0,
-        p.base_300,
-    ));
-    rects.push(CanvasRect::rounded(
-        margin_x + 1.0,
-        card_top + 1.0,
-        w as f32 - margin_x - 1.0,
-        card_top + card_h - 1.0,
-        23.0,
-        p.base_100,
-    ));
 
     let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
     let pct = if pages > 0 {
@@ -241,38 +246,59 @@ pub(crate) fn render_viewer_bottom_chrome(reader: &Reader) -> Option<Bitmap> {
         0.0
     };
 
-    // Texto: "Página N de M · P%" dentro de la tarjeta a 13 sp base-content (V3, G3)
-    let label = format!(
-        "Pág. {} de {} · {:.0}%",
-        reader.page + 1,
-        pages,
-        pct * 100.0
-    );
-    texts.push(CanvasText::new(
-        w as f32 / 2.0,
-        card_top + 26.0,
-        theme::FONT_BODY,
-        p.base_content,
-        TextAlign::Center,
-        true,
-        label,
-    ));
-
-    // SLIDER: Track 6 px radio completo base-300 con fill primary (V3)
-    let pad_inner = 32.0f32;
+    let pad_inner = 28.0f32;
     let track_x0 = margin_x + pad_inner;
     let track_x1 = w as f32 - margin_x - pad_inner;
-    let track_w = track_x1 - track_x0;
-    let track_y = card_top + 46.0f32;
-    let track_h = 6.0f32;
+    let track_w = (track_x1 - track_x0).max(1.0);
 
+    // Fila superior asimétrica: contador tabular a la izquierda + token tonal de % a la derecha
+    let page_label = format!("Pág. {} de {}", reader.page + 1, pages);
+    texts.push(
+        CanvasText::new(
+            track_x0,
+            card_top + 27.0,
+            theme::FONT_BODY,
+            p.text_primary,
+            TextAlign::Left,
+            true,
+            page_label,
+        )
+        .with_font(TextFont::Mono),
+    );
+
+    let pct_str = format!("{:.0}%", pct * 100.0);
+    let pill_w = 54.0f32;
+    let pill_h = 22.0f32;
+    let pill_rect = (
+        track_x1 - pill_w,
+        card_top + 11.0,
+        track_x1,
+        card_top + 11.0 + pill_h,
+    );
+    draw_token_pill(
+        &mut rects,
+        &mut texts,
+        pill_rect,
+        p.accent_muted,
+        None,
+        p.on_accent_muted,
+        theme::FONT_CAPTION,
+        TextFont::Mono,
+        0.0,
+        true,
+        &pct_str,
+    );
+
+    // Scrubber Astryx: pista 6 px + relleno accent + thumb con halo sutil
+    let track_y = card_top + 48.0f32;
+    let track_h = 6.0f32;
     rects.push(CanvasRect::rounded(
         track_x0,
         track_y,
         track_x1,
         track_y + track_h,
         3.0,
-        p.base_300,
+        p.track,
     ));
     let fill_w = (track_w * pct).max(0.0);
     if fill_w > 0.0 {
@@ -282,21 +308,29 @@ pub(crate) fn render_viewer_bottom_chrome(reader: &Reader) -> Option<Bitmap> {
             track_x0 + fill_w,
             track_y + track_h,
             3.0,
-            p.primary,
+            p.accent,
         ));
     }
 
-    // THUMB circular de 22 px primary con borde de 2 px base-100 (V3)
     let thumb_cx = (track_x0 + fill_w).clamp(track_x0, track_x1);
     let thumb_cy = track_y + track_h / 2.0;
-    let thumb_r = 11.0f32;
+    let thumb_r = 10.0f32;
+    // Halo de foco Astryx
+    rects.push(CanvasRect::rounded(
+        thumb_cx - thumb_r - 4.0,
+        thumb_cy - thumb_r - 4.0,
+        thumb_cx + thumb_r + 4.0,
+        thumb_cy + thumb_r + 4.0,
+        thumb_r + 4.0,
+        p.accent_muted,
+    ));
     rects.push(CanvasRect::rounded(
         thumb_cx - thumb_r - 2.0,
         thumb_cy - thumb_r - 2.0,
         thumb_cx + thumb_r + 2.0,
         thumb_cy + thumb_r + 2.0,
         thumb_r + 2.0,
-        p.base_100,
+        p.bg_popover,
     ));
     rects.push(CanvasRect::rounded(
         thumb_cx - thumb_r,
@@ -304,36 +338,29 @@ pub(crate) fn render_viewer_bottom_chrome(reader: &Reader) -> Option<Bitmap> {
         thumb_cx + thumb_r,
         thumb_cy + thumb_r,
         thumb_r,
-        p.primary,
+        p.accent,
     ));
 
     jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts)
 }
 
 /// Cursor de la GOMA durante el borrado: círculo del tamaño REAL de la goma
-/// (`radius_px`, = radio en puntos × escala efectiva) con borde visible y
-/// relleno translúcido — el usuario ve exactamente qué se va a borrar.
+/// con anillo Astryx y relleno translúcido.
 pub(crate) fn render_eraser_cursor(reader: &Reader, radius_px: i32) -> Option<Bitmap> {
     let d = radius_px.max(4) * 2 + 8;
     let p = reader.theme.palette();
-    // Relleno translúcido sutil (mismo tono del badge, alpha 0x66).
-    let fill = (p.badge_bg() & 0x00FF_FFFF) | 0x6600_0000;
+    let fill = (p.accent_muted & 0x00FF_FFFF) | 0x5500_0000;
     let mut rects = Vec::new();
     let rr = (d / 2) as f32;
     rects.push(CanvasRect::rounded(
-        0.0,
-        0.0,
-        d as f32,
-        d as f32,
-        rr,
-        p.badge_border(),
+        0.0, 0.0, d as f32, d as f32, rr, p.accent,
     ));
     rects.push(CanvasRect::rounded(
-        1.0,
-        1.0,
-        d as f32 - 1.0,
-        d as f32 - 1.0,
-        rr - 1.0,
+        1.5,
+        1.5,
+        d as f32 - 1.5,
+        d as f32 - 1.5,
+        (rr - 1.5).max(0.0),
         fill,
     ));
     jni_text_bitmap(d, d, theme::TRANSPARENT, &rects, &[])

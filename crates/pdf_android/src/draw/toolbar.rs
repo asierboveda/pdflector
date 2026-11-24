@@ -14,7 +14,7 @@
 //! invalidate_toolbar`) y se presentan como overlays cacheados: el trazo no
 //! paga nada por la barra.
 
-use super::{ButtonRect, CanvasLine, CanvasRect, draw_card_shadow, jni_canvas_bitmap};
+use super::{ButtonRect, CanvasLine, CanvasRect, jni_canvas_bitmap};
 use crate::annotations::{HIGHLIGHT_PALETTE, INK_PALETTE, INK_WIDTHS, PenMode};
 use crate::reader::{Reader, viewer_bottom_chrome_h, viewer_top_chrome_h};
 use crate::theme;
@@ -304,19 +304,24 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
     0xFF00_0000 | ch(16) | ch(8) | ch(0)
 }
 
-/// Fondo de tarjeta con sombra (coordenadas locales del bitmap).
-fn card(rects: &mut Vec<CanvasRect>, w: f32, h: f32, p: &theme::ThemePalette) {
-    let (l, t, r, b) = (SHADOW, SHADOW, w - SHADOW, h - SHADOW);
-    draw_card_shadow(rects, l, t, r, b, CARD_R, p.is_dark);
-    rects.push(CanvasRect::rounded(l, t, r, b, CARD_R, p.base_300));
-    rects.push(CanvasRect::rounded(
-        l + 1.0,
-        t + 1.0,
-        r - 1.0,
-        b - 1.0,
-        CARD_R - 1.0,
-        p.base_100,
-    ));
+/// Fondo de tarjeta flotante Astryx (`bg_popover` + hairline enfatizado + elevación).
+fn card(
+    rects: &mut Vec<CanvasRect>,
+    w: f32,
+    h: f32,
+    p: &theme::ThemePalette,
+    elevation: super::Elevation,
+) {
+    let rect = (SHADOW, SHADOW, w - SHADOW, h - SHADOW);
+    super::draw_surface_card(
+        rects,
+        rect,
+        CARD_R,
+        p.bg_popover,
+        p.border_emphasized,
+        elevation,
+        p.is_dark,
+    );
 }
 
 /// Círculo relleno (rect redondeado cuadrado).
@@ -495,7 +500,7 @@ fn width_index(width: f32) -> usize {
         .map_or(1, |(i, _)| i)
 }
 
-/// Renderiza la barra; devuelve el bitmap y su posición en la ventana.
+/// Renderiza la barra flotante Astryx; devuelve el bitmap y su posición en la ventana.
 pub(crate) fn render_toolbar(reader: &Reader) -> Option<(Bitmap, i32, i32)> {
     let layout = toolbar_layout(
         reader.win_w,
@@ -509,27 +514,62 @@ pub(crate) fn render_toolbar(reader: &Reader) -> Option<(Bitmap, i32, i32)> {
     let (w, h) = (cr - cl + 2.0 * SHADOW, cb - ct + 2.0 * SHADOW);
     let mut rects = Vec::with_capacity(32);
     let mut lines = Vec::with_capacity(64);
-    card(&mut rects, w, h, &p);
+    card(&mut rects, w, h, &p, super::Elevation::Med);
     for &(x0, y0, x1, y1) in &layout.separators {
         lines.push(CanvasLine::new(
             (x0 - ox, y0 - oy),
             (x1 - ox, y1 - oy),
-            2.0,
-            p.base_300,
+            1.5,
+            p.border_emphasized,
         ));
     }
-    let fg = p.base_content;
-    let dim = mix(fg, p.base_100, 0.7);
+    let fg = p.text_primary;
+    let dim = mix(p.text_secondary, p.bg_popover, 0.55);
+    let tile_r = (CARD_R - PAD).max(theme::RADIUS_CONTAINER);
     for &(button, (l, t, r, b)) in &layout.buttons {
         let (l, t, r, b) = (l - ox, t - oy, r - ox, b - oy);
         let (cx, cy) = ((l + r) / 2.0, (t + b) / 2.0);
         if let Some(mode) = tool_of(button) {
             let selected = reader.pen_mode == mode;
-            let bg = if selected { p.base_300 } else { p.base_100 };
+            let bg = if selected {
+                p.accent_muted
+            } else {
+                p.bg_popover
+            };
             if selected {
-                rects.push(CanvasRect::rounded(l, t, r, b, 20.0, bg));
+                // Selección tonal Astryx con anillo de foco concéntrico + indicador lateral de acento
+                super::draw_inset_ring(&mut rects, (l, t, r, b), tile_r, p.focus_ring, bg);
+                if layout.dock.vertical() {
+                    let ix = if layout.dock == ToolbarDock::Left {
+                        l + 3.0
+                    } else {
+                        r - 6.0
+                    };
+                    rects.push(CanvasRect::rounded(
+                        ix,
+                        cy - 14.0,
+                        ix + 3.0,
+                        cy + 14.0,
+                        1.5,
+                        p.accent,
+                    ));
+                } else {
+                    let iy = if layout.dock == ToolbarDock::Top {
+                        t + 3.0
+                    } else {
+                        b - 6.0
+                    };
+                    rects.push(CanvasRect::rounded(
+                        cx - 14.0,
+                        iy,
+                        cx + 14.0,
+                        iy + 3.0,
+                        1.5,
+                        p.accent,
+                    ));
+                }
             }
-            let color = if selected { p.primary } else { fg };
+            let color = if selected { p.text_accent } else { fg };
             tool_icon(&mut lines, (cx, cy), mode, color, bg, reader);
             continue;
         }
@@ -545,15 +585,14 @@ pub(crate) fn render_toolbar(reader: &Reader) -> Option<(Bitmap, i32, i32)> {
             ToolbarButton::Toggle => {
                 let edge = toward_edge(layout.dock);
                 if reader.toolbar_collapsed {
-                    // Cerrada: herramienta guardada atenuada (el lápiz
-                    // navega) y chevron hacia el interior para abrir.
+                    // Cerrada: herramienta guardada atenuada y chevron hacia el interior
                     let (sx, sy) = (edge.0 * 8.0, edge.1 * 8.0);
                     tool_icon(
                         &mut lines,
                         (cx + sx, cy + sy),
                         reader.pen_mode,
                         dim,
-                        p.base_100,
+                        p.bg_popover,
                         reader,
                     );
                     chevron(
@@ -562,10 +601,10 @@ pub(crate) fn render_toolbar(reader: &Reader) -> Option<(Bitmap, i32, i32)> {
                         cy - sy * 3.6,
                         (-edge.0, -edge.1),
                         7.0,
-                        fg,
+                        p.text_accent,
                     );
                 } else {
-                    chevron(&mut lines, cx, cy, edge, 12.0, fg);
+                    chevron(&mut lines, cx, cy, edge, 12.0, p.text_secondary);
                 }
             }
             _ => {}
@@ -582,7 +621,7 @@ pub(crate) fn render_toolbar(reader: &Reader) -> Option<(Bitmap, i32, i32)> {
     Some((bmp, ox.round() as i32, oy.round() as i32))
 }
 
-/// Renderiza el popover abierto; devuelve el bitmap y su posición.
+/// Renderiza el popover Astryx (Elevation::High) de color/grosor junto a la barra.
 pub(crate) fn render_toolbar_popover(
     reader: &Reader,
     kind: ToolbarPopover,
@@ -600,7 +639,7 @@ pub(crate) fn render_toolbar_popover(
     let (w, h) = (cr - cl + 2.0 * SHADOW, cb - ct + 2.0 * SHADOW);
     let mut rects = Vec::with_capacity(32);
     let mut lines = Vec::new();
-    card(&mut rects, w, h, &p);
+    card(&mut rects, w, h, &p, super::Elevation::High);
     let (palette, current) = match kind {
         ToolbarPopover::Pen => (&INK_PALETTE, reader.ink_color),
         ToolbarPopover::Highlighter => (&HIGHLIGHT_PALETTE, reader.highlight_color),
@@ -612,23 +651,22 @@ pub(crate) fn render_toolbar_popover(
             PopoverCell::Color(i) => {
                 let color = palette[i];
                 if color == current {
-                    circle(&mut rects, cx, cy, 31.0, p.primary);
-                    circle(&mut rects, cx, cy, 27.0, p.base_100);
+                    circle(&mut rects, cx, cy, 31.0, p.accent);
+                    circle(&mut rects, cx, cy, 27.5, p.bg_popover);
                 }
-                // Contorno: la tinta oscura se distingue también en temas oscuros.
-                circle(&mut rects, cx, cy, 25.0, p.base_300);
+                // Contorno hairline: la tinta oscura se distingue también en temas oscuros.
+                circle(&mut rects, cx, cy, 25.0, p.border_emphasized);
                 circle(&mut rects, cx, cy, 23.0, argb(color, 255));
             }
             PopoverCell::Width(i) => {
                 if i == width_index(reader.ink_width) {
-                    rects.push(CanvasRect::rounded(
-                        l + 4.0,
-                        t + 4.0,
-                        r - 4.0,
-                        b - 4.0,
-                        20.0,
-                        p.base_300,
-                    ));
+                    super::draw_inset_ring(
+                        &mut rects,
+                        (l + 4.0, t + 4.0, r - 4.0, b - 4.0),
+                        theme::RADIUS_CONTAINER,
+                        p.focus_ring,
+                        p.accent_muted,
+                    );
                 }
                 lines.push(CanvasLine::new(
                     (cx - 20.0, cy),
