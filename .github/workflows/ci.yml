@@ -20,6 +20,10 @@ jobs:
           /tmp/corpus-venv/bin/pip install --quiet pillow reportlab
           /tmp/corpus-venv/bin/python tools/generate_corpus.py
           cargo test -p pdf_core
+      - name: test python tools
+        run: |
+          python3 -m unittest discover -s tools/tests
+          PYTHONPATH=tools/ink_bench python3 -m unittest discover -s tools/ink_bench/tests
   android:
     runs-on: ubuntu-latest
     steps:
@@ -39,7 +43,6 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android: --sysroot=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot
         run: |
-          echo "placeholder" > crates/pdf_android/groq_key.txt
           echo "placeholder" > crates/pdf_android/google_key.txt
           export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           cargo check -p pdf_android --target aarch64-linux-android --all-targets
@@ -53,3 +56,17 @@ jobs:
         run: |
           export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           cargo clippy -p pdf_android --target aarch64-linux-android --all-targets -- -D warnings
+  android-jvm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: test android/product & android/ink_bench (JVM)
+        working-directory: android/product
+        run: |
+          ./gradlew :app:testDebugUnitTest --no-daemon
+          ./gradlew -p ../ink_bench :app:testDebugUnitTest --no-daemon

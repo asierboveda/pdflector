@@ -495,10 +495,12 @@ están en [`android/ink_bench/README.md`](android/ink_bench/README.md) y la
 decisión aprobada en
 [`ADR-009`](docs/adr/ADR-009-evaluacion-tinta-causal-front-buffer.md).
 
-La CI ejecuta formato, clippy y tests de `pdf_core` en host. En un job separado
-instala NDK r28 y comprueba/clippy `pdf_android` para
-`aarch64-linux-android` (`.github/workflows/ci.yml:1-55`). La CI no instala ni
-ejecuta la APK en una tablet.
+La CI ejecuta formato, clippy, tests de `pdf_core` y tests Python de `tools/`
+en host (`check`); en un segundo job (`android`) instala NDK r28 y ejecuta
+`check`/`clippy` de `pdf_android` para `aarch64-linux-android`; y en un tercer
+job (`android-jvm`) compila y ejecuta los tests JVM Gradle/Kotlin de
+`android/product` y `android/ink_bench` (`.github/workflows/ci.yml`). La CI no
+instala ni ejecuta la APK en una tablet.
 
 ## 4. Estado verificado en esta reconstrucción
 
