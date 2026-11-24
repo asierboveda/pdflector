@@ -356,6 +356,9 @@ pub(crate) struct SelState {
 /// color del cuerpo y qué muestra el panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AiPhase {
+    /// Confirmación previa al envío: muestra qué saldrá del dispositivo y exige
+    /// pulsar «Explicar» antes de contactar con Gemini (ADR-015).
+    Confirm,
     /// Consulta en vuelo: el hilo de fondo aún no ha devuelto nada (el panel
     /// muestra "preguntando…" y `tick` sigue sondeando el canal).
     Asking,
@@ -364,6 +367,14 @@ pub(crate) enum AiPhase {
     /// La consulta falló (sin red, key inválida, error HTTP/JSON...): el
     /// panel muestra el error en rojo en el mismo sitio que la respuesta.
     Error,
+}
+
+/// Payload acotado de una selección pendiente de confirmación (solo recorte,
+/// texto de esa selección y número de página; nunca texto fuera de ella).
+pub(crate) struct PendingAiRequest {
+    pub(crate) page: u32,
+    pub(crate) text: String,
+    pub(crate) image: Option<String>,
 }
 
 /// Panel flotante de "Preguntar a la IA" (Parte 2): tarjeta flotante
@@ -719,6 +730,8 @@ pub(crate) struct Reader {
     /// cuerpo y el flujo del tap. Separada del panel para que el render
     /// (`draw::render_ai_panel`) la lea sin dependencias circulares.
     pub(crate) ai_phase: AiPhase,
+    /// Selección pendiente de confirmación explícita antes de contactar Gemini.
+    pub(crate) ai_pending: Option<PendingAiRequest>,
     /// Receptor del hilo de fondo de IA (std::thread + mpsc, el patrón de
     /// `pdf_core::prefetch`): Some mientras una consulta está en vuelo.
     /// `tick` lo sondea con `try_recv` (sin bloquear) y lo libera al llegar

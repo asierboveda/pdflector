@@ -130,9 +130,9 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
     let panel_h = header_h + body_h + pad;
     let x = (win_w - panel_w) / 2.0;
     let y = ((win_h - panel_h) / 2.0).max(8.0);
-    // Botones de la cabecera, alineados a la derecha: [▲][▼][×] (▲/▼ solo
-    // si `scrollable`). Misma geometría para render y tap.
-    let mut buttons: Vec<(&'static str, ButtonRect)> = Vec::with_capacity(3);
+    // Botones de la cabecera, alineados a la derecha: [Explicar][▲][▼][×].
+    // Misma geometría para render y tap.
+    let mut buttons: Vec<(&'static str, ButtonRect)> = Vec::with_capacity(4);
     let btn_top = y + (header_h - btn) / 2.0;
     let btn_bottom = btn_top + btn;
     let mut bx = x + panel_w - pad - btn; // el más a la derecha: ✕
@@ -142,6 +142,11 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
         buttons.push(("▼", (bx, btn_top, bx + btn, btn_bottom)));
         bx -= btn + gap;
         buttons.push(("▲", (bx, btn_top, bx + btn, btn_bottom)));
+    }
+    if reader.ai_phase == AiPhase::Confirm {
+        let confirm_w = 104.0f32;
+        bx -= confirm_w + gap;
+        buttons.push(("Explicar", (bx, btn_top, bx + confirm_w, btn_bottom)));
     }
     // Recortar el scroll actual al rango válido (0..total−visible).
     let max_scroll = total.saturating_sub(visible);
@@ -165,8 +170,8 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
 /// y botones + cuerpo con las líneas VISIBLES, saltando las que quedan fuera
 /// de la ventana de scroll) a un bitmap RGBA8 del tamaño del panel con fondo
 /// transparente. Título y color del cuerpo según la fase (`AiPhase`):
-/// Asking = "Preguntando a la IA…" en gris (estado transitorio), Answer =
-/// texto claro, Error = "IA — error" con texto rojizo (`STATUS_*`).
+/// Confirm = aviso antes de enviar, Asking = "Preguntando a la IA…",
+/// Answer = texto claro, Error = "IA — error" con texto rojizo (`STATUS_*`).
 pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
     let layout = ai_panel_layout(reader)?;
     let (mx, my, mrx, mry) = layout.rect;
@@ -208,8 +213,9 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
         header_h + 1.0,
         p.popup_border(),
     ));
-    // Cabecera: título según la fase + botones ✕/▲/▼
+    // Cabecera: título según la fase + botones Explicar/▲/▼/✕
     let (title, body_color) = match reader.ai_phase {
+        AiPhase::Confirm => ("Explicar selección", p.base_content),
         AiPhase::Asking => ("Preguntando a la IA…", p.neutral_content),
         AiPhase::Answer => ("Preguntar a la IA", p.base_content),
         AiPhase::Error => ("IA — error", p.status_text()),
@@ -224,6 +230,11 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
         title,
     ));
     for (label, (l, t, rr, b)) in &layout.buttons {
+        let (bg, border, fg, bold) = if *label == "Explicar" {
+            (p.primary, p.primary, p.primary_content, true)
+        } else {
+            (p.base_200, p.base_300, p.base_content, false)
+        };
         draw_button(
             &mut rects,
             &mut texts,
@@ -231,11 +242,11 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
             *t - my,
             *rr - mx,
             *b - my,
-            p.base_200,
-            p.base_300,
-            p.base_content,
+            bg,
+            border,
+            fg,
             theme::FONT_CAPTION,
-            false,
+            bold,
             label,
         );
     }

@@ -5,11 +5,26 @@
 
 use super::AiPanel;
 use super::AiPhase;
+use super::PendingAiRequest;
 use super::Reader;
 use crate::draw::ai_panel_layout;
 use crate::draw::render_ai_panel;
 use log::info;
 use std::time::Instant;
+
+fn build_ai_prompt(page_num: u32, selected_text: &str, has_image: bool) -> String {
+    let mut prompt = format!(
+        "Eres un asistente de estudio. Explica de forma clara y concisa, en español, el contenido seleccionado por el estudiante en la página {page_num}. Si es una ecuación o un gráfico, explica qué significa y para qué sirve. No te limites a repetir el texto: explícalo. Escribe las fórmulas en notación sencilla y legible sin LaTeX complejo (por ejemplo x^2, a/b, raíz(x)) y usa párrafos cortos."
+    );
+    if !selected_text.is_empty() {
+        prompt.push_str("\n\nTexto seleccionado:\n");
+        prompt.push_str(selected_text);
+    }
+    if has_image {
+        prompt.push_str("\n\nLa imagen adjunta es el recorte exacto de la selección del estudiante: es la fuente principal de lo que hay que explicar.");
+    }
+    prompt
+}
 
 impl Reader {
     /// Aviso breve sobre el indicador de página ("copied", ...): texto +
@@ -21,54 +36,40 @@ impl Reader {
         self.redraw();
     }
 
-    // ---------------------------------------------------------------------
-    // "Preguntar a la IA" (Parte 2): hilo de fondo + IA híbrida + panel
-    // ---------------------------------------------------------------------
-    //
-    // Al soltar la selección (`Reader::end_sel`) se llama a
-    // `ask_ai`: se cierra el menú, se abre el panel en fase Asking
-    // ("preguntando…") y se lanza un hilo de fondo (std::thread + mpsc, el
-    // mismo patrón de `pdf_core::prefetch`) que llama a la IA y envía el
-    // resultado por el canal. El hilo de UI sondea el canal en `tick`
-    // (`try_recv`, sin bloquear) y al llegar el mensaje pasa el panel a
-    // Answer (texto envuelto con scroll) o Error (mensaje claro en el mismo
-    // panel). Decisiones:
-    //
-    // - GEMINI SIEMPRE: con IMAGEN de la selección (crop del bitmap
-    //   cacheado, `sel_image_png_base64`) se llama a
-    //   `GeminiClient::explain_image` con `GEMINI_MODEL`; la imagen es la
-    //   fuente principal para ecuaciones/gráficos (el texto extraído de una
-    //   ecuación es parcial o nulo). El prompt incluye además el texto de
-    //   la selección y el de la hoja completa como contexto. Sin imagen, la
-    //   misma explicación va solo con texto (`explain_text`).
-    // - Respaldo: solo si Gemini responde ocupado (503/Busy), se prueba al
-    //   momento con `GEMINI_FALLBACK_MODEL` DENTRO del hilo de fondo (nunca
-    //   bloquea el hilo de UI); cualquier otro error se muestra en el panel.
-    // - La key va EMBEBIDA en el APK (uso personal, sin telemetría; ver
-    //   `lib.rs`). Una consulta no se cancela al cerrar el panel: el hilo
-    //   termina solo y el resultado se descarta al soltar el receptor.
-    // - El hilo de fondo evita bloquear el hilo de UI durante la red
-    /// "IA": lanza la consulta a Gemini (imagen y contexto, o solo texto)
-    /// en un hilo de fondo y abre el panel en fase "preguntando…". Si no hay
-    /// ni texto ni imagen aprovechable avisa "no text" y no abre el panel
-    /// (mismo comportamiento que Copiar; con imagen — PDF escaneado — sí
-    /// abre: la imagen es la fuente principal). El texto y la imagen se
-    /// capturan ANTES de cerrar el menú (`sel_text` y
-    /// `sel_image_png_base64`).
-    pub(crate) fn ask_ai(&mut self) {
+    /// Captura únicamente el recorte y texto de la selección (nunca el resto de
+    /// la página) y abre el panel en fase de confirmación antes de enviar nada
+    /// a Google Gemini (ADR-015).
+    pub(crate) fn prepare_ai_explain(&mut self) {
         let text = self.sel_text();
-        // Imagen de la selección (ecuaciones/gráficos): PNG base64 del crop
-        // del bitmap cacheado. None si el crop no es posible (sin bitmap,
-        // rect vacío) — en ese caso la explicación va solo con texto.
         let image = self.sel_image_png_base64();
-        // Contexto: el texto de la hoja completa sitúa la selección (un
-        // párrafo o una ecuación se entienden dentro de su hoja).
-        let page_context = self.page_context_text();
-        self.clear_selection(); // el panel sustituye a la selección
+        let page = self.page + 1;
+        self.clear_selection();
         if text.is_empty() && image.is_none() {
             self.show_toast("no text");
             return;
         }
+        let what = match (!text.is_empty(), image.is_some()) {
+            (true, true) => "el recorte y el texto seleccionado",
+            (false, true) => "el recorte seleccionado",
+            (true, false) => "el texto seleccionado",
+            (false, false) => return,
+        };
+        self.ai_rx = None;
+        self.ai_pending = Some(PendingAiRequest { page, text, image });
+        self.ai_text = format!(
+            "Se enviará a Google Gemini únicamente {what} de la página {page} (sin el resto de la hoja).\n\nPulsa Explicar para continuar o × para cancelar."
+        );
+        self.ai_phase = AiPhase::Confirm;
+        self.rebuild_ai_panel();
+        self.redraw();
+    }
+
+    /// Confirma el envío a Gemini tras pulsar explícitamente «Explicar» en el
+    /// panel de confirmación. Envía solo el recorte y texto capturados.
+    pub(crate) fn confirm_ask_ai(&mut self) {
+        let Some(req) = self.ai_pending.take() else {
+            return;
+        };
         if crate::GOOGLE_API_KEY.trim().len() < 20 {
             self.ai_text =
                 "Falta tu clave de Gemini: pégala en crates/pdf_android/google_key.txt y reinstala la app."
@@ -79,26 +80,14 @@ impl Reader {
             return;
         }
         info!(
-            "ask_ai: {} chars, image {} B PNG, context {} chars -> Gemini ({})",
-            text.chars().count(),
-            image.as_ref().map_or(0, String::len),
-            page_context.chars().count(),
+            "ask_ai: page {}, {} chars, image {} B PNG -> Gemini ({})",
+            req.page,
+            req.text.chars().count(),
+            req.image.as_ref().map_or(0, String::len),
             crate::GEMINI_MODEL
         );
-        let mut prompt = "Eres un asistente de estudio. Explica de forma clara y concisa, en español, el contenido seleccionado por el estudiante dentro del contexto de su hoja. Si es una ecuación o un gráfico, explica qué significa y para qué sirve. No te limites a repetir el texto: explícalo. Escribe las fórmulas en notación sencilla y legible sin LaTeX complejo (por ejemplo x^2, a/b, raíz(x)) y usa párrafos cortos.".to_string();
-        if !text.is_empty() {
-            prompt.push_str("\n\nTexto de la selección:\n");
-            prompt.push_str(&text);
-        }
-        if !page_context.is_empty() && page_context != text {
-            prompt.push_str("\n\nTexto de la hoja (contexto):\n");
-            prompt.push_str(&page_context);
-        }
-        if image.is_some() {
-            prompt.push_str("\n\nLa imagen adjunta es la selección exacta del estudiante: es la fuente principal de lo que hay que explicar.");
-        }
-        // Panel en fase Asking ("preguntando…") y hilo de fondo con la
-        // llamada HTTP: el UI nunca espera por la red.
+        let prompt = build_ai_prompt(req.page, &req.text, req.image.is_some());
+        let image = req.image;
         self.ai_text = "preguntando…".to_string();
         self.ai_phase = AiPhase::Asking;
         self.rebuild_ai_panel();
@@ -112,9 +101,6 @@ impl Reader {
             };
             let result = match attempt(&client) {
                 Ok(answer) => Ok(answer),
-                // Si el modelo principal está ocupado (503), se prueba al
-                // momento con el modelo de respaldo; esperar y repetir con
-                // el mismo modelo saturado solo añade latencia.
                 Err(pdf_core::AiError::Busy(_)) => {
                     let fallback = pdf_core::ai::GeminiClient::with_model(
                         crate::GOOGLE_API_KEY,
@@ -124,8 +110,6 @@ impl Reader {
                 }
                 Err(e) => Err(e),
             };
-            // El error también viaja por el canal (`AiError` implementa
-            // Display): el hilo de UI decide si es respuesta o error.
             let _ = tx.send(result);
         });
         self.ai_rx = Some(rx);
@@ -170,12 +154,13 @@ impl Reader {
         self.ai_panel_id = self.next_ovl_id(); // contenido nuevo del panel
     }
 
-    /// Cierra el panel de IA (✕ o tap fuera): descarta el resultado
-    /// pendiente si la consulta aún está en vuelo (el hilo de fondo termina
-    /// solo y su mensaje se descarta al soltar el receptor).
+    /// Cierra el panel de IA (✕ o tap fuera): descarta la selección pendiente o
+    /// el resultado en vuelo (el hilo de fondo termina solo y su mensaje se
+    /// descarta al soltar el receptor).
     pub(crate) fn close_ai_panel(&mut self) {
         let had = self.ai_panel.is_some();
         self.ai_panel = None;
+        self.ai_pending = None;
         self.ai_rx = None;
         self.ai_text = String::new();
         self.ai_phase = AiPhase::Asking;
@@ -214,5 +199,24 @@ impl Reader {
             self.ai_panel_id = self.next_ovl_id();
         }
         self.redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_ai_prompt;
+
+    #[test]
+    fn prompt_contains_only_page_number_selected_text_and_image_note() {
+        let prompt = build_ai_prompt(7, "E = mc^2", true);
+        assert!(prompt.contains("página 7"));
+        assert!(prompt.contains("E = mc^2"));
+        assert!(prompt.contains("imagen adjunta"));
+        assert!(!prompt.contains("Texto de la hoja"));
+
+        let image_only = build_ai_prompt(3, "", true);
+        assert!(image_only.contains("página 3"));
+        assert!(!image_only.contains("Texto seleccionado:"));
+        assert!(image_only.contains("imagen adjunta"));
     }
 }

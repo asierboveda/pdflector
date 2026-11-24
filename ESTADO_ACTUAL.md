@@ -376,18 +376,18 @@ y [`docs/benchmark-results.md`](docs/benchmark-results.md).
 
 #### Selección e IA
 
-Al soltar una selección se pide directamente la explicación a la IA: no
-hay menú Copiar/Subrayar/IA. La consulta se ejecuta en un hilo de fondo y
-el hilo de UI sondea el canal sin bloquear
-(`crates/pdf_android/src/reader/toast_ia.rs`):
+Al soltar una selección se abre un panel de confirmación con aviso previo y
+botón explícito «Explicar» (sin enviar nada a la red hasta confirmar). Al
+confirmar, la consulta se ejecuta en un hilo de fondo y el hilo de UI sondea
+el canal sin bloquear (`crates/pdf_android/src/reader/toast_ia.rs`):
 
 - Siempre responde Gemini (`gemini-flash-lite-latest`; si responde
   ocupado, se prueba con `gemini-3.5-flash-lite`). Si hay una imagen
   recortada de la selección, se envía como fuente principal (ecuaciones y
-  gráficos) junto con el texto extraído de la selección y el texto de la
-  hoja completa como contexto (recortado a 6 000 caracteres). La salida se
-  acota a 600 tokens y el timeout de red es de 60 s.
-- Si no hay imagen, la explicación va solo con texto mediante
+  gráficos) junto con el texto extraído únicamente de esa selección y el
+  número de página (nunca texto fuera de la selección). La salida se acota a
+  600 tokens y el timeout de red es de 60 s.
+- Si no hay imagen, la explicación va solo con el texto seleccionado mediante
   `GeminiClient::explain_text` (`crates/pdf_core/src/ai.rs`).
 - Sin clave válida en `google_key.txt`, el panel avisa de que falta la clave
   en vez de mostrar el error del proveedor.

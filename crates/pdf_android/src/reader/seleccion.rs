@@ -9,9 +9,6 @@ use crate::SEL_MIN_PX;
 use base64::Engine;
 use pdf_core::{Rect, TextSpan};
 
-/// Caracteres máximos del texto de la hoja que viajan como contexto a la IA.
-const PAGE_CONTEXT_MAX_CHARS: usize = 6_000;
-
 // ---------------------------------------------------------------------
 // Selección de texto: long-press + arrastre, copiar y subrayar (Parte 1)
 // ---------------------------------------------------------------------
@@ -49,9 +46,8 @@ impl Reader {
     }
 
     /// Al levantar el dedo con un rect significativo (≥ `SEL_MIN_PX` por
-    /// lado) pide directamente la explicación a la IA: no hay menú
-    /// explicación a la IA. Un long-press sin arrastre (rect degenerado, el
-    /// punto) se descarta.
+    /// lado) abre la confirmación explícita de «Explicar» sin enviar nada
+    /// todavía a la red. Un long-press sin arrastre se descarta.
     pub(crate) fn end_sel(&mut self) {
         let Some((l, t, r, b)) = self.sel_screen_rect() else {
             self.clear_selection(); // no hubo arrastre
@@ -61,7 +57,7 @@ impl Reader {
             self.clear_selection(); // long-press sin arrastre: nada que fijar
             return;
         }
-        self.ask_ai();
+        self.prepare_ai_explain();
     }
 
     /// Descarta la selección y redibuja solo si había algo visible que
@@ -169,31 +165,6 @@ impl Reader {
             .map(|s| s.text.as_str())
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    /// Texto completo de la hoja actual como CONTEXTO para la IA: todos los
-    /// spans en orden de lectura, unidos por líneas y recortados a
-    /// `PAGE_CONTEXT_MAX_CHARS` caracteres. Cadena vacía si la hoja no tiene
-    /// texto extraíble (PDF escaneado).
-    pub(crate) fn page_context_text(&mut self) -> String {
-        let Some(doc) = self.doc.as_ref() else {
-            return String::new();
-        };
-        let Ok(pt) = self.text_cache.get_or_extract(doc, self.page) else {
-            return String::new();
-        };
-        let mut spans: Vec<&TextSpan> = pt.spans.iter().collect();
-        spans.sort_by(|a, b| {
-            a.y.partial_cmp(&b.y)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
-        });
-        let full = spans
-            .iter()
-            .map(|s| s.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        full.chars().take(PAGE_CONTEXT_MAX_CHARS).collect()
     }
 
     /// PNG base64 de la REGIÓN seleccionada (para "Preguntar a la IA" con

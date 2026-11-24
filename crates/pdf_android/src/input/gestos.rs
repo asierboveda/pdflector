@@ -264,6 +264,7 @@ fn ai_panel_tap(reader: &mut Reader, x: f32, y: f32) {
         .find(|(_, (l, t, r, b))| x >= *l && x < *r && y >= *t && y < *b)
         .map(|(label, _)| *label);
     match hit {
+        Some("Explicar") => reader.confirm_ask_ai(),
         Some("×") => reader.close_ai_panel(),
         Some("▲") => reader.ai_scroll(-1),
         Some("▼") => reader.ai_scroll(1),

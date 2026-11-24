@@ -156,6 +156,7 @@ impl Reader {
             ai_panel_id: 0,
             ai_text: String::new(),
             ai_phase: AiPhase::Asking,
+            ai_pending: None,
             ai_rx: None,
             toast: None,
             toast_bitmap: None,
