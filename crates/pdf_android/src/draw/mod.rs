@@ -92,6 +92,38 @@ pub(crate) enum TextAlign {
     Right,
 }
 
+/// Familia tipográfica nativa de Android (`android.graphics.Typeface`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TextFont {
+    #[default]
+    Sans,
+    #[allow(dead_code)]
+    Serif,
+    #[allow(dead_code)]
+    Mono,
+}
+
+/// Escala de elevación Astryx (`none | low | med | high`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum Elevation {
+    None,
+    Low,
+    Med,
+    High,
+}
+
+/// Variantes semánticas de botón Astryx.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ButtonVariant {
+    Primary,
+    Secondary,
+    Tonal,
+    Ghost,
+    Danger,
+}
+
 pub(crate) struct CanvasRect {
     pub(crate) left: f32,
     pub(crate) top: f32,
@@ -142,6 +174,8 @@ pub(crate) struct CanvasText {
     pub(crate) color: u32,
     pub(crate) align: TextAlign,
     pub(crate) bold: bool,
+    pub(crate) font: TextFont,
+    pub(crate) letter_spacing: f32,
     pub(crate) text: String,
 }
 
@@ -162,8 +196,22 @@ impl CanvasText {
             color,
             align,
             bold,
+            font: TextFont::Sans,
+            letter_spacing: 0.0,
             text: text.into(),
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_font(mut self, font: TextFont) -> Self {
+        self.font = font;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_tracking(mut self, em: f32) -> Self {
+        self.letter_spacing = em;
+        self
     }
 }
 
@@ -191,7 +239,228 @@ impl CanvasLine {
     }
 }
 
-/// Helper para renderizar un botón estilo píldora con bordes redondeados y relleno.
+/// Sombra graduada Astryx (`--shadow-low`, `--shadow-med`, `--shadow-high`).
+/// En claro usa tinte azul-pizarra frío `rgba(5, 54, 89, α)`; en oscuro, negro profundo.
+pub(crate) fn draw_elevation_shadow(
+    rects: &mut Vec<CanvasRect>,
+    (l, t, r, b): ButtonRect,
+    radius: f32,
+    elevation: Elevation,
+    is_dark: bool,
+) {
+    let tint: u32 = if is_dark { 0x0000_0000 } else { 0x0005_3659 };
+    let layer = |alpha: u32| -> u32 { (alpha << 24) | tint };
+    match elevation {
+        Elevation::None => {}
+        Elevation::Low => {
+            let (a1, a2) = if is_dark { (0x24, 0x3C) } else { (0x0A, 0x16) };
+            rects.push(CanvasRect::rounded(
+                l,
+                t + 1.5,
+                r,
+                b + 3.5,
+                radius + 1.0,
+                layer(a1),
+            ));
+            rects.push(CanvasRect::rounded(
+                l + 0.5,
+                t + 1.0,
+                r - 0.5,
+                b + 2.0,
+                radius,
+                layer(a2),
+            ));
+        }
+        Elevation::Med => {
+            let (a1, a2, a3) = if is_dark {
+                (0x1E, 0x38, 0x58)
+            } else {
+                (0x0B, 0x14, 0x22)
+            };
+            rects.push(CanvasRect::rounded(
+                l - 1.5,
+                t + 3.0,
+                r + 1.5,
+                b + 8.0,
+                radius + 3.0,
+                layer(a1),
+            ));
+            rects.push(CanvasRect::rounded(
+                l - 0.5,
+                t + 2.0,
+                r + 0.5,
+                b + 5.0,
+                radius + 1.5,
+                layer(a2),
+            ));
+            rects.push(CanvasRect::rounded(
+                l + 0.5,
+                t + 1.0,
+                r - 0.5,
+                b + 2.5,
+                radius,
+                layer(a3),
+            ));
+        }
+        Elevation::High => {
+            let (a1, a2, a3) = if is_dark {
+                (0x28, 0x48, 0x6C)
+            } else {
+                (0x0E, 0x1A, 0x2C)
+            };
+            rects.push(CanvasRect::rounded(
+                l - 3.0,
+                t + 5.0,
+                r + 3.0,
+                b + 14.0,
+                radius + 4.0,
+                layer(a1),
+            ));
+            rects.push(CanvasRect::rounded(
+                l - 1.5,
+                t + 3.0,
+                r + 1.5,
+                b + 9.0,
+                radius + 2.0,
+                layer(a2),
+            ));
+            rects.push(CanvasRect::rounded(
+                l,
+                t + 1.5,
+                r,
+                b + 4.0,
+                radius + 0.5,
+                layer(a3),
+            ));
+        }
+    }
+}
+
+/// Superficie Astryx (tarjeta, popover o diálogo) con elevación opcional y borde hairline 1 px.
+#[allow(dead_code)]
+pub(crate) fn draw_surface_card(
+    rects: &mut Vec<CanvasRect>,
+    rect: ButtonRect,
+    radius: f32,
+    fill: u32,
+    border: u32,
+    elevation: Elevation,
+    is_dark: bool,
+) {
+    let (l, t, r, b) = rect;
+    draw_elevation_shadow(rects, rect, radius, elevation, is_dark);
+    rects.push(CanvasRect::rounded(l, t, r, b, radius, border));
+    rects.push(CanvasRect::rounded(
+        l + 1.0,
+        t + 1.0,
+        r - 1.0,
+        b - 1.0,
+        (radius - 1.0).max(0.0),
+        fill,
+    ));
+}
+
+/// Anillo de foco/selección Astryx (`--shadow-inset-selected` 2 px).
+#[allow(dead_code)]
+pub(crate) fn draw_inset_ring(
+    rects: &mut Vec<CanvasRect>,
+    (l, t, r, b): ButtonRect,
+    radius: f32,
+    ring_color: u32,
+    inner_fill: u32,
+) {
+    rects.push(CanvasRect::rounded(l, t, r, b, radius, ring_color));
+    rects.push(CanvasRect::rounded(
+        l + 2.0,
+        t + 2.0,
+        r - 2.0,
+        b - 2.0,
+        (radius - 2.0).max(0.0),
+        inner_fill,
+    ));
+}
+
+/// Botón Astryx con radio de elemento (`--radius-element`, no píldora por defecto) y variantes semánticas.
+#[allow(clippy::too_many_arguments, dead_code)]
+pub(crate) fn draw_astryx_button(
+    rects: &mut Vec<CanvasRect>,
+    texts: &mut Vec<CanvasText>,
+    (l, t, r, b): ButtonRect,
+    variant: ButtonVariant,
+    p: &crate::theme::ThemePalette,
+    ts: f32,
+    bold: bool,
+    label: &str,
+) {
+    let radius = crate::theme::RADIUS_ELEMENT;
+    let (fill, border, fg) = match variant {
+        ButtonVariant::Primary => (p.accent, p.accent, p.on_accent),
+        ButtonVariant::Secondary => (p.bg_card, p.border_emphasized, p.text_primary),
+        ButtonVariant::Tonal => (p.accent_muted, p.accent_muted, p.on_accent_muted),
+        ButtonVariant::Ghost => (p.bg_muted, p.border, p.text_primary),
+        ButtonVariant::Danger => (p.error_bg, p.error_border, p.error_text),
+    };
+    rects.push(CanvasRect::rounded(l, t, r, b, radius, border));
+    rects.push(CanvasRect::rounded(
+        l + 1.0,
+        t + 1.0,
+        r - 1.0,
+        b - 1.0,
+        (radius - 1.0).max(0.0),
+        fill,
+    ));
+    let cx = l + (r - l) * 0.5;
+    let cy = t + (b - t) * 0.5 + ts * 0.35;
+    texts.push(CanvasText::new(
+        cx,
+        cy,
+        ts,
+        fg,
+        TextAlign::Center,
+        bold,
+        label,
+    ));
+}
+
+/// Token / Badge Astryx (`--radius-full`) con relleno tonal semántico y tracking tipográfico.
+#[allow(clippy::too_many_arguments, dead_code)]
+pub(crate) fn draw_token_pill(
+    rects: &mut Vec<CanvasRect>,
+    texts: &mut Vec<CanvasText>,
+    (l, t, r, b): ButtonRect,
+    fill: u32,
+    border: Option<u32>,
+    fg: u32,
+    ts: f32,
+    font: TextFont,
+    tracking: f32,
+    bold: bool,
+    label: &str,
+) {
+    let rad = ((b - t) * 0.5).max(crate::theme::RADIUS_INNER);
+    if let Some(bdr) = border {
+        rects.push(CanvasRect::rounded(l, t, r, b, rad, bdr));
+        rects.push(CanvasRect::rounded(
+            l + 1.0,
+            t + 1.0,
+            r - 1.0,
+            b - 1.0,
+            (rad - 1.0).max(0.0),
+            fill,
+        ));
+    } else {
+        rects.push(CanvasRect::rounded(l, t, r, b, rad, fill));
+    }
+    let cx = l + (r - l) * 0.5;
+    let cy = t + (b - t) * 0.5 + ts * 0.35;
+    texts.push(
+        CanvasText::new(cx, cy, ts, fg, TextAlign::Center, bold, label)
+            .with_font(font)
+            .with_tracking(tracking),
+    );
+}
+
+/// Helper compatible para botones con radio Astryx (`RADIUS_ELEMENT`, 8 px).
 #[allow(clippy::too_many_arguments)]
 fn draw_button(
     rects: &mut Vec<CanvasRect>,
@@ -207,7 +476,7 @@ fn draw_button(
     bold: bool,
     label: &str,
 ) {
-    let r = ((bottom - top) * 0.5).max(4.0);
+    let r = crate::theme::RADIUS_ELEMENT.min((bottom - top) * 0.5);
     rects.push(CanvasRect::rounded(
         left,
         top,
@@ -237,7 +506,7 @@ fn draw_button(
     ));
 }
 
-/// Dibuja sombra multicapa suave y visible (G1: alpha >= 0x30 en light, >= 0x60 en dark)
+/// Dibuja sombra multicapa suave Astryx (`Elevation::Med` por defecto para tarjetas/overlays).
 fn draw_card_shadow(
     rects: &mut Vec<CanvasRect>,
     l: f32,
@@ -247,35 +516,7 @@ fn draw_card_shadow(
     radius: f32,
     is_dark: bool,
 ) {
-    let (s1, s2, s3) = if is_dark {
-        (0x28000000, 0x48000000, 0x70000000)
-    } else {
-        (0x10000000, 0x20000000, 0x34000000)
-    };
-    rects.push(CanvasRect::rounded(
-        l - 1.0,
-        t + 3.0,
-        r + 1.0,
-        b + 7.0,
-        radius + 2.0,
-        s1,
-    ));
-    rects.push(CanvasRect::rounded(
-        l,
-        t + 2.0,
-        r,
-        b + 5.0,
-        radius + 1.0,
-        s2,
-    ));
-    rects.push(CanvasRect::rounded(
-        l + 1.0,
-        t + 1.0,
-        r - 1.0,
-        b + 3.0,
-        radius,
-        s3,
-    ));
+    draw_elevation_shadow(rects, (l, t, r, b), radius, Elevation::Med, is_dark);
 }
 
 /// Dibuja rectángulos (rectos o redondeados) y textos (con alineación y negrita)
@@ -467,52 +708,105 @@ fn jni_canvas_bitmap(
                 }
             }
 
-            // Textos.
-            for t in texts {
-                env.call_method(
-                    &paint,
-                    jni_str!("setColor"),
-                    jni_sig!(sig = (int) -> void),
-                    &[JValue::Int(t.color as i32)],
-                )?;
-                env.call_method(
-                    &paint,
-                    jni_str!("setTextSize"),
-                    jni_sig!(sig = (float) -> void),
-                    &[JValue::Float(t.size)],
-                )?;
-                env.call_method(
-                    &paint,
-                    jni_str!("setFakeBoldText"),
-                    jni_sig!(sig = (boolean) -> void),
-                    &[JValue::Bool(t.bold)],
-                )?;
-                let align_obj = match t.align {
-                    TextAlign::Left => &align_left,
-                    TextAlign::Center => &align_center,
-                    TextAlign::Right => &align_right,
-                };
-                env.call_method(
-                    &paint,
-                    jni_str!("setTextAlign"),
-                    jni_sig!(sig = (android.graphics.Paint::Align) -> void),
-                    &[JValue::Object(align_obj)],
-                )?;
-                let jstr = env.new_string(t.text.as_str())?;
-                env.call_method(
-                    &canvas,
-                    jni_str!("drawText"),
-                    jni_sig!(
-                        sig = ("java.lang.String", float, float, android.graphics.Paint) -> void
-                    ),
-                    &[
-                        JValue::Object(jstr.as_ref()),
-                        JValue::Float(t.x),
-                        JValue::Float(t.y),
-                        JValue::Object(&paint),
-                    ],
-                )?;
-                env.delete_local_ref(jstr);
+            // Textos (tipografía Astryx: Sans / Serif / Mono + letter-spacing con estado cacheado).
+            if !texts.is_empty() {
+                let tf_class = env.find_class(jni_str!("android/graphics/Typeface"))?;
+                let tf_sans = env
+                    .get_static_field(
+                        &tf_class,
+                        jni_str!("SANS_SERIF"),
+                        jni_sig!(sig = android.graphics.Typeface),
+                    )?
+                    .l()?;
+                let tf_serif = env
+                    .get_static_field(
+                        &tf_class,
+                        jni_str!("SERIF"),
+                        jni_sig!(sig = android.graphics.Typeface),
+                    )?
+                    .l()?;
+                let tf_mono = env
+                    .get_static_field(
+                        &tf_class,
+                        jni_str!("MONOSPACE"),
+                        jni_sig!(sig = android.graphics.Typeface),
+                    )?
+                    .l()?;
+                let mut cur_font: Option<TextFont> = None;
+                let mut cur_spacing: f32 = 0.0;
+
+                for t in texts {
+                    if cur_font != Some(t.font) {
+                        let tf_obj = match t.font {
+                            TextFont::Sans => &tf_sans,
+                            TextFont::Serif => &tf_serif,
+                            TextFont::Mono => &tf_mono,
+                        };
+                        let prev_tf = env
+                            .call_method(
+                                &paint,
+                                jni_str!("setTypeface"),
+                                jni_sig!(sig = (android.graphics.Typeface) -> android.graphics.Typeface),
+                                &[JValue::Object(tf_obj)],
+                            )?
+                            .l()?;
+                        env.delete_local_ref(prev_tf);
+                        cur_font = Some(t.font);
+                    }
+                    if (t.letter_spacing - cur_spacing).abs() > f32::EPSILON {
+                        env.call_method(
+                            &paint,
+                            jni_str!("setLetterSpacing"),
+                            jni_sig!(sig = (float) -> void),
+                            &[JValue::Float(t.letter_spacing)],
+                        )?;
+                        cur_spacing = t.letter_spacing;
+                    }
+                    env.call_method(
+                        &paint,
+                        jni_str!("setColor"),
+                        jni_sig!(sig = (int) -> void),
+                        &[JValue::Int(t.color as i32)],
+                    )?;
+                    env.call_method(
+                        &paint,
+                        jni_str!("setTextSize"),
+                        jni_sig!(sig = (float) -> void),
+                        &[JValue::Float(t.size)],
+                    )?;
+                    env.call_method(
+                        &paint,
+                        jni_str!("setFakeBoldText"),
+                        jni_sig!(sig = (boolean) -> void),
+                        &[JValue::Bool(t.bold)],
+                    )?;
+                    let align_obj = match t.align {
+                        TextAlign::Left => &align_left,
+                        TextAlign::Center => &align_center,
+                        TextAlign::Right => &align_right,
+                    };
+                    env.call_method(
+                        &paint,
+                        jni_str!("setTextAlign"),
+                        jni_sig!(sig = (android.graphics.Paint::Align) -> void),
+                        &[JValue::Object(align_obj)],
+                    )?;
+                    let jstr = env.new_string(t.text.as_str())?;
+                    env.call_method(
+                        &canvas,
+                        jni_str!("drawText"),
+                        jni_sig!(
+                            sig = ("java.lang.String", float, float, android.graphics.Paint) -> void
+                        ),
+                        &[
+                            JValue::Object(jstr.as_ref()),
+                            JValue::Float(t.x),
+                            JValue::Float(t.y),
+                            JValue::Object(&paint),
+                        ],
+                    )?;
+                    env.delete_local_ref(jstr);
+                }
             }
 
             // getPixels (ARGB int) → nuestros bytes RGBA8.

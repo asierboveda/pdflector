@@ -113,29 +113,70 @@ pub(crate) const GEMINI_FALLBACK_MODEL: &str = "gemini-3.5-flash-lite";
 pub(crate) const PINCH_MIN: f32 = 1.0;
 pub(crate) const PINCH_MAX: f32 = 8.0;
 
-/// Constantes de color, temas y tipografía para la interfaz (0xAARRGGBB para Canvas JNI).
+/// Sistema de diseño Astryx adaptado a Canvas JNI nativo (colores ARGB 0xAARRGGBB).
+///
+/// Jerarquía de superficies (`body → surface → card → popover`), tokens de forma
+/// (`RADIUS_*`), ritmo espacial de 4 px (`SPACE_*`) y escala tipográfica geométrica
+/// con contraste WCAG AA verificado en los 4 temas persistidos.
 pub(crate) mod theme {
     use serde::{Deserialize, Serialize};
 
     /// Color transparente para fondos de bitmap sin opacidad.
-    pub(crate) const TRANSPARENT: u32 = 0x00000000;
+    pub(crate) const TRANSPARENT: u32 = 0x0000_0000;
 
-    /// Fondo de error cuando no se pudo abrir el PDF (rojo oscuro opaco).
-    pub(crate) const ERROR_BG_RGBA: [u8; 4] = [0x5A, 0x12, 0x12, 0xFF];
+    /// Fondo de error cuando no se pudo abrir el PDF (Astryx error inverted dark).
+    pub(crate) const ERROR_BG_RGBA: [u8; 4] = [0x41, 0x17, 0x1F, 0xFF];
 
-    /// Color del relleno del rect de selección (azul accent, alfa ~30 %: 77/255).
-    pub(crate) const SEL_FILL_RGBA: [u8; 4] = [0x4D, 0xA3, 0xFF, 0x4D];
-    /// Color del borde del rect de selección (1-2 px, alfa completo).
-    pub(crate) const SEL_BORDER_RGBA: [u8; 4] = [0x4D, 0xA3, 0xFF, 0xFF];
+    /// Relleno y borde del rect de selección (Astryx `--color-accent` `#0064E0`).
+    pub(crate) const SEL_FILL_RGBA: [u8; 4] = [0x01, 0x71, 0xE3, 0x3D];
+    pub(crate) const SEL_BORDER_RGBA: [u8; 4] = [0x00, 0x64, 0xE0, 0xFF];
 
-    /// Jerarquía tipográfica única (Readest Design System).
-    pub(crate) const FONT_DISPLAY: f32 = 24.0;
+    // ---- Escala de forma (Astryx Shape: inner → element → container → page → full) ----
+    #[allow(dead_code)]
+    pub(crate) const RADIUS_NONE: f32 = 0.0;
+    pub(crate) const RADIUS_INNER: f32 = 4.0;
+    pub(crate) const RADIUS_ELEMENT: f32 = 8.0;
+    #[allow(dead_code)]
+    pub(crate) const RADIUS_CONTAINER: f32 = 12.0;
+    #[allow(dead_code)]
+    pub(crate) const RADIUS_CARD: f32 = 16.0;
+    #[allow(dead_code)]
+    pub(crate) const RADIUS_PAGE: f32 = 24.0;
+    #[allow(dead_code)]
+    pub(crate) const RADIUS_FULL: f32 = 999.0;
+
+    // ---- Ritmo espacial (Astryx Spacing, base 4 px) ----
+    #[allow(dead_code)]
+    pub(crate) const SPACE_1: f32 = 4.0;
+    #[allow(dead_code)]
+    pub(crate) const SPACE_2: f32 = 8.0;
+    #[allow(dead_code)]
+    pub(crate) const SPACE_3: f32 = 12.0;
+    #[allow(dead_code)]
+    pub(crate) const SPACE_4: f32 = 16.0;
+    #[allow(dead_code)]
+    pub(crate) const SPACE_5: f32 = 20.0;
+    #[allow(dead_code)]
+    pub(crate) const SPACE_6: f32 = 24.0;
+
+    // ---- Escala tipográfica geométrica (Astryx Type Scale) ----
+    pub(crate) const FONT_DISPLAY: f32 = 26.0;
+    #[allow(dead_code)]
+    pub(crate) const FONT_H1: f32 = 20.0;
     pub(crate) const FONT_TITLE: f32 = 17.0;
     pub(crate) const FONT_BODY: f32 = 14.0;
     pub(crate) const FONT_CAPTION: f32 = 12.0;
     pub(crate) const FONT_LABEL_CAPS: f32 = 11.0;
+    #[allow(dead_code)]
+    pub(crate) const FONT_MICRO: f32 = 10.0;
 
-    /// Temas disponibles en PDFLector (reglas y paletas derivadas exactas de Readest).
+    /// Tracking tipográfico (`Paint.setLetterSpacing` en em).
+    #[allow(dead_code)]
+    pub(crate) const TRACKING_CAPS: f32 = 0.08;
+    #[allow(dead_code)]
+    pub(crate) const TRACKING_TIGHT: f32 = -0.015;
+
+    /// Temas persistidos en `state.json` (se preservan las variantes exactas).
     #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
     pub(crate) enum AppTheme {
         #[default]
@@ -146,7 +187,7 @@ pub(crate) mod theme {
     }
 
     impl AppTheme {
-        /// Cicla al siguiente tema: Default-Light → Sepia-Light → Default-Dark → Sepia-Dark → Default-Light...
+        /// Cicla al siguiente tema: Claro → Papel → Oscuro → Nocturno → Claro.
         pub(crate) fn next(self) -> Self {
             match self {
                 Self::DefaultLight => Self::SepiaLight,
@@ -161,69 +202,248 @@ pub(crate) mod theme {
             matches!(self, Self::DefaultDark | Self::SepiaDark)
         }
 
-        /// Obtiene la paleta completa calculada para este tema según las reglas Readest.
+        /// Paleta semántica Astryx completa para este tema.
         pub(crate) fn palette(self) -> ThemePalette {
             match self {
+                // Astryx Core Light (`#F1F4F7` body → `#FFFFFF` surface/card/popover, `#0064E0` accent)
                 Self::DefaultLight => ThemePalette {
-                    name: "Default-Light",
+                    name: "Claro",
                     is_dark: false,
-                    base_100: 0xFFFFFFFF,
-                    base_200: 0xFFF2F2F2,
-                    base_300: 0xFFE0E0E0,
-                    base_content: 0xFF171717,
-                    neutral: 0xFFD9D9D9,
-                    neutral_content: 0xFF737373,
-                    primary: 0xFF0066CC,
-                    primary_content: 0xFFFFFFFF,
+                    bg_body: 0xFFF1_F4F7,
+                    bg_surface: 0xFFFF_FFFF,
+                    bg_card: 0xFFFF_FFFF,
+                    bg_popover: 0xFFFF_FFFF,
+                    bg_muted: 0xFFE6_ECF2,
+                    bg_inverted: 0xFF0A_1317,
+                    text_primary: 0xFF0A_1317,
+                    text_secondary: 0xFF44_5564,
+                    text_disabled: 0xFF69_7886,
+                    text_accent: 0xFF00_64E0,
+                    on_accent: 0xFFFF_FFFF,
+                    on_inverted: 0xFFFF_FFFF,
+                    border: 0xFFD8_E0E8,
+                    border_emphasized: 0xFFBC_C6D0,
+                    focus_ring: 0x8001_71E3,
+                    track: 0xFFCC_D3DB,
+                    accent: 0xFF00_64E0,
+                    accent_muted: 0xFFD8_EBFF,
+                    on_accent_muted: 0xFF04_2F97,
+                    success: 0xFF0D_8626,
+                    success_bg: 0xFFD6_F4E1,
+                    success_text: 0xFF09_441F,
+                    success_border: 0xFF0D_8626,
+                    warning: 0xFFC5_8600,
+                    warning_bg: 0xFFFB_F0CE,
+                    warning_text: 0xFF6B_3A06,
+                    error: 0xFFE3_193B,
+                    error_bg: 0xFFFC_DCE1,
+                    error_text: 0xFF8B_0A1E,
+                    error_border: 0xFFE3_193B,
+                    teal_bg: 0xFFD4_F1EF,
+                    teal_text: 0xFF08_3943,
+                    purple_bg: 0xFFE7_E0FF,
+                    purple_text: 0xFF3E_0697,
+                    // Alias heredados mientras migran los submódulos de `draw`
+                    base_100: 0xFFFF_FFFF,
+                    base_200: 0xFFF1_F4F7,
+                    base_300: 0xFFD8_E0E8,
+                    base_content: 0xFF0A_1317,
+                    neutral: 0xFFE6_ECF2,
+                    neutral_content: 0xFF44_5564,
+                    primary: 0xFF00_64E0,
+                    primary_content: 0xFFFF_FFFF,
                 },
+                // Astryx Paper Light (papel cálido editorial + acento Astryx Teal)
                 Self::SepiaLight => ThemePalette {
-                    name: "Sepia-Light",
+                    name: "Papel",
                     is_dark: false,
-                    base_100: 0xFFF1E8D0,
-                    base_200: 0xFFE6DCBF,
-                    base_300: 0xFFD4C8A5,
-                    base_content: 0xFF5B4636,
-                    neutral: 0xFFC9BC96,
-                    neutral_content: 0xFF8A705B,
-                    primary: 0xFF008B8B,
-                    primary_content: 0xFFFFFFFF,
+                    bg_body: 0xFFEC_E3D2,
+                    bg_surface: 0xFFF8_F3E8,
+                    bg_card: 0xFFF8_F3E8,
+                    bg_popover: 0xFFFB_F7EE,
+                    bg_muted: 0xFFE4_D9C3,
+                    bg_inverted: 0xFF26_1D15,
+                    text_primary: 0xFF26_1D15,
+                    text_secondary: 0xFF5D_4B3B,
+                    text_disabled: 0xFF84_715E,
+                    text_accent: 0xFF00_6663,
+                    on_accent: 0xFFFF_FFFF,
+                    on_inverted: 0xFFF8_F3E8,
+                    border: 0xFFD8_CBB4,
+                    border_emphasized: 0xFFBE_AE93,
+                    focus_ring: 0x8000_6E6A,
+                    track: 0xFFCF_C1A8,
+                    accent: 0xFF00_6E6A,
+                    accent_muted: 0xFFCF_E8E5,
+                    on_accent_muted: 0xFF06_3D3B,
+                    success: 0xFF15_7A30,
+                    success_bg: 0xFFD6_ECD7,
+                    success_text: 0xFF0F_4A1E,
+                    success_border: 0xFF15_7A30,
+                    warning: 0xFFB0_7704,
+                    warning_bg: 0xFFF5_E7C1,
+                    warning_text: 0xFF62_3B07,
+                    error: 0xFFC8_2333,
+                    error_bg: 0xFFF6_D9D5,
+                    error_text: 0xFF84_1515,
+                    error_border: 0xFFC8_2333,
+                    teal_bg: 0xFFCF_E8E5,
+                    teal_text: 0xFF06_3D3B,
+                    purple_bg: 0xFFE5_DCF2,
+                    purple_text: 0xFF3F_1B78,
+                    base_100: 0xFFF8_F3E8,
+                    base_200: 0xFFEC_E3D2,
+                    base_300: 0xFFD8_CBB4,
+                    base_content: 0xFF26_1D15,
+                    neutral: 0xFFE4_D9C3,
+                    neutral_content: 0xFF5D_4B3B,
+                    primary: 0xFF00_6E6A,
+                    primary_content: 0xFFFF_FFFF,
                 },
+                // Astryx Core Dark (`#111112` body → `#1F1F22` card → `#28292C` popover)
                 Self::DefaultDark => ThemePalette {
-                    name: "Default-Dark",
+                    name: "Oscuro",
                     is_dark: true,
-                    base_100: 0xFF242424,
-                    // Fondo de biblioteca (delta de luminosidad +10% más profundo en dark para contraste de tarjetas)
-                    base_200: 0xFF141414,
-                    base_300: 0xFF3D3D3D,
-                    base_content: 0xFFE0E0E0,
-                    neutral: 0xFF474747,
-                    neutral_content: 0xFF9E9E9E,
-                    primary: 0xFF77BBEE,
-                    primary_content: 0xFF111111,
+                    bg_body: 0xFF11_1112,
+                    bg_surface: 0xFF1F_1F22,
+                    bg_card: 0xFF1F_1F22,
+                    bg_popover: 0xFF28_292C,
+                    bg_muted: 0xFF2B_2D31,
+                    bg_inverted: 0xFFFF_FFFF,
+                    text_primary: 0xFFDF_E2E5,
+                    text_secondary: 0xFFB0_B5BB,
+                    text_disabled: 0xFF7B_8088,
+                    text_accent: 0xFF5B_AEFF,
+                    on_accent: 0xFFFF_FFFF,
+                    on_inverted: 0xFF0A_1317,
+                    border: 0xFF2E_3035,
+                    border_emphasized: 0xFF49_4D53,
+                    focus_ring: 0x8026_94FE,
+                    track: 0xFF49_4D53,
+                    accent: 0xFF01_71E3,
+                    accent_muted: 0xFF16_324E,
+                    on_accent_muted: 0xFFAF_D7FF,
+                    success: 0xFF26_A756,
+                    success_bg: 0xFF13_3521,
+                    success_text: 0xFF9C_EFA8,
+                    success_border: 0xFF26_A756,
+                    warning: 0xFFF2_C00B,
+                    warning_bg: 0xFF3E_2F10,
+                    warning_text: 0xFFFB_D65A,
+                    error: 0xFFF5_394F,
+                    error_bg: 0xFF41_171F,
+                    error_text: 0xFFFF_B2B8,
+                    error_border: 0xFFF5_394F,
+                    teal_bg: 0xFF11_3638,
+                    teal_text: 0xFF66_E4D8,
+                    purple_bg: 0xFF2A_1F4B,
+                    purple_text: 0xFFC7_C2FF,
+                    base_100: 0xFF1F_1F22,
+                    base_200: 0xFF11_1112,
+                    base_300: 0xFF2E_3035,
+                    base_content: 0xFFDF_E2E5,
+                    neutral: 0xFF2B_2D31,
+                    neutral_content: 0xFFB0_B5BB,
+                    primary: 0xFF01_71E3,
+                    primary_content: 0xFFFF_FFFF,
                 },
+                // Astryx Nocturne Paper (sombra cálida de estudio nocturno + Teal luminoso)
                 Self::SepiaDark => ThemePalette {
-                    name: "Sepia-Dark",
+                    name: "Nocturno",
                     is_dark: true,
-                    base_100: 0xFF342E25,
-                    // Fondo de biblioteca (delta de luminosidad +10% más profundo en dark para contraste de tarjetas)
-                    base_200: 0xFF201B15,
-                    base_300: 0xFF4D4437,
-                    base_content: 0xFFFFD595,
-                    neutral: 0xFF615747,
-                    neutral_content: 0xFFC4A572,
-                    primary: 0xFF48D1CC,
-                    primary_content: 0xFF1A1610,
+                    bg_body: 0xFF17_130F,
+                    bg_surface: 0xFF23_1E18,
+                    bg_card: 0xFF23_1E18,
+                    bg_popover: 0xFF2E_2820,
+                    bg_muted: 0xFF32_2B23,
+                    bg_inverted: 0xFFF3_E6D0,
+                    text_primary: 0xFFF3_E6D0,
+                    text_secondary: 0xFFC4_B094,
+                    text_disabled: 0xFF8A_7860,
+                    text_accent: 0xFF55_D8D0,
+                    on_accent: 0xFFFF_FFFF,
+                    on_inverted: 0xFF17_130F,
+                    border: 0xFF39_3127,
+                    border_emphasized: 0xFF56_4A3C,
+                    focus_ring: 0x8026_A69A,
+                    track: 0xFF56_4A3C,
+                    accent: 0xFF13_847E,
+                    accent_muted: 0xFF17_3634,
+                    on_accent_muted: 0xFF8C_ECE5,
+                    success: 0xFF2E_B864,
+                    success_bg: 0xFF18_3320,
+                    success_text: 0xFF9C_E8A5,
+                    success_border: 0xFF2E_B864,
+                    warning: 0xFFE8_B931,
+                    warning_bg: 0xFF3E_3014,
+                    warning_text: 0xFFF8_D568,
+                    error: 0xFFF2_5C5C,
+                    error_bg: 0xFF41_1C1B,
+                    error_text: 0xFFFF_B5B0,
+                    error_border: 0xFFF2_5C5C,
+                    teal_bg: 0xFF17_3634,
+                    teal_text: 0xFF8C_ECE5,
+                    purple_bg: 0xFF2D_2242,
+                    purple_text: 0xFFD0_C5FF,
+                    base_100: 0xFF23_1E18,
+                    base_200: 0xFF17_130F,
+                    base_300: 0xFF39_3127,
+                    base_content: 0xFFF3_E6D0,
+                    neutral: 0xFF32_2B23,
+                    neutral_content: 0xFFC4_B094,
+                    primary: 0xFF13_847E,
+                    primary_content: 0xFFFF_FFFF,
                 },
             }
         }
     }
 
-    /// Paleta de color derivada de Readest para renderizado UI.
-    #[allow(dead_code)] // tokens Readest completos: no todos los roles están cableados a widgets aún
+    /// Paleta semántica de color Astryx para renderizado nativo Canvas+JNI.
+    #[allow(dead_code)]
     #[derive(Copy, Clone, Debug)]
     pub(crate) struct ThemePalette {
         pub(crate) name: &'static str,
         pub(crate) is_dark: bool,
+        // Superficies Astryx (`body → surface → card → popover`)
+        pub(crate) bg_body: u32,
+        pub(crate) bg_surface: u32,
+        pub(crate) bg_card: u32,
+        pub(crate) bg_popover: u32,
+        pub(crate) bg_muted: u32,
+        pub(crate) bg_inverted: u32,
+        // Tipografía e iconos
+        pub(crate) text_primary: u32,
+        pub(crate) text_secondary: u32,
+        pub(crate) text_disabled: u32,
+        pub(crate) text_accent: u32,
+        pub(crate) on_accent: u32,
+        pub(crate) on_inverted: u32,
+        // Bordes, pistas y anillo de foco
+        pub(crate) border: u32,
+        pub(crate) border_emphasized: u32,
+        pub(crate) focus_ring: u32,
+        pub(crate) track: u32,
+        // Acento principal y superficie tonal
+        pub(crate) accent: u32,
+        pub(crate) accent_muted: u32,
+        pub(crate) on_accent_muted: u32,
+        // Roles semánticos de estado y taxonomía
+        pub(crate) success: u32,
+        pub(crate) success_bg: u32,
+        pub(crate) success_text: u32,
+        pub(crate) success_border: u32,
+        pub(crate) warning: u32,
+        pub(crate) warning_bg: u32,
+        pub(crate) warning_text: u32,
+        pub(crate) error: u32,
+        pub(crate) error_bg: u32,
+        pub(crate) error_text: u32,
+        pub(crate) error_border: u32,
+        pub(crate) teal_bg: u32,
+        pub(crate) teal_text: u32,
+        pub(crate) purple_bg: u32,
+        pub(crate) purple_text: u32,
+        // Alias heredados en transición hacia tokens Astryx puros
         pub(crate) base_100: u32,
         pub(crate) base_200: u32,
         pub(crate) base_300: u32,
@@ -234,96 +454,125 @@ pub(crate) mod theme {
         pub(crate) primary_content: u32,
     }
 
-    #[allow(dead_code)] // Métodos de acceso a tokens Readest; se conservan por completitud del sistema de diseño.
+    #[allow(dead_code)]
     impl ThemePalette {
         pub(crate) fn bg(&self) -> u32 {
-            self.base_100
+            self.bg_surface
         }
         pub(crate) fn lib_bg(&self) -> u32 {
-            self.base_200
+            self.bg_body
         }
         pub(crate) fn card_bg(&self) -> u32 {
-            self.base_100
+            self.bg_card
         }
         pub(crate) fn card_border(&self) -> u32 {
-            self.base_300
-        }
-        pub(crate) fn btn_bg(&self) -> u32 {
-            self.base_200
-        }
-        pub(crate) fn btn_border(&self) -> u32 {
-            self.base_300
-        }
-        pub(crate) fn btn_text(&self) -> u32 {
-            self.base_content
-        }
-        pub(crate) fn text_primary(&self) -> u32 {
-            self.base_content
-        }
-        pub(crate) fn text_secondary(&self) -> u32 {
-            self.neutral_content
-        }
-        pub(crate) fn text_muted(&self) -> u32 {
-            self.neutral_content
-        }
-        pub(crate) fn accent(&self) -> u32 {
-            self.primary
-        }
-        pub(crate) fn accent_text(&self) -> u32 {
-            self.primary_content
-        }
-        pub(crate) fn progress_track(&self) -> u32 {
-            self.base_300
-        }
-        pub(crate) fn progress_fill(&self) -> u32 {
-            self.primary
-        }
-        pub(crate) fn cover_shadow(&self) -> u32 {
-            if self.is_dark { 0x70000000 } else { 0x34000000 }
+            self.border
         }
         pub(crate) fn cover_placeholder(&self) -> u32 {
-            self.base_200
-        }
-        pub(crate) fn sel_overlay(&self) -> u32 {
-            if self.is_dark { 0x5577BBEE } else { 0x440066CC }
+            self.bg_muted
         }
         pub(crate) fn popup_bg(&self) -> u32 {
-            if self.is_dark { 0xF2222222 } else { 0xF2FFFFFF }
+            (self.bg_popover & 0x00FF_FFFF) | 0xF700_0000
         }
         pub(crate) fn popup_border(&self) -> u32 {
-            self.base_300
+            self.border_emphasized
         }
         pub(crate) fn badge_bg(&self) -> u32 {
-            if self.is_dark { 0xDD222222 } else { 0xDDFFFFFF }
+            (self.bg_popover & 0x00FF_FFFF) | 0xEB00_0000
         }
         pub(crate) fn badge_border(&self) -> u32 {
-            self.base_300
+            self.border_emphasized
         }
         pub(crate) fn badge_text(&self) -> u32 {
-            self.base_content
+            self.text_primary
         }
         pub(crate) fn status_bg(&self) -> u32 {
-            if self.is_dark { 0xFF3A1A1A } else { 0xFFFFEAEA }
+            self.error_bg
         }
         pub(crate) fn status_border(&self) -> u32 {
-            if self.is_dark { 0xFF5A2A2A } else { 0xFFFFCCCC }
+            self.error_border
         }
         pub(crate) fn status_text(&self) -> u32 {
-            if self.is_dark { 0xFFFF9999 } else { 0xFFCC0000 }
+            self.error_text
         }
         pub(crate) fn rgba_bg(&self) -> [u8; 4] {
-            let a = ((self.base_100 >> 24) & 0xFF) as u8;
-            let r = ((self.base_100 >> 16) & 0xFF) as u8;
-            let g = ((self.base_100 >> 8) & 0xFF) as u8;
-            let b = (self.base_100 & 0xFF) as u8;
-            [r, g, b, a]
+            argb_to_rgba(self.bg_body)
         }
         pub(crate) fn rgba_lib_bg(&self) -> [u8; 4] {
-            let a = ((self.base_200 >> 24) & 0xFF) as u8;
-            let r = ((self.base_200 >> 16) & 0xFF) as u8;
-            let g = ((self.base_200 >> 8) & 0xFF) as u8;
-            let b = (self.base_200 & 0xFF) as u8;
-            [r, g, b, a]
+            argb_to_rgba(self.bg_body)
+        }
+    }
+
+    pub(crate) fn argb_to_rgba(c: u32) -> [u8; 4] {
+        [
+            ((c >> 16) & 0xFF) as u8,
+            ((c >> 8) & 0xFF) as u8,
+            (c & 0xFF) as u8,
+            ((c >> 24) & 0xFF) as u8,
+        ]
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn rel_luminance(argb: u32) -> f64 {
+            let chan = |shift: u32| -> f64 {
+                let s = ((argb >> shift) & 0xFF) as f64 / 255.0;
+                if s <= 0.03928 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * chan(16) + 0.7152 * chan(8) + 0.0722 * chan(0)
+        }
+
+        fn contrast_ratio(fg: u32, bg: u32) -> f64 {
+            let l1 = rel_luminance(fg);
+            let l2 = rel_luminance(bg);
+            (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05)
+        }
+
+        #[test]
+        fn all_astryx_themes_meet_wcag_aa_contrast() {
+            let themes = [
+                AppTheme::DefaultLight,
+                AppTheme::SepiaLight,
+                AppTheme::DefaultDark,
+                AppTheme::SepiaDark,
+            ];
+            for t in themes {
+                let p = t.palette();
+                let pairs = [
+                    ("text_primary/bg_body", p.text_primary, p.bg_body),
+                    ("text_primary/bg_card", p.text_primary, p.bg_card),
+                    ("text_primary/bg_popover", p.text_primary, p.bg_popover),
+                    ("text_secondary/bg_body", p.text_secondary, p.bg_body),
+                    ("text_secondary/bg_card", p.text_secondary, p.bg_card),
+                    ("text_secondary/bg_popover", p.text_secondary, p.bg_popover),
+                    ("text_accent/bg_card", p.text_accent, p.bg_card),
+                    ("on_accent/accent", p.on_accent, p.accent),
+                    (
+                        "on_accent_muted/accent_muted",
+                        p.on_accent_muted,
+                        p.accent_muted,
+                    ),
+                    ("success_text/success_bg", p.success_text, p.success_bg),
+                    ("error_text/error_bg", p.error_text, p.error_bg),
+                    ("warning_text/warning_bg", p.warning_text, p.warning_bg),
+                    ("teal_text/teal_bg", p.teal_text, p.teal_bg),
+                    ("purple_text/purple_bg", p.purple_text, p.purple_bg),
+                ];
+                for (name, fg, bg) in pairs {
+                    let ratio = contrast_ratio(fg, bg);
+                    assert!(
+                        ratio >= 4.5,
+                        "{:?} pair {name} contrast {ratio:.2} < 4.5:1",
+                        t
+                    );
+                }
+            }
         }
     }
 }
