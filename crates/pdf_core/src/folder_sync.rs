@@ -149,6 +149,7 @@ pub struct FolderLibrary {
     outgoing_root: PathBuf,
     manifest: Manifest,
     annotations: HashMap<String, AnnotationSet>,
+    checked_publication_hashes: HashMap<PathBuf, (SourceStamp, String)>,
     has_more_work: bool,
 }
 
@@ -196,6 +197,7 @@ impl FolderLibrary {
             outgoing_root,
             manifest,
             annotations: HashMap::new(),
+            checked_publication_hashes: HashMap::new(),
             has_more_work: false,
         };
         library.load_backups();
@@ -604,25 +606,60 @@ impl FolderLibrary {
                     .strip_suffix(".json")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| doc.relative_path.clone());
-                let pdf_path = self
-                    .outgoing_root
-                    .join("_PDFLector/Apuntes")
-                    .join(&pdf_relative);
-                let pdf_is_present = fs::symlink_metadata(&pdf_path)
-                    .is_ok_and(|metadata| metadata.file_type().is_file())
-                    && backup.pdf_hash.as_ref().is_some_and(|expected| {
-                        hash_file(&pdf_path).is_ok_and(|actual| &actual == expected)
-                    });
-                if pdf_is_present
-                    && self
-                        .manifest
+                let needs_publication_record =
+                    self.manifest
                         .publications
                         .get(&doc.id)
                         .is_none_or(|existing| {
                             existing.backup_relative != *backup_relative
                                 || existing.pdf_relative != pdf_relative
-                        })
-                {
+                        });
+                if !needs_publication_record {
+                    continue;
+                }
+                let Some(expected) = backup.pdf_hash.as_ref() else {
+                    continue;
+                };
+                let pdf_path = self
+                    .outgoing_root
+                    .join("_PDFLector/Apuntes")
+                    .join(&pdf_relative);
+                let Ok(metadata) = fs::symlink_metadata(&pdf_path) else {
+                    self.checked_publication_hashes.remove(&pdf_path);
+                    continue;
+                };
+                if !metadata.file_type().is_file() {
+                    self.checked_publication_hashes.remove(&pdf_path);
+                    continue;
+                }
+                let stamp = source_stamp(&metadata);
+                let actual = match stamp {
+                    Some(stamp)
+                        if self
+                            .checked_publication_hashes
+                            .get(&pdf_path)
+                            .is_some_and(|(cached_stamp, _)| *cached_stamp == stamp) =>
+                    {
+                        self.checked_publication_hashes
+                            .get(&pdf_path)
+                            .map(|(_, hash)| hash.clone())
+                    }
+                    _ => match hash_file(&pdf_path) {
+                        Ok(hash) => {
+                            if let Some(stamp) = stamp {
+                                if self.checked_publication_hashes.len() >= MAX_DOCUMENTS {
+                                    self.checked_publication_hashes.clear();
+                                }
+                                self.checked_publication_hashes
+                                    .insert(pdf_path.clone(), (stamp, hash.clone()));
+                            }
+                            Some(hash)
+                        }
+                        Err(_) => None,
+                    },
+                };
+                if actual.as_deref() == Some(expected.as_str()) {
+                    self.checked_publication_hashes.remove(&pdf_path);
                     self.manifest.publications.insert(
                         doc.id.clone(),
                         Publication {
@@ -1000,7 +1037,14 @@ fn copy_bounded(source: &Path, target: &Path, max: u64) -> std::io::Result<()> {
     output.sync_all()
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_HASH_FILE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn hash_file(path: &Path) -> std::io::Result<String> {
+    #[cfg(test)]
+    TEST_HASH_FILE_CALLS.with(|count| count.set(count.get() + 1));
     let mut file = File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -1314,6 +1358,79 @@ mod publication_race_tests {
                     .to_string_lossy()
                     .starts_with("book [PDFLector-"))
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn reset_hash_calls() {
+        TEST_HASH_FILE_CALLS.with(|count| count.set(0));
+    }
+
+    fn hash_calls() -> usize {
+        TEST_HASH_FILE_CALLS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn repeated_scans_do_not_rehash_known_published_pdfs() {
+        let root = root();
+        let (mut library, doc) = setup(&root);
+        let set = annotations();
+        library.publish(&doc.local_path, &set).unwrap();
+
+        // Warm once so periodic source verification timestamp is set.
+        library.scan().unwrap();
+
+        reset_hash_calls();
+        library.scan().unwrap();
+        library.scan().unwrap();
+        assert_eq!(hash_calls(), 0);
+        drop(library);
+
+        reset_hash_calls();
+        let mut reopened = FolderLibrary::open(
+            root.join("internal"),
+            root.join("incoming"),
+            root.join("outgoing"),
+        )
+        .unwrap();
+        reopened.scan().unwrap();
+        assert_eq!(hash_calls(), 0);
+        assert!(reopened.manifest.publications.contains_key(&doc.id));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unknown_and_mismatched_publication_hashes_only_when_needed() {
+        let root = root();
+        let (mut library, doc) = setup(&root);
+        let set = annotations();
+        library.publish(&doc.local_path, &set).unwrap();
+        let published_pdf = root.join("outgoing/_PDFLector/Apuntes/course/book.pdf");
+        let real_pdf_bytes = fs::read(&published_pdf).unwrap();
+
+        // Simulate missing publication entry + colliding unowned file at Apuntes path.
+        library.manifest.publications.clear();
+        library.save_manifest().unwrap();
+        fs::write(&published_pdf, b"unowned").unwrap();
+        // Warm periodic source verify timestamp.
+        library.scan().unwrap();
+
+        // Unchanged colliding file should not be re-hashed on subsequent scans.
+        reset_hash_calls();
+        library.scan().unwrap();
+        assert_eq!(hash_calls(), 0);
+        assert!(!library.manifest.publications.contains_key(&doc.id));
+
+        // Replacing colliding file with the real published PDF triggers a single hash and records it.
+        fs::write(&published_pdf, &real_pdf_bytes).unwrap();
+        reset_hash_calls();
+        library.scan().unwrap();
+        assert_eq!(hash_calls(), 1);
+        assert!(library.manifest.publications.contains_key(&doc.id));
+
+        // Now that it is recorded, further scans do not hash it again.
+        reset_hash_calls();
+        library.scan().unwrap();
+        assert_eq!(hash_calls(), 0);
         let _ = fs::remove_dir_all(root);
     }
 }
