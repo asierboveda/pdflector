@@ -121,16 +121,22 @@ def mirror(source, cloud, state):
     source, cloud = Path(source), Path(cloud)
     if not source.is_dir() or not cloud.is_dir():
         raise ValueError('source and cloud directories must be available')
-    uploads = downloads = 0
+    uploads = downloads = failures = 0
     for path in files(source):
-        uploads += transfer(path, cloud/path.relative_to(source), state, True)
+        try:
+            uploads += transfer(path, cloud/path.relative_to(source), state, True)
+        except (OSError, ValueError):
+            failures += 1
     for category in ['Apuntes', 'Respaldo']:
         output_root = cloud/'_PDFLector'/category
         if not output_root.is_dir() or output_root.is_symlink():
             continue
         for path in files(output_root, outputs=True):
-            downloads += transfer(path, source/'_PDFLector'/category/path.relative_to(output_root), state, True)
-    return uploads, downloads
+            try:
+                downloads += transfer(path, source/'_PDFLector'/category/path.relative_to(output_root), state, True)
+            except (OSError, ValueError):
+                failures += 1
+    return uploads, downloads, failures
 
 
 def main():
@@ -160,7 +166,7 @@ def main():
             if not os.path.ismount(mount):
                 raise ValueError('cloud drive is not mounted')
             cloud.mkdir(parents=True, exist_ok=True)
-            uploads, downloads = mirror(source, cloud, state)
+            uploads, downloads, failures = mirror(source, cloud, state)
             safe_parent(state_path)
             with tempfile.NamedTemporaryFile(dir=state_path.parent, prefix='.state-', delete=False, mode='w') as stream:
                 json.dump(state, stream)
@@ -168,6 +174,11 @@ def main():
             os.replace(temporary, state_path)
             if uploads or downloads:
                 print(f'Synced {uploads} source PDFs and {downloads} published files', flush=True)
+            if failures:
+                # Do not put personal filenames in persistent service logs.
+                print(f'Skipped {failures} file(s) due to transfer errors; will retry next cycle', flush=True)
+                if args.once:
+                    raise SystemExit(1)
         except (OSError, ValueError) as error:
             # Do not put personal filenames in persistent service logs.
             print(f'Sync unavailable ({type(error).__name__}); retrying', flush=True)

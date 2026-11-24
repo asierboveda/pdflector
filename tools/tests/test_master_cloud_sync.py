@@ -67,5 +67,27 @@ class MirrorTests(unittest.TestCase):
             sync.mirror(source, cloud, {})
             self.assertFalse((cloud/'escape.pdf').exists())
 
+    def test_upload_collision_does_not_block_independent_downloads_and_retries(self):
+        with tempfile.TemporaryDirectory() as t:
+            source, cloud = pathlib.Path(t)/'source', pathlib.Path(t)/'cloud'
+            source.mkdir()
+            (cloud/'book.pdf').mkdir(parents=True)  # directory colliding with PDF path
+            (source/'book.pdf').write_bytes(b'%PDF collided')
+            (source/'other.pdf').write_bytes(b'%PDF ok')
+            note = cloud/'_PDFLector/Apuntes/note.pdf'
+            note.parent.mkdir(parents=True)
+            note.write_bytes(b'%PDF tablet note')
+
+            state = {}
+            uploads, downloads, failures = sync.mirror(source, cloud, state)
+            self.assertEqual((uploads, downloads, failures), (1, 1, 1))
+            self.assertEqual((cloud/'other.pdf').read_bytes(), b'%PDF ok')
+            self.assertEqual((source/'_PDFLector/Apuntes/note.pdf').read_bytes(), b'%PDF tablet note')
+
+            (cloud/'book.pdf').rmdir()
+            uploads, downloads, failures = sync.mirror(source, cloud, state)
+            self.assertEqual((uploads, downloads, failures), (1, 0, 0))
+            self.assertEqual((cloud/'book.pdf').read_bytes(), b'%PDF collided')
+
 if __name__ == '__main__':
     unittest.main()
