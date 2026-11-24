@@ -66,6 +66,7 @@ struct ActorState {
     pending: VecDeque<PendingSave>,
     in_flight: Option<PendingSave>,
     generation: u64,
+    recovery_complete: bool,
     scan_requested: bool,
     flush_requested: bool,
     last_save_enqueued: Option<Instant>,
@@ -169,9 +170,30 @@ impl FolderSyncWorker {
         None
     }
 
-    pub(crate) fn latest_snapshot(&self, sidecar: &Path) -> Option<AnnotationSet> {
+    pub(crate) fn is_recovery_complete(&self) -> bool {
+        !self.available
+            || self
+                .shared
+                .0
+                .lock()
+                .map(|state| state.recovery_complete)
+                .unwrap_or(true)
+    }
+
+    /// Returns `None` while startup journal recovery is still running, or
+    /// `Some(snapshot)` once recovered entries are visible in the queue.
+    pub(crate) fn latest_snapshot_when_recovered(
+        &self,
+        sidecar: &Path,
+    ) -> Option<Option<AnnotationSet>> {
+        if !self.available {
+            return Some(None);
+        }
         let state = self.shared.0.lock().ok()?;
-        state
+        if !state.recovery_complete {
+            return None;
+        }
+        let snapshot = state
             .pending
             .iter()
             .find(|job| job.sidecar == sidecar)
@@ -181,7 +203,8 @@ impl FolderSyncWorker {
                     .as_ref()
                     .filter(|job| job.sidecar == sidecar)
             })
-            .map(|job| job.annotations.clone())
+            .map(|job| job.annotations.clone());
+        Some(snapshot)
     }
 }
 
@@ -208,7 +231,6 @@ fn run_actor(
     config: FolderSyncConfig,
 ) {
     let journal = internal_root.join("folder_sync").join("pending.json");
-    let mut library = open_library(&internal_root, &config, &events, &latest_status);
     match fs::metadata(&journal) {
         Ok(meta) if meta.len() > MAX_JOURNAL_BYTES => emit(
             &events,
@@ -240,6 +262,7 @@ fn run_actor(
                                 break;
                             }
                         }
+                        state.recovery_complete = true;
                     }
                 }
                 Ok(_) => emit(
@@ -268,6 +291,10 @@ fn run_actor(
             FolderSyncEvent::Status(format!("Cannot inspect pending annotations: {error}")),
         ),
     }
+    if let Ok(mut state) = shared.0.lock() {
+        state.recovery_complete = true;
+    }
+    let mut library = open_library(&internal_root, &config, &events, &latest_status);
     let mut local_retry_at: Option<Instant> = None;
     let mut export_retry_at: Option<Instant> = None;
     let mut next_scan = Instant::now();
@@ -752,6 +779,14 @@ impl crate::reader::Reader {
     pub(crate) fn poll_folder_sync(&mut self) {
         let mut library_changed = false;
         let mut status_changed = false;
+        if self.annotations_recovery_pending && self.folder_sync.is_recovery_complete() {
+            if let Some(path) = self.doc_path.clone() {
+                self.load_annotations(&path);
+                status_changed = true;
+            } else {
+                self.annotations_recovery_pending = false;
+            }
+        }
         self.retry_deferred_annotation_saves();
         while let Some(event) = self.folder_sync.try_event() {
             match event {
@@ -771,7 +806,8 @@ impl crate::reader::Reader {
                         .map(|document| document.relative_path.display().to_string());
                     self.synced_annotations = annotations.into_iter().collect();
                     library_changed = old != self.synced_documents;
-                    if self.annotation_backup_restore_allowed
+                    if !self.annotations_recovery_pending
+                        && self.annotation_backup_restore_allowed
                         && self.annotations.is_empty()
                         && let Some(path) = self.doc_path.as_deref().map(Path::new)
                         && let Some(document) = self
@@ -1235,5 +1271,79 @@ mod tests {
         assert!(
             matches!(worker.try_event(), Some(super::FolderSyncEvent::Status(text)) if text == "newer error")
         );
+    }
+
+    #[test]
+    fn snapshot_lookup_waits_for_journal_recovery_over_stale_sqlite() {
+        let sidecar = PathBuf::from("/book.db");
+        let shared = Arc::new((Mutex::new(ActorState::default()), Condvar::new()));
+        let worker = FolderSyncWorker {
+            shared: Arc::clone(&shared),
+            events: mpsc::sync_channel(1).1,
+            latest_status: Arc::new(Mutex::new(None)),
+            thread: None,
+            available: true,
+        };
+        assert!(!worker.is_recovery_complete());
+        assert!(worker.latest_snapshot_when_recovered(&sidecar).is_none());
+
+        let base = std::env::temp_dir().join(format!(
+            "pdflector-sync-recovery-gate-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let disk_sidecar = base.join("book.db");
+        let mut stale = AnnotationSet::new();
+        stale.add(
+            0,
+            Annotation::TextNote(TextNote {
+                anchor: (1.0, 1.0),
+                text: "stale".into(),
+            }),
+        );
+        AnnotationStore::open(&disk_sidecar)
+            .unwrap()
+            .save(&stale)
+            .unwrap();
+
+        let mut recovered = stale.clone();
+        recovered.add(
+            0,
+            Annotation::TextNote(TextNote {
+                anchor: (2.0, 2.0),
+                text: "recovered".into(),
+            }),
+        );
+        let journal = base.join("folder_sync/pending.json");
+        super::write_json_atomic(
+            &journal,
+            &vec![PendingSave {
+                pdf_path: base.join("book.pdf"),
+                sidecar: disk_sidecar.clone(),
+                annotations: recovered.clone(),
+                publish: false,
+                persisted: false,
+            }],
+        )
+        .unwrap();
+
+        let live = FolderSyncWorker::start(base.clone(), FolderSyncConfig::default());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let loaded = loop {
+            if let Some(snapshot) = live.latest_snapshot_when_recovered(&disk_sidecar) {
+                break snapshot.unwrap_or_else(|| {
+                    AnnotationStore::open(&disk_sidecar)
+                        .unwrap()
+                        .load()
+                        .unwrap()
+                });
+            }
+            assert!(Instant::now() < deadline, "recovery did not complete");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(loaded, recovered);
+        drop(live);
+        let _ = fs::remove_dir_all(base);
     }
 }

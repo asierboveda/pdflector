@@ -147,6 +147,7 @@ impl Reader {
             list_drag: None,
             annotations: AnnotationSet::new(),
             annotation_backup_restore_allowed: false,
+            annotations_recovery_pending: false,
             annot_sidecar: None,
             text_cache: PageTextCache::default(),
             status_bar_top: 0, // se fija en runtime (content_rect top)

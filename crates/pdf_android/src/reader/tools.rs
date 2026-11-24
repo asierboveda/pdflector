@@ -234,6 +234,10 @@ impl Reader {
         if tool == ToolKind::Navigate {
             return false;
         }
+        if !self.can_edit_annotations() {
+            self.show_toast("Recovering annotations…");
+            return false;
+        }
         // B3: el resaltador pre-ordena los spans en el Down (una vez por
         // gesto) para el preview por present y el cálculo al soltar.
         let want_hl = tool == ToolKind::Highlight;
@@ -551,6 +555,10 @@ impl Reader {
     /// o el punto no cae en la página) — en ese caso `input` no entra en el
     /// modo Erase.
     pub(crate) fn begin_erase_gesture(&mut self, sx: f32, sy: f32) -> bool {
+        if !self.can_edit_annotations() {
+            self.show_toast("Recovering annotations…");
+            return false;
+        }
         // El modo ERASE nunca coexiste con `tool_gesture` de dibujo: si hay
         // tinta en curso, este Down no inicia borrado (el trazo sigue como
         // estaba).

@@ -138,6 +138,10 @@ impl Reader {
 
     /// Down del lápiz: empieza un lazo en la página actual.
     pub(crate) fn begin_lasso(&mut self, sx: f32, sy: f32) -> bool {
+        if !self.can_edit_annotations() {
+            self.show_toast("Recovering annotations…");
+            return false;
+        }
         let Some(pt) = self.screen_to_page(sx, sy) else {
             return false;
         };
@@ -218,6 +222,10 @@ impl Reader {
     /// Empieza a mover (o escalar con el asa) la selección. La Dry se
     /// recompone sin los trazos seleccionados mientras dure.
     pub(crate) fn begin_recorte_drag(&mut self, sx: f32, sy: f32, scaling: bool) -> bool {
+        if !self.can_edit_annotations() {
+            self.show_toast("Recovering annotations…");
+            return false;
+        }
         let Some(start) = self.screen_to_page(sx, sy) else {
             return false;
         };

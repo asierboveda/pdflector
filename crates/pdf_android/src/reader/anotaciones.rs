@@ -27,35 +27,31 @@ impl Reader {
     /// Si el sidecar no existe o está corrupto, el set queda VACÍO (nunca se
     /// impide abrir el PDF ni se rompe la app); `AnnotationStore::open` crea
     /// el directorio y el esquema al primer guardado.
+    pub(crate) fn can_edit_annotations(&self) -> bool {
+        !self.annotations_recovery_pending
+    }
+
     pub(crate) fn load_annotations(&mut self, path: &str) {
         // Complete the previous document's queued snapshot before changing its
         // target sidecar; this only signals the actor and never waits for I/O.
         self.folder_sync.flush();
         let sidecar = sidecar_path(Path::new(path));
-        let sidecar_existed = sidecar.is_file();
-        let latest_snapshot = self.folder_sync.latest_snapshot(&sidecar);
-        let mut set = match AnnotationStore::open(&sidecar) {
-            Ok(store) => match store.load() {
-                Ok(set) => {
-                    info!(
-                        "annotations: {} loaded from {}",
-                        set.len(),
-                        sidecar.display()
-                    );
-                    set
-                }
-                Err(e) => {
-                    error!("annotations load {}: {e}", sidecar.display());
-                    AnnotationSet::new()
-                }
-            },
-            Err(e) => {
-                error!("annotations open {}: {e}", sidecar.display());
-                AnnotationSet::new()
-            }
+        let Some(latest_snapshot) = self.folder_sync.latest_snapshot_when_recovered(&sidecar)
+        else {
+            // Startup journal recovery is still reading `pending.json`; keep
+            // editing disabled until `poll_folder_sync` reloads after recovery.
+            self.annotation_backup_restore_allowed = false;
+            self.annotations_recovery_pending = true;
+            self.annotations = AnnotationSet::new();
+            self.annot_sidecar = Some(sidecar);
+            return;
         };
-        if let Some(latest) = latest_snapshot {
-            set = latest;
+        self.annotations_recovery_pending = false;
+        let sidecar_existed = sidecar.is_file();
+        // Check the recovered/in-flight queue before reading SQLite so a
+        // snapshot finishing persistence concurrently cannot leave a stale set.
+        let set = if let Some(latest) = latest_snapshot {
+            latest
         } else if !sidecar_existed
             && let Some(imported) = self
                 .synced_documents
@@ -63,15 +59,39 @@ impl Reader {
                 .find(|document| document.local_path == Path::new(path))
             && let Some(restored) = self.synced_annotations.get(&imported.id)
         {
-            set = restored.clone();
             info!(
                 "annotations: restored {} from portable folder backup",
-                set.len()
+                restored.len()
             );
-        }
+            restored.clone()
+        } else {
+            match AnnotationStore::open(&sidecar) {
+                Ok(store) => match store.load() {
+                    Ok(set) => {
+                        info!(
+                            "annotations: {} loaded from {}",
+                            set.len(),
+                            sidecar.display()
+                        );
+                        set
+                    }
+                    Err(e) => {
+                        error!("annotations load {}: {e}", sidecar.display());
+                        AnnotationSet::new()
+                    }
+                },
+                Err(e) => {
+                    error!("annotations open {}: {e}", sidecar.display());
+                    AnnotationSet::new()
+                }
+            }
+        };
         self.annotation_backup_restore_allowed = !sidecar_existed;
         self.annotations = set;
         self.annot_sidecar = Some(sidecar);
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.invalidate_dry();
+        }
     }
 
     /// Guarda el `AnnotationSet` completo en el sidecar del documento abierto
@@ -83,6 +103,9 @@ impl Reader {
     /// guardado es el mismo que usaba el modo dibujo eliminado; el modelo de
     /// anotaciones sigue siendo persistible y exportable.
     pub(crate) fn save_annotations(&mut self) {
+        if self.annotations_recovery_pending {
+            return;
+        }
         self.annotation_backup_restore_allowed = false;
         let Some(sidecar) = self.annot_sidecar.clone() else {
             return;
@@ -165,6 +188,9 @@ impl Reader {
 
     /// Deshace la última acción sobre las anotaciones (botón ↶ de la barra).
     pub(crate) fn undo_annotation(&mut self) {
+        if !self.can_edit_annotations() {
+            return;
+        }
         self.clear_recorte();
         let page = self.undo.undo(&mut self.annotations);
         self.after_history_step(page);
@@ -172,6 +198,9 @@ impl Reader {
 
     /// Rehace la última acción deshecha (botón ↷ de la barra).
     pub(crate) fn redo_annotation(&mut self) {
+        if !self.can_edit_annotations() {
+            return;
+        }
         self.clear_recorte();
         let page = self.undo.redo(&mut self.annotations);
         self.after_history_step(page);

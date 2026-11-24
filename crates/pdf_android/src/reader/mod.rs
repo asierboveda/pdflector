@@ -687,6 +687,7 @@ pub(crate) struct Reader {
     /// (`save_annotations`). El modelo vive en pdf_core (AGENTS.md §4.3).
     pub(crate) annotations: AnnotationSet,
     pub(crate) annotation_backup_restore_allowed: bool,
+    pub(crate) annotations_recovery_pending: bool,
     /// Ruta del sidecar del documento abierto (`store::sidecar_path`:
     /// `<pdf-dir>/annotations/<stem>.db`); None sin documento. El sidecar de
     /// un PDF abierto por content:// (biblioteca o "abrir con") queda junto
