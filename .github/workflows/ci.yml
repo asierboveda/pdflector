@@ -64,7 +64,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: test android/product & android/ink_bench (JVM)
         working-directory: android/product
         run: |
