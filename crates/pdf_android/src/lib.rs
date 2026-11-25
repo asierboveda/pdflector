@@ -243,15 +243,6 @@ pub(crate) mod theme {
                     teal_text: 0xFF08_3943,
                     purple_bg: 0xFFE7_E0FF,
                     purple_text: 0xFF3E_0697,
-                    // Alias heredados mientras migran los submódulos de `draw`
-                    base_100: 0xFFFF_FFFF,
-                    base_200: 0xFFF1_F4F7,
-                    base_300: 0xFFD8_E0E8,
-                    base_content: 0xFF0A_1317,
-                    neutral: 0xFFE6_ECF2,
-                    neutral_content: 0xFF44_5564,
-                    primary: 0xFF00_64E0,
-                    primary_content: 0xFFFF_FFFF,
                 },
                 // Astryx Paper Light (papel cálido editorial + acento Astryx Teal)
                 Self::SepiaLight => ThemePalette {
@@ -291,14 +282,6 @@ pub(crate) mod theme {
                     teal_text: 0xFF06_3D3B,
                     purple_bg: 0xFFE5_DCF2,
                     purple_text: 0xFF3F_1B78,
-                    base_100: 0xFFF8_F3E8,
-                    base_200: 0xFFEC_E3D2,
-                    base_300: 0xFFD8_CBB4,
-                    base_content: 0xFF26_1D15,
-                    neutral: 0xFFE4_D9C3,
-                    neutral_content: 0xFF5D_4B3B,
-                    primary: 0xFF00_6E6A,
-                    primary_content: 0xFFFF_FFFF,
                 },
                 // Astryx Core Dark (`#111112` body → `#1F1F22` card → `#28292C` popover)
                 Self::DefaultDark => ThemePalette {
@@ -338,14 +321,6 @@ pub(crate) mod theme {
                     teal_text: 0xFF66_E4D8,
                     purple_bg: 0xFF2A_1F4B,
                     purple_text: 0xFFC7_C2FF,
-                    base_100: 0xFF1F_1F22,
-                    base_200: 0xFF11_1112,
-                    base_300: 0xFF2E_3035,
-                    base_content: 0xFFDF_E2E5,
-                    neutral: 0xFF2B_2D31,
-                    neutral_content: 0xFFB0_B5BB,
-                    primary: 0xFF01_71E3,
-                    primary_content: 0xFFFF_FFFF,
                 },
                 // Astryx Nocturne Paper (sombra cálida de estudio nocturno + Teal luminoso)
                 Self::SepiaDark => ThemePalette {
@@ -385,14 +360,6 @@ pub(crate) mod theme {
                     teal_text: 0xFF8C_ECE5,
                     purple_bg: 0xFF2D_2242,
                     purple_text: 0xFFD0_C5FF,
-                    base_100: 0xFF23_1E18,
-                    base_200: 0xFF17_130F,
-                    base_300: 0xFF39_3127,
-                    base_content: 0xFFF3_E6D0,
-                    neutral: 0xFF32_2B23,
-                    neutral_content: 0xFFC4_B094,
-                    primary: 0xFF13_847E,
-                    primary_content: 0xFFFF_FFFF,
                 },
             }
         }
@@ -443,40 +410,9 @@ pub(crate) mod theme {
         pub(crate) teal_text: u32,
         pub(crate) purple_bg: u32,
         pub(crate) purple_text: u32,
-        // Alias heredados en transición hacia tokens Astryx puros
-        pub(crate) base_100: u32,
-        pub(crate) base_200: u32,
-        pub(crate) base_300: u32,
-        pub(crate) base_content: u32,
-        pub(crate) neutral: u32,
-        pub(crate) neutral_content: u32,
-        pub(crate) primary: u32,
-        pub(crate) primary_content: u32,
     }
 
-    #[allow(dead_code)]
     impl ThemePalette {
-        pub(crate) fn bg(&self) -> u32 {
-            self.bg_surface
-        }
-        pub(crate) fn lib_bg(&self) -> u32 {
-            self.bg_body
-        }
-        pub(crate) fn card_bg(&self) -> u32 {
-            self.bg_card
-        }
-        pub(crate) fn card_border(&self) -> u32 {
-            self.border
-        }
-        pub(crate) fn cover_placeholder(&self) -> u32 {
-            self.bg_muted
-        }
-        pub(crate) fn popup_bg(&self) -> u32 {
-            (self.bg_popover & 0x00FF_FFFF) | 0xF700_0000
-        }
-        pub(crate) fn popup_border(&self) -> u32 {
-            self.border_emphasized
-        }
         pub(crate) fn badge_bg(&self) -> u32 {
             (self.bg_popover & 0x00FF_FFFF) | 0xEB00_0000
         }

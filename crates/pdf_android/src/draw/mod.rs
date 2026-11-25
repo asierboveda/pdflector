@@ -97,15 +97,12 @@ pub(crate) enum TextAlign {
 pub(crate) enum TextFont {
     #[default]
     Sans,
-    #[allow(dead_code)]
     Serif,
-    #[allow(dead_code)]
     Mono,
 }
 
 /// Escala de elevación Astryx (`none | low | med | high`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum Elevation {
     None,
     Low,
@@ -115,13 +112,11 @@ pub(crate) enum Elevation {
 
 /// Variantes semánticas de botón Astryx.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum ButtonVariant {
     Primary,
     Secondary,
     Tonal,
     Ghost,
-    Danger,
 }
 
 pub(crate) struct CanvasRect {
@@ -202,13 +197,11 @@ impl CanvasText {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn with_font(mut self, font: TextFont) -> Self {
         self.font = font;
         self
     }
 
-    #[allow(dead_code)]
     pub(crate) fn with_tracking(mut self, em: f32) -> Self {
         self.letter_spacing = em;
         self
@@ -337,7 +330,6 @@ pub(crate) fn draw_elevation_shadow(
 }
 
 /// Superficie Astryx (tarjeta, popover o diálogo) con elevación opcional y borde hairline 1 px.
-#[allow(dead_code)]
 pub(crate) fn draw_surface_card(
     rects: &mut Vec<CanvasRect>,
     rect: ButtonRect,
@@ -361,7 +353,6 @@ pub(crate) fn draw_surface_card(
 }
 
 /// Anillo de foco/selección Astryx (`--shadow-inset-selected` 2 px).
-#[allow(dead_code)]
 pub(crate) fn draw_inset_ring(
     rects: &mut Vec<CanvasRect>,
     (l, t, r, b): ButtonRect,
@@ -381,7 +372,7 @@ pub(crate) fn draw_inset_ring(
 }
 
 /// Botón Astryx con radio de elemento (`--radius-element`, no píldora por defecto) y variantes semánticas.
-#[allow(clippy::too_many_arguments, dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_astryx_button(
     rects: &mut Vec<CanvasRect>,
     texts: &mut Vec<CanvasText>,
@@ -398,7 +389,6 @@ pub(crate) fn draw_astryx_button(
         ButtonVariant::Secondary => (p.bg_card, p.border_emphasized, p.text_primary),
         ButtonVariant::Tonal => (p.accent_muted, p.accent_muted, p.on_accent_muted),
         ButtonVariant::Ghost => (p.bg_muted, p.border, p.text_primary),
-        ButtonVariant::Danger => (p.error_bg, p.error_border, p.error_text),
     };
     rects.push(CanvasRect::rounded(l, t, r, b, radius, border));
     rects.push(CanvasRect::rounded(
@@ -423,7 +413,7 @@ pub(crate) fn draw_astryx_button(
 }
 
 /// Token / Badge Astryx (`--radius-full`) con relleno tonal semántico y tracking tipográfico.
-#[allow(clippy::too_many_arguments, dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_token_pill(
     rects: &mut Vec<CanvasRect>,
     texts: &mut Vec<CanvasText>,
