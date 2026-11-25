@@ -473,8 +473,11 @@ fn jni_canvas_bitmap(
     lines: &[CanvasLine],
     texts: &[CanvasText],
 ) -> Option<Bitmap> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
     let vm = JavaVM::singleton().ok()?;
-    let n = w as usize * h as usize;
+    let n = (w as usize).checked_mul(h as usize)?;
     let res: jni::errors::Result<Bitmap> = vm.attach_current_thread(|env| {
         env.with_local_frame(64, |env| {
             // android.graphics.Bitmap.Config.ARGB_8888

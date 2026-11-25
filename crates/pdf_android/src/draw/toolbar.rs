@@ -569,7 +569,7 @@ pub(crate) fn render_toolbar(reader: &Reader) -> Option<(Bitmap, i32, i32)> {
                     ));
                 }
             }
-            let color = if selected { p.text_accent } else { fg };
+            let color = if selected { p.on_accent_muted } else { fg };
             tool_icon(&mut lines, (cx, cy), mode, color, bg, reader);
             continue;
         }

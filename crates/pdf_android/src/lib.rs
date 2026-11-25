@@ -496,6 +496,8 @@ pub(crate) mod theme {
                     ),
                     ("success_text/success_bg", p.success_text, p.success_bg),
                     ("error_text/error_bg", p.error_text, p.error_bg),
+                    ("error_text/bg_popover", p.error_text, p.bg_popover),
+                    ("on_inverted/bg_inverted", p.on_inverted, p.bg_inverted),
                     ("warning_text/warning_bg", p.warning_text, p.warning_bg),
                     ("teal_text/teal_bg", p.teal_text, p.teal_bg),
                     ("purple_text/purple_bg", p.purple_text, p.purple_bg),

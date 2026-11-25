@@ -405,7 +405,7 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
             status_top,
             4.0,
             h_fixed as f32,
-            p.accent,
+            p.status_border(),
         ));
         rects.push(CanvasRect::sharp(
             0.0,

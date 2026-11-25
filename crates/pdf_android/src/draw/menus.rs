@@ -203,7 +203,7 @@ pub(crate) fn render_picker_list(reader: &Reader) -> Option<Bitmap> {
             header_h as f32,
             4.0,
             (header_h + status_h) as f32,
-            p.accent,
+            p.status_border(),
         ));
         rects.push(CanvasRect::sharp(
             0.0,

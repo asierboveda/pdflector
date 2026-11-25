@@ -12,8 +12,8 @@ use crate::theme;
 use pdf_core::{Bitmap, Document};
 
 use super::{
-    ButtonRect, ButtonVariant, CanvasRect, CanvasText, Elevation, TextAlign, TextFont,
-    draw_astryx_button, draw_elevation_shadow, draw_inset_ring, jni_text_bitmap,
+    ButtonRect, ButtonVariant, CanvasRect, CanvasText, TextAlign, TextFont, draw_astryx_button,
+    draw_inset_ring, jni_text_bitmap,
 };
 
 /// Botones del sheet de ajustes del visor (S2, S3):
@@ -66,13 +66,6 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
     let mut texts: Vec<CanvasText> = Vec::new();
 
     let card_r = theme::RADIUS_PAGE;
-    draw_elevation_shadow(
-        &mut rects,
-        (0.0, h as f32 - 16.0, w as f32, h as f32 + 12.0),
-        card_r,
-        Elevation::High,
-        p.is_dark,
-    );
 
     // Superficie elevada del panel
     rects.push(CanvasRect::rounded(
