@@ -460,65 +460,6 @@ pub(crate) fn draw_token_pill(
     );
 }
 
-/// Helper compatible para botones con radio Astryx (`RADIUS_ELEMENT`, 8 px).
-#[allow(clippy::too_many_arguments)]
-fn draw_button(
-    rects: &mut Vec<CanvasRect>,
-    texts: &mut Vec<CanvasText>,
-    left: f32,
-    top: f32,
-    right: f32,
-    bottom: f32,
-    fill_color: u32,
-    border_color: u32,
-    text_color: u32,
-    ts: f32,
-    bold: bool,
-    label: &str,
-) {
-    let r = crate::theme::RADIUS_ELEMENT.min((bottom - top) * 0.5);
-    rects.push(CanvasRect::rounded(
-        left,
-        top,
-        right,
-        bottom,
-        r,
-        border_color,
-    ));
-    rects.push(CanvasRect::rounded(
-        left + 1.0,
-        top + 1.0,
-        right - 1.0,
-        bottom - 1.0,
-        (r - 1.0).max(0.0),
-        fill_color,
-    ));
-    let cx = left + (right - left) * 0.5;
-    let cy = top + (bottom - top) * 0.5 + ts * 0.35;
-    texts.push(CanvasText::new(
-        cx,
-        cy,
-        ts,
-        text_color,
-        TextAlign::Center,
-        bold,
-        label,
-    ));
-}
-
-/// Dibuja sombra multicapa suave Astryx (`Elevation::Med` por defecto para tarjetas/overlays).
-fn draw_card_shadow(
-    rects: &mut Vec<CanvasRect>,
-    l: f32,
-    t: f32,
-    r: f32,
-    b: f32,
-    radius: f32,
-    is_dark: bool,
-) {
-    draw_elevation_shadow(rects, (l, t, r, b), radius, Elevation::Med, is_dark);
-}
-
 /// Dibuja rectángulos (rectos o redondeados) y textos (con alineación y negrita)
 /// con `android.graphics.Canvas` vía JNI y devuelve el resultado como `Bitmap` RGBA8.
 fn jni_text_bitmap(

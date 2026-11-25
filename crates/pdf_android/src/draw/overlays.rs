@@ -10,8 +10,9 @@ use crate::theme;
 use pdf_core::Bitmap;
 
 use super::{
-    AiLine, AiLineKind, ButtonRect, CanvasRect, CanvasText, TextAlign, copy_region, draw_button,
-    fill_buffer, format_ai_response, jni_text_bitmap,
+    AiLine, AiLineKind, ButtonRect, ButtonVariant, CanvasRect, CanvasText, Elevation, TextAlign,
+    TextFont, copy_region, draw_astryx_button, draw_surface_card, draw_token_pill, fill_buffer,
+    format_ai_response, jni_text_bitmap,
 };
 
 /// Tipografía del panel de IA (px): cuerpo, encabezado y ecuación, con su
@@ -22,60 +23,33 @@ pub(crate) const AI_EQUATION_SIZE: f32 = 19.0;
 pub(crate) const AI_LINE_H: f32 = 28.0;
 
 // ---------------------------------------------------------------------
-// Aviso breve (toast)
+// Aviso breve (toast) — píldora invertida Astryx de alto contraste
 // ---------------------------------------------------------------------
 pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
     let msg = reader.toast.as_ref()?.0.clone();
-    let (bw, bh) = ((reader.win_w / 6).max(140), (reader.win_h / 60).max(30));
+    let (bw, bh) = ((reader.win_w / 6).max(140), (reader.win_h / 60).max(32));
     let p = reader.theme.palette();
-    let (bg, border, text) = (p.badge_bg(), p.badge_border(), p.badge_text());
     let mut rects = Vec::new();
     let mut texts = Vec::new();
-    let r = 999.0f32;
-    rects.push(CanvasRect::rounded(
-        0.0, 0.0, bw as f32, bh as f32, r, border,
-    ));
-    rects.push(CanvasRect::rounded(
-        1.0,
-        1.0,
-        bw as f32 - 1.0,
-        bh as f32 - 1.0,
-        r,
-        bg,
-    ));
-    let ts = theme::FONT_CAPTION;
-    texts.push(CanvasText::new(
-        bw as f32 / 2.0,
-        bh as f32 * 0.5 + ts * 0.35,
-        ts,
-        text,
-        TextAlign::Center,
+    draw_token_pill(
+        &mut rects,
+        &mut texts,
+        (0.0, 0.0, bw as f32, bh as f32),
+        p.bg_inverted,
+        Some(p.border_emphasized),
+        p.on_inverted,
+        theme::FONT_CAPTION,
+        TextFont::Sans,
+        0.01,
         true,
-        msg,
-    ));
+        &msg,
+    );
     jni_text_bitmap(bw, bh, theme::TRANSPARENT, &rects, &texts)
 }
 
 // ---------------------------------------------------------------------
-// Panel de "Preguntar a la IA" (Parte 2): tarjeta flotante con respuesta
+// Panel de "Preguntar a la IA": diálogo flotante Astryx
 // ---------------------------------------------------------------------
-//
-// Geometría COMPARTIDA entre el
-// render (Canvas+JNI) y el tap de `input` (`Reader::ai_panel.buttons`). El
-// panel es una tarjeta centrada (horizontal y verticalmente) con cabecera
-// (título + botones ✕/▲/▼) y cuerpo de texto envuelto en líneas. El texto
-// se envuelve AQUÍ en Rust: se estima el ancho de cada carácter en ~0.52 ×
-// tamaño de fuente (alfabeto latino; no hay medición real de glifos vía
-// JNI) y cada línea es un `CanvasText`; las líneas fuera de la ventana de
-// scroll se saltan, así que el recorte del cuerpo es gratis. Decisiones:
-//
-// - El alto del panel se AJUSTA al texto: si cabe entero (≤ 55 % de la
-//   ventana) no hay scroll; si desborda, el cuerpo se limita y aparecen
-//   los botones ▲/▼ (scroll por línea, `Reader::ai_scroll`).
-// - La cabecera siempre muestra el botón ✕ (cerrar); un tap FUERA del panel
-//   también lo cierra (`input::ai_panel_tap`).
-// - El error (sin red / key inválida / error del proveedor) se muestra en
-//   el MISMO panel, en rojo, con el mensaje de `AiError` (Display).
 
 /// Layout del panel de IA calculado por `ai_panel_layout`: rect del panel en
 /// px de ventana + botones (✕ siempre; ▲/▼ solo si desborda) + las líneas
@@ -93,19 +67,13 @@ pub(crate) struct AiLayout {
 
 /// Layout del panel de IA: tarjeta grande centrada (margen 16 px, ancho
 /// hasta 1080 px), cabecera de 52 px (título + botones a la derecha) y
-/// cuerpo cuyo alto se ajusta al texto: si cabe entero, panel corto SIN
-/// scroll; si desborda, cuerpo limitado al ~78 % de la ventana, con scroll
-/// por arrastre y botones ▲/▼. El scroll actual se lee de `Reader::ai_panel`
-/// (0 al abrir) y se devuelve recortado al rango válido para que
-/// `Reader::rebuild_ai_panel` lo guarde. None si la ventana es demasiado
-/// pequeña para un panel.
+/// cuerpo cuyo alto se ajusta al texto.
 pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
     let win_w = reader.win_w as f32;
     let win_h = reader.win_h as f32;
     if win_w < 200.0 || win_h < 200.0 {
         return None;
     }
-    // Constantes del panel (las MISMAS en layout y render).
     let ts = AI_BODY_SIZE;
     let line_h = AI_LINE_H;
     let pad = 20.0f32;
@@ -115,7 +83,6 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
     let margin = 16.0f32;
     let panel_w = (win_w - 2.0 * margin).clamp(200.0, 1080.0);
     let max_body_h = (win_h * 0.78).clamp(160.0, (win_h - 120.0).max(160.0));
-    // Formatear y envolver (estimación de caracteres por línea, latino).
     let content_w = panel_w - 2.0 * pad;
     let max_chars = ((content_w / (ts * 0.52)).floor() as usize).max(8);
     let lines = format_ai_response(&reader.ai_text, max_chars);
@@ -131,11 +98,10 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
     let x = (win_w - panel_w) / 2.0;
     let y = ((win_h - panel_h) / 2.0).max(8.0);
     // Botones de la cabecera, alineados a la derecha: [Explicar][▲][▼][×].
-    // Misma geometría para render y tap.
     let mut buttons: Vec<(&'static str, ButtonRect)> = Vec::with_capacity(4);
     let btn_top = y + (header_h - btn) / 2.0;
     let btn_bottom = btn_top + btn;
-    let mut bx = x + panel_w - pad - btn; // el más a la derecha: ✕
+    let mut bx = x + panel_w - pad - btn;
     buttons.push(("×", (bx, btn_top, bx + btn, btn_bottom)));
     if scrollable {
         bx -= btn + gap;
@@ -148,7 +114,6 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
         bx -= confirm_w + gap;
         buttons.push(("Explicar", (bx, btn_top, bx + confirm_w, btn_bottom)));
     }
-    // Recortar el scroll actual al rango válido (0..total−visible).
     let max_scroll = total.saturating_sub(visible);
     let scroll = reader
         .ai_panel
@@ -166,12 +131,9 @@ pub(crate) fn ai_panel_layout(reader: &Reader) -> Option<AiLayout> {
     })
 }
 
-/// Renderiza el panel de IA (tarjeta oscura redondeada + cabecera con título
-/// y botones + cuerpo con las líneas VISIBLES, saltando las que quedan fuera
-/// de la ventana de scroll) a un bitmap RGBA8 del tamaño del panel con fondo
-/// transparente. Título y color del cuerpo según la fase (`AiPhase`):
-/// Confirm = aviso antes de enviar, Asking = "Preguntando a la IA…",
-/// Answer = texto claro, Error = "IA — error" con texto rojizo (`STATUS_*`).
+/// Renderiza el diálogo flotante de IA en lenguaje Astryx (`bg_popover` +
+/// banda de cabecera `bg_surface` + badge semántico por fase + bloques de
+/// ecuación monoespaciados sobre `bg_muted`).
 pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
     let layout = ai_panel_layout(reader)?;
     let (mx, my, mrx, mry) = layout.rect;
@@ -187,72 +149,121 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
     let header_h = 52.0f32;
     let mut rects: Vec<CanvasRect> = Vec::new();
     let mut texts: Vec<CanvasText> = Vec::new();
-    // Tarjeta: rect redondeado (borde + relleno)
-    let r = 16.0f32;
-    rects.push(CanvasRect::rounded(
-        0.0,
-        0.0,
-        w as f32,
-        h as f32,
-        r,
-        p.popup_border(),
-    ));
+
+    // Superficie Dialog Astryx (`bg_popover` + `border_emphasized`)
+    let card_border = if reader.ai_phase == AiPhase::Error {
+        p.error_border
+    } else {
+        p.border_emphasized
+    };
+    draw_surface_card(
+        &mut rects,
+        (0.0, 0.0, w as f32, h as f32),
+        theme::RADIUS_CARD,
+        p.bg_popover,
+        card_border,
+        Elevation::None,
+        p.is_dark,
+    );
+
+    // Banda superior de cabecera ligeramente diferenciada (`bg_surface`) + hairline
     rects.push(CanvasRect::rounded(
         1.0,
         1.0,
         w as f32 - 1.0,
-        h as f32 - 1.0,
-        (r - 1.0).max(0.0),
-        p.popup_bg(),
+        header_h,
+        theme::RADIUS_CARD - 1.0,
+        p.bg_surface,
     ));
-    // Divisor bajo la cabecera
+    rects.push(CanvasRect::sharp(
+        1.0,
+        header_h - theme::RADIUS_CARD,
+        w as f32 - 1.0,
+        header_h,
+        p.bg_surface,
+    ));
     rects.push(CanvasRect::sharp(
         1.0,
         header_h,
         w as f32 - 1.0,
         header_h + 1.0,
-        p.popup_border(),
+        p.border,
     ));
-    // Cabecera: título según la fase + botones Explicar/▲/▼/✕
-    let (title, body_color) = match reader.ai_phase {
-        AiPhase::Confirm => ("Explicar selección", p.base_content),
-        AiPhase::Asking => ("Preguntando a la IA…", p.neutral_content),
-        AiPhase::Answer => ("Preguntar a la IA", p.base_content),
-        AiPhase::Error => ("IA — error", p.status_text()),
+
+    // Badge semántico de fase + título en la cabecera
+    let (tag, tag_bg, tag_fg, title, body_color) = match reader.ai_phase {
+        AiPhase::Confirm => (
+            "CONFIRMAR",
+            p.accent_muted,
+            p.on_accent_muted,
+            "Explicar selección",
+            p.text_primary,
+        ),
+        AiPhase::Asking => (
+            "PROCESANDO",
+            p.warning_bg,
+            p.warning_text,
+            "Consultando IA…",
+            p.text_secondary,
+        ),
+        AiPhase::Answer => ("IA", p.teal_bg, p.teal_text, "Explicación", p.text_primary),
+        AiPhase::Error => (
+            "ERROR",
+            p.error_bg,
+            p.error_text,
+            "No se pudo responder",
+            p.error_text,
+        ),
     };
-    texts.push(CanvasText::new(
-        pad,
-        header_h * 0.5 + ts * 0.35,
-        ts,
-        p.base_content,
-        TextAlign::Left,
+    let tag_h = 22.0f32;
+    let tag_w = (tag.chars().count() as f32 * 8.0 + 18.0).max(38.0);
+    let tag_t = (header_h - tag_h) * 0.5;
+    draw_token_pill(
+        &mut rects,
+        &mut texts,
+        (pad, tag_t, pad + tag_w, tag_t + tag_h),
+        tag_bg,
+        None,
+        tag_fg,
+        theme::FONT_MICRO,
+        TextFont::Sans,
+        theme::TRACKING_CAPS,
         true,
-        title,
-    ));
+        tag,
+    );
+    texts.push(
+        CanvasText::new(
+            pad + tag_w + 10.0,
+            header_h * 0.5 + theme::FONT_TITLE * 0.34,
+            theme::FONT_TITLE,
+            p.text_primary,
+            TextAlign::Left,
+            true,
+            title,
+        )
+        .with_tracking(theme::TRACKING_TIGHT),
+    );
+
     for (label, (l, t, rr, b)) in &layout.buttons {
-        let (bg, border, fg, bold) = if *label == "Explicar" {
-            (p.primary, p.primary, p.primary_content, true)
+        let local_rect = (*l - mx, *t - my, *rr - mx, *b - my);
+        let variant = if *label == "Explicar" {
+            ButtonVariant::Primary
         } else {
-            (p.base_200, p.base_300, p.base_content, false)
+            ButtonVariant::Ghost
         };
-        draw_button(
+        draw_astryx_button(
             &mut rects,
             &mut texts,
-            *l - mx,
-            *t - my,
-            *rr - mx,
-            *b - my,
-            bg,
-            border,
-            fg,
+            local_rect,
+            variant,
+            &p,
             theme::FONT_CAPTION,
-            bold,
+            *label == "Explicar",
             label,
         );
     }
-    // Cuerpo: solo las líneas visibles [scroll, scroll+visible). Cada
-    // línea dibuja sus segmentos (normal/negrita) en orden; las ecuaciones
-    // van centradas y los encabezados, más grandes.
+
+    // Cuerpo: solo las líneas visibles [scroll, scroll+visible).
     let body_top = header_h + pad;
     for (i, line) in layout
         .lines
@@ -266,9 +277,8 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
             AiLineKind::Equation => AI_EQUATION_SIZE,
             AiLineKind::Body => ts,
         };
-        let y = body_top + (i - layout.scroll) as f32 * line_h + size * 0.9;
-        // Avance estimado por carácter (el espacio es más estrecho que la
-        // media; contarlo igual dejaba huecos alrededor de las negritas).
+        let row_top = body_top + (i - layout.scroll) as f32 * line_h;
+        let y = row_top + size * 0.9;
         let advance = |text: &str| -> f32 {
             text.chars()
                 .map(|c| if c == ' ' { 0.30 } else { 0.52 })
@@ -276,24 +286,63 @@ pub(crate) fn render_ai_panel(reader: &Reader) -> Option<Bitmap> {
                 * size
         };
         let plain_w: f32 = line.segs.iter().map(|s| advance(&s.text)).sum();
+
+        if line.kind == AiLineKind::Equation && plain_w > 0.0 {
+            rects.push(CanvasRect::rounded(
+                pad,
+                row_top + 1.0,
+                w as f32 - pad,
+                row_top + line_h - 1.0,
+                theme::RADIUS_INNER,
+                p.bg_muted,
+            ));
+            rects.push(CanvasRect::rounded(
+                pad,
+                row_top + 4.0,
+                pad + 3.0,
+                row_top + line_h - 4.0,
+                1.5,
+                p.accent,
+            ));
+        }
+
         let mut x = if line.kind == AiLineKind::Equation {
-            ((w as f32 - plain_w) / 2.0).max(pad)
+            ((w as f32 - plain_w) * 0.5).max(pad + 10.0)
         } else {
             pad
         };
+        let font = match line.kind {
+            AiLineKind::Equation => TextFont::Mono,
+            AiLineKind::Heading | AiLineKind::Body => TextFont::Sans,
+        };
+        let tracking = if line.kind == AiLineKind::Heading {
+            theme::TRACKING_TIGHT
+        } else {
+            0.0
+        };
+        let seg_color = if line.kind == AiLineKind::Heading && reader.ai_phase != AiPhase::Error {
+            p.text_primary
+        } else {
+            body_color
+        };
+
         for seg in &line.segs {
             if seg.text.is_empty() {
                 continue;
             }
-            texts.push(CanvasText::new(
-                x,
-                y,
-                size,
-                body_color,
-                TextAlign::Left,
-                seg.bold,
-                seg.text.clone(),
-            ));
+            texts.push(
+                CanvasText::new(
+                    x,
+                    y,
+                    size,
+                    seg_color,
+                    TextAlign::Left,
+                    seg.bold || line.kind == AiLineKind::Heading,
+                    seg.text.clone(),
+                )
+                .with_font(font)
+                .with_tracking(tracking),
+            );
             x += advance(&seg.text);
         }
     }
