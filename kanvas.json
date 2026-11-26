@@ -51,7 +51,7 @@
     {
       "id": "FD-01",
       "title": "Rama limpia desde main y tests host de pdf_android en CI",
-      "state": "review",
+      "state": "done",
       "group": "FD",
       "yolo": true,
       "at": "2026-11-26T14:45:24Z",
@@ -97,7 +97,7 @@
     {
       "id": "VL-01",
       "title": "Vault local en pdf_core: esquema SQLite WAL, indexado in-place y deduplicación SHA-256",
-      "state": "proposed",
+      "state": "todo",
       "group": "VL",
       "deps": ["FD-01"],
       "at": "2026-11-26T14:45:24Z",
