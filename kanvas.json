@@ -234,7 +234,7 @@
     {
       "id": "IN-02",
       "title": "Split input/motion.rs by UiMode",
-      "state": "doing",
+      "state": "review",
       "group": "IN",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -250,6 +250,11 @@
           "at": "2026-11-26T15:39:21Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
+        },
+        {
+          "at": "2026-11-26T15:54:41Z",
+          "by": "claude-code",
+          "text": "input/motion.rs (~1,945 lines) is now input/motion/{mod, viewer, library, discover, picker}.rs, with no behaviour change.\n- 10 new tests pin down which screen gets each touch event in each mode (viewer vs lists, tap targets, tap vs horizontal/vertical drag)\n- TDD verified by the orchestrator: tests added first pass on the old single file (characterization), and still pass after the split (124; 128 with UI-01 merged). No existing test changed.\n- To make routing testable, 3 decisions became small named functions with the exact same conditions; I checked each against the old code.\n- Merging with UI-01 conflicted (both touched the ＋ Añadir tap); resolved by keeping UI-01's fix in the new motion/library.rs.\n- Not covered by tests: the full handlers themselves (they need the Android app object). Worth a quick tablet pass: page taps, pinch/pan, stylus, and taps/scroll in library, Discover and picker."
         }
       ],
       "started": {
