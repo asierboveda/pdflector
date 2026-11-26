@@ -404,7 +404,7 @@
     {
       "id": "PR-01",
       "title": "Reading UX: continuous scroll & 1-finger pan/zoom polish",
-      "state": "doing",
+      "state": "review",
       "group": "PR",
       "deps": ["UI-02", "IN-02"],
       "at": "2026-11-26T13:03:52Z",
@@ -420,6 +420,11 @@
           "at": "2026-11-26T18:24:26Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works test-first in its own worktree (failing test committed first); orchestrator verifies RED/GREEN, merges behind the test gate, checks CI. Device checks are for the human."
+        },
+        {
+          "at": "2026-11-26T19:59:12Z",
+          "by": "claude-code",
+          "text": "New \"Continuo\" reading mode: pages stack vertically and you scroll with one finger. Chosen per book in the reader settings sheet (\"MODO DE LECTURA\": Página a página / Continuo); \"Página a página\" behaves exactly as before.\n- Scroll mode: one-finger drag scrolls (and pans sideways when zoomed), taps toggle the toolbars instead of turning pages, pinch-zoom stays under your fingers, the page number follows the page filling most of the screen, badge / ±10 / \"N / total\" jump to the page, and pen, highlighter, eraser, crop and selection work on whichever page you touch.\n- Remembers mode and exact position per book (also after killing the app); old library files open in page mode.\n- Only visible pages plus neighbours are rendered; if they don't fit in memory at high zoom they render a bit softer instead of going blank.\n- TDD verified by the orchestrator: 5 test-first pairs, each test commit fails (3, 10, 6, 3, 4 failures) and passes after its implementation; 169 tests total, all clippy + fmt clean. The final wiring commit (Reader/GPU/input) can't run on Linux; CI's Android build checks it compiles.\nKnown gaps (proposed as PR-04): no fling/inertia; mixed-size PDFs use one slot height; an undo on another visible page shows after the next scroll; a page MuPDF can't render is retried every frame; the no-GPU fallback shows one page.\nOn the tablet: the 10-point checklist from the agent is in the earlier note; key ones: smooth drag, page number follows, ink lands on the lower of two pages, position restored after relaunch, other books still in page mode."
         }
       ],
       "started": {
@@ -511,6 +516,16 @@
         "at": "2026-11-26T16:49:02Z",
         "by": "claude-code"
       }
+    },
+    {
+      "id": "PR-04",
+      "title": "Continuous scroll polish: fling, mixed page sizes, retries",
+      "state": "proposed",
+      "group": "PR",
+      "deps": ["PR-01"],
+      "at": "2026-11-26T19:59:12Z",
+      "by": "claude-code",
+      "desc": "Follow-ups found while building PR-01's Continuo mode:\n- Fling: scrolling keeps gliding and slows after a fast swipe, instead of stopping when the finger lifts\n- Mixed-size PDFs (e.g. landscape pages): each page gets its own height instead of one shared slot\n- An annotation change (e.g. undo) on a visible page other than the current one shows immediately\n- A page MuPDF fails to render is not retried every frame (back off and show an error placeholder)\nDone means: each point has host tests (fling physics, per-page layout, cache invalidation, retry back-off) and works on the tablet. The no-GPU fallback staying single-page is out of scope."
     }
   ]
 }
