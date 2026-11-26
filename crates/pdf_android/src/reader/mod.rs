@@ -54,6 +54,7 @@ mod redraw;
 mod scroll;
 mod seleccion;
 mod sheet_chrome;
+mod study;
 mod tick;
 mod toast_ia;
 mod toolbar;
