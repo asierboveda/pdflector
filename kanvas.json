@@ -290,7 +290,7 @@
     {
       "id": "IN-03",
       "title": "Surface silent prefetch errors & split jni.rs",
-      "state": "doing",
+      "state": "review",
       "group": "IN",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -306,6 +306,11 @@
           "at": "2026-11-26T15:39:21Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
+        },
+        {
+          "at": "2026-11-26T16:07:59Z",
+          "by": "claude-code",
+          "text": "Page-render errors during background prefetch are no longer thrown away, and jni.rs (~1,600 lines) is split by concern.\n- Prefetch: a page that fails to render is now reported to the caller (Prefetcher::take_errors, capped at 64 pending); the other pages still render. Only the desktop testbed (pdf_app) uses Prefetcher; it now logs these errors. The Android app does not use it, so nothing changes there.\n- jni.rs is now jni/{window, launch, parse, media, ime}.rs plus a ~235-line jni.rs; pure move (the agent compared every code line; only an include path and one visibility changed). All crate::jni::xxx paths unchanged.\n- TDD verified by the orchestrator: the failing-engine test was committed first and fails (0 errors reported), and passes after the fix. All 139 Android tests and clippy pass after merging; no existing test changed.\n- Risk: the Android-only JNI code was compiled here only against stand-ins; CI's Android job is the real check.\n- On the tablet: the \"open with\" / share-to-app flow, adding a PDF from the system picker, and search-box typing (IME) exercise the moved code."
         }
       ],
       "started": {
