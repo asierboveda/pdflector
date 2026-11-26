@@ -573,7 +573,7 @@
     {
       "id": "PR-04",
       "title": "Continuous scroll polish: fling, mixed page sizes, retries",
-      "state": "doing",
+      "state": "review",
       "group": "PR",
       "deps": ["PR-01"],
       "at": "2026-11-26T19:59:12Z",
@@ -589,6 +589,11 @@
           "at": "2026-11-26T20:48:51Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works test-first (fling physics, per-page layout, cache invalidation, retry back-off as separate red/green pairs); orchestrator verifies each pair, merges behind the test gate, checks CI before main moves."
+        },
+        {
+          "at": "2026-11-26T21:12:18Z",
+          "by": "claude-code",
+          "text": "Continuo scrolling now feels finished: swipes glide, mixed page sizes fit, edits on any visible page show at once, and broken pages no longer hammer the renderer.\n- Fling: a fast swipe keeps gliding and slows smoothly (same on any frame rate); stops exactly at the first/last page; any touch stops it without toggling the toolbars; jumps, zoom and mode changes stop it too.\n- Mixed page sizes: each page gets its own height (landscape pages full width); when a page's real size arrives, what you're reading stays put, even mid-drag; resume position still works.\n- Undo/redo/erase/highlight on any visible page appears immediately, and undo on a visible page no longer scrolls the view.\n- A page MuPDF can't render shows a muted slot with an X and is retried after 0.5 s, doubling up to 30 s, instead of every frame; a later success clears it.\n- TDD verified by the orchestrator: 5 test-first pairs, each test commit fails (6, 6, 2, 4, 1 failures) and passes after its implementation; 219 tests, all pdf_core suites, all clippy + fmt clean; no PR-01 assertion changed.\n- Left: unseen pages use the reference size until rendered; an eraser stroke acts only on the page it starts on; render back-off is Scroll-mode only.\nOn the tablet: the 11-point checklist is in the agent's report; key ones: fast swipe glides and stops at ends, touch during a glide stops it without toggling chrome, mixed portrait/landscape PDF fits and doesn't jump, undo on a non-current visible page shows immediately, Tap mode unchanged."
         }
       ],
       "started": {
