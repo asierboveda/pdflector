@@ -46,11 +46,27 @@
     {
       "id": "TD-01",
       "title": "Run 114 pdf_android unit tests on Linux host & CI",
-      "state": "proposed",
+      "state": "doing",
       "group": "TD",
       "at": "2026-11-26T13:03:52Z",
       "by": "gemini",
-      "desc": "Make `crates/pdf_android` pure unit tests execute on Linux host and in CI instead of only compiling.\n- [ ] Gate Android-only deps (`android-activity`, `ndk`, `jni`, `android_logger`) under `cfg(target_os = \"android\")` without adding a new crate\n- [ ] `cargo test -p pdf_android --lib` runs and passes on host (including Astryx contrast tests)\n- [ ] Add host test step to `.github/workflows/ci.yml` while keeping Android clippy clean"
+      "desc": "Make `crates/pdf_android` pure unit tests execute on Linux host and in CI instead of only compiling.\n- [ ] Gate Android-only deps (`android-activity`, `ndk`, `jni`, `android_logger`) under `cfg(target_os = \"android\")` without adding a new crate\n- [ ] `cargo test -p pdf_android --lib` runs and passes on host (including Astryx contrast tests)\n- [ ] Add host test step to `.github/workflows/ci.yml` while keeping Android clippy clean",
+      "notes": [
+        {
+          "at": "2026-11-26T15:23:07Z",
+          "by": "human",
+          "text": "Approved. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T15:23:18Z",
+          "by": "claude-code",
+          "text": "Plan: see what breaks when building pdf_android tests on Linux, move the Android-only libraries behind an Android-only switch with the smallest code changes, get all 114 tests passing on Linux, then add a test step to CI."
+        }
+      ],
+      "started": {
+        "at": "2026-11-26T15:23:18Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "TD-02",

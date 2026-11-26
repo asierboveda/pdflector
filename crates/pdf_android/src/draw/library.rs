@@ -4,6 +4,7 @@
 //! Pantalla de biblioteca: cabecera fija + zona scrolleable, filas de
 //! chips/carousel, blit de la biblioteca y pegado de portadas cacheadas.
 
+use crate::android_activity::ndk::native_window::NativeWindow;
 use crate::persist;
 use crate::reader::{
     GRID_CELL_PAD, LibraryCoverFit, Reader, cover_size_multiplier, entry_title, grid_cell_h,
@@ -13,7 +14,6 @@ use crate::reader::{
     settings_menu_button_rect, truncate_name, view_menu_button_rect,
 };
 use crate::theme;
-use android_activity::ndk::native_window::NativeWindow;
 use log::warn;
 use pdf_core::Bitmap;
 

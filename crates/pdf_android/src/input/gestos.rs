@@ -9,12 +9,12 @@
 //! `tick_gestures`) vive en `motion`; `dispatch` (handle_input) y `stylus`
 //! (USI 2.0) son los otros submódulos de `input`.
 
+use crate::android_activity::AndroidApp;
 use crate::annotations::ToolKind;
 use crate::draw::{sheet_buttons, viewer_top_chrome_buttons};
 use crate::reader::{
     Reader, page_badge_rect, sheet_h, viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
-use android_activity::AndroidApp;
 use std::time::Instant;
 
 /// Umbral de LONG-PRESS para entrar en MODO SELECCIÓN (selección de texto):

@@ -11,6 +11,8 @@
 //! conservan los timestamps monotónicos originales.
 
 use super::gestos::{GestureKind, LONG_PRESS_MS, TwoFingerMode, fire_tap_action};
+use crate::android_activity::AndroidApp;
+use crate::android_activity::input::{Button, ButtonState, MotionAction};
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_SELECT, PenMode, ToolKind};
 use crate::draw::{
     AI_LINE_H, SettingsMenuItem, ViewMenuItem, settings_menu_geometry, view_menu_geometry,
@@ -30,8 +32,6 @@ use crate::reader::{
     settings_menu_button_rect, view_menu_button_rect,
 };
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
-use android_activity::AndroidApp;
-use android_activity::input::{Button, ButtonState, MotionAction};
 use std::time::Instant;
 
 /// Avanza la máquina de gestos desde el bucle de eventos (timeout ~16 ms,

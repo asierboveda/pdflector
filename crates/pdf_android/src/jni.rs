@@ -9,19 +9,35 @@
 //! `input` llaman a estas funciones; los tipos de datos que construyen
 //! (`LaunchPdf`, `LibraryEntry`, `LibraryScan`) viven en `reader`.
 
+#[cfg(target_os = "android")]
 use std::fs;
+#[cfg(target_os = "android")]
 use std::path::Path;
+#[cfg(target_os = "android")]
 use std::sync::Mutex;
 
-use android_activity::AndroidApp;
+#[cfg(target_os = "android")]
+use crate::android_activity::AndroidApp;
+#[cfg(target_os = "android")]
 use jni::objects::{Global, JClass, JObject, JString, JValue};
+#[cfg(target_os = "android")]
 use jni::{JavaVM, jni_sig, jni_str};
+#[cfg(target_os = "android")]
 use log::{error, info, warn};
 
+#[cfg(target_os = "android")]
 use crate::reader::{LaunchPdf, LaunchRequest, LibraryEntry, LibraryScan};
 
+#[cfg(target_os = "android")]
 mod ink;
+#[cfg(target_os = "android")]
 pub(crate) use ink::InkOverlay;
+
+// En host (tests en Linux) no hay JVM: sustitutos inertes con la misma firma.
+#[cfg(not(target_os = "android"))]
+mod host;
+#[cfg(not(target_os = "android"))]
+pub(crate) use host::*;
 
 /// Modo inmersivo del visor: oculta la barra de estado y la de navegación del
 /// sistema (Android 15 edge-to-edge las deja DIBUJADAS sobre la app, pero el
@@ -41,6 +57,7 @@ pub(crate) use ink::InkOverlay;
 /// timeout del sistema apagaba el display a mitad de escritura con el lápiz
 /// (el stylus no cuenta como "user activity" para el suspend en todas las
 /// ROMs). Best-effort en el arranque, igual que `enter_immersive`.
+#[cfg(target_os = "android")]
 pub(crate) fn keep_screen_on(app: &AndroidApp) {
     const FLAG_KEEP_SCREEN_ON: i32 = 0x80; // WindowManager.LayoutParams
     let Ok(vm) = JavaVM::singleton() else {
@@ -79,6 +96,7 @@ pub(crate) fn keep_screen_on(app: &AndroidApp) {
 /// y si encuentra un modo de 120 Hz (como en la TCL NXTPaper 11 Plus, modeId 1),
 /// establece `preferredDisplayModeId` y `preferredRefreshRate = 120.0f` en los
 /// LayoutParams de la ventana.
+#[cfg(target_os = "android")]
 pub(crate) fn enable_120hz(app: &AndroidApp) {
     let Ok(vm) = JavaVM::singleton() else {
         log::warn!("enable_120hz: sin JavaVM");
@@ -149,6 +167,7 @@ pub(crate) fn enable_120hz(app: &AndroidApp) {
     }
 }
 
+#[cfg(target_os = "android")]
 pub(crate) fn enter_immersive(app: &AndroidApp) {
     let Ok(vm) = JavaVM::singleton() else {
         return;
@@ -206,6 +225,7 @@ pub(crate) fn enter_immersive(app: &AndroidApp) {
 ///
 /// JNI: `AndroidApp::activity_as_ptr()` expone la `Activity` (android-activity
 /// 0.6, global ref unowned) y `JavaVM::singleton()` el VM.
+#[cfg(target_os = "android")]
 pub(crate) fn launch_intent_request(app: &AndroidApp) -> Option<LaunchRequest> {
     let vm = JavaVM::singleton().ok()?;
     let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
@@ -696,6 +716,7 @@ fn parse_single_arxiv_target(input: &str) -> Option<String> {
 
 /// Convierte un `JObject` que es un `java.lang.String` a `String` Rust (copia).
 /// `new_cast_local_ref` verifica el tipo (IsInstanceOf) y crea una ref local.
+#[cfg(target_os = "android")]
 fn jni_jstring(env: &mut jni::Env, obj: &JObject) -> jni::errors::Result<String> {
     let jstr = env.new_cast_local_ref::<JString>(obj)?;
     jstr.try_to_string(env)
@@ -732,6 +753,7 @@ pub(crate) fn sanitize_pdf_name(raw: &str) -> String {
 /// Nivel de API de Android (Build.VERSION.SDK_INT). Decide qué columnas de
 /// MediaStore existen (RELATIVE_PATH/_SIZE solo desde API 29) y qué permiso
 /// exige la lectura de PDFs ajenos (MANAGE_EXTERNAL_STORAGE desde API 30).
+#[cfg(target_os = "android")]
 pub(crate) fn android_sdk_int() -> i32 {
     let vm = match JavaVM::singleton() {
         Ok(v) => v,
@@ -771,6 +793,7 @@ pub(crate) fn android_sdk_int() -> i32 {
 /// `Environment.isExternalStorageManager()` y no se consulta (se devuelve
 /// `permission_granted=false`); si la query fallara igualmente, se captura la
 /// excepción y se reporta el error.
+#[cfg(target_os = "android")]
 pub(crate) fn query_media_store(app: &AndroidApp, sdk_int: i32) -> LibraryScan {
     let vm = match JavaVM::singleton() {
         Ok(v) => v,
@@ -982,6 +1005,7 @@ pub(crate) fn query_media_store(app: &AndroidApp, sdk_int: i32) -> LibraryScan {
 }
 
 /// `Cursor.getString(col)` → String (vacío si null o columna ausente).
+#[cfg(target_os = "android")]
 fn cursor_string(env: &mut jni::Env, cursor: &JObject, idx: i32) -> jni::errors::Result<String> {
     if idx < 0 {
         return Ok(String::new());
@@ -1002,6 +1026,7 @@ fn cursor_string(env: &mut jni::Env, cursor: &JObject, idx: i32) -> jni::errors:
 }
 
 /// `Cursor.getLong(col)` → i64 (0 si columna ausente).
+#[cfg(target_os = "android")]
 fn cursor_long(env: &mut jni::Env, cursor: &JObject, idx: i32) -> jni::errors::Result<i64> {
     if idx < 0 {
         return Ok(0);
@@ -1016,6 +1041,7 @@ fn cursor_long(env: &mut jni::Env, cursor: &JObject, idx: i32) -> jni::errors::R
 }
 
 /// Lee un `java.io.InputStream` hasta EOF (búfer 64 KB) y lo cierra.
+#[cfg(target_os = "android")]
 fn drain_stream(env: &mut jni::Env, stream: &JObject) -> jni::errors::Result<Vec<u8>> {
     let mut bytes: Vec<u8> = Vec::new();
     const BUF_LEN: i32 = 65536;
@@ -1052,6 +1078,7 @@ fn drain_stream(env: &mut jni::Env, stream: &JObject) -> jni::errors::Result<Vec
 /// Abre una content:// URI con `ContentResolver.openInputStream` y devuelve
 /// todos sus bytes (para copiar un PDF de la biblioteca a almacenamiento
 /// interno). Mismo patrón JNI que el "abrir con" de `launch_intent_pdf`.
+#[cfg(target_os = "android")]
 pub(crate) fn read_content_uri_bytes(app: &AndroidApp, uri_str: &str) -> Option<Vec<u8>> {
     let vm = JavaVM::singleton().ok()?;
     let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
@@ -1109,6 +1136,7 @@ pub(crate) fn read_content_uri_bytes(app: &AndroidApp, uri_str: &str) -> Option<
 /// Abre la pantalla de Ajustes "Acceso a todos los archivos"
 /// (Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, API 30+) para que
 /// el usuario conceda MANAGE_EXTERNAL_STORAGE. Botón Grant de la biblioteca.
+#[cfg(target_os = "android")]
 pub(crate) fn launch_all_files_settings(app: &AndroidApp) {
     let vm = match JavaVM::singleton() {
         Ok(v) => v,
@@ -1195,15 +1223,18 @@ pub(crate) fn launch_all_files_settings(app: &AndroidApp) {
 
 /// Dex del helper IME embebido en el binario (ver `tools/ime/build.sh`).
 /// Se extrae a `files/ime/classes.dex` la primera vez que se usa.
+#[cfg(target_os = "android")]
 const IME_DEX: &[u8] = include_bytes!("../../../tools/ime/classes.dex");
 
 /// Clase `com.pdflector.app.ImeHelper` cargada (GlobalRef cacheado; la
 /// clase vive mientras la JVM viva — hasta `onDestroy`).
+#[cfg(target_os = "android")]
 static IME_LOADED: Mutex<Option<Global<JObject<'static>>>> = Mutex::new(None);
 
 /// Carga (o devuelve la cacheada) la clase del helper IME: extrae el dex
 /// embebido a `files/ime/classes.dex` si falta y lo carga con
 /// `DexClassLoader` usando el class loader de la activity.
+#[cfg(target_os = "android")]
 fn ime_class_raw(app: &AndroidApp) -> Option<jni::sys::jobject> {
     {
         let Ok(guard) = IME_LOADED.lock() else {
@@ -1297,6 +1328,7 @@ fn ime_class_raw(app: &AndroidApp) -> Option<jni::sys::jobject> {
 /// Abre el teclado del buscador con `initial` como texto inicial (el helper
 /// crea el EditText invisible e idempotente). Pensado para llamarse al tocar
 /// el campo "Buscar..." de la biblioteca.
+#[cfg(target_os = "android")]
 pub(crate) fn ime_attach(app: &AndroidApp, initial: &str) {
     let Some(raw) = ime_class_raw(app) else {
         return;
@@ -1328,6 +1360,7 @@ pub(crate) fn ime_attach(app: &AndroidApp, initial: &str) {
 }
 
 /// Oculta el teclado y suelta el foco del campo invisible.
+#[cfg(target_os = "android")]
 pub(crate) fn ime_hide(app: &AndroidApp) {
     let Some(raw) = ime_class_raw(app) else {
         return;
@@ -1355,6 +1388,7 @@ pub(crate) fn ime_hide(app: &AndroidApp) {
 
 /// Texto ACTUAL del campo del buscador (lo que ha tecleado el usuario; el
 /// helper lo publica como String volatile, seguro de leer desde este hilo).
+#[cfg(target_os = "android")]
 pub(crate) fn ime_text(app: &AndroidApp) -> Option<String> {
     let raw = ime_class_raw(app)?;
     let vm = JavaVM::singleton().ok()?;
@@ -1387,6 +1421,7 @@ pub(crate) fn ime_text(app: &AndroidApp) -> Option<String> {
 }
 
 /// Sustituye el texto del campo (p. ej. al limpiar con la "✕").
+#[cfg(target_os = "android")]
 pub(crate) fn ime_set_text(app: &AndroidApp, text: &str) {
     let Some(raw) = ime_class_raw(app) else {
         return;

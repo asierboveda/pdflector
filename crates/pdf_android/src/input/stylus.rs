@@ -8,8 +8,9 @@
 //! (`normalize_pressure`).
 
 use super::gestos::GestureKind;
+#[cfg(target_os = "android")]
+use crate::android_activity::input::MotionEvent;
 use crate::reader::Reader;
-use android_activity::input::MotionEvent;
 
 /// Tope de muestras históricas consumidas por evento del boli: Android
 /// batchea a 240 Hz; si el looper se retrasa, el history acumularía un
@@ -18,10 +19,11 @@ use android_activity::input::MotionEvent;
 const STYLUS_HISTORY_CAP: usize = 16;
 
 /// ¿La herramienta del puntero es lápiz/borrador físico?
-pub(crate) fn is_stylus_tool(t: android_activity::input::ToolType) -> bool {
+pub(crate) fn is_stylus_tool(t: crate::android_activity::input::ToolType) -> bool {
     matches!(
         t,
-        android_activity::input::ToolType::Stylus | android_activity::input::ToolType::Eraser
+        crate::android_activity::input::ToolType::Stylus
+            | crate::android_activity::input::ToolType::Eraser
     )
 }
 
@@ -56,6 +58,7 @@ fn feed_stylus_sample(reader: &mut Reader, x: f32, y: f32, time_ns: i64, pressur
 /// `pointers.len() == 1`): si el panel multiplexa palma+stylus en un solo
 /// MotionEvents, ese evento nunca arranca un trazo — el drain no cambia ese
 /// comportamiento.
+#[cfg(target_os = "android")]
 pub(crate) fn feed_stylus_history(reader: &mut Reader, motion: &MotionEvent) {
     for p in motion.pointers().filter(|p| is_stylus_tool(p.tool_type())) {
         let hist = p.history();

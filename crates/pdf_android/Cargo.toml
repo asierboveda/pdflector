@@ -14,20 +14,8 @@ crate-type = ["cdylib"]
 # pdf_core (motor MuPDF, ADR-001) sin features extra: rusqlite/notify ya
 # cross-compilan a aarch64-linux-android (fix del agente de build paralelo).
 pdf_core = { path = "../pdf_core" }
-# Ciclo de vida de la Activity + ANativeWindow + input. GameActivity permite
-# usar una Activity Kotlin propia y vistas AndroidX sobre la superficie nativa.
-android-activity = { version = "0.6", features = ["game-activity"] }
-# ANativeWindow lock/stride/format. Se usa el mismo 0.9 que android-activity,
-# sin features por defecto para no inflar el grafo (native_window es base).
-ndk = { version = "0.9", default-features = false }
-# JNI para el picker de PDFs: dibuja la lista con android.graphics.Canvas
-# (fuente del sistema, antialiasing) y lee los píxeles con Bitmap.getPixels.
-# Misma versión (0.22) que usa android-activity 0.6, así que reutiliza
-# JavaVM::singleton() sin duplicar la crate. MIT/Apache-2.0.
-jni = "0.22"
 # Log a logcat. MIT.
 log = "0.4"
-android_logger = "0.15"
 # Estado del visor (posicion + modo oscuro) en internal/state.json. serde y
 # serde_json ya estan en el grafo via pdf_core (mismas versiones, ya
 # cross-compiladas a aarch64-linux-android): no anaden unidades de
@@ -45,3 +33,20 @@ png = "0.18"
 # Base64 del PNG (sin prefijo data:) para enviar recortes a `GeminiClient::explain_image`.
 # Crate estándar, puro Rust, sin dependencias. MIT/Apache-2.0.
 base64 = "0.23"
+
+# Solo Android: estas crates no compilan en host (ndk-sys aborta con
+# compile_error!). En Linux el crate usa los sustitutos de `src/host/`, así
+# `cargo test -p pdf_android --lib` corre los tests puros en el host.
+[target.'cfg(target_os = "android")'.dependencies]
+# Ciclo de vida de la Activity + ANativeWindow + input. GameActivity permite
+# usar una Activity Kotlin propia y vistas AndroidX sobre la superficie nativa.
+android-activity = { version = "0.6", features = ["game-activity"] }
+# ANativeWindow lock/stride/format. Se usa el mismo 0.9 que android-activity,
+# sin features por defecto para no inflar el grafo (native_window es base).
+ndk = { version = "0.9", default-features = false }
+# JNI para el picker de PDFs: dibuja la lista con android.graphics.Canvas
+# (fuente del sistema, antialiasing) y lee los píxeles con Bitmap.getPixels.
+# Misma versión (0.22) que usa android-activity 0.6, así que reutiliza
+# JavaVM::singleton() sin duplicar la crate. MIT/Apache-2.0.
+jni = "0.22"
+android_logger = "0.15"
