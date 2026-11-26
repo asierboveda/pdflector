@@ -129,10 +129,12 @@ pub(crate) struct ScrollFling {
 }
 
 impl ScrollFling {
-    /// Un dedo toca la pantalla: la inercia se detiene en seco.
-    pub(crate) fn touch_down(&mut self) {
+    /// Un dedo toca la pantalla: la inercia se detiene en seco. Devuelve
+    /// si había inercia (ese toque solo frena: no es un tap).
+    pub(crate) fn touch_down(&mut self) -> bool {
         self.fling = None;
         self.tracker.reset();
+        false
     }
 
     /// Muestra de un arrastre de un dedo en curso.
@@ -328,5 +330,22 @@ mod tests {
             off = o;
         }
         assert!(close(off, max, 1e-3));
+    }
+
+    #[test]
+    fn the_touch_that_stops_a_glide_is_not_a_tap() {
+        let mut s = ScrollFling::default();
+        assert!(!s.touch_down(), "sin inercia: un toque normal");
+        s.track(0, 0.0);
+        s.track(10 * MS, 60.0);
+        assert!(s.release(20 * MS, 120.0));
+        assert!(s.touch_down(), "frenó una inercia: se traga el tap");
+        assert!(!s.touch_down());
+        // Inercia ya agotada por la fricción: el toque vuelve a ser un tap.
+        s.track(100 * MS, 0.0);
+        s.track(110 * MS, 60.0);
+        assert!(s.release(120 * MS, 120.0));
+        while s.frame(&layout(), 5000.0, 0.016).is_some() {}
+        assert!(!s.touch_down());
     }
 }
