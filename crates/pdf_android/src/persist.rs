@@ -32,12 +32,15 @@
 //!   se conserva. Sin estado guardado → biblioteca.
 //! - La escritura es best-effort: un fallo de disco solo se loguea, no rompe
 //!   la app.
+//! - Todas las escrituras son atómicas (`pdf_core::write_atomic`: temporal +
+//!   `sync_all` + `rename`): un cierre o corte de luz a mitad no deja un JSON
+//!   truncado.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::{error, info, warn};
-use pdf_core::Color;
+use pdf_core::{Color, write_atomic};
 use serde::{Deserialize, Serialize};
 
 use crate::annotations::{DEFAULT_INK_COLOR, PenMode, STROKE_WIDTH_PT};
@@ -152,7 +155,7 @@ pub(crate) fn save_progress(internal_dir: Option<&Path>, books: &[BookProgress])
     let Ok(text) = serde_json::to_string_pretty(books) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save progress {}: {e}", path.display());
     }
 }
@@ -258,7 +261,7 @@ pub(crate) fn save_tool_state(internal_dir: Option<&Path>, state: &ToolState) {
     let Ok(text) = serde_json::to_string_pretty(state) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save tool state {}: {e}", path.display());
     }
 }
@@ -365,7 +368,7 @@ pub(crate) fn save_recents(internal_dir: Option<&Path>, recents: &[RecentEntry])
     let Ok(text) = serde_json::to_string_pretty(recents) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save recents {}: {e}", path.display());
     }
 }
@@ -413,7 +416,7 @@ pub(crate) fn save_state(internal_dir: Option<&Path>, state: &ViewerState) {
     let Ok(text) = serde_json::to_string_pretty(state) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save state {}: {e}", path.display());
     }
 }
@@ -513,7 +516,7 @@ pub fn save_papers(internal_dir: Option<&Path>, papers: &[PaperMeta]) {
     let Ok(text) = serde_json::to_string_pretty(papers) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save papers {}: {e}", path.display());
     }
 }
@@ -557,7 +560,7 @@ pub fn save_discover(internal_dir: Option<&Path>, prefs: &DiscoverPrefs) {
     let Ok(text) = serde_json::to_string_pretty(prefs) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save discover {}: {e}", path.display());
     }
 }
@@ -723,5 +726,75 @@ mod tests {
         assert!(meta.title.is_empty());
         assert!(meta.authors.is_empty());
         assert!(meta.updated.is_empty());
+    }
+
+    /// Cada `save_*` reemplaza su fichero con escritura atómica
+    /// (`pdf_core::write_atomic`): `rename` de un temporal, no truncado en
+    /// sitio. Un hard link al fichero previo conserva el contenido viejo y
+    /// no quedan temporales en el directorio.
+    #[cfg(unix)]
+    #[test]
+    fn every_save_replaces_its_file_atomically() {
+        let dir =
+            std::env::temp_dir().join(format!("pdflector-persist-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let d = Some(dir.as_path());
+
+        let state = ViewerState {
+            path: "/x.pdf".into(),
+            page: 2,
+            zoom: 1.0,
+            dark: false,
+            theme: None,
+            view_mode: Default::default(),
+            cover_fit: Default::default(),
+            columns: 3,
+            hide_covers: false,
+            cover_size: 1,
+            cover_progress: false,
+        };
+        let saves: Vec<(PathBuf, Box<dyn Fn()>)> = vec![
+            (library_path(&dir), Box::new(move || save_progress(d, &[]))),
+            (
+                tool_state_path(&dir),
+                Box::new(move || save_tool_state(d, &ToolState::default())),
+            ),
+            (recents_path(&dir), Box::new(move || save_recents(d, &[]))),
+            (state_path(&dir), Box::new(move || save_state(d, &state))),
+            (papers_path(&dir), Box::new(move || save_papers(d, &[]))),
+            (
+                discover_path(&dir),
+                Box::new(move || save_discover(d, &DiscoverPrefs::default())),
+            ),
+        ];
+        for (path, save) in &saves {
+            fs::write(path, "anterior").unwrap();
+            let link = dir.join("old-link");
+            fs::hard_link(path, &link).unwrap();
+
+            save();
+
+            assert_ne!(
+                fs::read_to_string(path).unwrap(),
+                "anterior",
+                "{}",
+                path.display()
+            );
+            assert_eq!(
+                fs::read_to_string(&link).unwrap(),
+                "anterior",
+                "{} se reescribió en sitio, no de forma atómica",
+                path.display()
+            );
+            fs::remove_file(&link).unwrap();
+        }
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.ends_with(".json"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporales sobrantes: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
