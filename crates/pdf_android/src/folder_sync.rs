@@ -24,6 +24,26 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const EXPORT_IDLE_DELAY: Duration = Duration::from_millis(700);
 
+/// Esperas del actor. En producción siempre son las constantes por defecto;
+/// los tests las inyectan (p. ej. de horas) para comprobar por orden/causalidad,
+/// y no con umbrales de reloj, que el guardado SQLite no espera por ellas.
+#[derive(Clone, Copy, Debug)]
+struct ActorTimings {
+    /// Debounce de inactividad antes de exportar (publicar) al outgoing.
+    export_idle_delay: Duration,
+    /// Espera antes de reintentar un guardado local o una exportación fallidos.
+    retry_delay: Duration,
+}
+
+impl Default for ActorTimings {
+    fn default() -> Self {
+        Self {
+            export_idle_delay: EXPORT_IDLE_DELAY,
+            retry_delay: RETRY_DELAY,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(crate) struct FolderSyncConfig {
     #[serde(default)]
@@ -71,6 +91,10 @@ struct ActorState {
     flush_requested: bool,
     last_save_enqueued: Option<Instant>,
     stopped: bool,
+    /// Solo tests: retraso artificial antes de cada guardado SQLite local, para
+    /// simular un runner de CI lento (fsync/SQLite lentos) de forma determinista.
+    #[cfg(test)]
+    test_slow_local_save: Duration,
 }
 
 pub(crate) enum FolderSyncEvent {
@@ -88,6 +112,14 @@ pub(crate) struct FolderSyncWorker {
 
 impl FolderSyncWorker {
     pub(crate) fn start(internal_root: PathBuf, config: FolderSyncConfig) -> Self {
+        Self::start_with_timings(internal_root, config, ActorTimings::default())
+    }
+
+    fn start_with_timings(
+        internal_root: PathBuf,
+        config: FolderSyncConfig,
+        timings: ActorTimings,
+    ) -> Self {
         let shared = Arc::new((Mutex::new(ActorState::default()), Condvar::new()));
         let (event_tx, events) = mpsc::sync_channel(EVENT_CAPACITY);
         let latest_status = Arc::new(Mutex::new(None));
@@ -96,7 +128,14 @@ impl FolderSyncWorker {
         let thread = thread::Builder::new()
             .name("pdflector-folder-sync".into())
             .spawn(move || {
-                run_actor(actor_shared, event_tx, actor_status, internal_root, config);
+                run_actor(
+                    actor_shared,
+                    event_tx,
+                    actor_status,
+                    internal_root,
+                    config,
+                    timings,
+                );
             });
         let available = thread.is_ok();
         Self {
@@ -229,6 +268,7 @@ fn run_actor(
     latest_status: Arc<Mutex<Option<String>>>,
     internal_root: PathBuf,
     config: FolderSyncConfig,
+    timings: ActorTimings,
 ) {
     let journal = internal_root.join("folder_sync").join("pending.json");
     match fs::metadata(&journal) {
@@ -307,7 +347,7 @@ fn run_actor(
         let export_ready = state.flush_requested
             || state
                 .last_save_enqueued
-                .is_none_or(|at| at.elapsed() >= EXPORT_IDLE_DELAY);
+                .is_none_or(|at| at.elapsed() >= timings.export_idle_delay);
         let local_ready = local_retry_at.is_none_or(|at| now >= at)
             && state.pending.iter().any(|job| !job.persisted);
         let export_job_ready = export_ready
@@ -320,6 +360,7 @@ fn run_actor(
             export_retry_at,
             next_scan,
             config.is_active(),
+            timings.export_idle_delay,
         );
         if !local_ready && !export_job_ready && !state.scan_requested && !state.stopped {
             state = match wake.wait_timeout(state, timeout) {
@@ -336,7 +377,7 @@ fn run_actor(
         let idle_ready = state.flush_requested
             || state
                 .last_save_enqueued
-                .is_none_or(|at| at.elapsed() >= EXPORT_IDLE_DELAY);
+                .is_none_or(|at| at.elapsed() >= timings.export_idle_delay);
         let save = take_ready_job(&mut state, now, idle_ready, local_retry_at, export_retry_at);
         if state.stopped && save.is_none() {
             return;
@@ -382,7 +423,7 @@ fn run_actor(
                         }
                     }
                     emit(&events, &latest_status, FolderSyncEvent::Status(error));
-                    let retry_at = Some(Instant::now() + RETRY_DELAY);
+                    let retry_at = Some(Instant::now() + timings.retry_delay);
                     if was_export {
                         export_retry_at = retry_at;
                     } else {
@@ -540,6 +581,7 @@ fn next_wake_delay(
     export_retry_at: Option<Instant>,
     next_scan: Instant,
     scan_enabled: bool,
+    export_idle_delay: Duration,
 ) -> Duration {
     let now = Instant::now();
     let day = Duration::from_secs(24 * 60 * 60);
@@ -554,11 +596,11 @@ fn next_wake_delay(
         let idle_in = if export_ready {
             Duration::ZERO
         } else {
-            EXPORT_IDLE_DELAY.saturating_sub(
+            export_idle_delay.saturating_sub(
                 state
                     .last_save_enqueued
                     .map(|at| at.elapsed())
-                    .unwrap_or(EXPORT_IDLE_DELAY),
+                    .unwrap_or(export_idle_delay),
             )
         };
         let retry_in = export_retry_at
@@ -601,6 +643,15 @@ fn save_job(
 
     persist_job_and_queue(journal, shared, &job)
         .map_err(|e| format!("Cannot persist pending annotations: {e}"))?;
+    #[cfg(test)]
+    {
+        let delay = shared
+            .0
+            .lock()
+            .map(|state| state.test_slow_local_save)
+            .unwrap_or_default();
+        thread::sleep(delay);
+    }
     let store =
         AnnotationStore::open(&job.sidecar).map_err(|e| format!("Cannot open annotations: {e}"))?;
     store
@@ -866,7 +917,7 @@ impl crate::reader::Reader {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActorState, FolderSyncConfig, FolderSyncWorker, MAX_DEFERRED_DOCUMENTS,
+        ActorState, ActorTimings, FolderSyncConfig, FolderSyncWorker, MAX_DEFERRED_DOCUMENTS,
         MAX_PENDING_DOCUMENTS, PendingSave,
     };
     use pdf_core::AnnotationSet;
@@ -877,6 +928,38 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::time::{Duration, Instant};
+
+    /// Retraso por guardado SQLite local que simula un runner de CI lento (las
+    /// ejecuciones 204, 206, 210, 211 y 212 fallaron por tiempos así).
+    const SLOW_MACHINE_LOCAL_SAVE: Duration = Duration::from_millis(1500);
+
+    /// Hace que cada guardado SQLite local del actor tarde
+    /// `SLOW_MACHINE_LOCAL_SAVE`, como en una máquina lenta. Debe llamarse antes
+    /// del primer `save`.
+    fn simulate_slow_machine(worker: &FolderSyncWorker) {
+        worker.shared.0.lock().unwrap().test_slow_local_save = SLOW_MACHINE_LOCAL_SAVE;
+    }
+
+    /// Debounce y backoff de exportación de una hora: un guardado SQLite que
+    /// esperase por cualquiera de ellos no terminaría dentro de `SAFETY_TIMEOUT`.
+    const HOUR_LONG_EXPORT_WAITS: ActorTimings = ActorTimings {
+        export_idle_delay: Duration::from_secs(60 * 60),
+        retry_delay: Duration::from_secs(60 * 60),
+    };
+
+    /// Red de seguridad para no colgar la suite. No mide rendimiento: es
+    /// órdenes de magnitud mayor que un guardado lento y mucho menor que las
+    /// esperas de `HOUR_LONG_EXPORT_WAITS`.
+    const SAFETY_TIMEOUT: Duration = Duration::from_secs(120);
+
+    /// Sondea `ready` hasta que devuelve `true`; falla si pasa `SAFETY_TIMEOUT`.
+    fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + SAFETY_TIMEOUT;
+        while !ready() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn folder_sync_is_disabled_when_configuration_is_missing_or_incomplete() {
@@ -959,11 +1042,21 @@ mod tests {
 
     #[test]
     fn annotation_worker_serializes_snapshots_to_sqlite_before_export_delay() {
+        // Prueba causal, no de cronómetro: el debounce de exportación dura una
+        // hora, así que si el guardado SQLite lo heredara no llegaría antes del
+        // plazo de seguridad; y cuando el guardado ya está en SQLite, la
+        // exportación de esa misma instantánea debe seguir esperando su
+        // debounce en la cola (sin intento de exportación todavía).
         let base =
             std::env::temp_dir().join(format!("pdflector-sync-worker-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
-        let worker = FolderSyncWorker::start(base.clone(), FolderSyncConfig::default());
+        let worker = FolderSyncWorker::start_with_timings(
+            base.clone(),
+            FolderSyncConfig::default(),
+            HOUR_LONG_EXPORT_WAITS,
+        );
+        simulate_slow_machine(&worker);
         let pdf_path = base.join("book.pdf");
         let sidecar = base.join("book.db");
         let mut final_set = AnnotationSet::new();
@@ -974,7 +1067,6 @@ mod tests {
                 text: "latest".into(),
             }),
         );
-        let start = Instant::now();
         for text in ["older", "latest"] {
             let mut annotations = AnnotationSet::new();
             annotations.add(
@@ -989,30 +1081,38 @@ mod tests {
                     pdf_path: pdf_path.clone(),
                     sidecar: sidecar.clone(),
                     annotations,
-                    publish: false,
+                    publish: true,
                     persisted: false,
                 })
                 .unwrap();
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut saved = false;
-        while Instant::now() < deadline {
-            if let Some(super::FolderSyncEvent::Status(status)) = worker.try_event()
-                && status == "Annotations saved"
-            {
-                let store = AnnotationStore::open(&sidecar).unwrap();
-                if store.load().unwrap() == final_set {
-                    saved = true;
-                    assert!(
-                        start.elapsed() < Duration::from_millis(600),
-                        "SQLite save inherited the export debounce"
-                    );
-                    break;
+        let mut export_attempted = false;
+        wait_until(
+            "SQLite save of the latest snapshot (it inherited the export debounce)",
+            || {
+                if let Some(super::FolderSyncEvent::Status(status)) = worker.try_event() {
+                    export_attempted |= status.contains("unavailable");
+                    return status == "Annotations saved locally; publication pending"
+                        && AnnotationStore::open(&sidecar)
+                            .and_then(|store| store.load())
+                            .is_ok_and(|loaded| loaded == final_set);
                 }
-            }
-            std::thread::sleep(Duration::from_millis(10));
+                false
+            },
+        );
+        assert!(
+            !export_attempted,
+            "export ran before the SQLite save despite the debounce"
+        );
+        {
+            let state = worker.shared.0.lock().unwrap();
+            assert!(
+                state.pending.iter().any(|job| job.sidecar == sidecar
+                    && job.persisted
+                    && job.annotations == final_set),
+                "the export of the saved snapshot must still be waiting for its debounce"
+            );
         }
-        assert!(saved, "worker did not persist the latest snapshot");
         drop(worker);
         let _ = fs::remove_dir_all(base);
     }
@@ -1147,6 +1247,7 @@ mod tests {
             None,
             Instant::now() + Duration::from_secs(30),
             false,
+            super::EXPORT_IDLE_DELAY,
         );
         assert!(delay <= Duration::from_secs(5));
         assert!(delay > Duration::from_secs(4));
@@ -1154,13 +1255,22 @@ mod tests {
 
     #[test]
     fn failed_export_does_not_block_local_sqlite_save_for_another_pdf() {
+        // Prueba causal, no de cronómetro: el reintento de la exportación
+        // fallida de A espera una hora. Si el guardado SQLite de B esperara ese
+        // backoff no llegaría antes del plazo de seguridad; y cuando B ya está
+        // en SQLite, la exportación de A sigue en backoff (un solo intento).
         let base = std::env::temp_dir().join(format!(
             "pdflector-sync-export-priority-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
-        let worker = FolderSyncWorker::start(base.clone(), FolderSyncConfig::default());
+        let worker = FolderSyncWorker::start_with_timings(
+            base.clone(),
+            FolderSyncConfig::default(),
+            HOUR_LONG_EXPORT_WAITS,
+        );
+        simulate_slow_machine(&worker);
 
         let mut note_a = AnnotationSet::new();
         note_a.add(
@@ -1182,19 +1292,16 @@ mod tests {
             .unwrap();
         worker.flush();
 
-        // Wait until PDF A's export fails and enters export backoff.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut export_failed = false;
-        while Instant::now() < deadline {
+        // Espera a que la exportación de A falle y entre en backoff.
+        let mut failed_exports = 0;
+        wait_until("PDF A export attempt to fail", || {
             if let Some(super::FolderSyncEvent::Status(status)) = worker.try_event()
                 && status.contains("unavailable")
             {
-                export_failed = true;
-                break;
+                failed_exports += 1;
             }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(export_failed, "expected export attempt to fail");
+            failed_exports > 0
+        });
 
         let mut note_b = AnnotationSet::new();
         note_b.add(
@@ -1205,7 +1312,6 @@ mod tests {
             }),
         );
         let sidecar_b = base.join("b.db");
-        let start = Instant::now();
         worker
             .save(PendingSave {
                 pdf_path: base.join("b.pdf"),
@@ -1217,28 +1323,34 @@ mod tests {
             .unwrap();
         worker.flush();
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut saved_b = false;
-        while Instant::now() < deadline {
-            let _ = worker.try_event();
-            if sidecar_b.is_file()
-                && AnnotationStore::open(&sidecar_b)
-                    .and_then(|store| store.load())
-                    .is_ok_and(|loaded| loaded == note_b)
-            {
-                saved_b = true;
-                assert!(
-                    start.elapsed() < Duration::from_secs(1),
-                    "local SQLite save waited on export retry backoff"
-                );
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            saved_b,
-            "PDF B was not saved to SQLite while PDF A export was failing"
+        wait_until(
+            "PDF B SQLite save (it waited on PDF A's export retry backoff)",
+            || {
+                if let Some(super::FolderSyncEvent::Status(status)) = worker.try_event()
+                    && status.contains("unavailable")
+                {
+                    failed_exports += 1;
+                }
+                sidecar_b.is_file()
+                    && AnnotationStore::open(&sidecar_b)
+                        .and_then(|store| store.load())
+                        .is_ok_and(|loaded| loaded == note_b)
+            },
         );
+        assert_eq!(
+            failed_exports, 1,
+            "PDF A export was retried before PDF B was saved: the backoff had expired"
+        );
+        {
+            let state = worker.shared.0.lock().unwrap();
+            assert!(
+                state
+                    .pending
+                    .iter()
+                    .any(|job| job.sidecar == sidecar_a && job.persisted),
+                "PDF A export must still be waiting in its retry backoff"
+            );
+        }
         drop(worker);
         let _ = fs::remove_dir_all(base);
     }
