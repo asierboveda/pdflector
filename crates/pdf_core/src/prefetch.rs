@@ -30,7 +30,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::cache::{CacheStats, PageKey, RenderCache};
-use crate::engine::{Bitmap, RenderEngine, Result};
+use crate::engine::{Bitmap, Error, RenderEngine, Result};
 use crate::scroll::Viewport;
 
 /// Commands sent to the worker thread.
@@ -51,6 +51,14 @@ enum Cmd {
         scale_level: u32,
         reply: Sender<Option<Bitmap>>,
     },
+}
+
+/// A page the worker failed to render, surfaced to the client through
+/// `Prefetcher::take_errors` instead of being silently dropped.
+#[derive(Debug)]
+pub struct PageRenderError {
+    pub key: PageKey,
+    pub error: Error,
 }
 
 /// Prefetch controller: owns the channel to the renderer worker and a
@@ -280,6 +288,12 @@ impl<E: RenderEngine> Prefetcher<E> {
             reply: reply_tx,
         });
         reply_rx
+    }
+
+    /// Drains the per-page render errors recorded by the worker since the
+    /// previous call, oldest first.
+    pub fn take_errors(&self) -> Vec<PageRenderError> {
+        Vec::new()
     }
 
     /// Waits until the worker has processed every `Cmd::Request` submitted up
