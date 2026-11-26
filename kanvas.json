@@ -301,7 +301,7 @@
     {
       "id": "IN-01",
       "title": "Wet-to-dry ink rounded caps/joins & rebase PR #55",
-      "state": "doing",
+      "state": "review",
       "group": "IN",
       "deps": ["UI-02"],
       "at": "2026-11-26T13:03:52Z",
@@ -317,6 +317,11 @@
           "at": "2026-11-26T18:24:26Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works test-first in its own worktree (failing test committed first); orchestrator verifies RED/GREEN, merges behind the test gate, checks CI. Device checks are for the human."
+        },
+        {
+          "at": "2026-11-26T19:54:13Z",
+          "by": "claude-code",
+          "text": "Wet ink (while the pen is down) now has round ends and round corners, matching the finished (dry) stroke, so strokes should no longer change shape when you lift the pen. PR #55's fewer-repaints change is also in.\n- How: each wet segment is drawn as a capsule (band + rounded ends) with the same half-width and 0.5 px minimum as the Rust dry renderer; together they cover exactly the points within half the pen width of your line.\n- PR #55 ported as commit 40d24aa (cherry-pick of 04fd3bc, original author kept); 3 conflicts with today's changes resolved, its tests kept and extended to the crop rectangle. PR #55 closed with a note.\n- TDD verified in CI by the orchestrator: test commit alone -> run 228 RED (Kotlin compiled, 4 of 13 tests failed on assertions); fix -> run 229 all green, incl. Android build. Rust: 141 tests, clippy, fmt clean.\n- Known: wet layer has no antialiasing (dry has ~1 px), so edges look slightly harder while writing.\nOn the tablet:\n1. Slow and fast strokes with sharp V/Z turns: ends and corners keep their shape when you lift the pen\n2. A tap without moving: round dot, same size after it dries\n3. Thin and thick pens, several zoom levels\n4. Long fast stroke: latency same or better\n5. Highlighter, eraser cursor, selection and crop rectangles still draw live\n6. Rotate and draw again: ink lines up"
         }
       ],
       "started": {
