@@ -835,7 +835,18 @@ impl Reader {
                     match cmd {
                         WorkerCmd::Stop => break,
                         WorkerCmd::Render(req) => {
+                            let misses = doc.display_list_stats().misses;
                             render_worker_req(&doc, &rx, req);
+                            // PR-03: contadores de display lists de MuPDF
+                            // (entradas, bytes estimados, pico, evicciones),
+                            // solo si el lote construyó alguna lista nueva
+                            // (la residencia solo cambia en un miss). Para
+                            // contrastar con el PSS en la tablet:
+                            // `adb logcat | grep dlcache`.
+                            let stats = doc.display_list_stats();
+                            if stats.misses != misses {
+                                info!("render-worker {stats}");
+                            }
                         }
                     }
                 }
