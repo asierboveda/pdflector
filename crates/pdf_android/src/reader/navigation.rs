@@ -329,6 +329,7 @@ impl Reader {
                 // columna espera a conocer la geometría de una hoja.
                 self.doc_path = Some(path.to_string());
                 self.scroll_ref_pts = None;
+                self.scroll_reset_geometry();
                 self.resume_scroll_at(page);
                 // Apertura/restore: NO es un turno de navegación — sin
                 // dirección de viaje previa → ventana ±1 simétrica (fase B).

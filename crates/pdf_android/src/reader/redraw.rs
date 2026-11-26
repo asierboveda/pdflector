@@ -207,6 +207,7 @@ impl Reader {
             self.toolbar_bitmap = None;
             self.toolbar_popover_bitmap = None;
             self.study_bitmap = None; // panel de Estudio: layout nuevo
+            self.scroll_refresh_sizes(); // tamaños de la columna: otro contain
         }
         match self.mode {
             UiMode::Viewer => {

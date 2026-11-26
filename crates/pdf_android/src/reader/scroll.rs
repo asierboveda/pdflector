@@ -42,12 +42,14 @@ pub(crate) enum ReadingMode {
 }
 
 /// Geometría PURA de la columna de páginas del modo Scroll (sin `Reader`,
-/// testeable en host). Todas las páginas ocupan una RANURA del mismo alto
-/// (`ref_h · zoom`, la página de referencia a zoom 1 en contain) separadas
-/// por `gap`; la columna empieza y acaba con `margin`. El desplazamiento
-/// vertical `off` (px) es la distancia desde el inicio de la columna al
-/// borde superior de la ventana. Una página más alta que la ranura (PDF de
-/// tamaños mixtos) se reduce para caber en ella; una más baja se centra.
+/// testeable en host). Cada página ocupa una RANURA del alto de SU propio
+/// tamaño (`sizes[p] · zoom`, PR-04: apaisadas y hojas raras a su tamaño);
+/// las que aún no se conocen usan la página de referencia (`ref_w/ref_h`)
+/// como provisional. Ranuras separadas por `gap`; la columna empieza y
+/// acaba con `margin`. El desplazamiento vertical `off` (px) es la
+/// distancia desde el inicio de la columna al borde superior de la ventana.
+/// Un bitmap más alto que su ranura (tamaño aún provisional) se reduce para
+/// caber en ella; uno más bajo se centra.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ScrollLayout {
     pub(crate) win_w: f32,
@@ -56,26 +58,80 @@ pub(crate) struct ScrollLayout {
     pub(crate) margin: f32,
     /// Hueco entre páginas (px, no escala con el zoom).
     pub(crate) gap: f32,
-    /// Tamaño (px) de la página de referencia a zoom 1 (contain).
+    /// Tamaño (px) de la página de referencia a zoom 1 (contain): el
+    /// provisional de las hojas cuyo tamaño aún no se conoce.
     pub(crate) ref_w: f32,
     pub(crate) ref_h: f32,
-    /// Factor de zoom (1.0 = página de referencia en contain).
+    /// Factor de zoom (1.0 = cada página en contain).
     pub(crate) zoom: f32,
     /// Número de páginas del documento.
     pub(crate) pages: u32,
-    /// Tamaño (px a zoom 1, contain) de cada página ya conocida (PR-04).
+    /// Tamaño (px a zoom 1, contain) de cada página ya conocida; None (o
+    /// fuera del vector) = aún sin geometría → provisional de referencia.
     pub(crate) sizes: Arc<[Option<(f32, f32)>]>,
 }
 
 impl ScrollLayout {
-    /// Alto de una ranura de página (px) al zoom actual.
+    /// Alto de la ranura PROVISIONAL (página de referencia) al zoom actual.
     pub(crate) fn slot_h(&self) -> f32 {
         (self.ref_h * self.zoom).max(1.0)
     }
 
-    /// Distancia entre los bordes superiores de dos páginas consecutivas.
+    /// Distancia entre bordes superiores de dos ranuras provisionales.
     pub(crate) fn pitch(&self) -> f32 {
         self.slot_h() + self.gap
+    }
+
+    /// Tamaño conocido (px a zoom 1) de `page`, si lo hay y es válido.
+    fn known_size(&self, page: u32) -> Option<(f32, f32)> {
+        self.sizes
+            .get(page as usize)
+            .copied()
+            .flatten()
+            .filter(|&(w, h)| w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0)
+    }
+
+    /// Tamaño (px a zoom 1) con el que `page` ocupa la columna: el suyo o
+    /// el provisional de referencia.
+    pub(crate) fn size0(&self, page: u32) -> (f32, f32) {
+        self.known_size(page).unwrap_or((self.ref_w, self.ref_h))
+    }
+
+    /// Alto de la ranura de `page` al zoom actual.
+    pub(crate) fn slot_h_of(&self, page: u32) -> f32 {
+        match self.known_size(page) {
+            Some((_, h)) => (h * self.zoom).max(1.0),
+            None => self.slot_h(),
+        }
+    }
+
+    /// Ranura + hueco de `page`.
+    fn pitch_of(&self, page: u32) -> f32 {
+        match self.known_size(page) {
+            Some(_) => self.slot_h_of(page) + self.gap,
+            None => self.pitch(),
+        }
+    }
+
+    /// Distancia (px, sin margen ni offset) del inicio de la columna al
+    /// borde superior de la ranura de `page`.
+    fn top0(&self, page: u32) -> f32 {
+        (0..page.min(self.pages)).map(|p| self.pitch_of(p)).sum()
+    }
+
+    /// Ranura que contiene la coordenada de columna `c` (px desde el borde
+    /// superior de la hoja 0, sin margen): (página, su `top0`). Antes de la
+    /// columna → la 0; después → la última.
+    fn slot_at(&self, c: f32) -> (u32, f32) {
+        let mut top = 0.0;
+        for p in 0..self.pages {
+            let next = top + self.pitch_of(p);
+            if c < next || p + 1 == self.pages {
+                return (p, top);
+            }
+            top = next;
+        }
+        (0, 0.0)
     }
 
     /// Alto total de la columna (márgenes incluidos).
@@ -83,7 +139,7 @@ impl ScrollLayout {
         if self.pages == 0 {
             return 0.0;
         }
-        2.0 * self.margin + self.pages as f32 * self.pitch() - self.gap
+        2.0 * self.margin + self.top0(self.pages) - self.gap
     }
 
     /// Clampa `off` al rango válido; si la columna entera cabe en la
@@ -101,19 +157,26 @@ impl ScrollLayout {
     }
 
     /// Offset (clampado) de una posición continua `pos` en unidades de
-    /// página (`3.25` = un cuarto de hoja por debajo del borde de la 4ª).
+    /// página (`3.25` = un cuarto de la ranura de la 4ª por debajo de su
+    /// borde superior).
     pub(crate) fn offset_for_pos(&self, pos: f32) -> f32 {
-        self.clamp_offset(pos * self.pitch())
+        if !pos.is_finite() || self.pages == 0 {
+            return self.clamp_offset(0.0);
+        }
+        let k = (pos.floor().max(0.0) as u32).min(self.pages - 1);
+        let frac = pos - k as f32;
+        self.clamp_offset(self.top0(k) + frac * self.pitch_of(k))
     }
 
     /// Posición continua (unidades de página) de un offset.
     pub(crate) fn pos_for_offset(&self, off: f32) -> f32 {
-        off / self.pitch()
+        let (k, top) = self.slot_at(off);
+        k as f32 + (off - top) / self.pitch_of(k)
     }
 
     /// Borde superior (px de ventana) de la ranura de `page`.
     fn slot_top(&self, page: u32, off: f32) -> f32 {
-        self.margin + page as f32 * self.pitch() - off
+        self.margin + self.top0(page) - off
     }
 
     /// Rect en pantalla (l, t, r, b) de `page` cuyo tamaño a zoom 1 en
@@ -125,7 +188,7 @@ impl ScrollLayout {
         off: f32,
         pan_x: f32,
     ) -> (f32, f32, f32, f32) {
-        let slot = self.slot_h();
+        let slot = self.slot_h_of(page);
         let (mut w, mut h) = (size0.0 * self.zoom, size0.1 * self.zoom);
         if h > slot && h > 0.0 {
             let k = slot / h;
@@ -143,17 +206,26 @@ impl ScrollLayout {
             return None;
         }
         let last = self.pages - 1;
-        let pitch = self.pitch();
         // Primera ranura cuyo borde inferior queda por debajo de y = 0.
-        let first = ((off - self.margin - self.slot_h()) / pitch).floor() + 1.0;
-        let first = (first.max(0.0) as u32).min(last);
-        let mut end = first;
-        while end < last && self.slot_top(end + 1, off) < self.win_h {
-            end += 1;
+        let mut first = last;
+        let mut first_top = self.slot_top(last, off);
+        let mut top = self.margin - off;
+        for p in 0..self.pages {
+            if top + self.slot_h_of(p) > 0.0 {
+                first = p;
+                first_top = top;
+                break;
+            }
+            top += self.pitch_of(p);
         }
-        let top = self.slot_top(first, off);
-        if top >= self.win_h || top + self.slot_h() <= 0.0 {
+        if first_top >= self.win_h || first_top + self.slot_h_of(first) <= 0.0 {
             return None;
+        }
+        let mut end = first;
+        let mut next_top = first_top + self.pitch_of(first);
+        while end < last && next_top < self.win_h {
+            end += 1;
+            next_top += self.pitch_of(end);
         }
         Some((first, end))
     }
@@ -161,7 +233,7 @@ impl ScrollLayout {
     /// Alto visible (px) de la ranura de `page`.
     fn visible_h(&self, page: u32, off: f32) -> f32 {
         let top = self.slot_top(page, off);
-        ((top + self.slot_h()).min(self.win_h) - top.max(0.0)).max(0.0)
+        ((top + self.slot_h_of(page)).min(self.win_h) - top.max(0.0)).max(0.0)
     }
 
     /// Página "actual": la que más alto visible ocupa (empate → la de
@@ -189,15 +261,25 @@ impl ScrollLayout {
         if c < 0.0 || self.pages == 0 {
             return None;
         }
-        let page = (c / self.pitch()).floor() as u32;
-        let inside = c - page as f32 * self.pitch() <= self.slot_h();
-        (page < self.pages && inside).then_some(page)
+        let (page, top) = self.slot_at(c);
+        let inside = c - top <= self.slot_h_of(page) && c < top + self.pitch_of(page);
+        inside.then_some(page)
+    }
+
+    /// Ancho (px a zoom 1) de la hoja más ancha conocida de la columna.
+    fn column_w(&self) -> f32 {
+        self.sizes
+            .iter()
+            .flatten()
+            .map(|&(w, _)| w)
+            .filter(|w| w.is_finite())
+            .fold(self.ref_w, f32::max)
     }
 
     /// Clamp del pan horizontal: con la hoja más ancha que la ventana se
     /// puede mover hasta sus bordes; si cabe, queda centrada (pan 0).
     pub(crate) fn clamp_pan_x(&self, pan: f32) -> f32 {
-        let w = self.ref_w * self.zoom;
+        let w = self.column_w() * self.zoom;
         if w <= self.win_w || !pan.is_finite() {
             return 0.0;
         }
@@ -211,9 +293,9 @@ impl ScrollLayout {
 /// él a `from.zoom` con `off0`/`pan_x0`. Resultado clampado.
 ///
 /// En Y el punto se expresa como (ranura `k`, distancia `r` dentro de ella):
-/// dentro de la hoja `r` escala con el zoom; en el hueco (que no escala) se
-/// conserva tal cual. En X es la fórmula del pinch del modo Tap con la hoja
-/// centrada: `left(z) = (win_w − ref_w·z)/2 + pan`.
+/// dentro de la hoja `r` escala con su ranura; en el hueco (que no escala)
+/// se conserva tal cual. En X es la fórmula del pinch del modo Tap con la
+/// columna centrada: `left(z) = (win_w − ancho·z)/2 + pan`.
 pub(crate) fn anchor_zoom(
     from: &ScrollLayout,
     to: &ScrollLayout,
@@ -223,31 +305,25 @@ pub(crate) fn anchor_zoom(
 ) -> (f32, f32) {
     let (ax, ay) = anchor;
     let c0 = (off0 + ay - from.margin).max(0.0);
-    let k = (c0 / from.pitch()).floor();
-    let r = c0 - k * from.pitch();
-    let r1 = if r <= from.slot_h() {
-        r * to.slot_h() / from.slot_h()
-    } else {
-        to.slot_h() + (r - from.slot_h())
-    };
-    let off1 = to.clamp_offset(k * to.pitch() + r1 + to.margin - ay);
+    let (k, top_k) = from.slot_at(c0);
+    let r = c0 - top_k;
+    let (h0, h1) = (from.slot_h_of(k), to.slot_h_of(k));
+    let r1 = if r <= h0 { r * h1 / h0 } else { h1 + (r - h0) };
+    let off1 = to.clamp_offset(to.top0(k) + r1 + to.margin - ay);
 
-    let left0 = (from.win_w - from.ref_w * from.zoom) / 2.0 + pan_x0;
+    let left0 = (from.win_w - from.column_w() * from.zoom) / 2.0 + pan_x0;
     let q = (ax - left0) / from.zoom.max(1e-4);
     let left1 = ax - q * to.zoom;
-    let pan1 = to.clamp_pan_x(left1 - (to.win_w - to.ref_w * to.zoom) / 2.0);
+    let pan1 = to.clamp_pan_x(left1 - (to.win_w - to.column_w() * to.zoom) / 2.0);
     (off1, pan1)
 }
 
 /// Offset que mantiene fija en pantalla la página `page` cuando el layout
-/// cambia de `old` a `new` (p. ej. llega el tamaño real de otra hoja).
-pub(crate) fn reanchor_offset(
-    _old: &ScrollLayout,
-    _new: &ScrollLayout,
-    off: f32,
-    _page: u32,
-) -> f32 {
-    off
+/// cambia de `old` a `new` (llega el tamaño real de otra hoja): lo que
+/// crece o mengua por encima desplaza el offset lo mismo y la hoja (la
+/// actual) no salta. Un cambio por debajo no mueve nada.
+pub(crate) fn reanchor_offset(old: &ScrollLayout, new: &ScrollLayout, off: f32, page: u32) -> f32 {
+    new.clamp_offset(off + new.top0(page) - old.top0(page))
 }
 
 /// ¿El bitmap residente (renderizado a `entry_zoom`) está obsoleto frente
@@ -303,16 +379,22 @@ pub(crate) fn render_plan(
     visible.truncate(max_entries.max(1));
 
     let budget = budget_bytes as f32 * PLAN_BUDGET_FRACTION;
-    let bytes_at = |z: f32| layout.ref_w * layout.ref_h * z * z * 4.0;
+    // Bytes de cada hoja a zoom 1 según SU tamaño (PR-04: una apaisada
+    // pesa la mitad que una vertical).
+    let area = |p: u32| {
+        let (w, h) = layout.size0(p);
+        w * h * 4.0
+    };
+    let visible_area: f32 = visible.iter().map(|&p| area(p)).sum();
     let mut zoom = layout.zoom;
-    let n = visible.len() as f32;
-    if n * bytes_at(zoom) > budget {
+    if visible_area * zoom * zoom > budget {
         // Zoom máximo al que caben TODAS las visibles (nunca por encima del
         // pedido; nunca por debajo de un mínimo razonable).
-        zoom = (budget / (n * bytes_at(1.0))).sqrt().min(zoom).max(0.25);
+        zoom = (budget / visible_area).sqrt().min(zoom).max(0.25);
     }
 
     let mut pages = visible;
+    let mut used = visible_area * zoom * zoom;
     let mut neighbours = Vec::with_capacity(2);
     if b + 1 < layout.pages {
         neighbours.push(b + 1);
@@ -321,9 +403,10 @@ pub(crate) fn render_plan(
         neighbours.push(a - 1);
     }
     for p in neighbours {
-        let fits_bytes = (pages.len() + 1) as f32 * bytes_at(zoom) <= budget;
-        if pages.len() < max_entries && fits_bytes {
+        let bytes = area(p) * zoom * zoom;
+        if pages.len() < max_entries && used + bytes <= budget {
             pages.push(p);
+            used += bytes;
         }
     }
     (pages, zoom)
@@ -364,19 +447,93 @@ impl Reader {
             ref_h: ph * fit,
             zoom,
             pages,
-            sizes: Arc::from(Vec::new()),
+            sizes: self.scroll_sizes_now(margin),
         })
     }
 
-    /// Fija la página de referencia de la columna con la primera geometría
-    /// conocida del documento (llega con los renders del worker).
+    /// Tamaños por página para el layout: la caché si corresponde a esta
+    /// ventana y densidad; si no (resize aún sin refrescar), recalculados.
+    fn scroll_sizes_now(&self, margin: f32) -> Arc<[Option<(f32, f32)>]> {
+        if self.scroll_sizes_key == (self.win_w, self.win_h, self.density_dpi) {
+            return self.scroll_sizes.clone();
+        }
+        Arc::from(self.scroll_sizes_px(margin))
+    }
+
+    fn scroll_sizes_px(&self, margin: f32) -> Vec<Option<(f32, f32)>> {
+        self.scroll_geoms
+            .iter()
+            .map(|g| {
+                let b = g.as_ref()?.visible_bounds;
+                let (pw, ph) = (b.width(), b.height());
+                let fit = initial_scale_with_margin(pw, ph, self.win_w, self.win_h, margin);
+                (pw > 0.0 && ph > 0.0 && fit > 0.0).then_some((pw * fit, ph * fit))
+            })
+            .collect()
+    }
+
+    /// Recalcula la caché de tamaños (geometría nueva, resize).
+    pub(crate) fn scroll_refresh_sizes(&mut self) {
+        let margin = viewport_margin_px(self.density_dpi);
+        self.scroll_sizes = Arc::from(self.scroll_sizes_px(margin));
+        self.scroll_sizes_key = (self.win_w, self.win_h, self.density_dpi);
+    }
+
+    /// Documento nuevo: olvida las geometrías de la columna.
+    pub(crate) fn scroll_reset_geometry(&mut self) {
+        self.scroll_geoms.clear();
+        self.scroll_refresh_sizes();
+    }
+
+    /// Geometría conocida de `page` (la de la columna, o la caché corta).
+    fn scroll_geometry(&self, page: u32) -> Option<pdf_core::engine::PageGeometry> {
+        self.scroll_geoms
+            .get(page as usize)
+            .copied()
+            .flatten()
+            .or_else(|| self.page_geometry_cache.get(page))
+    }
+
+    /// Registra la geometría de `page` (llega con los renders del worker):
+    /// la primera conocida fija la página de referencia (provisional de las
+    /// demás) y cada una da a su hoja su propia ranura (PR-04). Si la
+    /// columna cambia de forma, la hoja actual queda ANCLADA en pantalla
+    /// (`reanchor_offset`): lo que estaba a la vista no salta.
     pub(crate) fn scroll_note_geometry(&mut self, page: u32) {
-        if self.scroll_ref_pts.is_none()
-            && let Some(g) = self.page_geometry_cache.get(page)
+        let Some(g) = self.page_geometry_cache.get(page) else {
+            return;
+        };
+        let b = g.visible_bounds;
+        if b.width() <= 0.0 || b.height() <= 0.0 {
+            return;
+        }
+        if self.scroll_ref_pts.is_none() {
+            self.scroll_ref_pts = Some((b.width(), b.height()));
+        }
+        let pages = self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0) as usize;
+        if (page as usize) >= pages {
+            return;
+        }
+        if self.scroll_geoms.len() != pages {
+            self.scroll_geoms.resize(pages, None);
+        }
+        let known = self.scroll_geoms[page as usize];
+        self.scroll_geoms[page as usize] = Some(g);
+        if known.is_some_and(|k| k.visible_bounds == b) {
+            return; // mismo tamaño: la columna no cambia
+        }
+        let old = self.scroll_layout();
+        self.scroll_refresh_sizes();
+        if let (Some(old), Some(new)) = (old, self.scroll_layout())
+            && old != new
         {
-            let b = g.visible_bounds;
-            if b.width() > 0.0 && b.height() > 0.0 {
-                self.scroll_ref_pts = Some((b.width(), b.height()));
+            let off0 = old.offset_for_pos(self.scroll_pos);
+            let off1 = reanchor_offset(&old, &new, off0, self.page);
+            self.scroll_pos = new.pos_for_offset(off1);
+            self.gesture.shift_pan_origin(off1 - off0);
+            self.mark_repaint();
+            if let Some(g) = self.gpu.as_mut() {
+                g.invalidate_dry();
             }
         }
     }
@@ -385,8 +542,8 @@ impl Reader {
     /// no tiene geometría conocida o no hay layout).
     pub(crate) fn scroll_page_transform(&self, page: u32) -> Option<PageScreenTransform> {
         let layout = self.scroll_layout()?;
-        let geometry = self.page_geometry_cache.get(page)?;
-        let size0 = self.page_doc_size_px(page);
+        let geometry = self.scroll_geometry(page)?;
+        let size0 = layout.size0(page);
         if size0.0 <= 0.0 || size0.1 <= 0.0 {
             return None;
         }
@@ -517,7 +674,7 @@ impl Reader {
         let Some(entry) = self.cache.peek(page) else {
             return true;
         };
-        let Some(g) = self.page_geometry_cache.get(page) else {
+        let Some(g) = self.scroll_geometry(page) else {
             return false; // sin geometría no se puede medir: no insistir
         };
         let (pw, ph) = (g.visible_bounds.width(), g.visible_bounds.height());
@@ -915,7 +1072,7 @@ mod tests {
         let (a, b) = (mixed(1.0), mixed(2.0));
         // y=1000 con la apaisada arriba: 140 px dentro de la hoja 2.
         let (off, _) = anchor_zoom(&a, &b, (600.0, 1000.0), 1660.0, 0.0);
-        assert!(close(off, 3300.0 + 1700.0 + 280.0 + 20.0 - 1000.0), "{off}");
+        assert!(close(off, 3300.0 + 1660.0 + 280.0 + 20.0 - 1000.0), "{off}");
     }
 
     #[test]

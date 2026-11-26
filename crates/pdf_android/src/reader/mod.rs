@@ -505,6 +505,15 @@ pub(crate) struct Reader {
     /// la columna del modo Scroll (ranura uniforme); None hasta conocer la
     /// geometría de alguna página del documento (llega con el worker).
     pub(crate) scroll_ref_pts: Option<(f32, f32)>,
+    /// Geometría conocida de cada página del documento (PR-04): da a cada
+    /// hoja de la columna su propia ranura. No se expulsa como la
+    /// `page_geometry_cache` (5 entradas): la columna necesita TODAS.
+    pub(crate) scroll_geoms: Vec<Option<pdf_core::engine::PageGeometry>>,
+    /// Tamaños (px a zoom 1, contain) derivados de `scroll_geoms` para la
+    /// ventana y densidad de `scroll_sizes_key` (caché: el layout se pide
+    /// varias veces por frame).
+    pub(crate) scroll_sizes: std::sync::Arc<[Option<(f32, f32)>]>,
+    pub(crate) scroll_sizes_key: (i32, i32, u32),
     /// Desplazamiento del bitmap de la LISTA dentro del buffer (picker;
     /// 0 por ahora — `pub(crate)` por el present GPU del picker).
     pub(crate) offset_x: i32,
