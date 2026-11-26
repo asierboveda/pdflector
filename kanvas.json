@@ -62,7 +62,7 @@
     {
       "id": "UI-02",
       "title": "Merge Astryx redesign to main & prune git/PR noise",
-      "state": "review",
+      "state": "done",
       "group": "UI",
       "deps": ["UI-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -93,6 +93,11 @@
           "at": "2026-11-26T18:06:30Z",
           "by": "claude-code",
           "text": "main now has the Astryx redesign and all of today's work, and the Dependabot backlog is cleared.\n- main fast-forwarded (no merge commit, no conflicts) to include feat/frontend-redesign-astryx + every accepted card; CI green before each move (runs 215, 221)\n- Dependabot: #41, #42, #44, #54, #57 closed as already applied on main; #58 setup-java v6 and #59 gradle/actions v6 applied and closed. Each PR has a comment saying why.\n- Left for you: the stale `actualizar` worktree is on your computer, not in this checkout (`git worktree list`, then `git worktree remove <path>`). PR #55 stays open for IN-01. feat/pdflector-v2 (2 commits, its own board) was not touched."
+        },
+        {
+          "at": "2026-11-26T18:24:25Z",
+          "by": "human",
+          "text": "Accepted in chat (\"done UI02\"). (relayed from chat by the agent)"
         }
       ],
       "started": {
