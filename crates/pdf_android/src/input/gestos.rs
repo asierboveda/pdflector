@@ -260,6 +260,8 @@ fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                 "← Library" => reader.enter_library(app),
                 "Search" => reader.enter_library_search(app),
                 "Close" => reader.hide_sheet(),
+                "Mode:Tap" => reader.set_reading_mode(ReadingMode::Tap),
+                "Mode:Scroll" => reader.set_reading_mode(ReadingMode::Scroll),
                 "-10" => reader.jump_page(-10),
                 "+10" => reader.jump_page(10),
                 _ => reader.next_page(), // "N / total"

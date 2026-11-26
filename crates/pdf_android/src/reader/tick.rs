@@ -66,7 +66,11 @@ impl Reader {
         // esperar a soltar. Con el actor persistente el lote en vuelo no
         // bloquea (preemption por seq); `render_in_flight_for` evita
         // duplicar el render al mismo nivel.
-        if let Some(t) = self.last_pinch_move
+        if self.is_scroll_mode() && self.mode == UiMode::Viewer {
+            // Modo continuo: el lote siguiente (visibles que faltan o a
+            // otro zoom) en cuanto el worker queda libre.
+            self.scroll_ensure_rendered();
+        } else if let Some(t) = self.last_pinch_move
             && t.elapsed() >= Duration::from_millis(350)
             && (self.rendered_zoom - self.zoom).abs() / self.zoom.max(1e-4) > 0.05
             && !self.render_in_flight_for(self.zoom)

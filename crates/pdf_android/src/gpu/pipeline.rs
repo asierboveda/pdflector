@@ -191,7 +191,7 @@ impl Gpu {
         }
         self.draw_tex_quad(tex, b, x, y, alpha);
     }
-    fn draw_solid_quad(&mut self, l: f32, t: f32, r: f32, b: f32, rgba: [u8; 4]) {
+    pub(super) fn draw_solid_quad(&mut self, l: f32, t: f32, r: f32, b: f32, rgba: [u8; 4]) {
         if !l.is_finite() || !t.is_finite() || !r.is_finite() || !b.is_finite() {
             return;
         }
@@ -324,7 +324,7 @@ impl Gpu {
     }
     /// Trazo como TRIANGLE_STRIP: genera vértices directamente sobre `self.ink_scratch`
     /// para cero alocaciones en heap en el hot path.
-    fn draw_polyline_gpu(&mut self, pts: &[(f32, f32)], hw: f32, rgba: [u8; 4]) {
+    pub(super) fn draw_polyline_gpu(&mut self, pts: &[(f32, f32)], hw: f32, rgba: [u8; 4]) {
         if !hw.is_finite() || hw <= 0.0 {
             return;
         }
@@ -570,6 +570,11 @@ impl Gpu {
     /// goma) NO viven aquí: se dibujan por frame en `present_viewer` directos
     /// a fb0 (Fase 2).
     fn render_dry(&mut self, reader: &Reader) -> bool {
+        // Modo continuo (PR-01): la columna de hojas (`gpu/scroll.rs`).
+        if reader.scroll_layout().is_some() {
+            return self.render_dry_scroll(reader);
+        }
+        self.free_page_slots();
         if self.dry_fbo == 0 || self.dry_tex == 0 {
             return false;
         }
@@ -927,7 +932,7 @@ impl Gpu {
             page: reader.page,
             zoom_bits: reader.zoom.to_bits(),
             pan_x: reader.pan_x.round() as i32,
-            pan_y: reader.pan_y.round() as i32,
+            pan_y: reader.dry_pan_y(),
             ann_count: anns_count,
             dark: reader.dark,
         };

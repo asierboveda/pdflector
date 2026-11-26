@@ -222,7 +222,10 @@ impl Reader {
                         .filter(|&p| self.cache.peek(p).is_none())
                         .collect::<Vec<u32>>()
                 };
-                if !needs.is_empty() && self.render_rx.is_none() {
+                if self.is_scroll_mode() {
+                    // Modo continuo: visibles + vecinas (`render_plan`).
+                    self.scroll_ensure_rendered();
+                } else if !needs.is_empty() && self.render_rx.is_none() {
                     self.launch_render(needs, self.rendered_zoom, false);
                 }
                 // Chrome del visor y sheet de ajustes
@@ -873,6 +876,9 @@ impl Reader {
                         continue; // lote obsoleto: descartar
                     }
                     self.cache_page_geometry(msg.page, msg.geometry);
+                    // Primera geometría del documento: referencia de la
+                    // columna del modo Scroll.
+                    self.scroll_note_geometry(msg.page);
                     // Guard (robustez del pase de página): un bitmap
                     // degenerado (0×0 o data vacía — dims degenerados del
                     // render) NUNCA entra en la caché: envenenaría la página
@@ -922,6 +928,12 @@ impl Reader {
                         // llegar el render real: misma página/zoom/anns/dark).
                         // Sin esta invalidación la página real no se mostraría
                         // nunca (quedaría el fallback hasta otra invalidación).
+                        if let Some(g) = self.gpu.as_mut() {
+                            g.invalidate_dry();
+                        }
+                    } else if self.scroll_visible_pages().contains(&msg.page) {
+                        // Modo continuo: otra hoja visible de la columna.
+                        self.mark_repaint();
                         if let Some(g) = self.gpu.as_mut() {
                             g.invalidate_dry();
                         }

@@ -7,8 +7,27 @@
 //! sigue a la hoja que más ocupa la pantalla.
 //!
 //! El modo es una preferencia POR DOCUMENTO (`persist::BookProgress`).
+//!
+//! Integración con el visor (`impl Reader` al final del módulo):
+//! - `page_screen_transform` devuelve en Scroll la transformación de cada
+//!   hoja en su rect de la columna, así selección, tinta, resaltado, goma y
+//!   Recorte siguen funcionando sobre la página actual (`self.page`), que
+//!   es la más visible — o la que el lápiz toca (`scroll_focus_page_at`).
+//! - `set_pan`/`begin_pan` (dedo, dos dedos, modo mano) mueven el offset
+//!   vertical y el pan X en vez del pan de UNA hoja.
+//! - El render reutiliza el worker y la `PageCache`: solo visibles +
+//!   vecinas (`render_plan`), un lote a la vez, re-render al cambiar el zoom.
 
+use log::info;
 use serde::{Deserialize, Serialize};
+
+use super::Reader;
+use super::geometry::PageScreenTransform;
+use super::redraw::budget_render_scale;
+use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES};
+use crate::view::{initial_scale_with_margin, viewport_margin_px};
+use pdf_core::Document;
+use std::time::Duration;
 
 /// Modo de lectura del visor (por documento, persistido en `library.json`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +315,302 @@ pub(crate) fn render_plan(
     (pages, zoom)
 }
 
+/// Quietud del pinch (ms) a partir de la cual se re-renderiza al zoom
+/// actual con los dedos aún en pantalla (mismo criterio que el debounce
+/// del modo Tap en `tick`).
+const SCROLL_PINCH_SETTLE: Duration = Duration::from_millis(350);
+
+impl Reader {
+    /// ¿Documento abierto en modo continuo?
+    pub(crate) fn is_scroll_mode(&self) -> bool {
+        self.reading_mode == ReadingMode::Scroll
+    }
+
+    /// Layout de la columna al zoom actual. None fuera del modo Scroll, sin
+    /// documento o mientras no se conoce la página de referencia (entonces
+    /// el visor se comporta como en Tap con la página actual).
+    pub(crate) fn scroll_layout(&self) -> Option<ScrollLayout> {
+        self.scroll_layout_at(self.zoom)
+    }
+
+    fn scroll_layout_at(&self, zoom: f32) -> Option<ScrollLayout> {
+        if !self.is_scroll_mode() || self.win_w <= 0 || self.win_h <= 0 {
+            return None;
+        }
+        let pages = self.doc.as_ref()?.page_count();
+        let (pw, ph) = self.scroll_ref_pts?;
+        let margin = viewport_margin_px(self.density_dpi);
+        let fit = initial_scale_with_margin(pw, ph, self.win_w, self.win_h, margin);
+        Some(ScrollLayout {
+            win_w: self.win_w as f32,
+            win_h: self.win_h as f32,
+            margin,
+            gap: margin,
+            ref_w: pw * fit,
+            ref_h: ph * fit,
+            zoom,
+            pages,
+        })
+    }
+
+    /// Fija la página de referencia de la columna con la primera geometría
+    /// conocida del documento (llega con los renders del worker).
+    pub(crate) fn scroll_note_geometry(&mut self, page: u32) {
+        if self.scroll_ref_pts.is_none()
+            && let Some(g) = self.page_geometry_cache.get(page)
+        {
+            let b = g.visible_bounds;
+            if b.width() > 0.0 && b.height() > 0.0 {
+                self.scroll_ref_pts = Some((b.width(), b.height()));
+            }
+        }
+    }
+
+    /// Transformación de `page` en su rect de la columna (None si la hoja
+    /// no tiene geometría conocida o no hay layout).
+    pub(crate) fn scroll_page_transform(&self, page: u32) -> Option<PageScreenTransform> {
+        let layout = self.scroll_layout()?;
+        let geometry = self.page_geometry_cache.get(page)?;
+        let size0 = self.page_doc_size_px(page);
+        if size0.0 <= 0.0 || size0.1 <= 0.0 {
+            return None;
+        }
+        let off = layout.offset_for_pos(self.scroll_pos);
+        PageScreenTransform::from_screen_rect(
+            geometry,
+            layout.page_rect(page, size0, off, self.pan_x),
+        )
+    }
+
+    /// Páginas de la columna que cruzan la ventana (vacío fuera de Scroll).
+    pub(crate) fn scroll_visible_pages(&self) -> Vec<u32> {
+        self.scroll_layout()
+            .and_then(|l| l.visible_pages(l.offset_for_pos(self.scroll_pos)))
+            .map(|(a, b)| (a..=b).collect())
+            .unwrap_or_default()
+    }
+
+    /// Componente vertical de la `DryKey`: en Scroll el offset de la
+    /// columna (cada frame de desplazamiento re-hornea la dry), en Tap el
+    /// pan de la hoja.
+    pub(crate) fn dry_pan_y(&self) -> i32 {
+        match self.scroll_layout() {
+            Some(l) => -(l.offset_for_pos(self.scroll_pos).round() as i32),
+            None => self.pan_y.round() as i32,
+        }
+    }
+
+    /// Pan de partida de un arrastre en Scroll: (pan X, −offset), mismo
+    /// convenio que `set_pan` (el contenido sigue al dedo: arrastrar hacia
+    /// abajo reduce el offset y deja ver lo de arriba).
+    pub(crate) fn scroll_begin_pan(&self) -> (f32, f32) {
+        let off = self
+            .scroll_layout()
+            .map(|l| l.offset_for_pos(self.scroll_pos))
+            .unwrap_or(0.0);
+        (self.pan_x, -off)
+    }
+
+    /// `set_pan` del modo Scroll: `x` es el pan horizontal y `y = −offset`.
+    pub(crate) fn scroll_set_pan(&mut self, x: f32, y: f32) {
+        let Some(layout) = self.scroll_layout() else {
+            return;
+        };
+        self.pan_x = layout.clamp_pan_x(x);
+        let off = layout.clamp_offset(-y);
+        self.scroll_pos = layout.pos_for_offset(off);
+        self.scroll_moved(&layout, off);
+    }
+
+    /// Salto a `page` en Scroll (badge, ±10, "N / total"): la hoja queda
+    /// arriba (o lo más arriba que permita el final del documento).
+    pub(crate) fn scroll_to_page(&mut self, page: u32) {
+        match self.scroll_layout() {
+            Some(layout) => {
+                let off = layout.offset_for_pos(page as f32);
+                self.scroll_pos = layout.pos_for_offset(off);
+                self.scroll_moved(&layout, off);
+            }
+            None => {
+                self.scroll_pos = page as f32;
+                self.page = page;
+                self.cache.set_protected(page);
+                self.page_badge = None;
+                self.sheet_bitmap = None;
+                self.mark_state_dirty();
+                self.scroll_ensure_rendered();
+                self.mark_repaint();
+            }
+        }
+    }
+
+    /// Tras mover la columna: la página actual sigue a la más visible, se
+    /// piden las hojas que faltan y se marca la posición para persistir.
+    fn scroll_moved(&mut self, layout: &ScrollLayout, off: f32) {
+        let cur = layout.current_page(off);
+        if cur != self.page {
+            self.page = cur;
+            self.cache.set_protected(cur);
+            self.page_badge = None; // el indicador "N / total" cambia
+            self.sheet_bitmap = None;
+        }
+        self.mark_state_dirty();
+        self.scroll_ensure_rendered();
+        self.mark_repaint();
+    }
+
+    /// El lápiz o el long-press actúan sobre la hoja que TOCAN: si `y` cae
+    /// en otra página visible de la columna, esa pasa a ser la actual (sin
+    /// mover la vista) para que la tinta, el resaltado o la selección usen
+    /// su transformación.
+    pub(crate) fn scroll_focus_page_at(&mut self, y: f32) {
+        let Some(layout) = self.scroll_layout() else {
+            return;
+        };
+        let off = layout.offset_for_pos(self.scroll_pos);
+        if let Some(p) = layout.page_at_y(y, off)
+            && p != self.page
+        {
+            self.page = p;
+            self.cache.set_protected(p);
+            self.page_badge = None;
+            self.sheet_bitmap = None;
+        }
+    }
+
+    /// Zoom del modo Scroll anclado en `anchor` (px de ventana): conserva el
+    /// punto de documento bajo los dedos (`anchor_zoom`).
+    pub(super) fn scroll_apply_zoom(&mut self, zoom: f32, anchor: (f32, f32)) {
+        let (Some(from), Some(to)) = (
+            self.scroll_layout_at(self.zoom),
+            self.scroll_layout_at(zoom),
+        ) else {
+            self.zoom = zoom;
+            return;
+        };
+        let off0 = from.offset_for_pos(self.scroll_pos);
+        let (off1, pan1) = anchor_zoom(&from, &to, anchor, off0, self.pan_x);
+        self.zoom = zoom;
+        self.pan_x = pan1;
+        self.scroll_pos = to.pos_for_offset(off1);
+        self.scroll_moved(&to, off1);
+    }
+
+    /// ¿Hay que (re)renderizar `page` al zoom de render `z`? Sí si no está
+    /// en caché o si su bitmap quedó a otra escala (zoom anterior).
+    fn scroll_needs_render(&self, page: u32, z: f32) -> bool {
+        let Some(entry) = self.cache.peek(page) else {
+            return true;
+        };
+        let Some(g) = self.page_geometry_cache.get(page) else {
+            return false; // sin geometría no se puede medir: no insistir
+        };
+        let (pw, ph) = (g.visible_bounds.width(), g.visible_bounds.height());
+        let margin = viewport_margin_px(self.density_dpi);
+        let fit = initial_scale_with_margin(pw, ph, self.win_w, self.win_h, margin);
+        if fit <= 0.0 || pw <= 0.0 {
+            return false;
+        }
+        let entry_zoom = entry.full_w as f32 / (pw * fit);
+        let expected = budget_render_scale(fit, z, pw, ph) / fit;
+        entry_is_stale(entry_zoom, expected)
+    }
+
+    /// Pide al worker las hojas visibles (+ vecinas) que faltan o están a
+    /// otro zoom. Un lote a la vez (no se preempta el que está en vuelo) y
+    /// nada durante un pinch en movimiento.
+    pub(crate) fn scroll_ensure_rendered(&mut self) {
+        if self.render_rx.is_some() {
+            return;
+        }
+        self.scroll_launch_needed();
+    }
+
+    fn scroll_launch_needed(&mut self) {
+        if !self.is_scroll_mode() || self.doc.is_none() {
+            return;
+        }
+        if self
+            .last_pinch_move
+            .is_some_and(|t| t.elapsed() < SCROLL_PINCH_SETTLE)
+        {
+            return;
+        }
+        let Some(layout) = self.scroll_layout() else {
+            // Sin página de referencia: basta la actual (trae su geometría).
+            if self.cache.peek(self.page).is_none() {
+                self.launch_render(vec![self.page], self.zoom, false);
+            }
+            return;
+        };
+        let off = layout.offset_for_pos(self.scroll_pos);
+        let (plan, z) = render_plan(
+            &layout,
+            off,
+            self.page,
+            CACHE_BYTE_BUDGET,
+            CACHE_MAX_ENTRIES,
+        );
+        let needs: Vec<u32> = plan
+            .into_iter()
+            .filter(|&p| self.scroll_needs_render(p, z))
+            .collect();
+        if !needs.is_empty() {
+            self.launch_render(needs, z, false);
+        }
+    }
+
+    /// Fin del pinch en Scroll: render nítido de las visibles al zoom final
+    /// (preempta el lote en vuelo, como el sharp del modo Tap).
+    pub(super) fn scroll_zoom_settled(&mut self) {
+        self.scroll_launch_needed();
+        info!("zoom {:.3} (scroll)", self.zoom);
+        self.save_state();
+        self.mark_repaint();
+    }
+
+    /// Posición continua de apertura de `page`: la fina guardada en
+    /// `library.json` si el registro apunta a esa misma página.
+    pub(crate) fn resume_scroll_at(&mut self, page: u32) {
+        let path = self.doc_path.clone().unwrap_or_default();
+        let (mode, frac) = crate::persist::reading_view_for(&self.library.lib_books, &path);
+        let same_page = crate::persist::progress_for(&self.library.lib_books, &path)
+            .is_some_and(|b| b.page == page);
+        self.reading_mode = mode;
+        self.scroll_pos = resume_scroll_pos(page, if same_page { frac } else { 0.0 });
+    }
+
+    /// Cambia el modo de lectura del documento abierto (sheet). La posición
+    /// se conserva: Tap → Scroll deja la hoja actual arriba; Scroll → Tap
+    /// muestra la hoja más visible. Persiste en el acto.
+    pub(crate) fn set_reading_mode(&mut self, mode: ReadingMode) {
+        if self.reading_mode == mode {
+            return;
+        }
+        self.reading_mode = mode;
+        self.scroll_pos = self.page as f32;
+        self.pan_x = 0.0;
+        self.pan_y = 0.0;
+        self.pinch = None;
+        self.fallback_page = None;
+        self.scroll_note_geometry(self.page);
+        if let Some(layout) = self.scroll_layout() {
+            let off = layout.offset_for_pos(self.scroll_pos);
+            self.scroll_pos = layout.pos_for_offset(off);
+            self.page = layout.current_page(off);
+        }
+        self.cache.set_protected(self.page);
+        self.page_badge = None;
+        self.sheet_bitmap = None;
+        if let Some(g) = self.gpu.as_mut() {
+            g.invalidate_dry();
+        }
+        info!("reading mode {:?}", mode);
+        self.save_state();
+        self.redraw();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,7 +799,7 @@ mod tests {
         let off = 3300.0 - 1000.0; // borde entre las páginas 0 y 1
         let (pages, rz) = render_plan(&z, off, 0, 48 * MIB, 5);
         assert_eq!(pages, vec![0, 1]);
-        assert!(rz < 2.0 && rz >= 1.0);
+        assert!((1.0..2.0).contains(&rz));
         let bytes = 1160.0 * 1640.0 * rz * rz * 4.0 * 2.0;
         assert!(bytes <= (48 * MIB) as f32);
         // Una sola visible a zoom 2: cabe tal cual.

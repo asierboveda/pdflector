@@ -237,6 +237,10 @@ impl Reader {
     }
 
     pub(crate) fn page_screen_transform(&self, page: u32) -> Option<PageScreenTransform> {
+        // Modo continuo con columna: cada hoja en su rect (PR-01).
+        if self.scroll_layout().is_some() {
+            return self.scroll_page_transform(page);
+        }
         self.page_screen_transform_at(page, self.zoom, self.pan_x, self.pan_y)
     }
 
