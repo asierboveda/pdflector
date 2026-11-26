@@ -202,6 +202,48 @@ fn export_markdown_to_file_writes_utf8_markdown() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// La exportación usa escritura atómica (`write_atomic`): reemplaza por
+/// `rename` (un hard link al fichero previo conserva el contenido viejo) y
+/// no deja temporales junto al destino.
+#[cfg(unix)]
+#[test]
+fn export_markdown_to_file_replaces_atomically() {
+    let dir = std::env::temp_dir().join(format!("pdflector_export_atomic_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("notas.md");
+    let link = dir.join("old-link");
+    std::fs::write(&path, "anterior").expect("seed");
+    std::fs::hard_link(&path, &link).expect("hard link");
+
+    let mut set = AnnotationSet::new();
+    set.add(
+        0,
+        Annotation::TextNote(TextNote {
+            anchor: (0.0, 0.0),
+            text: "Nota.".to_string(),
+        }),
+    );
+    export_markdown_to_file(&path, &FakeDoc, &set).expect("write to file");
+
+    assert!(
+        std::fs::read_to_string(&path)
+            .expect("read")
+            .contains("> Nota.")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&link).expect("read link"),
+        "anterior"
+    );
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read_dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["notas.md", "old-link"], "sin temporales");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // PDF export: round-trip through real MuPDF (standard annotations)
 // ---------------------------------------------------------------------------
