@@ -48,6 +48,7 @@ mod gpu;
 pub mod ink;
 mod input;
 mod jni;
+mod notebook;
 mod persist;
 mod reader;
 mod thumbs;
