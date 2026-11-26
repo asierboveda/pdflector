@@ -382,7 +382,7 @@
     {
       "id": "TD-03",
       "title": "Fix 2 flaky folder_sync timing tests (CI fails at random)",
-      "state": "doing",
+      "state": "review",
       "group": "TD",
       "deps": ["TD-01"],
       "at": "2026-11-26T16:01:13Z",
@@ -408,6 +408,11 @@
           "at": "2026-11-26T16:49:02Z",
           "by": "claude-code",
           "text": "Plan: an agent rewrites the 2 folder_sync timing tests test-first (first prove the flake reproducibly under load, then remove the wall-clock dependency while keeping what they check); also check whether CO-01's fsync slowed the export path. Orchestrator reviews and merges."
+        },
+        {
+          "at": "2026-11-26T17:03:47Z",
+          "by": "claude-code",
+          "text": "The two folder_sync tests that made CI fail at random now check the order of events instead of elapsed time, so a slow machine can't break them.\n- Root cause: the code never waited on the export debounce or backoff. The 600 ms / 1 s limits were really measuring how fast the machine saves (each save does 2 fsynced journal writes + SQLite).\n- TDD verified by the orchestrator: a test-only \"slow machine\" switch (1.5 s per save) makes both old tests fail every time (2 failures); after the rewrite they pass with it on. Debounce/backoff are set to 1 hour in these tests, so a save that waited on them would time out. The agent broke the code on purpose both ways and each test caught it.\n- 30 loaded runs (8 parallel, CPUs saturated): 30/30 pass. Production timings unchanged (700 ms debounce, 5 s retry).\n- Finding, not changed (your design call): exports and local saves share one worker thread. A save that arrives during a running export waits for that one export to finish, which can be noticeable for a large PDF.\n- Not related: CO-01's fsync change is not on this path (only the desktop app uses that export).\n- Possible follow-up: another nearby test compares two clock readings (`> 4 s`); not seen flaky."
         }
       ],
       "started": {
