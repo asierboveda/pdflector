@@ -14,6 +14,22 @@
 
 use super::scroll::ScrollLayout;
 
+/// Ventana de muestras para la velocidad de suelta (ns): solo cuenta el
+/// último tramo del gesto (un dedo que se para antes de levantar no lanza).
+const VELOCITY_WINDOW_NS: i64 = 100_000_000;
+/// Muestras retenidas como máximo (Moves a 120-240 Hz en la ventana).
+const VELOCITY_MAX_SAMPLES: usize = 32;
+/// Velocidad mínima de suelta para deslizar (px/s).
+const FLING_MIN_V: f32 = 500.0;
+/// Tope de velocidad (px/s): un salto espurio de muestras no dispara la
+/// columna al otro extremo del documento.
+const FLING_MAX_V: f32 = 12_000.0;
+/// Velocidad por debajo de la cual la inercia termina (px/s).
+const FLING_STOP_V: f32 = 30.0;
+/// Constante de tiempo de la fricción (s): `v(t) = v0·e^(−t/τ)`; el
+/// recorrido total es `v0·τ` (8000 px/s → ~3600 px, casi dos pantallas).
+const FLING_TAU: f32 = 0.45;
+
 /// Muestras de velocidad del dedo (t en ns, y en px de pantalla).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct VelocityTracker {
@@ -27,11 +43,39 @@ impl VelocityTracker {
     }
 
     /// Registra la posición `y` del dedo en el instante `t_ns`.
-    pub(crate) fn push(&mut self, _t_ns: i64, _y: f32) {}
+    pub(crate) fn push(&mut self, t_ns: i64, y: f32) {
+        if !y.is_finite() {
+            return;
+        }
+        // Un reloj que retrocede (evento fuera de orden) reinicia la serie.
+        if self.samples.last().is_some_and(|&(t, _)| t > t_ns) {
+            self.samples.clear();
+        }
+        self.samples.push((t_ns, y));
+        self.samples
+            .retain(|&(t, _)| t_ns - t <= VELOCITY_WINDOW_NS);
+        if self.samples.len() > VELOCITY_MAX_SAMPLES {
+            let extra = self.samples.len() - VELOCITY_MAX_SAMPLES;
+            self.samples.drain(..extra);
+        }
+    }
 
-    /// Velocidad (px/s, + = dedo hacia abajo) en el instante `now_ns`.
-    pub(crate) fn velocity(&self, _now_ns: i64) -> f32 {
-        0.0
+    /// Velocidad (px/s, + = dedo hacia abajo) en el instante `now_ns`: la
+    /// pendiente entre la muestra más vieja y la más reciente de la
+    /// ventana que acaba en `now_ns` (0 con menos de dos muestras).
+    pub(crate) fn velocity(&self, now_ns: i64) -> f32 {
+        let mut recent = self
+            .samples
+            .iter()
+            .filter(|&&(t, _)| t <= now_ns && now_ns - t <= VELOCITY_WINDOW_NS);
+        let Some(&(t0, y0)) = recent.next() else {
+            return 0.0;
+        };
+        let Some(&(t1, y1)) = recent.next_back() else {
+            return 0.0;
+        };
+        let dt = (t1 - t0) as f32 / 1e9;
+        if dt <= 0.0 { 0.0 } else { (y1 - y0) / dt }
     }
 }
 
@@ -44,8 +88,13 @@ pub(crate) struct Fling {
 impl Fling {
     /// Inercia para una velocidad de suelta `v` (None si el arrastre fue
     /// lento: soltar despacio no desliza).
-    pub(crate) fn start(_v: f32) -> Option<Fling> {
-        None
+    pub(crate) fn start(v: f32) -> Option<Fling> {
+        if !v.is_finite() || v.abs() < FLING_MIN_V {
+            return None;
+        }
+        Some(Fling {
+            v: v.clamp(-FLING_MAX_V, FLING_MAX_V),
+        })
     }
 
     /// Velocidad actual (px/s).
@@ -55,12 +104,20 @@ impl Fling {
 
     /// ¿Sigue deslizando?
     pub(crate) fn active(&self) -> bool {
-        false
+        self.v.abs() >= FLING_STOP_V
     }
 
     /// Avanza `dt` segundos: devuelve el desplazamiento (px, eje del dedo).
-    pub(crate) fn step(&mut self, _dt: f32) -> f32 {
-        0.0
+    /// Integral EXACTA de la fricción exponencial en el intervalo, así un
+    /// frame de 100 ms recorre lo mismo que diez de 10 ms.
+    pub(crate) fn step(&mut self, dt: f32) -> f32 {
+        if !dt.is_finite() || dt <= 0.0 {
+            return 0.0;
+        }
+        let decay = (-dt / FLING_TAU).exp();
+        let d = self.v * FLING_TAU * (1.0 - decay);
+        self.v *= decay;
+        d
     }
 }
 
@@ -73,7 +130,10 @@ pub(crate) struct ScrollFling {
 
 impl ScrollFling {
     /// Un dedo toca la pantalla: la inercia se detiene en seco.
-    pub(crate) fn touch_down(&mut self) {}
+    pub(crate) fn touch_down(&mut self) {
+        self.fling = None;
+        self.tracker.reset();
+    }
 
     /// Muestra de un arrastre de un dedo en curso.
     pub(crate) fn track(&mut self, t_ns: i64, y: f32) {
@@ -81,8 +141,12 @@ impl ScrollFling {
     }
 
     /// Fin del arrastre: lanza la inercia si la suelta fue rápida.
-    pub(crate) fn release(&mut self, _t_ns: i64, _y: f32) -> bool {
-        false
+    pub(crate) fn release(&mut self, t_ns: i64, y: f32) -> bool {
+        self.tracker.push(t_ns, y);
+        let v = self.tracker.velocity(t_ns);
+        self.tracker.reset();
+        self.fling = Fling::start(v);
+        self.fling.is_some()
     }
 
     /// Detiene la inercia (salto de página, zoom, cambio de modo...).
@@ -98,8 +162,15 @@ impl ScrollFling {
     /// Frame de inercia de `dt` s con la columna `layout` en `off`:
     /// devuelve el offset nuevo (clampado), o None si no hay inercia. Al
     /// llegar a un extremo del documento la inercia termina allí.
-    pub(crate) fn frame(&mut self, _layout: &ScrollLayout, _off: f32, _dt: f32) -> Option<f32> {
-        None
+    pub(crate) fn frame(&mut self, layout: &ScrollLayout, off: f32, dt: f32) -> Option<f32> {
+        let fling = self.fling.as_mut()?;
+        // El contenido sigue al dedo: dedo hacia abajo = offset menor.
+        let target = off - fling.step(dt);
+        let next = layout.clamp_offset(target);
+        if (next - target).abs() > 1e-3 || !fling.active() {
+            self.fling = None; // extremo del documento o fricción agotada
+        }
+        Some(next)
     }
 }
 
