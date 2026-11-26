@@ -192,6 +192,7 @@ impl Reader {
             last_stylus_time: None,
             render_rx: None,
             render_seq: 0,
+            render_failures: Default::default(),
             inflight_target: None,
             render_worker: None,
             last_pinch_move: None,

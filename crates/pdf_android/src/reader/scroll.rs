@@ -200,6 +200,12 @@ impl ScrollLayout {
         (l, t, l + w, t + h)
     }
 
+    /// Rect en pantalla de la RANURA de `page` (su tamaño de columna):
+    /// donde se pinta el marcador de una hoja sin bitmap.
+    pub(crate) fn slot_rect(&self, page: u32, off: f32, pan_x: f32) -> (f32, f32, f32, f32) {
+        self.page_rect(page, self.size0(page), off, pan_x)
+    }
+
     /// Rango (primera, última) de páginas cuya ranura cruza la ventana.
     pub(crate) fn visible_pages(&self, off: f32) -> Option<(u32, u32)> {
         if self.pages == 0 {
@@ -554,6 +560,14 @@ impl Reader {
         )
     }
 
+    /// Rect en pantalla de la ranura de `page` (marcador de una hoja sin
+    /// bitmap: error de render).
+    pub(crate) fn scroll_slot_rect(&self, page: u32) -> Option<(f32, f32, f32, f32)> {
+        let layout = self.scroll_layout()?;
+        let off = layout.offset_for_pos(self.scroll_pos);
+        Some(layout.slot_rect(page, off, self.pan_x))
+    }
+
     /// Páginas de la columna que cruzan la ventana (vacío fuera de Scroll).
     pub(crate) fn scroll_visible_pages(&self) -> Vec<u32> {
         self.scroll_layout()
@@ -759,9 +773,12 @@ impl Reader {
         {
             return;
         }
+        let now = Instant::now();
         let Some(layout) = self.scroll_layout() else {
             // Sin página de referencia: basta la actual (trae su geometría).
-            if self.cache.peek(self.page).is_none() {
+            if self.cache.peek(self.page).is_none()
+                && self.render_failures.can_request(self.page, now)
+            {
                 self.launch_render(vec![self.page], self.zoom, false);
             }
             return;
@@ -774,7 +791,10 @@ impl Reader {
             CACHE_BYTE_BUDGET,
             CACHE_MAX_ENTRIES,
         );
-        let needs: Vec<u32> = plan
+        // Las hojas que fallaron esperan su turno de reintento (PR-04).
+        let needs: Vec<u32> = self
+            .render_failures
+            .requestable(plan, now)
             .into_iter()
             .filter(|&p| self.scroll_needs_render(p, z))
             .collect();

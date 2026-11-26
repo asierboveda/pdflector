@@ -67,7 +67,8 @@ mod tools;
 // Tipos del worker de render y del anclaje del pinch: campos del `struct Reader`.
 use geometry::PageGeometryCache;
 use pinch::PinchAnchor;
-use redraw::{RenderWorker, WorkerMsg};
+use redraw::{RenderWorker, WorkerReply};
+pub(crate) use render_failures::{SlotDraw, slot_draw};
 pub(crate) use scroll::ReadingMode;
 
 // API geométrica compartida del crate (paths `crate::reader::*` que consumen
@@ -858,8 +859,11 @@ pub(crate) struct Reader {
     /// el hilo UI): worker con su PROPIO documento (MuPDF no es Send — patrón
     /// de `prefetch.rs`). Cada lote lleva un `render_seq`; al recibir, si el
     /// seq no es el actual (el usuario hizo otro zoom/página), se descarta.
-    render_rx: Option<std::sync::mpsc::Receiver<WorkerMsg>>,
+    render_rx: Option<std::sync::mpsc::Receiver<WorkerReply>>,
     render_seq: u64,
+    /// Hojas cuyo render falló (PR-04): espera antes de reintentarlas y
+    /// marcador de error en su ranura de la columna.
+    pub(crate) render_failures: render_failures::RenderFailures,
     /// Zoom objetivo del último lote lanzado al worker (`launch_render`): lo
     /// usa `render_in_flight_for` para no duplicar renders del mismo nivel
     /// (el `rendered_zoom` aún es el del lote ANTERIOR hasta que aterriza el
