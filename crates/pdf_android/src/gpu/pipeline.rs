@@ -927,7 +927,15 @@ impl Gpu {
 
         // 1. Comprobar si la capa Dry (base persistente) está sucia
         // `count_for_page` (A2): O(1) sin el Vec intermedio de `for_page`.
-        let anns_count = reader.annotations.count_for_page(reader.page as usize);
+        // Firma de TODAS las hojas que hornea la dry (PR-04): en Scroll un
+        // cambio en cualquier hoja visible la invalida, no solo en la actual.
+        let drawn = if reader.scroll_layout().is_some() {
+            reader.scroll_visible_pages()
+        } else {
+            vec![reader.page]
+        };
+        let anns_count =
+            super::dry_key::ann_key(&drawn, |p| reader.annotations.count_for_page(p as usize));
         let key = DryKey {
             page: reader.page,
             zoom_bits: reader.zoom.to_bits(),

@@ -207,7 +207,8 @@ impl Reader {
     }
 
     /// Tras deshacer/rehacer: recompone la capa Dry, guarda el sidecar,
-    /// refresca la barra y lleva la vista a la página afectada si es otra.
+    /// refresca la barra y lleva la vista a la página afectada si no está
+    /// ya a la vista (`history_jump`).
     fn after_history_step(&mut self, page: Option<usize>) {
         self.invalidate_toolbar();
         let Some(page) = page else {
@@ -217,8 +218,11 @@ impl Reader {
             gpu.invalidate_dry();
         }
         self.save_annotations();
-        if page as u32 != self.page {
-            self.jump_page(page as i32 - self.page as i32);
+        // Modo Scroll: si la hoja afectada ya se ve, el cambio aparece en su
+        // sitio (la dry hornea todas las visibles) sin mover la columna.
+        let visible = self.scroll_visible_pages();
+        if let Some(target) = history_jump(page as u32, self.page, &visible) {
+            self.jump_page(target as i32 - self.page as i32);
         }
         self.mark_repaint();
     }
@@ -231,5 +235,31 @@ impl Reader {
         self.erase_edit = AnnotationEdit::default();
         self.close_toolbar_popover();
         self.invalidate_toolbar();
+    }
+}
+
+/// Hoja a la que debe llevarse la vista tras deshacer/rehacer sobre
+/// `affected` (None = quedarse): en Tap, cualquier otra hoja; en Scroll
+/// (`visible` = hojas a la vista de la columna) solo si la afectada no se
+/// ve ya — el cambio se muestra en su sitio sin mover la columna (PR-04).
+pub(crate) fn history_jump(affected: u32, current: u32, visible: &[u32]) -> Option<u32> {
+    (affected != current && !visible.contains(&affected)).then_some(affected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::history_jump;
+
+    #[test]
+    fn undo_on_a_visible_page_does_not_move_the_column() {
+        // Scroll: hojas 4-6 a la vista, actual la 5.
+        assert_eq!(history_jump(6, 5, &[4, 5, 6]), None);
+        assert_eq!(history_jump(4, 5, &[4, 5, 6]), None);
+        assert_eq!(history_jump(5, 5, &[4, 5, 6]), None);
+        // Fuera de la vista: se salta a ella.
+        assert_eq!(history_jump(9, 5, &[4, 5, 6]), Some(9));
+        // Tap (sin columna): cualquier otra hoja.
+        assert_eq!(history_jump(6, 5, &[]), Some(6));
+        assert_eq!(history_jump(5, 5, &[]), None);
     }
 }
