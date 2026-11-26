@@ -233,3 +233,29 @@ impl Reader {
         self.invalidate_toolbar();
     }
 }
+
+/// Hoja a la que debe llevarse la vista tras deshacer/rehacer sobre
+/// `affected` (None = quedarse): en Tap, cualquier otra hoja; en Scroll
+/// (`visible` = hojas a la vista de la columna) solo si la afectada no se
+/// ve ya — el cambio se muestra en su sitio sin mover la columna (PR-04).
+pub(crate) fn history_jump(affected: u32, current: u32, _visible: &[u32]) -> Option<u32> {
+    (affected != current).then_some(affected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::history_jump;
+
+    #[test]
+    fn undo_on_a_visible_page_does_not_move_the_column() {
+        // Scroll: hojas 4-6 a la vista, actual la 5.
+        assert_eq!(history_jump(6, 5, &[4, 5, 6]), None);
+        assert_eq!(history_jump(4, 5, &[4, 5, 6]), None);
+        assert_eq!(history_jump(5, 5, &[4, 5, 6]), None);
+        // Fuera de la vista: se salta a ella.
+        assert_eq!(history_jump(9, 5, &[4, 5, 6]), Some(9));
+        // Tap (sin columna): cualquier otra hoja.
+        assert_eq!(history_jump(6, 5, &[]), Some(6));
+        assert_eq!(history_jump(5, 5, &[]), None);
+    }
+}

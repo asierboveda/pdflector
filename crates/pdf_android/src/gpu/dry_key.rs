@@ -25,9 +25,39 @@ impl DryKey {
     }
 }
 
+/// Firma de las anotaciones de las hojas que hornea la dry (`pages`: la
+/// actual en Tap, TODAS las visibles de la columna en Scroll — PR-04): un
+/// cambio en cualquiera de ellas invalida la dry, no solo en la actual.
+pub(crate) fn ann_key(pages: &[u32], count: impl Fn(u32) -> usize) -> usize {
+    pages.first().map_or(0, |&p| count(p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ann_key_changes_with_any_drawn_page() {
+        let counts = |c: [usize; 4]| move |p: u32| c[p as usize];
+        let visible = [1, 2, 3];
+        let k = ann_key(&visible, counts([0, 2, 5, 1]));
+        // Deshacer/borrar en una hoja visible que NO es la primera.
+        assert_ne!(k, ann_key(&visible, counts([0, 2, 4, 1])));
+        assert_ne!(k, ann_key(&visible, counts([0, 2, 5, 2])));
+        // Un trazo que pasa de una hoja visible a otra también cuenta.
+        assert_ne!(
+            ann_key(&visible, counts([0, 1, 0, 0])),
+            ann_key(&visible, counts([0, 0, 1, 0]))
+        );
+        // Hojas fuera de la vista no invalidan; la firma es determinista.
+        assert_eq!(k, ann_key(&visible, counts([9, 2, 5, 1])));
+        assert_eq!(k, ann_key(&visible, counts([0, 2, 5, 1])));
+        // Modo Tap (una hoja): sigue cambiando con su recuento.
+        assert_ne!(
+            ann_key(&[2], counts([0, 0, 5, 0])),
+            ann_key(&[2], counts([0, 0, 6, 0]))
+        );
+    }
 
     fn base() -> DryKey {
         DryKey {
