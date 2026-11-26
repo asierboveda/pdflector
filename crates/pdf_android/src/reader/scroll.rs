@@ -48,34 +48,50 @@ pub(crate) struct ScrollLayout {
 impl ScrollLayout {
     /// Alto de una ranura de página (px) al zoom actual.
     pub(crate) fn slot_h(&self) -> f32 {
-        0.0
+        (self.ref_h * self.zoom).max(1.0)
     }
 
     /// Distancia entre los bordes superiores de dos páginas consecutivas.
     pub(crate) fn pitch(&self) -> f32 {
-        1.0
+        self.slot_h() + self.gap
     }
 
     /// Alto total de la columna (márgenes incluidos).
     pub(crate) fn content_h(&self) -> f32 {
-        0.0
+        if self.pages == 0 {
+            return 0.0;
+        }
+        2.0 * self.margin + self.pages as f32 * self.pitch() - self.gap
     }
 
     /// Clampa `off` al rango válido; si la columna entera cabe en la
     /// ventana queda CENTRADA (offset negativo).
     pub(crate) fn clamp_offset(&self, off: f32) -> f32 {
-        off
+        let content = self.content_h();
+        if content <= self.win_h {
+            return -(self.win_h - content) / 2.0;
+        }
+        if off.is_finite() {
+            off.clamp(0.0, content - self.win_h)
+        } else {
+            0.0
+        }
     }
 
     /// Offset (clampado) de una posición continua `pos` en unidades de
     /// página (`3.25` = un cuarto de hoja por debajo del borde de la 4ª).
     pub(crate) fn offset_for_pos(&self, pos: f32) -> f32 {
-        pos
+        self.clamp_offset(pos * self.pitch())
     }
 
     /// Posición continua (unidades de página) de un offset.
     pub(crate) fn pos_for_offset(&self, off: f32) -> f32 {
-        off
+        off / self.pitch()
+    }
+
+    /// Borde superior (px de ventana) de la ranura de `page`.
+    fn slot_top(&self, page: u32, off: f32) -> f32 {
+        self.margin + page as f32 * self.pitch() - off
     }
 
     /// Rect en pantalla (l, t, r, b) de `page` cuyo tamaño a zoom 1 en
@@ -87,40 +103,95 @@ impl ScrollLayout {
         off: f32,
         pan_x: f32,
     ) -> (f32, f32, f32, f32) {
-        let _ = (page, size0, off, pan_x);
-        (0.0, 0.0, 0.0, 0.0)
+        let slot = self.slot_h();
+        let (mut w, mut h) = (size0.0 * self.zoom, size0.1 * self.zoom);
+        if h > slot && h > 0.0 {
+            let k = slot / h;
+            w *= k;
+            h *= k;
+        }
+        let l = (self.win_w - w) / 2.0 + pan_x;
+        let t = self.slot_top(page, off) + (slot - h) / 2.0;
+        (l, t, l + w, t + h)
     }
 
     /// Rango (primera, última) de páginas cuya ranura cruza la ventana.
     pub(crate) fn visible_pages(&self, off: f32) -> Option<(u32, u32)> {
-        let _ = off;
-        None
+        if self.pages == 0 {
+            return None;
+        }
+        let last = self.pages - 1;
+        let pitch = self.pitch();
+        // Primera ranura cuyo borde inferior queda por debajo de y = 0.
+        let first = ((off - self.margin - self.slot_h()) / pitch).floor() + 1.0;
+        let first = (first.max(0.0) as u32).min(last);
+        let mut end = first;
+        while end < last && self.slot_top(end + 1, off) < self.win_h {
+            end += 1;
+        }
+        let top = self.slot_top(first, off);
+        if top >= self.win_h || top + self.slot_h() <= 0.0 {
+            return None;
+        }
+        Some((first, end))
+    }
+
+    /// Alto visible (px) de la ranura de `page`.
+    fn visible_h(&self, page: u32, off: f32) -> f32 {
+        let top = self.slot_top(page, off);
+        ((top + self.slot_h()).min(self.win_h) - top.max(0.0)).max(0.0)
     }
 
     /// Página "actual": la que más alto visible ocupa (empate → la de
     /// arriba). Alimenta el indicador "N / total" y la persistencia.
     pub(crate) fn current_page(&self, off: f32) -> u32 {
-        let _ = off;
-        0
+        let Some((a, b)) = self.visible_pages(off) else {
+            return 0;
+        };
+        let mut best = a;
+        let mut best_h = self.visible_h(a, off);
+        for p in a + 1..=b {
+            let h = self.visible_h(p, off);
+            if h > best_h {
+                best = p;
+                best_h = h;
+            }
+        }
+        best
     }
 
     /// Página cuya ranura contiene la coordenada de pantalla `y` (None en
     /// los huecos y fuera de la columna).
     pub(crate) fn page_at_y(&self, y: f32, off: f32) -> Option<u32> {
-        let _ = (y, off);
-        None
+        let c = y + off - self.margin;
+        if c < 0.0 || self.pages == 0 {
+            return None;
+        }
+        let page = (c / self.pitch()).floor() as u32;
+        let inside = c - page as f32 * self.pitch() <= self.slot_h();
+        (page < self.pages && inside).then_some(page)
     }
 
     /// Clamp del pan horizontal: con la hoja más ancha que la ventana se
     /// puede mover hasta sus bordes; si cabe, queda centrada (pan 0).
     pub(crate) fn clamp_pan_x(&self, pan: f32) -> f32 {
-        pan
+        let w = self.ref_w * self.zoom;
+        if w <= self.win_w || !pan.is_finite() {
+            return 0.0;
+        }
+        let half = (w - self.win_w) / 2.0;
+        pan.clamp(-half, half)
     }
 }
 
 /// Zoom anclado del modo Scroll: (offset, pan_x) a zoom `to.zoom` que deja
 /// fijo bajo `anchor` (px de ventana) el punto de documento que estaba bajo
 /// él a `from.zoom` con `off0`/`pan_x0`. Resultado clampado.
+///
+/// En Y el punto se expresa como (ranura `k`, distancia `r` dentro de ella):
+/// dentro de la hoja `r` escala con el zoom; en el hueco (que no escala) se
+/// conserva tal cual. En X es la fórmula del pinch del modo Tap con la hoja
+/// centrada: `left(z) = (win_w − ref_w·z)/2 + pan`.
 pub(crate) fn anchor_zoom(
     from: &ScrollLayout,
     to: &ScrollLayout,
@@ -128,9 +199,27 @@ pub(crate) fn anchor_zoom(
     off0: f32,
     pan_x0: f32,
 ) -> (f32, f32) {
-    let _ = (from, to, anchor);
-    (off0, pan_x0)
+    let (ax, ay) = anchor;
+    let c0 = (off0 + ay - from.margin).max(0.0);
+    let k = (c0 / from.pitch()).floor();
+    let r = c0 - k * from.pitch();
+    let r1 = if r <= from.slot_h() {
+        r * to.slot_h() / from.slot_h()
+    } else {
+        to.slot_h() + (r - from.slot_h())
+    };
+    let off1 = to.clamp_offset(k * to.pitch() + r1 + to.margin - ay);
+
+    let left0 = (from.win_w - from.ref_w * from.zoom) / 2.0 + pan_x0;
+    let q = (ax - left0) / from.zoom.max(1e-4);
+    let left1 = ax - q * to.zoom;
+    let pan1 = to.clamp_pan_x(left1 - (to.win_w - to.ref_w * to.zoom) / 2.0);
+    (off1, pan1)
 }
+
+/// Margen de seguridad sobre el presupuesto de la caché: el recorte idle
+/// (`PageCache::trim_to_budget`) no debe expulsar ninguna hoja del plan.
+const PLAN_BUDGET_FRACTION: f32 = 0.9;
 
 /// Plan de render del modo Scroll: páginas a pedir al worker (la actual
 /// primero, luego el resto de visibles por cercanía y las vecinas que
@@ -145,8 +234,38 @@ pub(crate) fn render_plan(
     budget_bytes: usize,
     max_entries: usize,
 ) -> (Vec<u32>, f32) {
-    let _ = (layout, off, current, budget_bytes, max_entries);
-    (Vec::new(), 0.0)
+    let Some((a, b)) = layout.visible_pages(off) else {
+        return (Vec::new(), layout.zoom);
+    };
+    let mut visible: Vec<u32> = (a..=b).collect();
+    visible.sort_by_key(|&p| (p as i64 - current as i64).abs());
+    visible.truncate(max_entries.max(1));
+
+    let budget = budget_bytes as f32 * PLAN_BUDGET_FRACTION;
+    let bytes_at = |z: f32| layout.ref_w * layout.ref_h * z * z * 4.0;
+    let mut zoom = layout.zoom;
+    let n = visible.len() as f32;
+    if n * bytes_at(zoom) > budget {
+        // Zoom máximo al que caben TODAS las visibles (nunca por encima del
+        // pedido; nunca por debajo de un mínimo razonable).
+        zoom = (budget / (n * bytes_at(1.0))).sqrt().min(zoom).max(0.25);
+    }
+
+    let mut pages = visible;
+    let mut neighbours = Vec::with_capacity(2);
+    if b + 1 < layout.pages {
+        neighbours.push(b + 1);
+    }
+    if a > 0 {
+        neighbours.push(a - 1);
+    }
+    for p in neighbours {
+        let fits_bytes = (pages.len() + 1) as f32 * bytes_at(zoom) <= budget;
+        if pages.len() < max_entries && fits_bytes {
+            pages.push(p);
+        }
+    }
+    (pages, zoom)
 }
 
 #[cfg(test)]
