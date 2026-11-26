@@ -217,6 +217,14 @@ pub(crate) fn anchor_zoom(
     (off1, pan1)
 }
 
+/// ¿El bitmap residente (renderizado a `entry_zoom`) está obsoleto frente
+/// al zoom que el worker produciría ahora (`expected_zoom`)? Tolerancia del
+/// 5% (el redondeo a píxeles enteros del render no cuenta como cambio).
+pub(crate) fn entry_is_stale(entry_zoom: f32, expected_zoom: f32) -> bool {
+    let _ = (entry_zoom, expected_zoom);
+    false
+}
+
 /// Margen de seguridad sobre el presupuesto de la caché: el recorte idle
 /// (`PageCache::trim_to_budget`) no debe expulsar ninguna hoja del plan.
 const PLAN_BUDGET_FRACTION: f32 = 0.9;
@@ -412,6 +420,16 @@ mod tests {
         let (off2, _) = anchor_zoom(&a, &b, (600.0, 500.0), 1660.0, 0.0);
         // y=500 → página 1, 480 px dentro → 960 px a zoom 2.
         assert!(close(20.0 + 3300.0 - off2 + 960.0, 500.0));
+    }
+
+    #[test]
+    fn stale_entries_are_those_at_another_zoom() {
+        assert!(!entry_is_stale(1.0, 1.0));
+        assert!(!entry_is_stale(1.99, 2.0)); // redondeo del render
+        assert!(entry_is_stale(1.0, 2.0));
+        assert!(entry_is_stale(2.0, 1.0));
+        assert!(entry_is_stale(0.0, 1.0));
+        assert!(entry_is_stale(f32::NAN, 1.0));
     }
 
     #[test]

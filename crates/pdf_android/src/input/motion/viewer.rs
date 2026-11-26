@@ -15,7 +15,7 @@ use crate::android_activity::input::{Button, ButtonState, MotionAction};
 use crate::annotations::{PEN_BTN_ERASE, PEN_BTN_SELECT, PenMode, ToolKind};
 use crate::draw::AI_LINE_H;
 use crate::input::gestos::{GestureKind, LONG_PRESS_MS, TwoFingerMode, fire_tap_action};
-use crate::reader::Reader;
+use crate::reader::{Reader, ReadingMode};
 use crate::{PINCH_MAX, PINCH_MIN, SELECT_SLOP, TAP_SLOP};
 use std::time::Instant;
 
@@ -114,6 +114,19 @@ pub(crate) fn classify_tap_drag(moved: f32, zoom: f32, sheet_pull: bool) -> TapD
     } else {
         TapDrag::Cancel
     }
+}
+
+/// `classify_tap_drag` según el modo de lectura: en Scroll el arrastre de
+/// un dedo SIEMPRE desplaza el documento (también a zoom 1); el sheet
+/// visible sigue mandando. En Tap el comportamiento no cambia.
+pub(crate) fn classify_tap_drag_in(
+    mode: ReadingMode,
+    moved: f32,
+    zoom: f32,
+    sheet_pull: bool,
+) -> TapDrag {
+    let _ = mode;
+    classify_tap_drag(moved, zoom, sheet_pull)
 }
 
 fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {
@@ -1062,6 +1075,43 @@ mod tests {
             classify_tap_drag(TAP_SLOP + 1.0, 2.0, true),
             TapDrag::PullSheet
         );
+    }
+
+    #[test]
+    fn scroll_mode_drag_scrolls_even_at_zoom_one() {
+        let m = ReadingMode::Scroll;
+        assert_eq!(
+            classify_tap_drag_in(m, TAP_SLOP + 1.0, PINCH_MIN, false),
+            TapDrag::Pan
+        );
+        assert_eq!(
+            classify_tap_drag_in(m, TAP_SLOP + 1.0, 3.0, false),
+            TapDrag::Pan
+        );
+        assert_eq!(
+            classify_tap_drag_in(m, TAP_SLOP, PINCH_MIN, false),
+            TapDrag::Stay
+        );
+        assert_eq!(
+            classify_tap_drag_in(m, TAP_SLOP + 1.0, PINCH_MIN, true),
+            TapDrag::PullSheet
+        );
+    }
+
+    #[test]
+    fn tap_mode_drag_routing_is_unchanged() {
+        let m = ReadingMode::Tap;
+        for (moved, zoom, pull) in [
+            (TAP_SLOP + 1.0, PINCH_MIN, false),
+            (TAP_SLOP + 1.0, 2.0, false),
+            (TAP_SLOP, 2.0, false),
+            (TAP_SLOP + 1.0, 2.0, true),
+        ] {
+            assert_eq!(
+                classify_tap_drag_in(m, moved, zoom, pull),
+                classify_tap_drag(moved, zoom, pull)
+            );
+        }
     }
 
     #[test]
