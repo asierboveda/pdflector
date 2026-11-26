@@ -105,13 +105,12 @@ pub(crate) const LIB_FADE_MS: f32 = 0.18;
 // Configuración de "Preguntar a la IA": Gemini (texto e imagen)
 // ---------------------------------------------------------------------------
 //
-// La API key va EMBEBIDA en el APK: es una app de USO PERSONAL (sin
-// telemetría ni servidores propios) y la consulta va directa del dispositivo
-// a Google por HTTPS. Se obtiene en https://aistudio.google.com/apikey.
-// PRIVACIDAD: la key viaja en el binario — no publiques el APK ni el repo
-// con la key real; el fichero está ignorado por Git y un placeholder
-// compila pero el panel avisa de que falta la clave.
-pub(crate) const GOOGLE_API_KEY: &str = include_str!("../google_key.txt");
+// La API key YA NO va embebida en el APK (PR-02): el usuario la introduce en
+// la app (Ajustes de lectura → Estudio → Clave IA) y se guarda en el
+// almacenamiento interno privado (`gemini_key`). Un `google_key.txt` que
+// quede en el árbol de un build antiguo se IGNORA. La consulta va directa
+// del dispositivo a Google por HTTPS; la clave se obtiene en
+// https://aistudio.google.com/apikey.
 /// Modelo de GEMINI para "Preguntar a la IA": multimodal (texto + imagen),
 /// así que la misma llamada explica texto, ecuaciones y gráficos a partir
 /// del crop de la selección y del contexto de la hoja. Es la variante Lite:

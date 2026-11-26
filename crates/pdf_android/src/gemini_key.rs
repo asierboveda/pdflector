@@ -18,12 +18,14 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use pdf_core::write_atomic;
+
 /// Longitud mínima aceptada (las claves de AI Studio tienen 39 caracteres;
 /// mismo umbral que el antiguo aviso de "falta la clave").
 pub(crate) const MIN_KEY_LEN: usize = 20;
 
 /// Aviso del panel de IA cuando no hay clave guardada.
-pub(crate) const MISSING_KEY_MSG: &str = "";
+pub(crate) const MISSING_KEY_MSG: &str = "Falta tu clave de Gemini: añádela en Ajustes de lectura → Estudio → Clave de Gemini (se obtiene gratis en aistudio.google.com/apikey).";
 
 /// Clave de Gemini validada. `Debug` NO revela la clave.
 #[derive(Clone, PartialEq, Eq)]
@@ -40,15 +42,34 @@ pub(crate) enum KeyError {
 impl KeyError {
     /// Mensaje para el usuario (panel de la clave).
     pub(crate) fn message(self) -> &'static str {
-        ""
+        match self {
+            Self::Empty => "Pega la clave antes de guardar.",
+            Self::TooShort => "La clave es demasiado corta: cópiala completa de AI Studio.",
+            Self::InvalidChars => {
+                "La clave solo puede tener letras, números, guiones y guiones bajos."
+            }
+        }
     }
 }
 
 impl GeminiKey {
     /// Valida el texto pegado: se descartan los espacios y saltos de línea
     /// (pegados por accidente) y se exige `[A-Za-z0-9_-]` y `MIN_KEY_LEN`.
-    pub(crate) fn parse(_input: &str) -> Result<Self, KeyError> {
-        Err(KeyError::Empty)
+    pub(crate) fn parse(input: &str) -> Result<Self, KeyError> {
+        let key: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+        if key.is_empty() {
+            return Err(KeyError::Empty);
+        }
+        if !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(KeyError::InvalidChars);
+        }
+        if key.chars().count() < MIN_KEY_LEN {
+            return Err(KeyError::TooShort);
+        }
+        Ok(Self(key))
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -57,25 +78,36 @@ impl GeminiKey {
 
     /// Versión enmascarada para la UI (`••••` + 4 últimos).
     pub(crate) fn masked(&self) -> String {
-        String::new()
+        mask(&self.0)
     }
 }
 
 impl std::fmt::Debug for GeminiKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        write!(f, "GeminiKey({})", self.masked())
     }
 }
 
 /// Enmascara `s`: `••••` + sus 4 últimos caracteres (solo `••••` si es tan
 /// corto que revelaría demasiado).
-pub(crate) fn mask(_s: &str) -> String {
-    String::new()
+pub(crate) fn mask(s: &str) -> String {
+    let n = s.chars().count();
+    if n == 0 {
+        return String::new();
+    }
+    if n < 8 {
+        return "••••".to_string();
+    }
+    let tail: String = s.chars().skip(n - 4).collect();
+    format!("••••{tail}")
 }
 
 /// Etiqueta del botón del sheet: estado de la clave enmascarado.
-pub(crate) fn sheet_key_label(_key: Option<&GeminiKey>) -> String {
-    String::new()
+pub(crate) fn sheet_key_label(key: Option<&GeminiKey>) -> String {
+    match key {
+        Some(k) => format!("Clave IA {}", k.masked()),
+        None => "Añadir clave IA".to_string(),
+    }
 }
 
 /// Ruta del fichero de la clave dentro del directorio interno.
@@ -84,18 +116,38 @@ pub(crate) fn key_path(internal_dir: &Path) -> PathBuf {
 }
 
 /// Carga la clave guardada (None si no hay, no se puede leer o no es válida).
-pub(crate) fn load_key(_internal_dir: Option<&Path>) -> Option<GeminiKey> {
-    None
+pub(crate) fn load_key(internal_dir: Option<&Path>) -> Option<GeminiKey> {
+    let text = std::fs::read_to_string(key_path(internal_dir?)).ok()?;
+    GeminiKey::parse(&text).ok()
 }
 
 /// Guarda la clave (atómico, permisos 0600).
-pub(crate) fn save_key(_internal_dir: Option<&Path>, _key: &GeminiKey) -> io::Result<()> {
+pub(crate) fn save_key(internal_dir: Option<&Path>, key: &GeminiKey) -> io::Result<()> {
+    let Some(dir) = internal_dir else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "internal_data_path unavailable",
+        ));
+    };
+    let path = key_path(dir);
+    write_atomic(&path, key.as_str())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
 /// Borra la clave guardada (no es error si no existía).
-pub(crate) fn clear_key(_internal_dir: Option<&Path>) -> io::Result<()> {
-    Ok(())
+pub(crate) fn clear_key(internal_dir: Option<&Path>) -> io::Result<()> {
+    let Some(dir) = internal_dir else {
+        return Ok(());
+    };
+    match std::fs::remove_file(key_path(dir)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
