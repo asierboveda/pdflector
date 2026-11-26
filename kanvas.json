@@ -440,7 +440,7 @@
     {
       "id": "PR-02",
       "title": "Study workflow: in-app Gemini key, notes, figures & Anki",
-      "state": "doing",
+      "state": "review",
       "group": "PR",
       "deps": ["UI-02", "CO-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -466,6 +466,11 @@
           "at": "2026-11-26T20:16:12Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works test-first in its own worktree; orchestrator verifies every RED/GREEN pair, merges behind the test gate, checks CI (incl. Android) before main moves. Device checks are for the human."
+        },
+        {
+          "at": "2026-11-26T20:39:08Z",
+          "by": "claude-code",
+          "text": "You can now enter your Gemini key inside the app, and every PDF has its own notebook. Builds no longer need google_key.txt (CI stopped creating it).\n- Key: reader settings sheet → new ESTUDIO row → Clave IA. Paste, Guardar; shown only as ••••last4, never pre-filled, never logged. Stored in the app's private files (atomic write, mode 0600). With no key, the AI message points to Ajustes → Estudio → Clave de Gemini. You must enter your key once (the old file is ignored).\n- Notebook: ESTUDIO → Cuaderno. Newest first with \"Pág. N · date\"; + Nota attaches the current page; Editar; Borrar (tap twice); tapping a note jumps to its page (Tap and Scroll modes). Saved per PDF in notebooks.json (atomic; a corrupt file is kept as .corrupt). While open, pen/pinch don't act underneath.\n- TDD verified by the orchestrator: 4 test-first pairs, each test commit fails (5, 10, 7, 8 failures) and passes after its implementation; 200 tests total, all clippy + fmt clean, and the build passes with no key file. Checked: no log line prints the key.\n- Limits: single-line notes (the keyboard bridge has no line breaks); the note list scrolls with ▲/▼ only.\n- Decision for you: Android cloud backup may include the key and notes (allowBackup isn't set). Keep it, or exclude the key from backup?\nOn the tablet: the 12-point checklist is in the agent's report; key ones: build without google_key.txt, add/clear the key, Explicar works after restart, add/edit/delete notes, tap a note jumps to its page, notes separate per PDF and survive restart, `adb logcat | grep -i aiza` shows nothing."
         }
       ],
       "started": {
