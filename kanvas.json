@@ -161,6 +161,11 @@
           "at": "2026-11-26T16:00:11Z",
           "by": "claude-code",
           "text": "Saving the library, reading progress, tool settings, recents, papers and Discover state, and the Markdown export, can no longer leave a half-written or empty file after a crash or power loss.\n- Every one of those 7 writes now goes through one helper (pdf_core::write_atomic): write a hidden temp file next to the target, sync it to disk, then swap it in. On any error the old file stays as it was and the temp file is removed.\n- TDD verified by the orchestrator: the tests committed first fail against a stub that writes in place (4 failures, incl. one covering all 6 saves), and pass after the change. 129 pdf_android tests pass after merging; workspace clippy and fmt clean.\n- Follow-up idea, not done: two older JSON-only helpers in folder_sync could reuse it; one leaves its temp file behind on failure.\n- On the tablet: nothing visible should change; opening the app with your existing library and progress is the check."
+        },
+        {
+          "at": "2026-11-26T16:01:13Z",
+          "by": "claude-code",
+          "text": "Correction: right after the merge, one pdf_android test run showed 1 failure (128/129) while 5 agents were compiling; the push went out before I caught it. 100+ reruns since (alone, 12 in parallel, CPU-saturated) all pass 129/129. Suspect: the pre-existing timing assertion (< 600 ms) in folder_sync's annotation-worker test, which this card does not touch. Proposed TD-03 to fix it."
         }
       ],
       "started": {
@@ -348,6 +353,16 @@
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
         }
       ]
+    },
+    {
+      "id": "TD-03",
+      "title": "Make the annotation-worker timing test robust",
+      "state": "proposed",
+      "group": "TD",
+      "deps": ["TD-01"],
+      "at": "2026-11-26T16:01:13Z",
+      "by": "claude-code",
+      "desc": "One pdf_android test run failed once (1 of 129) while the machine was very busy, then passed 100+ times. The likely cause is folder_sync's `annotation_worker_serializes_snapshots_to_sqlite_before_export_delay`, which requires a background SQLite save to finish in under 600 ms; a loaded CI runner can miss that.\nDone means: the test still proves the snapshot is saved before the export delay, but without a wall-clock bound that a slow machine can break (e.g. a controllable clock or ordering check), and the suite passes repeatedly under heavy load."
     }
   ]
 }
