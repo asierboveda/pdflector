@@ -68,7 +68,7 @@ pub(crate) use primitives::copy_region;
 pub(crate) use primitives::fill_buffer;
 pub(crate) use sheet::render_sheet;
 pub(crate) use sheet::sheet_buttons;
-pub(crate) use study::{StudyHit, StudyView};
+pub(crate) use study::{StudyHit, StudyView, render_study_panel, study_hit, study_layout_for};
 pub(crate) use toolbar::PopoverCell;
 pub(crate) use toolbar::ToolbarButton;
 pub(crate) use toolbar::ToolbarDock;

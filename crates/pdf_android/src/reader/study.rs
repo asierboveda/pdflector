@@ -6,10 +6,13 @@
 //! testea en host) + el pegamento con `Reader` (abrir/cerrar, teclado,
 //! guardado del cuaderno y de la clave).
 
-use super::UiMode;
-use crate::draw::{StudyHit, StudyView};
+use super::{Reader, UiMode};
+use crate::android_activity::AndroidApp;
+use crate::draw::{StudyHit, StudyView, study_hit, study_layout_for};
 use crate::gemini_key::GeminiKey;
 use crate::notebook::Notebook;
+use log::{error, info};
+use pdf_core::Document as _;
 
 /// Contexto del documento abierto que necesita el controlador.
 #[derive(Clone, Copy, Debug)]
@@ -261,6 +264,143 @@ pub(crate) fn ime_target(mode: UiMode, study_editing: bool) -> ImeTarget {
         UiMode::Viewer => ImeTarget::None,
         UiMode::Discover => ImeTarget::DiscoverSearch,
         UiMode::Library | UiMode::Picker => ImeTarget::LibrarySearch,
+    }
+}
+
+// ---------------------------------------------------------------------
+// Pegamento con `Reader` (no testeable en host: teclado y disco reales)
+// ---------------------------------------------------------------------
+impl Reader {
+    /// Abre el cuaderno del documento actual (sheet → Estudio → Cuaderno).
+    pub(crate) fn open_notebook(&mut self) {
+        let Some(path) = self.doc_path.clone() else {
+            return;
+        };
+        let nb = crate::notebook::load_notebook_for(self.internal_dir.as_deref(), &path);
+        info!("notebook: {} notes", nb.notes.len());
+        self.hide_sheet();
+        self.study = Some(StudyState::notebook(nb));
+        self.refresh_study();
+    }
+
+    /// Abre el editor de la clave de Gemini con el teclado (sheet → Estudio).
+    pub(crate) fn open_key_editor(&mut self, app: &AndroidApp) {
+        self.hide_sheet();
+        self.study = Some(StudyState::key_editor());
+        crate::jni::ime_attach(app, "");
+        self.ime_active = true;
+        self.refresh_study();
+    }
+
+    /// Cierra el panel de Estudio (el teclado lo oculta `poll_ime_query`
+    /// al no tener destino, o `lib_close_ime` al salir del visor).
+    pub(crate) fn close_study(&mut self) {
+        let had = self.study.is_some();
+        self.study = None;
+        self.study_bitmap = None;
+        if had {
+            self.redraw();
+        }
+    }
+
+    /// Contenido del panel cambiado: re-render en el próximo `blit`.
+    fn refresh_study(&mut self) {
+        self.study_bitmap = None;
+        self.redraw();
+    }
+
+    /// Texto nuevo del IME para el editor abierto.
+    pub(crate) fn study_set_draft(&mut self, text: &str) {
+        if self.study.as_mut().is_some_and(|s| s.set_draft(text)) {
+            self.refresh_study();
+        }
+    }
+
+    /// Tap con el panel de Estudio abierto (misma geometría que el dibujo).
+    pub(crate) fn study_tap(&mut self, app: &AndroidApp, x: f32, y: f32) {
+        let Some(layout) = study_layout_for(self) else {
+            return;
+        };
+        let ctx = StudyCtx {
+            now: crate::persist::unix_now(),
+            page: self.page,
+            page_count: self.doc.as_ref().map(|d| d.page_count()).unwrap_or(0),
+        };
+        let Some(st) = self.study.as_mut() else {
+            return;
+        };
+        // El scroll efectivo es el del layout (recortado a las filas que caben).
+        st.scroll = layout.scroll;
+        let effects = match study_hit(&layout, x, y) {
+            Some(hit) => st.on_hit(hit, ctx),
+            None => st.on_outside(),
+        };
+        for fx in effects {
+            self.apply_study_effect(app, fx);
+        }
+        if let Some(st) = self.study.as_mut() {
+            st.scroll = st.scroll.min(layout.max_scroll);
+        }
+        if self.study.is_some() {
+            self.refresh_study();
+        }
+    }
+
+    fn apply_study_effect(&mut self, app: &AndroidApp, fx: StudyEffect) {
+        match fx {
+            StudyEffect::Close => self.close_study(),
+            StudyEffect::Jump(p) => {
+                let delta = p as i32 - self.page as i32;
+                self.jump_page(delta);
+            }
+            StudyEffect::OpenKeyboard(text) => {
+                crate::jni::ime_attach(app, &text);
+                self.ime_active = true;
+            }
+            StudyEffect::HideKeyboard => {
+                if self.ime_active {
+                    crate::jni::ime_set_text(app, "");
+                    crate::jni::ime_hide(app);
+                    self.ime_active = false;
+                }
+            }
+            StudyEffect::SaveNotebook => {
+                let (Some(path), Some(st)) = (self.doc_path.as_deref(), self.study.as_ref()) else {
+                    return;
+                };
+                if let Err(e) = crate::notebook::save_notebook_for(
+                    self.internal_dir.as_deref(),
+                    path,
+                    &st.notebook,
+                ) {
+                    error!("save notebook: {e}");
+                    self.show_toast("No se pudo guardar el cuaderno");
+                }
+            }
+            StudyEffect::SaveKey(key) => {
+                // Nunca se loguea la clave: solo el resultado.
+                match crate::gemini_key::save_key(self.internal_dir.as_deref(), &key) {
+                    Ok(()) => {
+                        info!("gemini key saved");
+                        self.gemini_key = Some(key);
+                        self.show_toast("Clave de Gemini guardada");
+                    }
+                    Err(e) => {
+                        error!("save gemini key: {e}");
+                        self.show_toast("No se pudo guardar la clave");
+                    }
+                }
+                self.sheet_bitmap = None; // la etiqueta del sheet cambia
+            }
+            StudyEffect::ClearKey => {
+                if let Err(e) = crate::gemini_key::clear_key(self.internal_dir.as_deref()) {
+                    error!("clear gemini key: {e}");
+                }
+                self.gemini_key = None;
+                self.sheet_bitmap = None;
+                self.show_toast("Clave de Gemini borrada");
+            }
+        }
     }
 }
 

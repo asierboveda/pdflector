@@ -1318,6 +1318,12 @@ impl<'a> OverlayList<'a> {
             out.items
                 .push((&panel.bitmap, reader.ai_panel_id, panel.x, panel.y));
         }
+        // Panel de Estudio (modal): encima del resto de la UI del visor.
+        if reader.study.is_some()
+            && let Some((sb, x, y)) = reader.study_bitmap.as_ref()
+        {
+            out.items.push((sb, reader.study_id, *x, *y));
+        }
         if let Some(eb) = reader.eraser_cursor.as_ref()
             && let Some((ex, ey)) = reader.erase_pt
         {

@@ -750,6 +750,15 @@ pub(crate) struct Reader {
     /// de `internal/gemini_api_key` al arrancar y se cambia desde el sheet
     /// (Estudio → Clave IA). None = sin clave (el panel de IA lo avisa).
     pub(crate) gemini_key: Option<crate::gemini_key::GeminiKey>,
+    /// Panel de Estudio (cuaderno del documento / editor de nota / clave de
+    /// Gemini, PR-02). Some mientras está abierto: es MODAL (los taps del
+    /// visor van a `study_tap`).
+    pub(crate) study: Option<study::StudyState>,
+    /// Bitmap del panel de Estudio y su posición (materializado en `blit`;
+    /// None = hay que re-renderizar).
+    pub(crate) study_bitmap: Option<(Bitmap, i32, i32)>,
+    /// Id de generación de `study_bitmap` (caché GPU; ver `ovl_seq`).
+    pub(crate) study_id: u64,
     /// Receptor del hilo de fondo de IA (std::thread + mpsc, el patrón de
     /// `pdf_core::prefetch`): Some mientras una consulta está en vuelo.
     /// `tick` lo sondea con `try_recv` (sin bloquear) y lo libera al llegar

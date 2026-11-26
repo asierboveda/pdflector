@@ -7,8 +7,14 @@
 //! el hit-test del tap (`study_hit`), igual que `menus.rs` y el sheet.
 
 use crate::notebook::{Note, format_date};
+use crate::reader::Reader;
+use crate::theme;
+use pdf_core::Bitmap;
 
-use super::ButtonRect;
+use super::{
+    ButtonRect, ButtonVariant, CanvasRect, CanvasText, Elevation, TextAlign, TextFont,
+    draw_astryx_button, draw_surface_card, draw_token_pill, jni_text_bitmap,
+};
 
 /// Pantalla del panel de Estudio.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,6 +332,305 @@ pub(crate) fn note_meta(note: &Note) -> String {
         meta.push_str(" · editada");
     }
     meta
+}
+
+// ---------------------------------------------------------------------
+// Render (Canvas+JNI) — misma geometría que el hit-test (`study_layout`)
+// ---------------------------------------------------------------------
+
+/// Layout del panel de Estudio abierto en `reader` (None si está cerrado).
+pub(crate) fn study_layout_for(reader: &Reader) -> Option<StudyLayout> {
+    let st = reader.study.as_ref()?;
+    let notes = st.notebook.newest_first();
+    let input = StudyInput {
+        view: st.view,
+        notes: &notes,
+        scroll: st.scroll,
+        confirm_delete: st.confirm_delete,
+        has_key: reader.gemini_key.is_some(),
+    };
+    Some(study_layout(
+        reader.win_w as f32,
+        reader.win_h as f32,
+        &input,
+    ))
+}
+
+/// Renderiza el panel de Estudio en lenguaje Astryx (tarjeta `bg_popover`
+/// con banda de cabecera, como el panel de IA). Devuelve el bitmap y su
+/// posición en px de ventana.
+pub(crate) fn render_study_panel(reader: &Reader) -> Option<(Bitmap, i32, i32)> {
+    let st = reader.study.as_ref()?;
+    let layout = study_layout_for(reader)?;
+    let (mx, my, mrx, mry) = layout.rect;
+    let (w, h) = ((mrx - mx) as i32, (mry - my) as i32);
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let local = |(l, t, r, b): ButtonRect| (l - mx, t - my, r - mx, b - my);
+    let p = reader.theme.palette();
+    let mut rects: Vec<CanvasRect> = Vec::new();
+    let mut texts: Vec<CanvasText> = Vec::new();
+    let (wf, header_h, pad) = (w as f32, STUDY_HEADER_H, STUDY_PAD);
+
+    draw_surface_card(
+        &mut rects,
+        (0.0, 0.0, wf, h as f32),
+        theme::RADIUS_CARD,
+        p.bg_popover,
+        p.border_emphasized,
+        Elevation::None,
+        p.is_dark,
+    );
+    rects.push(CanvasRect::rounded(
+        1.0,
+        1.0,
+        wf - 1.0,
+        header_h,
+        theme::RADIUS_CARD - 1.0,
+        p.bg_surface,
+    ));
+    rects.push(CanvasRect::sharp(
+        1.0,
+        header_h - theme::RADIUS_CARD,
+        wf - 1.0,
+        header_h,
+        p.bg_surface,
+    ));
+    rects.push(CanvasRect::sharp(
+        1.0,
+        header_h,
+        wf - 1.0,
+        header_h + 1.0,
+        p.border,
+    ));
+
+    // Insignia + título de la cabecera.
+    let title = match st.view {
+        StudyView::Notebook => match st.notebook.notes.len() {
+            0 => "Cuaderno del documento".to_string(),
+            1 => "Cuaderno · 1 nota".to_string(),
+            n => format!("Cuaderno · {n} notas"),
+        },
+        StudyView::NoteEditor => match (st.editing, st.draft_page) {
+            (Some(_), _) => "Editar nota".to_string(),
+            (None, Some(pg)) => format!("Nueva nota · pág. {}", pg + 1),
+            (None, None) => "Nueva nota".to_string(),
+        },
+        StudyView::KeyEditor => "Clave de Gemini".to_string(),
+    };
+    let tag = match st.view {
+        StudyView::Notebook => "ESTUDIO",
+        StudyView::NoteEditor => "NOTA",
+        StudyView::KeyEditor => "IA",
+    };
+    let tag_h = 22.0f32;
+    let tag_w = (tag.chars().count() as f32 * 8.0 + 18.0).max(38.0);
+    let tag_t = (header_h - tag_h) * 0.5;
+    draw_token_pill(
+        &mut rects,
+        &mut texts,
+        (pad, tag_t, pad + tag_w, tag_t + tag_h),
+        p.accent_muted,
+        None,
+        p.on_accent_muted,
+        theme::FONT_MICRO,
+        TextFont::Sans,
+        theme::TRACKING_CAPS,
+        true,
+        tag,
+    );
+    texts.push(
+        CanvasText::new(
+            pad + tag_w + 10.0,
+            header_h * 0.5 + theme::FONT_TITLE * 0.34,
+            theme::FONT_TITLE,
+            p.text_primary,
+            TextAlign::Left,
+            true,
+            title,
+        )
+        .with_tracking(theme::TRACKING_TIGHT),
+    );
+
+    for (hit, rect) in &layout.buttons {
+        let (variant, label) = match hit {
+            StudyHit::Close => (ButtonVariant::Ghost, "×"),
+            StudyHit::ScrollUp => (ButtonVariant::Ghost, "▲"),
+            StudyHit::ScrollDown => (ButtonVariant::Ghost, "▼"),
+            StudyHit::NewNote => (ButtonVariant::Primary, "+ Nota"),
+            StudyHit::Save => (ButtonVariant::Primary, "Guardar"),
+            StudyHit::Cancel => (ButtonVariant::Secondary, "Cancelar"),
+            StudyHit::ClearKey => (ButtonVariant::Ghost, "Borrar clave"),
+            _ => (ButtonVariant::Ghost, ""),
+        };
+        draw_astryx_button(
+            &mut rects,
+            &mut texts,
+            local(*rect),
+            variant,
+            &p,
+            theme::FONT_BODY,
+            variant == ButtonVariant::Primary,
+            label,
+        );
+    }
+
+    // Lista de notas.
+    if st.view == StudyView::Notebook && layout.rows.is_empty() {
+        texts.push(CanvasText::new(
+            wf * 0.5,
+            header_h + pad + 40.0,
+            theme::FONT_BODY,
+            p.text_secondary,
+            TextAlign::Center,
+            false,
+            "Aún no hay notas. Pulsa «+ Nota»: la nota guarda la página actual.",
+        ));
+    }
+    for row in &layout.rows {
+        let (l, t, r, b) = local(row.rect);
+        rects.push(CanvasRect::rounded(
+            l,
+            t,
+            r,
+            b,
+            theme::RADIUS_CONTAINER,
+            p.border,
+        ));
+        rects.push(CanvasRect::rounded(
+            l + 1.0,
+            t + 1.0,
+            r - 1.0,
+            b - 1.0,
+            theme::RADIUS_CONTAINER - 1.0,
+            p.bg_card,
+        ));
+        texts.push(CanvasText::new(
+            l + 16.0,
+            t + 26.0,
+            theme::FONT_BODY,
+            p.text_accent,
+            TextAlign::Left,
+            true,
+            row.meta.clone(),
+        ));
+        for (i, line) in row.lines.iter().enumerate() {
+            texts.push(CanvasText::new(
+                l + 16.0,
+                t + 26.0 + (i + 1) as f32 * STUDY_LINE_H,
+                STUDY_TEXT_SIZE,
+                p.text_primary,
+                TextAlign::Left,
+                false,
+                line.clone(),
+            ));
+        }
+        draw_astryx_button(
+            &mut rects,
+            &mut texts,
+            local(row.edit),
+            ButtonVariant::Secondary,
+            &p,
+            theme::FONT_BODY,
+            false,
+            "Editar",
+        );
+        let (variant, label) = if row.confirm_delete {
+            (ButtonVariant::Tonal, "¿Borrar?")
+        } else {
+            (ButtonVariant::Ghost, "Borrar")
+        };
+        draw_astryx_button(
+            &mut rects,
+            &mut texts,
+            local(row.delete),
+            variant,
+            &p,
+            theme::FONT_BODY,
+            row.confirm_delete,
+            label,
+        );
+    }
+
+    // Campo de texto de los editores: últimas líneas del borrador + cursor.
+    if let Some(field) = layout.field {
+        let (l, t, r, b) = local(field);
+        rects.push(CanvasRect::rounded(
+            l,
+            t,
+            r,
+            b,
+            theme::RADIUS_ELEMENT,
+            p.accent,
+        ));
+        rects.push(CanvasRect::rounded(
+            l + 2.0,
+            t + 2.0,
+            r - 2.0,
+            b - 2.0,
+            theme::RADIUS_ELEMENT - 2.0,
+            p.bg_muted,
+        ));
+        let shown = st.field_text();
+        let (lines, color) = if shown.is_empty() {
+            let hint = match st.view {
+                StudyView::KeyEditor => "Pega aquí tu clave de Gemini…",
+                _ => "Escribe tu nota…",
+            };
+            (vec![hint.to_string()], p.text_secondary)
+        } else {
+            let mut lines = wrap_plain(&shown, layout.field_chars);
+            let skip = lines.len().saturating_sub(FIELD_LINES);
+            lines.drain(..skip);
+            if let Some(last) = lines.last_mut() {
+                last.push('▏');
+            }
+            (lines, p.text_primary)
+        };
+        for (i, line) in lines.into_iter().enumerate() {
+            texts.push(CanvasText::new(
+                l + 12.0,
+                t + 12.0 + STUDY_TEXT_SIZE + i as f32 * STUDY_LINE_H,
+                STUDY_TEXT_SIZE,
+                color,
+                TextAlign::Left,
+                false,
+                line,
+            ));
+        }
+        let (hint, hint_color) = match (st.error, st.view) {
+            (Some(e), _) => (e.to_string(), p.error_text),
+            (None, StudyView::KeyEditor) => (
+                match reader.gemini_key.as_ref() {
+                    Some(k) => format!(
+                        "Guardada: {}. Se guarda solo en este dispositivo.",
+                        k.masked()
+                    ),
+                    None => {
+                        "Se guarda solo en este dispositivo (almacenamiento privado de la app)."
+                            .to_string()
+                    }
+                },
+                p.text_secondary,
+            ),
+            (None, _) => (
+                "Toca el campo si el teclado se ha cerrado.".to_string(),
+                p.text_secondary,
+            ),
+        };
+        texts.push(CanvasText::new(
+            l,
+            b + 26.0,
+            theme::FONT_BODY,
+            hint_color,
+            TextAlign::Left,
+            st.error.is_some(),
+            hint,
+        ));
+    }
+
+    jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts).map(|bmp| (bmp, mx as i32, my as i32))
 }
 
 #[cfg(test)]
