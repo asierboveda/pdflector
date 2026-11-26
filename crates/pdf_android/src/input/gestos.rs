@@ -157,6 +157,19 @@ impl GestureState {
             press_at: None,
         }
     }
+
+    /// Modo Scroll (PR-04): el layout de la columna cambió bajo un arrastre
+    /// en curso (llegó el tamaño real de una hoja) y el offset se reancló
+    /// `d_off` px: el origen absoluto del pan se desplaza lo mismo para que
+    /// el siguiente Move no deshaga el reanclaje.
+    pub(crate) fn shift_pan_origin(&mut self, d_off: f32) {
+        if let GestureKind::Pan { start, pan0 } = self.kind {
+            self.kind = GestureKind::Pan {
+                start,
+                pan0: (pan0.0, pan0.1 - d_off),
+            };
+        }
+    }
 }
 
 /// Acción de un tap simple sobre la página.
