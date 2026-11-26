@@ -790,6 +790,16 @@ impl App {
         // for visible pages still missing a texture (throttled).
         self.poll_pending(ui.ctx());
         self.issue_gets(prefetcher, level, first, last);
+        // Pages the worker failed to render: prefetch is best-effort (the
+        // page keeps its placeholder) but the error is no longer silent.
+        for err in prefetcher.take_errors() {
+            eprintln!(
+                "pdf_app: page {} (level {}) failed to render: {}",
+                err.key.page_idx + 1,
+                err.key.scale_level,
+                err.error
+            );
+        }
         // Free GPU memory for pages far outside the visible window; egui
         // releases the texture when the handle is dropped. The worker's LRU
         // cache still holds the CPU bitmap for quick re-entry.
@@ -1683,8 +1693,8 @@ impl App {
                     );
                 }
                 // Bitmap still landing on the worker (or a page that failed to
-                // render — the prefetcher swallows per-page render errors by
-                // design, best-effort): cheap placeholder so the layout is
+                // render — prefetch is best-effort; the error is logged from
+                // `Prefetcher::take_errors` in `scroll_body`): cheap placeholder so the layout is
                 // visible instead of a hole.
                 None => {
                     painter.rect_filled(rect, 2.0, visuals.extreme_bg_color);
