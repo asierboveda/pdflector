@@ -25,6 +25,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use log::warn;
+use pdf_core::write_atomic;
 use serde::{Deserialize, Serialize};
 
 /// Una nota del cuaderno.
@@ -49,18 +51,43 @@ pub(crate) struct Notebook {
 
 impl Notebook {
     /// Añade una nota (texto recortado). None si el texto está vacío.
-    pub(crate) fn add(&mut self, _text: &str, _page: Option<u32>, _now: i64) -> Option<u64> {
-        None
+    pub(crate) fn add(&mut self, text: &str, page: Option<u32>, now: i64) -> Option<u64> {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let id = self.notes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+        self.notes.push(Note {
+            id,
+            text: text.to_string(),
+            page,
+            created_unix: now,
+            edited_unix: now,
+        });
+        Some(id)
     }
 
     /// Cambia el texto de una nota. false si no existe o el texto está vacío.
-    pub(crate) fn edit(&mut self, _id: u64, _text: &str, _now: i64) -> bool {
-        false
+    pub(crate) fn edit(&mut self, id: u64, text: &str, now: i64) -> bool {
+        let text = text.trim();
+        if text.is_empty() {
+            return false;
+        }
+        match self.notes.iter_mut().find(|n| n.id == id) {
+            Some(n) => {
+                n.text = text.to_string();
+                n.edited_unix = now;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Borra una nota. false si no existía.
-    pub(crate) fn delete(&mut self, _id: u64) -> bool {
-        false
+    pub(crate) fn delete(&mut self, id: u64) -> bool {
+        let before = self.notes.len();
+        self.notes.retain(|n| n.id != id);
+        self.notes.len() != before
     }
 
     pub(crate) fn get(&self, id: u64) -> Option<&Note> {
@@ -69,7 +96,13 @@ impl Notebook {
 
     /// Notas de la más reciente a la más antigua (creación; empate por id).
     pub(crate) fn newest_first(&self) -> Vec<&Note> {
-        self.notes.iter().collect()
+        let mut out: Vec<&Note> = self.notes.iter().collect();
+        out.sort_by(|a, b| {
+            b.created_unix
+                .cmp(&a.created_unix)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        out
     }
 }
 
@@ -105,12 +138,30 @@ impl Default for NotebookStore {
 
 impl NotebookStore {
     /// Cuaderno de `path` (vacío si no tiene notas).
-    pub(crate) fn notebook(&self, _path: &str) -> Notebook {
-        Notebook::default()
+    pub(crate) fn notebook(&self, path: &str) -> Notebook {
+        self.documents
+            .iter()
+            .find(|d| d.path == path)
+            .map(|d| Notebook {
+                notes: d.notes.clone(),
+            })
+            .unwrap_or_default()
     }
 
     /// Sustituye el cuaderno de `path` (un cuaderno vacío borra la entrada).
-    pub(crate) fn set(&mut self, _path: &str, _notebook: &Notebook) {}
+    pub(crate) fn set(&mut self, path: &str, notebook: &Notebook) {
+        if notebook.notes.is_empty() {
+            self.documents.retain(|d| d.path != path);
+            return;
+        }
+        match self.documents.iter_mut().find(|d| d.path == path) {
+            Some(d) => d.notes = notebook.notes.clone(),
+            None => self.documents.push(DocNotebook {
+                path: path.to_string(),
+                notes: notebook.notes.clone(),
+            }),
+        }
+    }
 }
 
 /// Ruta de `notebooks.json` dentro del directorio interno.
@@ -118,9 +169,25 @@ pub(crate) fn notebooks_path(internal_dir: &Path) -> PathBuf {
     internal_dir.join("notebooks.json")
 }
 
-/// Carga todos los cuadernos (vacío si no hay fichero o directorio).
-pub(crate) fn load_notebooks(_internal_dir: Option<&Path>) -> NotebookStore {
-    NotebookStore::default()
+/// Carga todos los cuadernos (vacío si no hay fichero o directorio). Un
+/// fichero corrupto se copia a `notebooks.json.corrupt` (best-effort) para
+/// que el siguiente guardado no destruya notas recuperables a mano.
+pub(crate) fn load_notebooks(internal_dir: Option<&Path>) -> NotebookStore {
+    let Some(dir) = internal_dir else {
+        return NotebookStore::default();
+    };
+    let path = notebooks_path(dir);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return NotebookStore::default();
+    };
+    match serde_json::from_str::<NotebookStore>(&text) {
+        Ok(store) => store,
+        Err(e) => {
+            warn!("notebooks.json corrupt ({e}): set aside as notebooks.json.corrupt");
+            let _ = write_atomic(&dir.join("notebooks.json.corrupt"), &text);
+            NotebookStore::default()
+        }
+    }
 }
 
 /// Cuaderno del documento `path`.
@@ -131,21 +198,45 @@ pub(crate) fn load_notebook_for(internal_dir: Option<&Path>, path: &str) -> Note
 /// Guarda el cuaderno de `path` (relee el fichero, sustituye la entrada y
 /// escribe atómico).
 pub(crate) fn save_notebook_for(
-    _internal_dir: Option<&Path>,
-    _path: &str,
-    _notebook: &Notebook,
+    internal_dir: Option<&Path>,
+    path: &str,
+    notebook: &Notebook,
 ) -> io::Result<()> {
-    Ok(())
+    let Some(dir) = internal_dir else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "internal_data_path unavailable",
+        ));
+    };
+    let mut store = load_notebooks(Some(dir));
+    store.set(path, notebook);
+    let text = serde_json::to_string_pretty(&store).map_err(io::Error::other)?;
+    write_atomic(&notebooks_path(dir), text)
 }
 
 /// Página a la que salta el tap sobre una nota (recortada al documento).
-pub(crate) fn jump_target(_note: &Note, _page_count: u32) -> Option<u32> {
-    None
+pub(crate) fn jump_target(note: &Note, page_count: u32) -> Option<u32> {
+    let page = note.page?;
+    if page_count == 0 {
+        return None;
+    }
+    Some(page.min(page_count - 1))
 }
 
-/// Fecha `AAAA-MM-DD` (UTC) de un timestamp UNIX, para la lista de notas.
-pub(crate) fn format_date(_unix: i64) -> String {
-    String::new()
+/// Fecha `AAAA-MM-DD` (UTC) de un timestamp UNIX, para la lista de notas
+/// (algoritmo civil-from-days de H. Hinnant; sin dependencias de fecha).
+pub(crate) fn format_date(unix: i64) -> String {
+    let days = unix.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 #[cfg(test)]
