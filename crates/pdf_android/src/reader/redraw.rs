@@ -63,6 +63,14 @@ pub(crate) struct WorkerMsg {
     early: bool,
 }
 
+/// Respuesta del worker por página: el bitmap, o el aviso de que MuPDF no
+/// pudo renderizarla (PR-04: el visor la reintenta con espera en vez de
+/// pedirla en cada tick).
+pub(crate) enum WorkerReply {
+    Page(WorkerMsg),
+    Failed { seq: u64, page: u32 },
+}
+
 /// Petición de render al worker actor: páginas a la escala pedida, viewport
 /// y margen congelados y canal de respuesta propio por lote. El hilo drena
 /// comandos entre páginas (preemption por `seq`) en `render_worker_req`.
@@ -74,7 +82,7 @@ struct WorkerReq {
     win_w: i32,
     win_h: i32,
     margin_px: f32,
-    reply: std::sync::mpsc::Sender<WorkerMsg>,
+    reply: std::sync::mpsc::Sender<WorkerReply>,
 }
 
 /// Comandos del worker actor: render de la última petición o parada limpia.
@@ -95,7 +103,8 @@ pub(crate) struct RenderWorker {
 /// Ejecuta `req` en el worker: renderiza las páginas a la escala pedida y
 /// envía cada bitmap por `req.reply`. ENTRE páginas drena el canal: una
 /// petición con `seq` mayor sustituye a la actual y `Stop` sale del actor.
-/// Errores por página: best-effort (drop silencioso; el UI muestra fallback).
+/// Errores por página: se avisan con `WorkerReply::Failed` (el UI reintenta
+/// con espera y pinta un marcador de error en Scroll).
 fn render_worker_req(
     doc: &MupdfDocument,
     rx: &std::sync::mpsc::Receiver<WorkerCmd>,
@@ -121,6 +130,7 @@ fn render_worker_req(
                 }
             }
         }
+        let mut rendered = false;
         if let Ok(geometry) = doc.page_geometry(page) {
             let bounds = geometry.visible_bounds;
             let (pw, ph) = (bounds.width(), bounds.height());
@@ -151,7 +161,8 @@ fn render_worker_req(
                     } else {
                         (bmp, (0, 0))
                     };
-                let _ = req.reply.send(WorkerMsg {
+                rendered = true;
+                let _ = req.reply.send(WorkerReply::Page(WorkerMsg {
                     seq: req.seq,
                     page,
                     geometry,
@@ -162,8 +173,12 @@ fn render_worker_req(
                     crop_x,
                     crop_y,
                     early: req.clamp_level,
-                });
+                }));
             }
+        }
+        if !rendered {
+            warn!("render-worker: page {} failed", page + 1);
+            let _ = req.reply.send(WorkerReply::Failed { seq: req.seq, page });
         }
     }
 }
@@ -207,6 +222,7 @@ impl Reader {
             self.toolbar_bitmap = None;
             self.toolbar_popover_bitmap = None;
             self.study_bitmap = None; // panel de Estudio: layout nuevo
+            self.scroll_refresh_sizes(); // tamaños de la columna: otro contain
         }
         match self.mode {
             UiMode::Viewer => {
@@ -790,7 +806,7 @@ impl Reader {
         };
         self.render_seq += 1;
         let seq = self.render_seq;
-        let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
+        let (tx, rx) = std::sync::mpsc::channel::<WorkerReply>();
         self.inflight_target = Some(target_zoom);
         self.render_rx = Some(rx);
         let (win_w, win_h) = (self.win_w, self.win_h);
@@ -824,6 +840,7 @@ impl Reader {
     pub(crate) fn start_render_worker(&mut self, path: &str) {
         self.stop_render_worker();
         self.page_geometry_cache.clear();
+        self.render_failures.clear(); // documento nuevo: sin fallos previos
         let (tx, rx) = std::sync::mpsc::channel::<WorkerCmd>();
         let path = path.to_string();
         let handle = std::thread::Builder::new()
@@ -877,6 +894,18 @@ impl Reader {
         self.inflight_target = None;
     }
 
+    /// MuPDF no pudo renderizar `page`: se reintentará con espera
+    /// (`RenderFailures`) y, si se ve, su ranura muestra el error.
+    fn note_render_failure(&mut self, page: u32) {
+        self.render_failures.fail(page, Instant::now());
+        if page == self.page || self.scroll_visible_pages().contains(&page) {
+            self.mark_repaint();
+            if let Some(g) = self.gpu.as_mut() {
+                g.invalidate_dry();
+            }
+        }
+    }
+
     /// Sondeo del worker de render (desde `tick`): aplica los bitmaps
     /// recibidos a la caché y, cuando llega la página actual, fija
     /// `rendered_zoom` al nivel del lote y repintea (el blit pasa de preview
@@ -888,7 +917,16 @@ impl Reader {
                 return;
             };
             match rx.try_recv() {
-                Ok(msg) => {
+                Ok(reply) => {
+                    let msg = match reply {
+                        WorkerReply::Page(msg) => msg,
+                        WorkerReply::Failed { seq, page } => {
+                            if seq == self.render_seq {
+                                self.note_render_failure(page);
+                            }
+                            continue;
+                        }
+                    };
                     if msg.seq != self.render_seq {
                         continue; // lote obsoleto: descartar
                     }
@@ -905,6 +943,7 @@ impl Reader {
                     if msg.bitmap.width == 0 || msg.bitmap.height == 0 || msg.bitmap.data.is_empty()
                     {
                         warn!("dropping degenerate bitmap for page {}", msg.page + 1);
+                        self.note_render_failure(msg.page);
                         continue;
                     }
                     // Lote early que llegó tarde y grueso: el pinch siguió
@@ -924,6 +963,11 @@ impl Reader {
                             self.inflight_target = None;
                             continue;
                         }
+                    }
+                    let was_failed = self.render_failures.is_failed(msg.page);
+                    self.render_failures.succeed(msg.page);
+                    if was_failed && let Some(g) = self.gpu.as_mut() {
+                        g.invalidate_dry(); // fuera el marcador de error
                     }
                     self.cache.insert(
                         msg.page,

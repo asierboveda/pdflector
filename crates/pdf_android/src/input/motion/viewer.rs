@@ -224,6 +224,8 @@ pub(crate) fn handle_motion(
     }
     match action {
         MotionAction::Down => {
+            // Cualquier toque detiene la inercia del modo Scroll (PR-04).
+            reader.scroll_touch_down();
             // Primer dedo: arranca un posible TAP (página, indicador o
             // sheet) y arma el temporizador de LONG-PRESS (`press_at`, que
             // `tick_gestures` convierte en modo selección si el dedo se queda
@@ -343,6 +345,7 @@ pub(crate) fn handle_motion(
                         start: (x, y),
                         pan0: reader.begin_pan(),
                     };
+                    reader.scroll_track_drag(event_time, y);
                     return;
                 }
             }
@@ -488,6 +491,7 @@ pub(crate) fn handle_motion(
                                     pan0,
                                 };
                                 reader.set_pan(pan0.0 + (cx - start_x), pan0.1 + (cy - start_y));
+                                reader.scroll_track_drag(event_time, cy);
                             }
                             _ => {
                                 // A zoom 1 (o tacto ignorado tras escribir):
@@ -634,6 +638,7 @@ pub(crate) fn handle_motion(
                     // Dedo con herramienta activa: mover el documento (pan).
                     let (_, cx, cy) = reader.gesture.pointers[0];
                     reader.set_pan(pan0.0 + (cx - start.0), pan0.1 + (cy - start.1));
+                    reader.scroll_track_drag(event_time, cy);
                 }
                 GestureKind::ToolbarPress { start_x, start_y }
                     if reader.gesture.pointers.len() == 1 =>
@@ -679,9 +684,12 @@ pub(crate) fn handle_motion(
                     // acción se dispara aquí mismo, sin diferir. Un long-press
                     // habría cambiado el gesto a Selecting (`tick_gestures`),
                     // así que un tap nunca dispara la selección.
+                    // El toque que frenó una inercia del modo Scroll no es
+                    // un tap (PR-04).
+                    let swallowed = std::mem::take(&mut reader.scroll_tap_swallowed);
                     if let Some((_, x, y)) = up {
                         let moved = ((x - start_x).powi(2) + (y - start_y).powi(2)).sqrt();
-                        if moved <= TAP_SLOP {
+                        if moved <= TAP_SLOP && !swallowed {
                             fire_tap_action(reader, app, x, y);
                         }
                     }
@@ -743,8 +751,11 @@ pub(crate) fn handle_motion(
                     }
                 }
                 GestureKind::Pan { .. } => {
-                    // Fin del pan con dedo: no hay nada que asentar (el pan
-                    // ya quedó aplicado en cada Move).
+                    // Fin del pan con dedo: el pan ya quedó aplicado en cada
+                    // Move; en Scroll una suelta rápida sigue deslizando.
+                    if let Some((_, _, y)) = up {
+                        reader.scroll_release_drag(event_time, y);
+                    }
                 }
                 GestureKind::AiScroll { .. } => {
                     // Fin del scroll del panel: ya quedó aplicado en cada Move.

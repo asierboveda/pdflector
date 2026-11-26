@@ -15,6 +15,7 @@ use super::ffi as gl;
 use super::shaders::mat3_scale_translate;
 use super::surface::Gpu;
 use crate::reader::Reader;
+use crate::reader::{SlotDraw, slot_draw};
 use pdf_core::Bitmap;
 
 impl Gpu {
@@ -33,8 +34,21 @@ impl Gpu {
         }
         let hidden = reader.recorte_hidden_ids();
         for page in reader.scroll_visible_pages() {
-            let Some(entry) = reader.cache.peek(page) else {
-                continue; // aún sin render: queda el fondo (llega del worker)
+            let entry = reader.cache.peek(page);
+            match slot_draw(entry.is_some(), reader.render_failures.is_failed(page)) {
+                SlotDraw::Bitmap => {}
+                // Aún sin render: queda el fondo (llega del worker).
+                SlotDraw::Blank => continue,
+                SlotDraw::Error => {
+                    if let Some(rect) = reader.scroll_slot_rect(page) {
+                        self.draw_error_slot(rect, reader.dark);
+                        drew = true;
+                    }
+                    continue;
+                }
+            }
+            let Some(entry) = entry else {
+                continue;
             };
             let Some(transform) = reader.page_screen_transform(page) else {
                 continue;
@@ -82,6 +96,24 @@ impl Gpu {
             unsafe { gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, 0) };
         }
         drew
+    }
+
+    /// Marcador de una hoja que MuPDF no pudo renderizar (PR-04): la ranura
+    /// en un tono apagado con un aspa, hasta que un reintento la sustituya.
+    fn draw_error_slot(&mut self, rect: (f32, f32, f32, f32), dark: bool) {
+        let (l, t, r, b) = rect;
+        let (fill, mark) = if dark {
+            ([58, 44, 44, 255], [214, 96, 96, 255])
+        } else {
+            ([236, 228, 228, 255], [192, 64, 64, 255])
+        };
+        self.draw_solid_quad(l, t, r, b, fill);
+        // Aspa centrada (un tercio del lado menor).
+        let (cx, cy) = ((l + r) / 2.0, (t + b) / 2.0);
+        let s = ((r - l).min(b - t) / 6.0).max(8.0);
+        let hw = (s / 10.0).max(2.0);
+        self.draw_polyline_gpu(&[(cx - s, cy - s), (cx + s, cy + s)], hw, mark);
+        self.draw_polyline_gpu(&[(cx + s, cy - s), (cx - s, cy + s)], hw, mark);
     }
 
     /// Quad texturizado de una hoja: textura `tex` del bitmap `b` escalada

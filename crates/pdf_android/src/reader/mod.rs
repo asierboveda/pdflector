@@ -43,6 +43,8 @@ pub(crate) mod discover_categories;
 pub(crate) mod discover_state;
 #[path = "../discover.rs"]
 pub(crate) mod discover_worker;
+// Inercia del modo Scroll (PR-04): física pura del fling.
+mod fling;
 mod geometry;
 mod library;
 mod library_state;
@@ -51,6 +53,8 @@ mod navigation;
 mod pinch;
 mod recorte;
 mod redraw;
+// Reintento con espera de las hojas que MuPDF no pudo renderizar (PR-04).
+mod render_failures;
 mod scroll;
 mod seleccion;
 mod sheet_chrome;
@@ -63,7 +67,8 @@ mod tools;
 // Tipos del worker de render y del anclaje del pinch: campos del `struct Reader`.
 use geometry::PageGeometryCache;
 use pinch::PinchAnchor;
-use redraw::{RenderWorker, WorkerMsg};
+use redraw::{RenderWorker, WorkerReply};
+pub(crate) use render_failures::{SlotDraw, slot_draw};
 pub(crate) use scroll::ReadingMode;
 
 // API geométrica compartida del crate (paths `crate::reader::*` que consumen
@@ -505,6 +510,21 @@ pub(crate) struct Reader {
     /// la columna del modo Scroll (ranura uniforme); None hasta conocer la
     /// geometría de alguna página del documento (llega con el worker).
     pub(crate) scroll_ref_pts: Option<(f32, f32)>,
+    /// Geometría conocida de cada página del documento (PR-04): da a cada
+    /// hoja de la columna su propia ranura. No se expulsa como la
+    /// `page_geometry_cache` (5 entradas): la columna necesita TODAS.
+    pub(crate) scroll_geoms: Vec<Option<pdf_core::engine::PageGeometry>>,
+    /// Tamaños (px a zoom 1, contain) derivados de `scroll_geoms` para la
+    /// ventana y densidad de `scroll_sizes_key` (caché: el layout se pide
+    /// varias veces por frame).
+    pub(crate) scroll_sizes: std::sync::Arc<[Option<(f32, f32)>]>,
+    pub(crate) scroll_sizes_key: (i32, i32, u32),
+    /// Inercia del arrastre de un dedo en Scroll (PR-04) y el instante de
+    /// su último frame (el tick le inyecta el `dt`).
+    pub(crate) scroll_fling: fling::ScrollFling,
+    pub(crate) scroll_fling_at: Option<Instant>,
+    /// El Down en curso frenó una inercia: su Up no dispara el tap.
+    pub(crate) scroll_tap_swallowed: bool,
     /// Desplazamiento del bitmap de la LISTA dentro del buffer (picker;
     /// 0 por ahora — `pub(crate)` por el present GPU del picker).
     pub(crate) offset_x: i32,
@@ -841,8 +861,11 @@ pub(crate) struct Reader {
     /// el hilo UI): worker con su PROPIO documento (MuPDF no es Send — patrón
     /// de `prefetch.rs`). Cada lote lleva un `render_seq`; al recibir, si el
     /// seq no es el actual (el usuario hizo otro zoom/página), se descarta.
-    render_rx: Option<std::sync::mpsc::Receiver<WorkerMsg>>,
+    render_rx: Option<std::sync::mpsc::Receiver<WorkerReply>>,
     render_seq: u64,
+    /// Hojas cuyo render falló (PR-04): espera antes de reintentarlas y
+    /// marcador de error en su ranura de la columna.
+    pub(crate) render_failures: render_failures::RenderFailures,
     /// Zoom objetivo del último lote lanzado al worker (`launch_render`): lo
     /// usa `render_in_flight_for` para no duplicar renders del mismo nivel
     /// (el `rendered_zoom` aún es el del lote ANTERIOR hasta que aterriza el
