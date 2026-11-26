@@ -32,12 +32,15 @@
 //!   se conserva. Sin estado guardado → biblioteca.
 //! - La escritura es best-effort: un fallo de disco solo se loguea, no rompe
 //!   la app.
+//! - Todas las escrituras son atómicas (`pdf_core::write_atomic`: temporal +
+//!   `sync_all` + `rename`): un cierre o corte de luz a mitad no deja un JSON
+//!   truncado.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use log::{error, info, warn};
-use pdf_core::Color;
+use pdf_core::{Color, write_atomic};
 use serde::{Deserialize, Serialize};
 
 use crate::annotations::{DEFAULT_INK_COLOR, PenMode, STROKE_WIDTH_PT};
@@ -152,7 +155,7 @@ pub(crate) fn save_progress(internal_dir: Option<&Path>, books: &[BookProgress])
     let Ok(text) = serde_json::to_string_pretty(books) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save progress {}: {e}", path.display());
     }
 }
@@ -258,7 +261,7 @@ pub(crate) fn save_tool_state(internal_dir: Option<&Path>, state: &ToolState) {
     let Ok(text) = serde_json::to_string_pretty(state) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save tool state {}: {e}", path.display());
     }
 }
@@ -365,7 +368,7 @@ pub(crate) fn save_recents(internal_dir: Option<&Path>, recents: &[RecentEntry])
     let Ok(text) = serde_json::to_string_pretty(recents) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save recents {}: {e}", path.display());
     }
 }
@@ -413,7 +416,7 @@ pub(crate) fn save_state(internal_dir: Option<&Path>, state: &ViewerState) {
     let Ok(text) = serde_json::to_string_pretty(state) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save state {}: {e}", path.display());
     }
 }
@@ -513,7 +516,7 @@ pub fn save_papers(internal_dir: Option<&Path>, papers: &[PaperMeta]) {
     let Ok(text) = serde_json::to_string_pretty(papers) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save papers {}: {e}", path.display());
     }
 }
@@ -557,7 +560,7 @@ pub fn save_discover(internal_dir: Option<&Path>, prefs: &DiscoverPrefs) {
     let Ok(text) = serde_json::to_string_pretty(prefs) else {
         return;
     };
-    if let Err(e) = fs::write(&path, text) {
+    if let Err(e) = write_atomic(&path, text) {
         error!("save discover {}: {e}", path.display());
     }
 }
