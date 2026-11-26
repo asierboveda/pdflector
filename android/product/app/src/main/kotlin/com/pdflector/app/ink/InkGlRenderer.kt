@@ -6,7 +6,6 @@ import androidx.graphics.lowlatency.GLFrontBufferedRenderer
 import androidx.graphics.opengl.egl.EGLManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlin.math.sqrt
 
 internal data class InkSegment(
     val x0: Float,
@@ -142,9 +141,10 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
     private var transformLocation = -1
     private var colorLocation = -1
     private val vertices = ByteBuffer
-        .allocateDirect(8 * Float.SIZE_BYTES)
+        .allocateDirect(InkStrokeGeometry.MAX_FLOATS * Float.SIZE_BYTES)
         .order(ByteOrder.nativeOrder())
         .asFloatBuffer()
+    private val vertexScratch = FloatArray(InkStrokeGeometry.MAX_FLOATS)
     private val status = IntArray(1)
     private val orthoScratch = FloatArray(16)
     private val mvp = FloatArray(16)
@@ -207,9 +207,8 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
     }
 
     private fun drawSegment(segment: InkSegment) {
-        if (segment.widthPx <= 0f) return
-        fillQuad(segment)
-        vertices.position(0)
+        val vertexCount = fillGeometry(segment)
+        if (vertexCount == 0) return
 
         GLES20.glUseProgram(program)
         GLES20.glUniformMatrix4fv(transformLocation, 1, false, mvp, 0)
@@ -229,38 +228,26 @@ internal class InkGlRenderer(private val ledger: InkLedger) : GLFrontBufferedRen
             2 * Float.SIZE_BYTES,
             vertices,
         )
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertexCount)
         GLES20.glDisableVertexAttribArray(positionLocation)
     }
 
-    /** Writes the quad in surface pixel coordinates (top-left origin, y down); the GL uniform
-     * `uBufferTransform` (see [mvp]) carries these into clip space. */
-    private fun fillQuad(segment: InkSegment) {
-        val dx = segment.x1 - segment.x0
-        val dy = segment.y1 - segment.y0
-        val lengthSquared = dx * dx + dy * dy
-        val halfWidth = segment.widthPx / 2f
+    /** Writes the segment's triangles (see [InkStrokeGeometry]) in surface pixel coordinates
+     * (top-left origin, y down); the GL uniform `uBufferTransform` (see [mvp]) carries these into
+     * clip space. Returns the vertex count. */
+    private fun fillGeometry(segment: InkSegment): Int {
+        val count = InkStrokeGeometry.capsule(
+            segment.x0,
+            segment.y0,
+            segment.x1,
+            segment.y1,
+            segment.widthPx,
+            vertexScratch,
+        )
         vertices.position(0)
-        if (lengthSquared == 0f) {
-            putPixel(segment.x0 - halfWidth, segment.y0 + halfWidth)
-            putPixel(segment.x0 + halfWidth, segment.y0 + halfWidth)
-            putPixel(segment.x0 - halfWidth, segment.y0 - halfWidth)
-            putPixel(segment.x0 + halfWidth, segment.y0 - halfWidth)
-            return
-        }
-
-        val scale = halfWidth / sqrt(lengthSquared)
-        val normalX = -dy * scale
-        val normalY = dx * scale
-        putPixel(segment.x0 + normalX, segment.y0 + normalY)
-        putPixel(segment.x0 - normalX, segment.y0 - normalY)
-        putPixel(segment.x1 + normalX, segment.y1 + normalY)
-        putPixel(segment.x1 - normalX, segment.y1 - normalY)
-    }
-
-    private fun putPixel(x: Float, y: Float) {
-        vertices.put(x)
-        vertices.put(y)
+        vertices.put(vertexScratch, 0, count * 2)
+        vertices.position(0)
+        return count
     }
 
     private fun compileShader(type: Int, source: String): Int {
