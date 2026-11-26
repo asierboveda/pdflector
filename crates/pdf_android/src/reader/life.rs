@@ -74,6 +74,8 @@ impl Reader {
             scroll_geoms: Vec::new(),
             scroll_sizes: std::sync::Arc::from(Vec::new()),
             scroll_sizes_key: (0, 0, 0),
+            scroll_fling: Default::default(),
+            scroll_fling_at: None,
             offset_x: 0,
             offset_y: 0,
             win_w: 0,

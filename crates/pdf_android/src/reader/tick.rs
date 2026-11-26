@@ -67,6 +67,8 @@ impl Reader {
         // bloquea (preemption por seq); `render_in_flight_for` evita
         // duplicar el render al mismo nivel.
         if self.is_scroll_mode() && self.mode == UiMode::Viewer {
+            // Inercia del último arrastre (PR-04), antes de pedir renders.
+            self.scroll_fling_tick(Instant::now());
             // Modo continuo: el lote siguiente (visibles que faltan o a
             // otro zoom) en cuanto el worker queda libre.
             self.scroll_ensure_rendered();

@@ -28,7 +28,7 @@ use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES};
 use crate::view::{initial_scale_with_margin, viewport_margin_px};
 use pdf_core::Document;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Modo de lectura del visor (por documento, persistido en `library.json`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,9 +594,59 @@ impl Reader {
         self.scroll_moved(&layout, off);
     }
 
+    /// Un dedo toca la pantalla: la inercia se detiene en seco.
+    pub(crate) fn scroll_touch_down(&mut self) {
+        self.scroll_stop_fling();
+    }
+
+    /// Detiene la inercia (toque, salto, zoom, cambio de modo).
+    pub(crate) fn scroll_stop_fling(&mut self) {
+        self.scroll_fling.touch_down();
+        self.scroll_fling_at = None;
+    }
+
+    /// Muestra (`event_time` ns, y px) de un arrastre de un dedo en Scroll.
+    pub(crate) fn scroll_track_drag(&mut self, t_ns: i64, y: f32) {
+        if self.is_scroll_mode() {
+            self.scroll_fling.track(t_ns, y);
+        }
+    }
+
+    /// Fin del arrastre de un dedo: si la suelta fue rápida la columna
+    /// sigue deslizando (`scroll_fling_tick` en cada tick).
+    pub(crate) fn scroll_release_drag(&mut self, t_ns: i64, y: f32) {
+        if self.is_scroll_mode() && self.scroll_fling.release(t_ns, y) {
+            self.scroll_fling_at = Some(Instant::now());
+            self.mark_repaint();
+        }
+    }
+
+    /// Frame de inercia (desde `tick`): avanza la física el tiempo real
+    /// transcurrido (acotado: un tick tardío no pega un salto).
+    pub(crate) fn scroll_fling_tick(&mut self, now: Instant) {
+        let Some(at) = self.scroll_fling_at else {
+            return;
+        };
+        let dt = now.saturating_duration_since(at).as_secs_f32().min(0.05);
+        self.scroll_fling_at = Some(now);
+        let Some(layout) = self.scroll_layout() else {
+            self.scroll_stop_fling();
+            return;
+        };
+        let off = layout.offset_for_pos(self.scroll_pos);
+        match self.scroll_fling.frame(&layout, off, dt) {
+            Some(next) => self.scroll_set_pan(self.pan_x, -next),
+            None => self.scroll_fling_at = None,
+        }
+        if !self.scroll_fling.is_active() {
+            self.scroll_fling_at = None;
+        }
+    }
+
     /// Salto a `page` en Scroll (badge, ±10, "N / total"): la hoja queda
     /// arriba (o lo más arriba que permita el final del documento).
     pub(crate) fn scroll_to_page(&mut self, page: u32) {
+        self.scroll_stop_fling();
         match self.scroll_layout() {
             Some(layout) => {
                 let off = layout.offset_for_pos(page as f32);
@@ -653,6 +703,7 @@ impl Reader {
     /// Zoom del modo Scroll anclado en `anchor` (px de ventana): conserva el
     /// punto de documento bajo los dedos (`anchor_zoom`).
     pub(super) fn scroll_apply_zoom(&mut self, zoom: f32, anchor: (f32, f32)) {
+        self.scroll_stop_fling();
         let (Some(from), Some(to)) = (
             self.scroll_layout_at(self.zoom),
             self.scroll_layout_at(zoom),
@@ -760,6 +811,7 @@ impl Reader {
             return;
         }
         self.reading_mode = mode;
+        self.scroll_stop_fling();
         self.scroll_pos = self.page as f32;
         self.pan_x = 0.0;
         self.pan_y = 0.0;

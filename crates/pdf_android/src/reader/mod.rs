@@ -516,6 +516,10 @@ pub(crate) struct Reader {
     /// varias veces por frame).
     pub(crate) scroll_sizes: std::sync::Arc<[Option<(f32, f32)>]>,
     pub(crate) scroll_sizes_key: (i32, i32, u32),
+    /// Inercia del arrastre de un dedo en Scroll (PR-04) y el instante de
+    /// su último frame (el tick le inyecta el `dt`).
+    pub(crate) scroll_fling: fling::ScrollFling,
+    pub(crate) scroll_fling_at: Option<Instant>,
     /// Desplazamiento del bitmap de la LISTA dentro del buffer (picker;
     /// 0 por ahora — `pub(crate)` por el present GPU del picker).
     pub(crate) offset_x: i32,
