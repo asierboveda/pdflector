@@ -76,6 +76,7 @@ impl Reader {
             scroll_sizes_key: (0, 0, 0),
             scroll_fling: Default::default(),
             scroll_fling_at: None,
+            scroll_tap_swallowed: false,
             offset_x: 0,
             offset_y: 0,
             win_w: 0,

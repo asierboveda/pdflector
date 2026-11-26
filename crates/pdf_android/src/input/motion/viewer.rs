@@ -684,9 +684,12 @@ pub(crate) fn handle_motion(
                     // acción se dispara aquí mismo, sin diferir. Un long-press
                     // habría cambiado el gesto a Selecting (`tick_gestures`),
                     // así que un tap nunca dispara la selección.
+                    // El toque que frenó una inercia del modo Scroll no es
+                    // un tap (PR-04).
+                    let swallowed = std::mem::take(&mut reader.scroll_tap_swallowed);
                     if let Some((_, x, y)) = up {
                         let moved = ((x - start_x).powi(2) + (y - start_y).powi(2)).sqrt();
-                        if moved <= TAP_SLOP {
+                        if moved <= TAP_SLOP && !swallowed {
                             fire_tap_action(reader, app, x, y);
                         }
                     }

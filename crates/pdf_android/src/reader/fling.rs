@@ -132,9 +132,8 @@ impl ScrollFling {
     /// Un dedo toca la pantalla: la inercia se detiene en seco. Devuelve
     /// si había inercia (ese toque solo frena: no es un tap).
     pub(crate) fn touch_down(&mut self) -> bool {
-        self.fling = None;
         self.tracker.reset();
-        false
+        self.fling.take().is_some()
     }
 
     /// Muestra de un arrastre de un dedo en curso.
