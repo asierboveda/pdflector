@@ -153,6 +153,19 @@ impl Reader {
         if (self.zoom - zoom).abs() < 1e-4 {
             return;
         }
+        // Modo continuo: zoom anclado de la columna (sin render temprano:
+        // `scroll_ensure_rendered` re-renderiza tras la quietud del gesto).
+        if self.is_scroll_mode() {
+            let anchor = self
+                .pinch
+                .map(|p| (p.ax, p.ay))
+                .unwrap_or((self.win_w as f32 / 2.0, self.win_h as f32 / 2.0));
+            self.scroll_apply_zoom(zoom, anchor);
+            if self.window.is_some() {
+                self.blit();
+            }
+            return;
+        }
         // De vuelta a zoom 1.0 (PINCH_MIN): la página vuelve a su posición
         // natural (centrada en ambos ejes). BUG: sin este
         // reset, un pan residual de un zoom previo dejaba la vista
@@ -232,6 +245,17 @@ impl Reader {
         // Sin cambio REAL de zoom (p. ej. dos dedos tocando sin Moves, o un
         // pinch-in que se quedó en el mínimo): no re-renderizar — evita
         // limpiar la caché y pagar el render (~20-40 ms) por un no-op.
+        if self.is_scroll_mode() {
+            if (self.zoom - zoom).abs() >= 1e-4 {
+                let anchor = self
+                    .pinch
+                    .map(|p| (p.ax, p.ay))
+                    .unwrap_or((self.win_w as f32 / 2.0, self.win_h as f32 / 2.0));
+                self.scroll_apply_zoom(zoom, anchor);
+            }
+            self.scroll_zoom_settled();
+            return;
+        }
         if (self.zoom - zoom).abs() < 1e-4 && (self.rendered_zoom - zoom).abs() < 1e-4 {
             return;
         }
