@@ -78,8 +78,8 @@ pub(crate) use geometry::{
     lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect, page_badge_size,
     picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect,
     sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_mode_y, sheet_nav_y, sheet_pad,
-    sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
-    viewer_top_chrome_h, wrap_text_chars,
+    sheet_study_y, sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect,
+    viewer_bottom_chrome_h, viewer_top_chrome_h, wrap_text_chars,
 };
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.

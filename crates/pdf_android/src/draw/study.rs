@@ -6,7 +6,7 @@
 //! la fuente ÚNICA de geometría: la usan el render (`render_study_panel`) y
 //! el hit-test del tap (`study_hit`), igual que `menus.rs` y el sheet.
 
-use crate::notebook::Note;
+use crate::notebook::{Note, format_date};
 
 use super::ButtonRect;
 
@@ -87,33 +87,245 @@ pub(crate) const ROW_PREVIEW_LINES: usize = 2;
 /// Líneas visibles del campo de texto del editor.
 pub(crate) const FIELD_LINES: usize = 4;
 
+/// Tamaño del texto de las notas (mismo cuerpo que el panel de IA).
+pub(crate) const STUDY_TEXT_SIZE: f32 = 18.0;
+/// Interlineado del texto de las notas.
+pub(crate) const STUDY_LINE_H: f32 = 26.0;
+/// Alto de la cabecera del panel (título + botones).
+pub(crate) const STUDY_HEADER_H: f32 = 56.0;
+/// Margen interior del panel.
+pub(crate) const STUDY_PAD: f32 = 20.0;
+
+const MARGIN: f32 = 16.0;
+const BTN_H: f32 = 40.0;
+const GAP: f32 = 8.0;
+const ROW_H: f32 = 100.0;
+const ROW_GAP: f32 = 8.0;
+const ROW_BTN_W: f32 = 104.0;
+const EMPTY_H: f32 = 72.0;
+const HINT_H: f32 = 40.0;
+
+/// Caracteres que caben en `w` px con el cuerpo de las notas (estimación
+/// de ancho medio de glifo, la misma del panel de IA).
+fn chars_for(w: f32) -> usize {
+    ((w / (STUDY_TEXT_SIZE * 0.52)).floor() as usize).max(8)
+}
+
 /// Layout del panel (fuente única de dibujo e hit-test).
-pub(crate) fn study_layout(_win_w: f32, _win_h: f32, _input: &StudyInput) -> StudyLayout {
-    StudyLayout {
-        rect: (0.0, 0.0, 0.0, 0.0),
-        buttons: Vec::new(),
-        rows: Vec::new(),
-        field: None,
-        scroll: 0,
-        max_scroll: 0,
-        field_chars: 1,
+pub(crate) fn study_layout(win_w: f32, win_h: f32, input: &StudyInput) -> StudyLayout {
+    let panel_w = (win_w - 2.0 * MARGIN).clamp(200.0, 1080.0);
+    let x = (win_w - panel_w) / 2.0;
+    match input.view {
+        StudyView::Notebook => notebook_layout(win_h, x, panel_w, input),
+        StudyView::NoteEditor | StudyView::KeyEditor => editor_layout(win_h, x, panel_w, input),
     }
 }
 
+fn notebook_layout(win_h: f32, x: f32, panel_w: f32, input: &StudyInput) -> StudyLayout {
+    let n = input.notes.len();
+    let max_body = (win_h * 0.78 - STUDY_HEADER_H - 2.0 * STUDY_PAD).max(ROW_H);
+    let visible = (((max_body + ROW_GAP) / (ROW_H + ROW_GAP)).floor() as usize).max(1);
+    let max_scroll = n.saturating_sub(visible);
+    let scroll = input.scroll.min(max_scroll);
+    let shown = n.saturating_sub(scroll).min(visible);
+    let body_h = if shown == 0 {
+        EMPTY_H
+    } else {
+        shown as f32 * (ROW_H + ROW_GAP) - ROW_GAP
+    };
+    let panel_h = STUDY_HEADER_H + body_h + 2.0 * STUDY_PAD;
+    let y = ((win_h - panel_h) / 2.0).max(8.0);
+    let right = x + panel_w;
+
+    // Cabecera, alineada a la derecha: [+ Nota][▲][▼][×].
+    let mut buttons: Vec<(StudyHit, ButtonRect)> = Vec::with_capacity(4);
+    let bt = y + (STUDY_HEADER_H - BTN_H) / 2.0;
+    let bb = bt + BTN_H;
+    let mut bx = right - STUDY_PAD - BTN_H;
+    buttons.push((StudyHit::Close, (bx, bt, bx + BTN_H, bb)));
+    if max_scroll > 0 {
+        bx -= BTN_H + GAP;
+        buttons.push((StudyHit::ScrollDown, (bx, bt, bx + BTN_H, bb)));
+        bx -= BTN_H + GAP;
+        buttons.push((StudyHit::ScrollUp, (bx, bt, bx + BTN_H, bb)));
+    }
+    let new_w = 132.0;
+    bx -= new_w + GAP;
+    buttons.push((StudyHit::NewNote, (bx, bt, bx + new_w, bb)));
+
+    let body_top = y + STUDY_HEADER_H + STUDY_PAD;
+    let rows = input
+        .notes
+        .iter()
+        .skip(scroll)
+        .take(shown)
+        .enumerate()
+        .map(|(i, note)| {
+            let top = body_top + i as f32 * (ROW_H + ROW_GAP);
+            let rect = (x + STUDY_PAD, top, right - STUDY_PAD, top + ROW_H);
+            let bt = top + (ROW_H - BTN_H) / 2.0;
+            let del_r = rect.2 - 12.0;
+            let delete = (del_r - ROW_BTN_W, bt, del_r, bt + BTN_H);
+            let edit = (delete.0 - GAP - ROW_BTN_W, bt, delete.0 - GAP, bt + BTN_H);
+            let text_w = edit.0 - 16.0 - (rect.0 + 16.0);
+            NoteRowLayout {
+                id: note.id,
+                rect,
+                edit,
+                delete,
+                meta: note_meta(note),
+                lines: preview_lines(&note.text, chars_for(text_w)),
+                confirm_delete: input.confirm_delete == Some(note.id),
+            }
+        })
+        .collect();
+
+    StudyLayout {
+        rect: (x, y, right, y + panel_h),
+        buttons,
+        rows,
+        field: None,
+        scroll,
+        max_scroll,
+        field_chars: 0,
+    }
+}
+
+fn editor_layout(win_h: f32, x: f32, panel_w: f32, input: &StudyInput) -> StudyLayout {
+    // Arriba de la pantalla: el teclado del sistema ocupa la mitad inferior.
+    let y = (win_h * 0.05).clamp(24.0, 96.0);
+    let right = x + panel_w;
+    let field_top = y + STUDY_HEADER_H + STUDY_PAD;
+    let field_h = FIELD_LINES as f32 * STUDY_LINE_H + 24.0;
+    let field = (
+        x + STUDY_PAD,
+        field_top,
+        right - STUDY_PAD,
+        field_top + field_h,
+    );
+    let bt = field.3 + HINT_H;
+    let bb = bt + BTN_H + 4.0;
+    let mut buttons: Vec<(StudyHit, ButtonRect)> = Vec::with_capacity(3);
+    let w = 148.0;
+    let save_l = right - STUDY_PAD - w;
+    buttons.push((StudyHit::Save, (save_l, bt, save_l + w, bb)));
+    let cancel_l = save_l - GAP - w;
+    buttons.push((StudyHit::Cancel, (cancel_l, bt, cancel_l + w, bb)));
+    if input.view == StudyView::KeyEditor && input.has_key {
+        let l = x + STUDY_PAD;
+        buttons.push((StudyHit::ClearKey, (l, bt, l + 176.0, bb)));
+    }
+    StudyLayout {
+        rect: (x, y, right, bb + STUDY_PAD),
+        buttons,
+        rows: Vec::new(),
+        field: Some(field),
+        scroll: 0,
+        max_scroll: 0,
+        field_chars: chars_for(field.2 - field.0 - 24.0),
+    }
+}
+
+fn contains((l, t, r, b): ButtonRect, x: f32, y: f32) -> bool {
+    x >= l && x < r && y >= t && y < b
+}
+
 /// Hit-test de un tap: None si cae FUERA del panel.
-pub(crate) fn study_hit(_layout: &StudyLayout, _x: f32, _y: f32) -> Option<StudyHit> {
-    None
+pub(crate) fn study_hit(layout: &StudyLayout, x: f32, y: f32) -> Option<StudyHit> {
+    if !contains(layout.rect, x, y) {
+        return None;
+    }
+    if let Some((hit, _)) = layout.buttons.iter().find(|(_, r)| contains(*r, x, y)) {
+        return Some(*hit);
+    }
+    for row in &layout.rows {
+        if contains(row.edit, x, y) {
+            return Some(StudyHit::EditNote(row.id));
+        }
+        if contains(row.delete, x, y) {
+            return Some(StudyHit::DeleteNote(row.id));
+        }
+        if contains(row.rect, x, y) {
+            return Some(StudyHit::OpenNote(row.id));
+        }
+    }
+    if layout.field.is_some_and(|f| contains(f, x, y)) {
+        return Some(StudyHit::Field);
+    }
+    Some(StudyHit::Inside)
 }
 
 /// Envoltorio de texto plano por palabras a `max_chars` columnas (respeta
 /// los saltos de línea; parte palabras más largas que la línea).
-pub(crate) fn wrap_plain(_text: &str, _max_chars: usize) -> Vec<String> {
-    Vec::new()
+pub(crate) fn wrap_plain(text: &str, max_chars: usize) -> Vec<String> {
+    let max = max_chars.max(1);
+    let mut out = Vec::new();
+    if text.is_empty() {
+        return out;
+    }
+    for para in text.split('\n') {
+        let mut line = String::new();
+        let mut len = 0usize;
+        for word in para.split_whitespace() {
+            let mut word: Vec<char> = word.chars().collect();
+            // Palabra más larga que la línea: trocearla.
+            while word.len() > max {
+                if len > 0 {
+                    out.push(std::mem::take(&mut line));
+                    len = 0;
+                }
+                let rest = word.split_off(max);
+                out.push(word.into_iter().collect());
+                word = rest;
+            }
+            if word.is_empty() {
+                continue;
+            }
+            let need = if len == 0 {
+                word.len()
+            } else {
+                len + 1 + word.len()
+            };
+            if need > max {
+                out.push(std::mem::take(&mut line));
+                len = 0;
+            }
+            if len > 0 {
+                line.push(' ');
+                len += 1;
+            }
+            line.extend(word.iter());
+            len += word.len();
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// Vista previa de una nota: `ROW_PREVIEW_LINES` líneas, con "…" si sigue.
+fn preview_lines(text: &str, max_chars: usize) -> Vec<String> {
+    let mut lines = wrap_plain(text, max_chars);
+    if lines.len() > ROW_PREVIEW_LINES {
+        lines.truncate(ROW_PREVIEW_LINES);
+        if let Some(last) = lines.last_mut() {
+            let keep: String = last.chars().take(max_chars.saturating_sub(1)).collect();
+            *last = format!("{}…", keep.trim_end());
+        }
+    }
+    lines
 }
 
 /// Metadatos de la fila: página (1-based) y fecha de creación.
-pub(crate) fn note_meta(_note: &Note) -> String {
-    String::new()
+pub(crate) fn note_meta(note: &Note) -> String {
+    let date = format_date(note.created_unix);
+    let mut meta = match note.page {
+        Some(p) => format!("Pág. {} · {date}", p + 1),
+        None => format!("Nota general · {date}"),
+    };
+    if note.edited_unix != note.created_unix {
+        meta.push_str(" · editada");
+    }
+    meta
 }
 
 #[cfg(test)]

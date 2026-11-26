@@ -310,9 +310,10 @@ pub(crate) fn viewer_bottom_chrome_h(win_h: i32) -> f32 {
     (win_h as f32 * 0.025).clamp(28.0, 48.0) + 76.0 + 16.0
 }
 
-/// Alto (px) del sheet de ajustes (B2: ajustado al contenido real ~42% de win_h).
+/// Alto (px) del sheet de ajustes (B2: ajustado al contenido real; 5 filas
+/// desde PR-02 → ~46% de win_h, mínimo 760 px para que quepan las secciones).
 pub(crate) fn sheet_h(win_h: i32) -> i32 {
-    (win_h as f32 * 0.42).clamp(650.0, 950.0).round() as i32
+    (win_h as f32 * 0.46).clamp(760.0, 1040.0).round() as i32
 }
 
 /// Pad horizontal del sheet (px).
@@ -326,28 +327,30 @@ pub(crate) fn sheet_btn_h(_win_h: i32) -> f32 {
 }
 
 /// Y del borde superior de la fila de temas del sheet (B2: distribuido
-/// uniforme; 4 filas desde PR-01).
+/// uniforme; 5 filas desde PR-02, separadas un 17% del alto del sheet).
 pub(crate) fn sheet_theme_y(win_h: i32) -> f32 {
     let sh = sheet_h(win_h) as f32;
-    (sh * 0.15).clamp(90.0, 150.0)
+    (sh * 0.12).clamp(90.0, 150.0)
 }
 
 /// Y del borde superior de la fila del modo de lectura (Tap / Scroll).
 pub(crate) fn sheet_mode_y(win_h: i32) -> f32 {
-    let sh = sheet_h(win_h) as f32;
-    (sh * 0.37).clamp(240.0, 350.0)
+    sheet_h(win_h) as f32 * 0.29
 }
 
 /// Y del borde superior de la fila de navegación del sheet (B2: distribuido uniforme).
 pub(crate) fn sheet_nav_y(win_h: i32) -> f32 {
-    let sh = sheet_h(win_h) as f32;
-    (sh * 0.59).clamp(380.0, 560.0)
+    sheet_h(win_h) as f32 * 0.46
+}
+
+/// Y del borde superior de la fila de Estudio (cuaderno + clave de Gemini, PR-02).
+pub(crate) fn sheet_study_y(win_h: i32) -> f32 {
+    sheet_h(win_h) as f32 * 0.63
 }
 
 /// Y del borde superior de la fila de acciones del sheet (B2: distribuido uniforme).
 pub(crate) fn sheet_act_y(win_h: i32) -> f32 {
-    let sh = sheet_h(win_h) as f32;
-    (sh * 0.81).clamp(520.0, 770.0)
+    sheet_h(win_h) as f32 * 0.80
 }
 
 /// Ancho (px) de cada botón de 3 por fila del sheet.
