@@ -3,16 +3,14 @@
 /corpus
 /.worktrees/
 /.venv/
-docs/.obsidian/workspace.json
 # TCL benchmark JSON runs (generados por tools/adb-bench.sh)
 /bench-results-TCL-*.json
 
 # Ecosystem agent skills (installed via `npx skills add`; reproducible from
-# skills-lock.json). Project-authored skills live in .agents/skills/ and are
-# explicitly whitelisted below (canonical path per AGENTS.md §3).
+# skills-lock.json). Project-authored skills live in .agents/skills/.
 /.agents/skills/*
+!/.agents/skills/kanvas/
 !/.agents/skills/master-sync/
-!/.agents/skills/pdflector-rendimiento/
 /.claude/skills/
 
 # API keys locales de IA (uso personal, NO commitear)

@@ -1,0 +1,155 @@
+{
+  "kanvas": 1,
+  "title": "pdflector",
+  "groups": [
+    {
+      "id": "UI",
+      "name": "Astryx UI & Tablet"
+    },
+    {
+      "id": "TD",
+      "name": "Test Loop & Hygiene"
+    },
+    {
+      "id": "CO",
+      "name": "Core & Safety"
+    },
+    {
+      "id": "IN",
+      "name": "Ink & Architecture"
+    },
+    {
+      "id": "PR",
+      "name": "Product Reshape"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "UI-01",
+      "title": "Fix 2 TCL 9469X UI quirks & full on-device check",
+      "state": "proposed",
+      "group": "UI",
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Fix the two visual issues seen on the tablet and verify the remaining screens live on the TCL 9469X.\n- [ ] Reader top-right button renders its full icon glyph instead of only a bottom blue dash\n- [ ] Library top-right icon buttons (`...`, sort) match the height of the `+ Añadir` pill\n- [ ] Verify Settings sheet, Dark/Sepia themes, portrait orientation, AI panel, and stylus ink on device"
+    },
+    {
+      "id": "UI-02",
+      "title": "Merge Astryx redesign to main & prune git/PR noise",
+      "state": "proposed",
+      "group": "UI",
+      "deps": ["UI-01"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Consolidate `feat/frontend-redesign-astryx` onto `main` and clean stale repo clutter.\n- [ ] Merge `feat/frontend-redesign-astryx` into `main` with CI green\n- [ ] Remove stale `actualizar` worktree\n- [ ] Triage open Dependabot PRs (#41, #42, #44, #54, #57, #58, #59)"
+    },
+    {
+      "id": "TD-01",
+      "title": "Run 114 pdf_android unit tests on Linux host & CI",
+      "state": "proposed",
+      "group": "TD",
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Make `crates/pdf_android` pure unit tests execute on Linux host and in CI instead of only compiling.\n- [ ] Gate Android-only deps (`android-activity`, `ndk`, `jni`, `android_logger`) under `cfg(target_os = \"android\")` without adding a new crate\n- [ ] `cargo test -p pdf_android --lib` runs and passes on host (including Astryx contrast tests)\n- [ ] Add host test step to `.github/workflows/ci.yml` while keeping Android clippy clean"
+    },
+    {
+      "id": "TD-02",
+      "title": "Delete dead theme tokens behind allow(dead_code)",
+      "state": "proposed",
+      "group": "TD",
+      "deps": ["TD-01"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Remove unused spacing/radius tokens and `#[allow(dead_code)]` suppressions in `crates/pdf_android/src/lib.rs`.\n- [ ] Zero `#[allow(dead_code)]` attributes in `theme`\n- [ ] Host tests and Android `clippy -D warnings` pass"
+    },
+    {
+      "id": "CO-01",
+      "title": "Unify atomic file writes in persist.rs & export.rs",
+      "state": "proposed",
+      "group": "CO",
+      "deps": ["TD-01"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Prevent corrupted library or reader state on crash/power loss by replacing raw `fs::write` calls with temp-file + rename.\n- [ ] One minimal atomic write helper used by all 6 writes in `persist.rs` and `export_markdown_to_file` in `export.rs`\n- [ ] Unit tests confirm no leftover temp files and prior file stays intact on write failure"
+    },
+    {
+      "id": "CO-02",
+      "title": "Move pdf_core::theme into pdf_app",
+      "state": "proposed",
+      "group": "CO",
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Keep `pdf_core` free of UI styling by moving `crates/pdf_core/src/theme.rs` into the desktop testbed `pdf_app`, its only caller.\n- [ ] `pdf_core` no longer exposes `theme`\n- [ ] `pdf_app` and Android builds/tests pass cleanly"
+    },
+    {
+      "id": "CO-03",
+      "title": "Single-source menu hitboxes & bounded toast layout",
+      "state": "proposed",
+      "group": "CO",
+      "deps": ["TD-01"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Eliminate hitbox/render drift in `draw/menus.rs` and stop long error messages from clipping in `render_toast`.\n- [ ] `draw_view_menu` and `draw_settings_menu` render directly from `*_menu_geometry` rects\n- [ ] `render_toast` expands and truncates cleanly within the viewport\n- [ ] Host unit tests verify menu bounds and long toast truncation"
+    },
+    {
+      "id": "IN-01",
+      "title": "Wet-to-dry ink rounded caps/joins & rebase PR #55",
+      "state": "proposed",
+      "group": "IN",
+      "deps": ["UI-02"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Stop handwritten strokes from visibly changing shape on pen lift and skip redundant native EGL repaints while wet ink is active.\n- [ ] `InkGlRenderer.kt` emits rounded caps/joins matching Rust `draw_polyline_gpu`, verified by JVM unit tests\n- [ ] Rebase PR #55 (`issue-45`) onto `main`\n- [ ] Verify smooth wet-to-dry transition with the stylus on TCL 9469X"
+    },
+    {
+      "id": "IN-02",
+      "title": "Split input/motion.rs by UiMode",
+      "state": "proposed",
+      "group": "IN",
+      "deps": ["TD-01"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Break the ~1,945-line `input/motion.rs` mechanically into `input/motion/{mod,viewer,library,discover,picker}.rs` so touch/stylus edits stay isolated.\n- [ ] Host characterization tests cover mode routing edge cases\n- [ ] Behavior unchanged; host tests and Android clippy green"
+    },
+    {
+      "id": "IN-03",
+      "title": "Surface silent prefetch errors & split jni.rs",
+      "state": "proposed",
+      "group": "IN",
+      "deps": ["TD-01"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Stop dropping page-render errors silently in `pdf_core::prefetch` and split the ~1,584-line `jni.rs` by concern (`window`, `picker`, `ime`).\n- [ ] Failing mock `RenderEngine` test verifies errors are surfaced instead of dropped\n- [ ] `jni.rs` split mechanically without changing JNI behavior"
+    },
+    {
+      "id": "PR-01",
+      "title": "Reading UX: continuous scroll & 1-finger pan/zoom polish",
+      "state": "proposed",
+      "group": "PR",
+      "deps": ["UI-02", "IN-02"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Add continuous vertical scroll mode alongside tap-to-turn, with responsive 1-finger pan and pinch-zoom on the tablet.\n- [ ] Persisted Tap / Scroll mode toggle per document\n- [ ] Verified smooth on TCL 9469X"
+    },
+    {
+      "id": "PR-02",
+      "title": "Study workflow: in-app Gemini key, notes, figures & Anki",
+      "state": "proposed",
+      "group": "PR",
+      "deps": ["UI-02", "CO-01"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Replace compile-time `google_key.txt` with in-app API key configuration and define scope for study tools (per-document notebook, figure preview, Anki export).\n- [ ] Decide which study features to keep in scope before starting"
+    },
+    {
+      "id": "PR-03",
+      "title": "Display-list memory cap & 120 Hz profiling on TCL 9469X",
+      "state": "proposed",
+      "group": "PR",
+      "deps": ["IN-01"],
+      "at": "2026-11-26T13:03:52Z",
+      "by": "gemini",
+      "desc": "Bound MuPDF display-list retention and measure real PSS and frame-time p95 on the TCL 9469X after the UI and ink updates.\n- [ ] Explicit display-list budget in `pdf_core`\n- [ ] On-device PSS & frame-time check confirming no regression"
+    }
+  ]
+}
