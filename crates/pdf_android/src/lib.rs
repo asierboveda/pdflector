@@ -43,6 +43,7 @@ mod annotations;
 mod cache;
 mod draw;
 mod folder_sync;
+mod gemini_key;
 mod gpu;
 pub mod ink;
 mod input;
