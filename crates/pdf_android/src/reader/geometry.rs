@@ -112,8 +112,21 @@ impl PageScreenTransform {
         geometry: pdf_core::engine::PageGeometry,
         rect: (f32, f32, f32, f32),
     ) -> Option<Self> {
-        let _ = (geometry, rect);
-        None
+        let bounds = geometry.visible_bounds;
+        let (l, t, r, b) = rect;
+        if ![l, t, r, b].iter().all(|v| v.is_finite()) || r <= l || b <= t {
+            return None;
+        }
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            return None;
+        }
+        let scale = (r - l) / bounds.width();
+        (scale.is_finite() && scale > 0.0).then_some(Self {
+            geometry,
+            scale,
+            origin_x: l,
+            origin_y: t,
+        })
     }
 
     /// Quad del bitmap residente de esta página (render full `full_w` px de
@@ -122,8 +135,17 @@ impl PageScreenTransform {
     /// para bitmaps a CUALQUIER escala de render (el modo Scroll dibuja
     /// páginas renderizadas a zooms distintos).
     pub(crate) fn bitmap_quad(self, full_w: u32, crop_x: u32, crop_y: u32) -> (f32, f32, f32) {
-        let _ = (full_w, crop_x, crop_y);
-        (1.0, 0.0, 0.0)
+        let bw = self.geometry.visible_bounds.width();
+        let s = if full_w > 0 && bw > 0.0 {
+            self.scale * bw / full_w as f32
+        } else {
+            1.0
+        };
+        (
+            s,
+            self.origin_x + crop_x as f32 * s,
+            self.origin_y + crop_y as f32 * s,
+        )
     }
 
     pub(crate) fn scale(self) -> f32 {
