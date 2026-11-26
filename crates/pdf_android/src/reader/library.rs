@@ -288,6 +288,8 @@ impl Reader {
                 page_count: 0,
                 last_read_unix: now,
                 added_unix: now,
+                reading_mode: crate::reader::ReadingMode::Tap,
+                scroll_frac: 0.0,
             })
             .collect();
         info!(

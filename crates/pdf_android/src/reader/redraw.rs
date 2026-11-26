@@ -127,12 +127,7 @@ fn render_worker_req(
             let fit = initial_scale_with_margin(pw, ph, req.win_w, req.win_h, req.margin_px);
             // Presupuesto: el bitmap debe caber en la caché. El worker no tiene
             // acceso a `self`, así que aplica la regla con su propio cálculo.
-            let mut scale = fit * target;
-            let px_pdf = pw as f64 * ph as f64;
-            let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
-            while scale > 0.001 && px_pdf * scale as f64 * scale as f64 > max_px {
-                scale *= 0.5;
-            }
+            let scale = budget_render_scale(fit, target, pw, ph);
             let target_eff = if fit > 0.0 { scale / fit } else { 1.0 };
             if let Ok(bmp) = doc.render_page(page, scale) {
                 let (full_w, full_h) = (bmp.width, bmp.height);
@@ -171,6 +166,20 @@ fn render_worker_req(
             }
         }
     }
+}
+
+/// Escala de render del worker para una página de `pw × ph` puntos con
+/// escala contain `fit` y zoom `target`: se reduce por MITADES hasta que el
+/// bitmap cabe en la caché (`CACHE_BYTE_BUDGET`). El modo Scroll la usa
+/// para saber a qué zoom quedará realmente un bitmap pedido.
+pub(crate) fn budget_render_scale(fit: f32, target: f32, pw: f32, ph: f32) -> f32 {
+    let mut scale = fit * target;
+    let px_pdf = pw as f64 * ph as f64;
+    let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
+    while scale > 0.001 && px_pdf * scale as f64 * scale as f64 > max_px {
+        scale *= 0.5;
+    }
+    scale
 }
 
 impl Reader {
@@ -213,7 +222,10 @@ impl Reader {
                         .filter(|&p| self.cache.peek(p).is_none())
                         .collect::<Vec<u32>>()
                 };
-                if !needs.is_empty() && self.render_rx.is_none() {
+                if self.is_scroll_mode() {
+                    // Modo continuo: visibles + vecinas (`render_plan`).
+                    self.scroll_ensure_rendered();
+                } else if !needs.is_empty() && self.render_rx.is_none() {
                     self.launch_render(needs, self.rendered_zoom, false);
                 }
                 // Chrome del visor y sheet de ajustes
@@ -864,6 +876,9 @@ impl Reader {
                         continue; // lote obsoleto: descartar
                     }
                     self.cache_page_geometry(msg.page, msg.geometry);
+                    // Primera geometría del documento: referencia de la
+                    // columna del modo Scroll.
+                    self.scroll_note_geometry(msg.page);
                     // Guard (robustez del pase de página): un bitmap
                     // degenerado (0×0 o data vacía — dims degenerados del
                     // render) NUNCA entra en la caché: envenenaría la página
@@ -916,6 +931,12 @@ impl Reader {
                         if let Some(g) = self.gpu.as_mut() {
                             g.invalidate_dry();
                         }
+                    } else if self.scroll_visible_pages().contains(&msg.page) {
+                        // Modo continuo: otra hoja visible de la columna.
+                        self.mark_repaint();
+                        if let Some(g) = self.gpu.as_mut() {
+                            g.invalidate_dry();
+                        }
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -925,5 +946,27 @@ impl Reader {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::budget_render_scale;
+
+    #[test]
+    fn budget_scale_is_the_requested_one_when_it_fits() {
+        // A4 (595×842 pt) a contain ~1.95 y zoom 1: ~7,6 MiB, cabe.
+        assert_eq!(budget_render_scale(1.95, 1.0, 595.0, 842.0), 1.95);
+    }
+
+    #[test]
+    fn budget_scale_halves_until_the_bitmap_fits_the_cache() {
+        let s = budget_render_scale(1.95, 8.0, 595.0, 842.0);
+        let bytes = 595.0 * 842.0 * s * s * 4.0;
+        assert!(bytes <= crate::cache::CACHE_BYTE_BUDGET as f32);
+        assert!(s < 1.95 * 8.0);
+        // Exactamente una potencia de dos por debajo de lo pedido.
+        let k = (1.95 * 8.0) / s;
+        assert_eq!(k, 2f32.powi(k.log2().round() as i32));
     }
 }

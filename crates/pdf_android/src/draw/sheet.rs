@@ -5,8 +5,8 @@
 //! `input::sheet_tap`) y render del panel deslizante (Canvas+JNI).
 
 use crate::reader::{
-    Reader, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad,
-    sheet_theme_btn_w, sheet_theme_y,
+    Reader, ReadingMode, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_mode_y, sheet_nav_y,
+    sheet_pad, sheet_theme_btn_w, sheet_theme_y,
 };
 use crate::theme;
 use pdf_core::{Bitmap, Document};
@@ -17,12 +17,18 @@ use super::{
 };
 
 /// Botones del sheet de ajustes del visor (S2, S3):
-/// Fila 0 = 4 Temas (swatches); Fila 1 = Navegación (−10 / Pág / +10); Fila 2 = Acciones.
+/// Fila 0 = 4 Temas (swatches); Fila 1 = Modo de lectura (Tap / Scroll);
+/// Fila 2 = Navegación (−10 / Pág / +10); Fila 3 = Acciones.
 pub(crate) fn sheet_buttons(
     _reader: &Reader,
     win_w: f32,
     win_h: f32,
 ) -> Vec<(&'static str, ButtonRect)> {
+    sheet_layout(win_w, win_h)
+}
+
+/// Layout PURO del sheet (fuente única de dibujo e hit-test, sin `Reader`).
+pub(crate) fn sheet_layout(win_w: f32, win_h: f32) -> Vec<(&'static str, ButtonRect)> {
     let pad = sheet_pad(win_w as i32);
     let bh = sheet_btn_h(win_h as i32);
     let mut out = Vec::with_capacity(10);
@@ -36,7 +42,15 @@ pub(crate) fn sheet_buttons(
         out.push((label, (x0, ty, x0 + tw, ty + bh)));
     }
 
-    // Fila 1: 3 botones de navegación
+    // Fila 1: modo de lectura (segmentado Tap / Scroll, por documento)
+    let my = sheet_mode_y(win_h as i32);
+    let mw = (win_w - 3.0 * pad) / 2.0;
+    for (i, label) in ["Mode:Tap", "Mode:Scroll"].into_iter().enumerate() {
+        let x0 = pad + i as f32 * (mw + pad);
+        out.push((label, (x0, my, x0 + mw, my + bh)));
+    }
+
+    // Fila 2: 3 botones de navegación
     let bw = sheet_btn_w(win_w as i32);
     let ny = sheet_nav_y(win_h as i32);
     for (i, label) in ["-10", "N / total", "+10"].into_iter().enumerate() {
@@ -44,7 +58,7 @@ pub(crate) fn sheet_buttons(
         out.push((label, (x0, ny, x0 + bw, ny + bh)));
     }
 
-    // Fila 2: 3 botones de acción
+    // Fila 3: 3 botones de acción
     let ay = sheet_act_y(win_h as i32);
     for (i, label) in ["← Library", "Search", "Close"].into_iter().enumerate() {
         let x0 = pad + i as f32 * (bw + pad);
@@ -114,8 +128,10 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
     let theme_y = sheet_theme_y(reader.win_h);
     let nav_y = sheet_nav_y(reader.win_h);
     let act_y = sheet_act_y(reader.win_h);
+    let mode_y = sheet_mode_y(reader.win_h);
     for (y, title, draw_rule) in [
         (theme_y, "APARIENCIA", false),
+        (mode_y, "MODO DE LECTURA", true),
         (nav_y, "NAVEGACIÓN", true),
         (act_y, "DOCUMENTO", true),
     ] {
@@ -298,7 +314,17 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
             continue;
         }
 
+        // Segmentado del modo de lectura: el activo en Primary.
+        let mode_variant = |m: ReadingMode| {
+            if reader.reading_mode == m {
+                ButtonVariant::Primary
+            } else {
+                ButtonVariant::Secondary
+            }
+        };
         let (variant, label_str) = match label {
+            "Mode:Tap" => (mode_variant(ReadingMode::Tap), "Página a página"),
+            "Mode:Scroll" => (mode_variant(ReadingMode::Scroll), "Continuo"),
             "-10" => (ButtonVariant::Secondary, "‹ −10 págs."),
             "+10" => (ButtonVariant::Secondary, "+10 págs. ›"),
             "← Library" => (ButtonVariant::Secondary, "← Biblioteca"),
@@ -320,4 +346,33 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
     }
 
     jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn overlap(a: ButtonRect, b: ButtonRect) -> bool {
+        a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+    }
+
+    #[test]
+    fn sheet_has_a_tap_scroll_toggle_that_fits_without_overlaps() {
+        for (w, h) in [(1200.0, 2000.0), (2000.0, 1200.0), (800.0, 1280.0)] {
+            let layout = sheet_layout(w, h);
+            let labels: Vec<&str> = layout.iter().map(|(l, _)| *l).collect();
+            assert!(labels.contains(&"Mode:Tap"), "{labels:?}");
+            assert!(labels.contains(&"Mode:Scroll"), "{labels:?}");
+            let sh = sheet_h(h as i32) as f32;
+            for (i, (la, ra)) in layout.iter().enumerate() {
+                assert!(
+                    ra.0 >= 0.0 && ra.2 <= w && ra.1 >= 0.0 && ra.3 <= sh,
+                    "{la} {ra:?}"
+                );
+                for (lb, rb) in layout.iter().skip(i + 1) {
+                    assert!(!overlap(*ra, *rb), "{la} {ra:?} solapa {lb} {rb:?}");
+                }
+            }
+        }
+    }
 }
