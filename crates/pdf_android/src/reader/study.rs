@@ -87,27 +87,160 @@ impl StudyState {
 
     /// ¿Está abierto un editor (el teclado escribe en `draft`)?
     pub(crate) fn is_editing(&self) -> bool {
-        false
+        matches!(self.view, StudyView::NoteEditor | StudyView::KeyEditor)
     }
 
     /// Nuevo texto del IME. true si cambió (hay que repintar).
-    pub(crate) fn set_draft(&mut self, _text: &str) -> bool {
-        false
+    pub(crate) fn set_draft(&mut self, text: &str) -> bool {
+        if self.draft == text {
+            return false;
+        }
+        self.draft = text.to_string();
+        self.error = None;
+        true
     }
 
     /// Texto que muestra el campo: la clave siempre enmascarada.
     pub(crate) fn field_text(&self) -> String {
-        String::new()
+        match self.view {
+            StudyView::KeyEditor if !self.draft.is_empty() => {
+                let n = self.draft.chars().filter(|c| !c.is_whitespace()).count();
+                format!("{} ({n} caracteres)", crate::gemini_key::mask(&self.draft))
+            }
+            _ => self.draft.clone(),
+        }
     }
 
-    /// Tap FUERA del panel.
+    /// Tap FUERA del panel: la lista se cierra; un editor no descarta lo
+    /// escrito (hay que pulsar Cancelar).
     pub(crate) fn on_outside(&mut self) -> Vec<StudyEffect> {
-        Vec::new()
+        if self.is_editing() {
+            Vec::new()
+        } else {
+            vec![StudyEffect::Close]
+        }
+    }
+
+    /// Abre el editor de notas con `text` (nota nueva si `editing` es None).
+    fn open_note_editor(
+        &mut self,
+        editing: Option<u64>,
+        page: Option<u32>,
+        text: String,
+    ) -> Vec<StudyEffect> {
+        self.view = StudyView::NoteEditor;
+        self.editing = editing;
+        self.draft_page = page;
+        self.draft = text.clone();
+        self.error = None;
+        vec![StudyEffect::OpenKeyboard(text)]
+    }
+
+    /// Vuelve a la lista de notas (o cierra si el panel era solo la clave).
+    fn leave_editor(&mut self) -> Vec<StudyEffect> {
+        self.draft.clear();
+        self.editing = None;
+        self.draft_page = None;
+        self.error = None;
+        if self.key_only {
+            vec![StudyEffect::HideKeyboard, StudyEffect::Close]
+        } else {
+            self.view = StudyView::Notebook;
+            vec![StudyEffect::HideKeyboard]
+        }
     }
 
     /// Tap sobre un control del panel.
-    pub(crate) fn on_hit(&mut self, _hit: StudyHit, _ctx: StudyCtx) -> Vec<StudyEffect> {
-        Vec::new()
+    pub(crate) fn on_hit(&mut self, hit: StudyHit, ctx: StudyCtx) -> Vec<StudyEffect> {
+        // Cualquier control que no sea el mismo Borrar desarma la confirmación.
+        let armed = self.confirm_delete.take();
+        match (self.view, hit) {
+            (StudyView::Notebook, StudyHit::Close) => vec![StudyEffect::Close],
+            (StudyView::Notebook, StudyHit::NewNote) => {
+                self.open_note_editor(None, Some(ctx.page), String::new())
+            }
+            (StudyView::Notebook, StudyHit::ScrollUp) => {
+                self.scroll = self.scroll.saturating_sub(1);
+                Vec::new()
+            }
+            (StudyView::Notebook, StudyHit::ScrollDown) => {
+                let last = self.notebook.notes.len().saturating_sub(1);
+                self.scroll = (self.scroll + 1).min(last);
+                Vec::new()
+            }
+            (StudyView::Notebook, StudyHit::OpenNote(id)) => {
+                let Some(note) = self.notebook.get(id) else {
+                    return Vec::new();
+                };
+                match crate::notebook::jump_target(note, ctx.page_count) {
+                    Some(p) => vec![StudyEffect::Close, StudyEffect::Jump(p)],
+                    None => {
+                        let (page, text) = (note.page, note.text.clone());
+                        self.open_note_editor(Some(id), page, text)
+                    }
+                }
+            }
+            (StudyView::Notebook, StudyHit::EditNote(id)) => {
+                let Some(note) = self.notebook.get(id) else {
+                    return Vec::new();
+                };
+                let (page, text) = (note.page, note.text.clone());
+                self.open_note_editor(Some(id), page, text)
+            }
+            (StudyView::Notebook, StudyHit::DeleteNote(id)) => {
+                if armed == Some(id) {
+                    if self.notebook.delete(id) {
+                        let last = self.notebook.notes.len().saturating_sub(1);
+                        self.scroll = self.scroll.min(last);
+                        return vec![StudyEffect::SaveNotebook];
+                    }
+                    Vec::new()
+                } else {
+                    self.confirm_delete = Some(id);
+                    Vec::new()
+                }
+            }
+            (StudyView::NoteEditor, StudyHit::Save) => {
+                let saved = match self.editing {
+                    Some(id) => self.notebook.edit(id, &self.draft, ctx.now),
+                    None => self
+                        .notebook
+                        .add(&self.draft, self.draft_page, ctx.now)
+                        .is_some(),
+                };
+                if !saved {
+                    self.error = Some(EMPTY_NOTE_MSG);
+                    return Vec::new();
+                }
+                if self.editing.is_none() {
+                    self.scroll = 0; // la nota nueva es la primera de la lista
+                }
+                let mut fx = self.leave_editor();
+                fx.push(StudyEffect::SaveNotebook);
+                fx
+            }
+            (StudyView::KeyEditor, StudyHit::Save) => match GeminiKey::parse(&self.draft) {
+                Ok(key) => {
+                    let mut fx = self.leave_editor();
+                    fx.insert(1, StudyEffect::SaveKey(key));
+                    fx
+                }
+                Err(e) => {
+                    self.error = Some(e.message());
+                    Vec::new()
+                }
+            },
+            (StudyView::KeyEditor, StudyHit::ClearKey) => {
+                let mut fx = self.leave_editor();
+                fx.insert(1, StudyEffect::ClearKey);
+                fx
+            }
+            (StudyView::NoteEditor | StudyView::KeyEditor, StudyHit::Cancel) => self.leave_editor(),
+            (StudyView::NoteEditor | StudyView::KeyEditor, StudyHit::Field) => {
+                vec![StudyEffect::OpenKeyboard(self.draft.clone())]
+            }
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -122,8 +255,13 @@ pub(crate) enum ImeTarget {
 }
 
 /// Decide a quién va el texto del IME según el modo y el panel de Estudio.
-pub(crate) fn ime_target(_mode: UiMode, _study_editing: bool) -> ImeTarget {
-    ImeTarget::LibrarySearch
+pub(crate) fn ime_target(mode: UiMode, study_editing: bool) -> ImeTarget {
+    match mode {
+        UiMode::Viewer if study_editing => ImeTarget::StudyDraft,
+        UiMode::Viewer => ImeTarget::None,
+        UiMode::Discover => ImeTarget::DiscoverSearch,
+        UiMode::Library | UiMode::Picker => ImeTarget::LibrarySearch,
+    }
 }
 
 #[cfg(test)]
