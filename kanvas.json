@@ -382,7 +382,7 @@
     {
       "id": "TD-03",
       "title": "Fix 2 flaky folder_sync timing tests (CI fails at random)",
-      "state": "todo",
+      "state": "doing",
       "group": "TD",
       "deps": ["TD-01"],
       "at": "2026-11-26T16:01:13Z",
@@ -403,8 +403,17 @@
           "at": "2026-11-26T16:49:01Z",
           "by": "human",
           "text": "Approved in chat (\"yeah go further in the plan\"). (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T16:49:02Z",
+          "by": "claude-code",
+          "text": "Plan: an agent rewrites the 2 folder_sync timing tests test-first (first prove the flake reproducibly under load, then remove the wall-clock dependency while keeping what they check); also check whether CO-01's fsync slowed the export path. Orchestrator reviews and merges."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T16:49:02Z",
+        "by": "claude-code"
+      }
     }
   ]
 }
