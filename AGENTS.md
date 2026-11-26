@@ -2,6 +2,8 @@
 
 Plan and track work on the Kanvas board; follow .agents/skills/kanvas/SKILL.md.
 
+Before planning or starting work, read PLANNING_CONTEXT.md: the process used so far (agents per card, TDD review, test gate, CI before main), lessons learned and open items.
+
 ## When the human can only reach you through chat
 
 In cloud sessions the human cannot open the Kanvas web board (`kanvas.py serve` runs inside the container). Then the chat replaces the board for the human's own decisions:
