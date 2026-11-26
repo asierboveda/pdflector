@@ -30,6 +30,8 @@
 use std::fmt;
 use std::rc::Rc;
 
+use lru::LruCache;
+
 /// Upper bounds for the resident display lists of ONE document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayListBudget {
@@ -48,8 +50,8 @@ impl DisplayListBudget {
     /// - 24 MiB: a text page's list is in the 50-300 KiB range (16 of them
     ///   stay far below the cap), while scanned / vector-heavy pages can pin
     ///   MiBs each (compressed image data is held alive by the list); the
-    ///   byte cap stops those from piling up. Next to the page cache (48 MiB
-    ///   + 32 MiB deferred slack) and the thumbnails (12 MiB) it keeps the
+    ///   byte cap stops those from piling up. Next to the page cache (48 MiB plus
+    ///   32 MiB deferred slack) and the thumbnails (12 MiB) it keeps the
     ///   app inside the project's RSS < 150 MB target.
     pub const TABLET_DEFAULT: Self = Self {
         max_entries: 16,
@@ -98,19 +100,27 @@ impl fmt::Display for DisplayListStats {
     }
 }
 
+/// One resident list and the estimated bytes it pins.
+struct Entry<V> {
+    value: Rc<V>,
+    bytes: usize,
+}
+
 /// Budgeted LRU of display lists keyed by 0-based page index.
 pub struct DisplayListCache<V> {
     budget: DisplayListBudget,
+    /// Recency order lives in `lru` (MRU first); eviction is driven here so
+    /// in-use entries and the just-requested page can be skipped.
+    map: LruCache<u32, Entry<V>>,
     stats: DisplayListStats,
-    _marker: std::marker::PhantomData<V>,
 }
 
 impl<V> DisplayListCache<V> {
     pub fn new(budget: DisplayListBudget) -> Self {
         Self {
             budget,
+            map: LruCache::unbounded(),
             stats: DisplayListStats::default(),
-            _marker: std::marker::PhantomData,
         }
     }
 
@@ -120,19 +130,68 @@ impl<V> DisplayListCache<V> {
 
     /// Returns the list of `page`, building it with `build` on a miss.
     /// `build` returns the list and its estimated size in bytes.
+    ///
+    /// A hit promotes the entry. A miss inserts the new list and then evicts
+    /// least-recently-used entries — never `page` itself and never an entry
+    /// whose `Rc` is held elsewhere — until the budget holds again (or no
+    /// evictable entry is left). A failed build leaves residency untouched.
     pub fn get_or_build<E>(
         &mut self,
         page: u32,
         build: impl FnOnce() -> Result<(V, usize), E>,
     ) -> Result<Rc<V>, E> {
-        let _ = page;
-        let (value, _bytes) = build()?;
-        Ok(Rc::new(value))
+        if let Some(entry) = self.map.get(&page) {
+            self.stats.hits += 1;
+            return Ok(Rc::clone(&entry.value));
+        }
+        self.stats.misses += 1;
+        let (value, bytes) = build()?;
+        let value = Rc::new(value);
+        if self.budget.is_disabled() {
+            return Ok(value);
+        }
+        self.map.put(
+            page,
+            Entry {
+                value: Rc::clone(&value),
+                bytes,
+            },
+        );
+        self.stats.bytes += bytes;
+        self.evict_to_budget(page);
+        self.stats.entries = self.map.len();
+        self.stats.peak_bytes = self.stats.peak_bytes.max(self.stats.bytes);
+        Ok(value)
     }
 
     /// Snapshot of the counters.
     pub fn stats(&self) -> DisplayListStats {
         self.stats
+    }
+
+    fn over_budget(&self) -> bool {
+        self.map.len() > self.budget.max_entries || self.stats.bytes > self.budget.max_bytes
+    }
+
+    /// Evicts LRU entries until the budget holds, skipping `keep` (the page
+    /// being requested) and every entry still referenced by a caller.
+    fn evict_to_budget(&mut self, keep: u32) {
+        while self.over_budget() {
+            // `iter().rev()` walks from the least recently used entry.
+            let victim = self
+                .map
+                .iter()
+                .rev()
+                .find(|(page, entry)| **page != keep && Rc::strong_count(&entry.value) == 1)
+                .map(|(page, _)| *page);
+            let Some(victim) = victim else {
+                return; // only pinned entries left: best-effort overshoot
+            };
+            if let Some(entry) = self.map.pop(&victim) {
+                self.stats.bytes -= entry.bytes;
+                self.stats.evictions += 1;
+            }
+        }
     }
 }
 
@@ -163,14 +222,16 @@ mod tests {
         built.get()
     }
 
-    /// Deterministic pseudo-random sizes (no rand dependency).
+    /// Deterministic pseudo-random sizes (no rand dependency), 10-130 KiB:
+    /// all below the 200 KiB budget used with them, so the oversized-entry
+    /// exception never applies.
     fn fake_size(page: u32) -> usize {
         (page as usize * 7919 % 13 + 1) * 10 * KIB
     }
 
     #[test]
     fn byte_budget_is_never_exceeded_after_many_pages() {
-        let mut cache = DisplayListCache::new(budget(1000, 100 * KIB));
+        let mut cache = DisplayListCache::new(budget(1000, 200 * KIB));
         let mut total_built = 0usize;
         for round in 0..3 {
             for page in 0..500u32 {
@@ -179,7 +240,7 @@ mod tests {
                     total_built += 1;
                 }
                 let s = cache.stats();
-                assert!(s.bytes <= 100 * KIB, "bytes {} over budget", s.bytes);
+                assert!(s.bytes <= 200 * KIB, "bytes {} over budget", s.bytes);
                 assert!(s.entries <= 1000);
             }
         }
