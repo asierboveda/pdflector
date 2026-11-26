@@ -27,7 +27,7 @@
     {
       "id": "UI-01",
       "title": "Fix 2 TCL 9469X UI quirks & full on-device check",
-      "state": "doing",
+      "state": "review",
       "group": "UI",
       "at": "2026-11-26T13:03:52Z",
       "by": "gemini",
@@ -42,6 +42,11 @@
           "at": "2026-11-26T15:39:20Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
+        },
+        {
+          "at": "2026-11-26T15:51:57Z",
+          "by": "claude-code",
+          "text": "Both tablet UI quirks are fixed in code; please check them on the TCL 9469X.\n- Reader top-right theme button: it never had a real icon. It was a swatch in colours nearly identical to the button, so only its blue accent strip showed (the \"dash\"). It now shows a bold \"Aa\" with readable contrast in all 4 themes, plus a short accent underline.\n- Library ⋯ / ☰ buttons: they were 72 px squares next to a ~41 px pill. They now take the pill's exact top and height from one shared definition. The ＋ Añadir tap area uses that same definition, and the ⋯/☰ dropdowns now open ~15 px higher.\n- TDD verified by the orchestrator: tests committed first fail (2 failures), and pass after the fix (118/118). Clippy and fmt clean, no existing test changed.\nOn the tablet, check:\n1. The \"Aa\" button in Light, Sepia, Dark, Sepia-dark; tapping still cycles the theme\n2. ⋯ / ☰ match the ＋ Añadir height, in landscape and portrait; their dropdowns open and don't overlap the buttons\n3. ＋ Añadir still opens the add flow, including taps near its edges\n4. Rest of the card: Settings sheet, Dark/Sepia themes, portrait, AI panel, stylus ink"
         }
       ],
       "started": {
