@@ -379,6 +379,7 @@ impl Reader {
                 self.sheet_hide_now(); // sheet del visor anterior: fuera (libera también el frame)
                 self.clear_selection(); // selección del documento anterior: fuera
                 self.close_ai_panel(); // panel de IA del documento anterior: fuera
+                self.close_study(); // cuaderno del documento anterior: fuera
                 self.thumbs.clear(); // portadas de otra biblioteca: no sirven
                 self.thumb_failed.clear();
                 self.list_dirty = true;

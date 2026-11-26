@@ -232,6 +232,19 @@ pub(crate) fn handle_motion(
             // solo entra si el dedo NO se levanta antes de `LONG_PRESS_MS` y
             // NO se mueve más de `TAP_SLOP`.
             reader.gesture.pointers = pts;
+            // Panel de Estudio abierto (modal): dedo o lápiz solo hacen TAP
+            // sobre el panel (sin trazos, sin long-press ni barra).
+            if reader.study.is_some() {
+                reader.gesture.press_at = None;
+                reader.gesture.kind = match reader.gesture.pointers.as_slice() {
+                    [(_, x, y)] => GestureKind::Tap {
+                        start_x: *x,
+                        start_y: *y,
+                    },
+                    _ => GestureKind::None,
+                };
+                return;
+            }
             // Barra de herramientas (o su popover abierto): el Down de dedo o
             // lápiz es de la barra — tap al levantar, o arrastre tras la
             // pulsación larga sobre la tarjeta. Nunca empieza un trazo.
@@ -350,6 +363,12 @@ pub(crate) fn handle_motion(
         }
         MotionAction::PointerDown => {
             reader.gesture.pointers = pts;
+            // Panel de Estudio (modal): un segundo dedo no hace pinch debajo.
+            if reader.study.is_some() {
+                reader.gesture.kind = GestureKind::None;
+                reader.gesture.press_at = None;
+                return;
+            }
             // Palm rejection por tiempo: tras escribir con stylus, se ignora
             // el táctil un margen (evita pinch/pan de la palma).
             if reader.should_ignore_touch() {
@@ -427,6 +446,12 @@ pub(crate) fn handle_motion(
                         // El dedo se movió: el long-press muere (se exige un
                         // dedo quieto).
                         reader.gesture.press_at = None;
+                        // Panel de Estudio (modal): el arrastre no mueve la
+                        // hoja de debajo; solo cancela el tap.
+                        if reader.study.is_some() {
+                            reader.gesture.kind = GestureKind::None;
+                            return;
+                        }
                         // Arrastre sobre el panel de IA: scroll de su texto.
                         let on_ai_panel = reader.ai_panel.as_ref().is_some_and(|panel| {
                             panel.scrollable

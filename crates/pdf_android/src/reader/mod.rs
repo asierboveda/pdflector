@@ -54,6 +54,7 @@ mod redraw;
 mod scroll;
 mod seleccion;
 mod sheet_chrome;
+mod study;
 mod tick;
 mod toast_ia;
 mod toolbar;
@@ -78,8 +79,8 @@ pub(crate) use geometry::{
     lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect, page_badge_size,
     picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect,
     sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_mode_y, sheet_nav_y, sheet_pad,
-    sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
-    viewer_top_chrome_h, wrap_text_chars,
+    sheet_study_y, sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect,
+    viewer_bottom_chrome_h, viewer_top_chrome_h, wrap_text_chars,
 };
 
 /// Un PDF externo recibido por "abrir con" (ACTION_VIEW) al lanzar la app.
@@ -745,6 +746,19 @@ pub(crate) struct Reader {
     pub(crate) ai_phase: AiPhase,
     /// Selección pendiente de confirmación explícita antes de contactar Gemini.
     pub(crate) ai_pending: Option<PendingAiRequest>,
+    /// Clave de Gemini introducida en la app (PR-02; `gemini_key`): se lee
+    /// de `internal/gemini_api_key` al arrancar y se cambia desde el sheet
+    /// (Estudio → Clave IA). None = sin clave (el panel de IA lo avisa).
+    pub(crate) gemini_key: Option<crate::gemini_key::GeminiKey>,
+    /// Panel de Estudio (cuaderno del documento / editor de nota / clave de
+    /// Gemini, PR-02). Some mientras está abierto: es MODAL (los taps del
+    /// visor van a `study_tap`).
+    pub(crate) study: Option<study::StudyState>,
+    /// Bitmap del panel de Estudio y su posición (materializado en `blit`;
+    /// None = hay que re-renderizar).
+    pub(crate) study_bitmap: Option<(Bitmap, i32, i32)>,
+    /// Id de generación de `study_bitmap` (caché GPU; ver `ovl_seq`).
+    pub(crate) study_id: u64,
     /// Receptor del hilo de fondo de IA (std::thread + mpsc, el patrón de
     /// `pdf_core::prefetch`): Some mientras una consulta está en vuelo.
     /// `tick` lo sondea con `try_recv` (sin bloquear) y lo libera al llegar

@@ -18,7 +18,7 @@ the final product.
 - **Discover / arXiv**: Integrated paper search across arXiv, metadata inspection, background PDF download, and immediate handoff to the reader.
 - **Curated Library**: Folder selection via Android SAF / MediaStore and local folder sync without automatic deletion.
 - **In-Document Search**: Interactive text search with native Android IME keyboard support.
-- **AI Assistant**: Built-in Gemini panel for text explanations and cropped equation/figure analysis (requires user API key).
+- **AI Assistant**: Built-in Gemini panel for text explanations and cropped equation/figure analysis (requires your own Gemini API key, entered in the reader settings sheet: Estudio → Clave IA; stored only in the app's private storage).
 - **Export**: Notes export to Markdown and PDF with embedded vector annotations.
 
 ## Layout
@@ -50,9 +50,6 @@ shipped by `mupdf-sys`, AGPL-3.0).
 export ANDROID_NDK_HOME=$HOME/Android/Sdk/ndk/android-ndk-r28
 export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
-
-# Create placeholder API key if not present (required by crates/pdf_android/src/lib.rs):
-echo "placeholder" > crates/pdf_android/google_key.txt
 
 cargo check -p pdf_android --target aarch64-linux-android                  # quick check
 ```
