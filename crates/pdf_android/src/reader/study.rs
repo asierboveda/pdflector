@@ -1,0 +1,326 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Asier Bóveda
+
+//! Panel de Estudio del visor (PR-02): estado y controlador PURO
+//! (`StudyState::on_hit` devuelve efectos; sin `AndroidApp` ni JNI, así se
+//! testea en host) + el pegamento con `Reader` (abrir/cerrar, teclado,
+//! guardado del cuaderno y de la clave).
+
+use super::UiMode;
+use crate::draw::{StudyHit, StudyView};
+use crate::gemini_key::GeminiKey;
+use crate::notebook::Notebook;
+
+/// Contexto del documento abierto que necesita el controlador.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StudyCtx {
+    pub(crate) now: i64,
+    /// Página actual (0-based): se adjunta a las notas nuevas.
+    pub(crate) page: u32,
+    pub(crate) page_count: u32,
+}
+
+/// Efecto que el `Reader` debe aplicar tras un tap del panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StudyEffect {
+    /// Cerrar el panel.
+    Close,
+    /// Saltar a la página (0-based).
+    Jump(u32),
+    /// Abrir el teclado con este texto inicial.
+    OpenKeyboard(String),
+    HideKeyboard,
+    /// Persistir el cuaderno del documento.
+    SaveNotebook,
+    SaveKey(GeminiKey),
+    ClearKey,
+}
+
+/// Estado del panel de Estudio (Some en `Reader::study` mientras está abierto).
+#[derive(Clone, Debug)]
+pub(crate) struct StudyState {
+    pub(crate) view: StudyView,
+    pub(crate) notebook: Notebook,
+    pub(crate) scroll: usize,
+    /// Texto del editor (lo que llega del IME).
+    pub(crate) draft: String,
+    /// Nota en edición (None = nota nueva).
+    pub(crate) editing: Option<u64>,
+    /// Página que se adjunta a la nota nueva.
+    pub(crate) draft_page: Option<u32>,
+    pub(crate) confirm_delete: Option<u64>,
+    /// Error de validación visible en el editor.
+    pub(crate) error: Option<&'static str>,
+    /// El editor de la clave se abrió directamente desde el sheet: guardar
+    /// o cancelar cierran el panel.
+    pub(crate) key_only: bool,
+}
+
+/// Mensaje del editor de notas cuando se intenta guardar sin texto.
+pub(crate) const EMPTY_NOTE_MSG: &str = "Escribe algo antes de guardar.";
+
+impl StudyState {
+    /// Panel abierto en la lista de notas del documento.
+    pub(crate) fn notebook(notebook: Notebook) -> Self {
+        Self {
+            view: StudyView::Notebook,
+            notebook,
+            scroll: 0,
+            draft: String::new(),
+            editing: None,
+            draft_page: None,
+            confirm_delete: None,
+            error: None,
+            key_only: false,
+        }
+    }
+
+    /// Panel abierto directamente en el editor de la clave (borrador vacío:
+    /// la clave guardada nunca se precarga en el campo de texto).
+    pub(crate) fn key_editor() -> Self {
+        Self {
+            view: StudyView::KeyEditor,
+            key_only: true,
+            ..Self::notebook(Notebook::default())
+        }
+    }
+
+    /// ¿Está abierto un editor (el teclado escribe en `draft`)?
+    pub(crate) fn is_editing(&self) -> bool {
+        false
+    }
+
+    /// Nuevo texto del IME. true si cambió (hay que repintar).
+    pub(crate) fn set_draft(&mut self, _text: &str) -> bool {
+        false
+    }
+
+    /// Texto que muestra el campo: la clave siempre enmascarada.
+    pub(crate) fn field_text(&self) -> String {
+        String::new()
+    }
+
+    /// Tap FUERA del panel.
+    pub(crate) fn on_outside(&mut self) -> Vec<StudyEffect> {
+        Vec::new()
+    }
+
+    /// Tap sobre un control del panel.
+    pub(crate) fn on_hit(&mut self, _hit: StudyHit, _ctx: StudyCtx) -> Vec<StudyEffect> {
+        Vec::new()
+    }
+}
+
+/// Destino del texto que teclea el IME.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImeTarget {
+    LibrarySearch,
+    DiscoverSearch,
+    StudyDraft,
+    /// Nadie escucha (visor sin editor abierto): ocultar el teclado.
+    None,
+}
+
+/// Decide a quién va el texto del IME según el modo y el panel de Estudio.
+pub(crate) fn ime_target(_mode: UiMode, _study_editing: bool) -> ImeTarget {
+    ImeTarget::LibrarySearch
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    const CTX: StudyCtx = StudyCtx {
+        now: 1000,
+        page: 6,
+        page_count: 20,
+    };
+
+    fn with_notes() -> (StudyState, u64, u64) {
+        let mut nb = Notebook::default();
+        let a = nb.add("con página", Some(4), 10).unwrap();
+        let b = nb.add("general", None, 20).unwrap();
+        (StudyState::notebook(nb), a, b)
+    }
+
+    #[test]
+    fn new_note_attaches_current_page_and_saves() {
+        let mut s = StudyState::notebook(Notebook::default());
+        assert!(!s.is_editing());
+        assert_eq!(
+            s.on_hit(StudyHit::NewNote, CTX),
+            vec![StudyEffect::OpenKeyboard(String::new())]
+        );
+        assert_eq!(s.view, StudyView::NoteEditor);
+        assert!(s.is_editing());
+        // Guardar vacío: error visible, sigue en el editor.
+        assert!(s.on_hit(StudyHit::Save, CTX).is_empty());
+        assert_eq!(s.error, Some(EMPTY_NOTE_MSG));
+        assert_eq!(s.view, StudyView::NoteEditor);
+        assert!(s.set_draft("Repasar la demostración"));
+        assert!(!s.set_draft("Repasar la demostración"), "sin cambio");
+        assert_eq!(s.error, None, "teclear limpia el error");
+        assert_eq!(
+            s.on_hit(StudyHit::Save, CTX),
+            vec![StudyEffect::HideKeyboard, StudyEffect::SaveNotebook]
+        );
+        assert_eq!(s.view, StudyView::Notebook);
+        let n = &s.notebook.notes[0];
+        assert_eq!(n.text, "Repasar la demostración");
+        assert_eq!(n.page, Some(6));
+        assert_eq!(n.created_unix, 1000);
+    }
+
+    #[test]
+    fn edit_prefills_text_and_keeps_page() {
+        let (mut s, a, _) = with_notes();
+        assert_eq!(
+            s.on_hit(StudyHit::EditNote(a), CTX),
+            vec![StudyEffect::OpenKeyboard("con página".to_string())]
+        );
+        assert_eq!(s.draft, "con página");
+        s.set_draft("con página, revisada");
+        let fx = s.on_hit(StudyHit::Save, CTX);
+        assert!(fx.contains(&StudyEffect::SaveNotebook), "{fx:?}");
+        let n = s.notebook.get(a).unwrap();
+        assert_eq!(n.text, "con página, revisada");
+        assert_eq!(n.page, Some(4));
+        assert_eq!(n.edited_unix, 1000);
+        // Cancelar no guarda.
+        s.on_hit(StudyHit::EditNote(a), CTX);
+        s.set_draft("descartado");
+        assert_eq!(
+            s.on_hit(StudyHit::Cancel, CTX),
+            vec![StudyEffect::HideKeyboard]
+        );
+        assert_eq!(s.notebook.get(a).unwrap().text, "con página, revisada");
+        assert_eq!(s.view, StudyView::Notebook);
+    }
+
+    #[test]
+    fn delete_needs_a_second_tap_on_the_same_note() {
+        let (mut s, a, b) = with_notes();
+        assert!(s.on_hit(StudyHit::DeleteNote(a), CTX).is_empty());
+        assert_eq!(s.confirm_delete, Some(a));
+        // Otro control desarma la confirmación.
+        s.on_hit(StudyHit::Inside, CTX);
+        assert_eq!(s.confirm_delete, None);
+        s.on_hit(StudyHit::DeleteNote(a), CTX);
+        assert!(s.on_hit(StudyHit::DeleteNote(b), CTX).is_empty());
+        assert_eq!(s.confirm_delete, Some(b), "la confirmación es por nota");
+        assert_eq!(
+            s.on_hit(StudyHit::DeleteNote(b), CTX),
+            vec![StudyEffect::SaveNotebook]
+        );
+        assert!(s.notebook.get(b).is_none());
+        assert!(s.notebook.get(a).is_some());
+        assert_eq!(s.confirm_delete, None);
+    }
+
+    #[test]
+    fn tapping_a_note_with_a_page_jumps_there_and_closes() {
+        let (mut s, a, b) = with_notes();
+        assert_eq!(
+            s.on_hit(StudyHit::OpenNote(a), CTX),
+            vec![StudyEffect::Close, StudyEffect::Jump(4)]
+        );
+        // Página fuera del documento: se recorta a la última.
+        let short = StudyCtx {
+            page_count: 3,
+            ..CTX
+        };
+        assert_eq!(
+            s.on_hit(StudyHit::OpenNote(a), short),
+            vec![StudyEffect::Close, StudyEffect::Jump(2)]
+        );
+        // Nota sin página: se abre para editar.
+        assert_eq!(
+            s.on_hit(StudyHit::OpenNote(b), CTX),
+            vec![StudyEffect::OpenKeyboard("general".to_string())]
+        );
+        assert_eq!(s.editing, Some(b));
+    }
+
+    #[test]
+    fn close_scroll_and_outside_in_the_list() {
+        let (mut s, _, _) = with_notes();
+        s.on_hit(StudyHit::ScrollUp, CTX);
+        assert_eq!(s.scroll, 0);
+        s.on_hit(StudyHit::ScrollDown, CTX);
+        assert_eq!(s.scroll, 1);
+        s.on_hit(StudyHit::ScrollDown, CTX);
+        assert_eq!(s.scroll, 1, "no más allá de la última nota");
+        assert_eq!(s.on_hit(StudyHit::Close, CTX), vec![StudyEffect::Close]);
+        assert_eq!(s.on_outside(), vec![StudyEffect::Close]);
+        // En un editor el tap fuera NO descarta lo escrito.
+        s.on_hit(StudyHit::NewNote, CTX);
+        s.set_draft("a medias");
+        assert!(s.on_outside().is_empty());
+        assert_eq!(
+            s.on_hit(StudyHit::Field, CTX),
+            vec![StudyEffect::OpenKeyboard("a medias".to_string())]
+        );
+    }
+
+    #[test]
+    fn key_editor_validates_saves_clears_and_masks() {
+        let mut s = StudyState::key_editor();
+        assert!(s.is_editing());
+        assert_eq!(s.draft, "");
+        s.set_draft("corta");
+        assert!(s.on_hit(StudyHit::Save, CTX).is_empty());
+        assert_eq!(
+            s.error,
+            Some(crate::gemini_key::KeyError::TooShort.message())
+        );
+        let pasted = "AIzaTESTONLY_not-a-real-key-0123456789";
+        s.set_draft(pasted);
+        let shown = s.field_text();
+        assert!(shown.contains("••••6789"), "{shown}");
+        assert!(!shown.contains("AIza"), "{shown}");
+        let key = GeminiKey::parse(pasted).unwrap();
+        assert_eq!(
+            s.on_hit(StudyHit::Save, CTX),
+            vec![
+                StudyEffect::HideKeyboard,
+                StudyEffect::SaveKey(key),
+                StudyEffect::Close
+            ]
+        );
+        let mut s = StudyState::key_editor();
+        assert_eq!(
+            s.on_hit(StudyHit::ClearKey, CTX),
+            vec![
+                StudyEffect::HideKeyboard,
+                StudyEffect::ClearKey,
+                StudyEffect::Close
+            ]
+        );
+        let mut s = StudyState::key_editor();
+        assert_eq!(
+            s.on_hit(StudyHit::Cancel, CTX),
+            vec![StudyEffect::HideKeyboard, StudyEffect::Close]
+        );
+    }
+
+    #[test]
+    fn note_field_shows_the_draft_verbatim() {
+        let mut s = StudyState::notebook(Notebook::default());
+        s.on_hit(StudyHit::NewNote, CTX);
+        s.set_draft("x^2 + 1");
+        assert_eq!(s.field_text(), "x^2 + 1");
+    }
+
+    #[test]
+    fn ime_text_goes_to_the_study_editor_only_in_the_viewer() {
+        assert_eq!(ime_target(UiMode::Viewer, true), ImeTarget::StudyDraft);
+        assert_eq!(ime_target(UiMode::Viewer, false), ImeTarget::None);
+        assert_eq!(ime_target(UiMode::Library, false), ImeTarget::LibrarySearch);
+        assert_eq!(
+            ime_target(UiMode::Discover, false),
+            ImeTarget::DiscoverSearch
+        );
+        assert_eq!(ime_target(UiMode::Library, true), ImeTarget::LibrarySearch);
+    }
+}
