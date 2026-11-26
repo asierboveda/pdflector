@@ -27,7 +27,7 @@
     {
       "id": "UI-01",
       "title": "Fix 2 TCL 9469X UI quirks & full on-device check",
-      "state": "todo",
+      "state": "doing",
       "group": "UI",
       "at": "2026-11-26T13:03:52Z",
       "by": "gemini",
@@ -37,8 +37,17 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T15:39:20Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T15:39:20Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "UI-02",
@@ -100,7 +109,7 @@
     {
       "id": "TD-02",
       "title": "Delete dead theme tokens behind allow(dead_code)",
-      "state": "todo",
+      "state": "doing",
       "group": "TD",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -111,13 +120,22 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T15:39:20Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T15:39:20Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "CO-01",
       "title": "Unify atomic file writes in persist.rs & export.rs",
-      "state": "todo",
+      "state": "doing",
       "group": "CO",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -128,13 +146,22 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T15:39:21Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T15:39:21Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "CO-02",
       "title": "Move pdf_core::theme into pdf_app",
-      "state": "todo",
+      "state": "doing",
       "group": "CO",
       "at": "2026-11-26T13:03:52Z",
       "by": "gemini",
@@ -144,13 +171,22 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T15:39:21Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T15:39:21Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "CO-03",
       "title": "Single-source menu hitboxes & bounded toast layout",
-      "state": "todo",
+      "state": "doing",
       "group": "CO",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -161,8 +197,17 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T15:39:21Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T15:39:21Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "IN-01",
@@ -184,7 +229,7 @@
     {
       "id": "IN-02",
       "title": "Split input/motion.rs by UiMode",
-      "state": "todo",
+      "state": "doing",
       "group": "IN",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -195,13 +240,22 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T15:39:21Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T15:39:21Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "IN-03",
       "title": "Surface silent prefetch errors & split jni.rs",
-      "state": "todo",
+      "state": "doing",
       "group": "IN",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -212,8 +266,17 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T15:39:21Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T15:39:21Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "PR-01",
