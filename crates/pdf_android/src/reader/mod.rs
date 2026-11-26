@@ -77,8 +77,8 @@ pub(crate) use geometry::{
     lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
     lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect, page_badge_size,
     picker_btn_h, picker_btn_w, picker_header_h, picker_row_h, settings_menu_button_rect,
-    sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_nav_y, sheet_pad, sheet_theme_btn_w,
-    sheet_theme_y, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
+    sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_mode_y, sheet_nav_y, sheet_pad,
+    sheet_theme_btn_w, sheet_theme_y, truncate_name, view_menu_button_rect, viewer_bottom_chrome_h,
     viewer_top_chrome_h, wrap_text_chars,
 };
 
@@ -493,6 +493,17 @@ pub(crate) struct Reader {
     /// consume en cada `set_zoom_fast` y queda sin usar al soltar el gesto
     /// (`set_zoom_sharp` conserva el pan ya calculado). None = sin pinch.
     pinch: Option<PinchAnchor>,
+    /// Modo de lectura del documento abierto (Tap / Scroll, PR-01): se
+    /// restaura de `library.json` al abrir y se cambia en el sheet.
+    pub(crate) reading_mode: ReadingMode,
+    /// Posición continua del modo Scroll en unidades de página (`3.25` =
+    /// un cuarto de hoja por debajo del borde superior de la 4ª). Es la
+    /// fuente de verdad del desplazamiento: sobrevive a zoom y resize.
+    pub(crate) scroll_pos: f32,
+    /// Tamaño en puntos PDF (caja visible) de la página de referencia de
+    /// la columna del modo Scroll (ranura uniforme); None hasta conocer la
+    /// geometría de alguna página del documento (llega con el worker).
+    pub(crate) scroll_ref_pts: Option<(f32, f32)>,
     /// Desplazamiento del bitmap de la LISTA dentro del buffer (picker;
     /// 0 por ahora — `pub(crate)` por el present GPU del picker).
     pub(crate) offset_x: i32,

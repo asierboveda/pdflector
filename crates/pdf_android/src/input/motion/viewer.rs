@@ -125,8 +125,10 @@ pub(crate) fn classify_tap_drag_in(
     zoom: f32,
     sheet_pull: bool,
 ) -> TapDrag {
-    let _ = mode;
-    classify_tap_drag(moved, zoom, sheet_pull)
+    match classify_tap_drag(moved, zoom, sheet_pull) {
+        TapDrag::Cancel if mode == ReadingMode::Scroll => TapDrag::Pan,
+        other => other,
+    }
 }
 
 fn begin_pinch_gesture(reader: &mut Reader, pts: &[(i32, f32, f32)]) {

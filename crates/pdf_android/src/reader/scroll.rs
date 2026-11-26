@@ -221,8 +221,10 @@ pub(crate) fn anchor_zoom(
 /// al zoom que el worker produciría ahora (`expected_zoom`)? Tolerancia del
 /// 5% (el redondeo a píxeles enteros del render no cuenta como cambio).
 pub(crate) fn entry_is_stale(entry_zoom: f32, expected_zoom: f32) -> bool {
-    let _ = (entry_zoom, expected_zoom);
-    false
+    if !entry_zoom.is_finite() || entry_zoom <= 0.0 || expected_zoom <= 0.0 {
+        return true;
+    }
+    (entry_zoom - expected_zoom).abs() / expected_zoom > 0.05
 }
 
 /// Margen de seguridad sobre el presupuesto de la caché: el recorte idle

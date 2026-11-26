@@ -127,12 +127,7 @@ fn render_worker_req(
             let fit = initial_scale_with_margin(pw, ph, req.win_w, req.win_h, req.margin_px);
             // Presupuesto: el bitmap debe caber en la caché. El worker no tiene
             // acceso a `self`, así que aplica la regla con su propio cálculo.
-            let mut scale = fit * target;
-            let px_pdf = pw as f64 * ph as f64;
-            let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
-            while scale > 0.001 && px_pdf * scale as f64 * scale as f64 > max_px {
-                scale *= 0.5;
-            }
+            let scale = budget_render_scale(fit, target, pw, ph);
             let target_eff = if fit > 0.0 { scale / fit } else { 1.0 };
             if let Ok(bmp) = doc.render_page(page, scale) {
                 let (full_w, full_h) = (bmp.width, bmp.height);
@@ -178,8 +173,13 @@ fn render_worker_req(
 /// bitmap cabe en la caché (`CACHE_BYTE_BUDGET`). El modo Scroll la usa
 /// para saber a qué zoom quedará realmente un bitmap pedido.
 pub(crate) fn budget_render_scale(fit: f32, target: f32, pw: f32, ph: f32) -> f32 {
-    let _ = (pw, ph);
-    fit * target
+    let mut scale = fit * target;
+    let px_pdf = pw as f64 * ph as f64;
+    let max_px = crate::cache::CACHE_BYTE_BUDGET as f64 / 4.0;
+    while scale > 0.001 && px_pdf * scale as f64 * scale as f64 > max_px {
+        scale *= 0.5;
+    }
+    scale
 }
 
 impl Reader {
