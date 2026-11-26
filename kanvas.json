@@ -83,6 +83,11 @@
           "at": "2026-11-26T17:59:50Z",
           "by": "claude-code",
           "text": "main fast-forwarded 9c6068c -> 55f70f6: now contains feat/frontend-redesign-astryx (all 9 commits) and every card from this session. No merge commit needed; CI was green on the last code commit (run 215)."
+        },
+        {
+          "at": "2026-11-26T18:00:42Z",
+          "by": "claude-code",
+          "text": "Dependabot: #41 base64, #42 quick-xml, #44 log, #54 lru, #57 serde_json closed as superseded (main already has those versions, each PR has a comment explaining). #58 setup-java v6 and #59 gradle/actions v6 applied in commit 1ef5485; main moves once CI is green. 'actualizar' worktree: not in this checkout (git worktree list here shows only the session); it lives on your computer: run `git worktree list` there and `git worktree remove <path>`. PR #55 (issue-45) is left for IN-01."
         }
       ],
       "started": {
