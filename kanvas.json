@@ -61,6 +61,11 @@
           "at": "2026-11-26T15:23:18Z",
           "by": "claude-code",
           "text": "Plan: see what breaks when building pdf_android tests on Linux, move the Android-only libraries behind an Android-only switch with the smallest code changes, get all 114 tests passing on Linux, then add a test step to CI."
+        },
+        {
+          "at": "2026-11-26T15:29:28Z",
+          "by": "claude-code",
+          "text": "All 114 pdf_android tests pass on Linux (cargo test -p pdf_android --lib), no warnings, host clippy clean. Android build not checked locally (NDK download blocked in this container); relying on the CI android job (check + clippy aarch64) for commit a9ac0a4."
         }
       ],
       "started": {
