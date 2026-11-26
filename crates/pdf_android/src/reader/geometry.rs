@@ -409,8 +409,8 @@ pub(crate) fn lib_header_buttons_cy(win_h: i32) -> f32 {
     top_pad + (header_h - top_pad) / 2.0
 }
 
-/// Diámetro (px) del círculo de los botones de menú de la cabecera: un
-/// touch target de ~32 dp (≈ 65 px con densidad 2.0 de la TCL) — el tamaño
+/// Ancho (px) de los botones de menú de la cabecera (el alto es el de la
+/// píldora "＋ Añadir", ver `lib_add_btn_rect`): un touch target de ~32 dp (≈ 65 px con densidad 2.0 de la TCL) — el tamaño
 /// mínimo cómodo para un dedo.
 pub(crate) fn header_menu_btn_d(win_w: i32) -> f32 {
     (win_w as f32 / 22.0).clamp(56.0, 72.0)
@@ -434,27 +434,25 @@ pub(crate) fn lib_add_btn_rect(win_w: i32, win_h: i32) -> ButtonRect {
     let top_pad = 36.0f32;
     let btn_w = lib_add_btn_w(win_w);
     let btn_h = ((header_h - top_pad) * 0.52).clamp(38.0, 46.0);
-    let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
+    let btn_y = lib_header_buttons_cy(win_h) - btn_h / 2.0;
     let btn_x = win_w as f32 - grid_pad(win_w) - btn_w;
     (btn_x, btn_y, btn_x + btn_w, btn_y + btn_h)
 }
 
 /// Rectángulo (left, top, right, bottom) del botón de menú SETTINGS "☰":
-/// círculo de `header_menu_btn_d` alineado a la IZQUIERDA del "＋ Añadir"
-/// (que mantiene su anclaje a derecha con `grid_pad`) con `header_menu_gap`
-/// de separación, centrado en el Y de la fila de botones. Los futuros
-/// dropdowns cuelgan de su BORDE DERECHO (`dropdown-end`) para no cortarse
-/// por la izquierda.
+/// azulejo de ancho `header_menu_btn_d` (touch target) y MISMO top/alto que
+/// la píldora "＋ Añadir" (antes era un cuadrado de `d` = 56–72 px frente a
+/// los 38–46 px de la píldora), alineado a su IZQUIERDA con
+/// `header_menu_gap` de separación. Los futuros dropdowns cuelgan de su
+/// BORDE DERECHO (`dropdown-end`) para no cortarse por la izquierda.
 pub(crate) fn settings_menu_button_rect(win_w: i32, win_h: i32) -> (f32, f32, f32, f32) {
     let d = header_menu_btn_d(win_w);
-    let pad = grid_pad(win_w);
-    let add_x = win_w as f32 - pad - lib_add_btn_w(win_w); // borde izq del ＋
-    let cy = lib_header_buttons_cy(win_h);
+    let (add_x, add_t, _, add_b) = lib_add_btn_rect(win_w, win_h);
     (
         add_x - header_menu_gap() - d,
-        cy - d / 2.0,
+        add_t,
         add_x - header_menu_gap(),
-        cy + d / 2.0,
+        add_b,
     )
 }
 
