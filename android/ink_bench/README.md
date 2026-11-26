@@ -73,8 +73,6 @@ instaló la APK final de este experimento y se abrió en una TCL 9469X, Android
 16, 1440×2200. La vista dry y la capa `SurfaceView` fueron visibles sin
 crash; el sistema mostró una petición de 120 Hz, pero el refresco físico
 observado fue 60 Hz. La memoria solo se observó en reposo, sin serie temporal.
-La evidencia detallada está en
-[`docs/benchmark-results.md`](../../docs/benchmark-results.md).
 
 Después, un trazo físico reveló que la proyección vertical estaba invertida.
 Se corrigió; la prueba ADB del trazo asentado pasa y el propietario confirmó

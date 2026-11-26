@@ -5,7 +5,6 @@ description: Configurar y comprobar la sincronización de una carpeta universita
 
 # Sincronización de material y apuntes
 
-Leer `AGENTS.md`, `ESTADO_ACTUAL.md` y `docs/adr/023-sincronizacion-carpetas-y-apuntes.md`.
 No registrar credenciales, PDFs personales ni nombres de documentos en Git o evidencia compartida.
 
 ## Ordenador

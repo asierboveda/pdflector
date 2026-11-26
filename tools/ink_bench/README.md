@@ -121,8 +121,7 @@ un error de formato, no una aprobación.
    incertidumbre en milisegundos. El límite se evalúa de forma conservadora
    como `p95 + incertidumbre ≤ 25 ms`.
 
-Los umbrales evaluados son exactamente los presupuestos de `AGENTS.md` que
-corresponden a este flujo:
+Los umbrales evaluados para este flujo son:
 
 | Métrica | Umbral |
 |---|---:|
