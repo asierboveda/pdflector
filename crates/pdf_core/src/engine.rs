@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+pub mod display_list_cache;
 pub mod mupdf;
 
 /// RGBA8 bitmap of a rendered page, row-major, `data.len() == width * height * 4`.
