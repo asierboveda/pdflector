@@ -84,6 +84,7 @@ impl Reader {
         self.sheet_hide_now(); // fuera del visor: el sheet no pinta en biblioteca
         self.clear_selection(); // selección del visor: fuera (no pinta en biblioteca)
         self.close_ai_panel(); // panel de IA del visor: fuera
+        self.close_study(); // panel de Estudio del visor: fuera
         self.list_drag = None;
         // Herramientas del visor: fuera (no pinta en biblioteca).
         self.tool = ToolKind::Navigate;
@@ -770,6 +771,7 @@ impl Reader {
         self.sheet_hide_now();
         self.clear_selection(); // selección del visor: fuera (no pinta aquí)
         self.close_ai_panel(); // panel de IA del visor: fuera
+        self.close_study(); // panel de Estudio del visor: fuera
         self.list_drag = None;
         self.bitmap = None;
         self.library.lib_header = None; // biblioteca fuera: liberar planos cedeados
@@ -915,10 +917,23 @@ impl Reader {
         if !self.ime_active {
             return;
         }
+        let target = super::study::ime_target(
+            self.mode,
+            self.study.as_ref().is_some_and(|s| s.is_editing()),
+        );
+        if target == super::study::ImeTarget::None {
+            // Visor sin editor abierto (p. ej. el panel se cerró al cambiar
+            // de documento): nadie escucha → ocultar el teclado.
+            self.ime_active = false;
+            crate::jni::ime_hide(app);
+            return;
+        }
         let Some(t) = crate::jni::ime_text(app) else {
             return;
         };
-        if self.mode == UiMode::Discover {
+        if target == super::study::ImeTarget::StudyDraft {
+            self.study_set_draft(&t);
+        } else if target == super::study::ImeTarget::DiscoverSearch {
             if t != self.discover.query {
                 self.discover.query = t;
                 self.discover.dirty = true;

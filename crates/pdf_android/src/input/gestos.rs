@@ -262,6 +262,8 @@ fn sheet_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
                 "Close" => reader.hide_sheet(),
                 "Mode:Tap" => reader.set_reading_mode(ReadingMode::Tap),
                 "Mode:Scroll" => reader.set_reading_mode(ReadingMode::Scroll),
+                "Study:Notebook" => reader.open_notebook(),
+                "Study:Key" => reader.open_key_editor(app),
                 "-10" => reader.jump_page(-10),
                 "+10" => reader.jump_page(10),
                 _ => reader.next_page(), // "N / total"
@@ -304,6 +306,11 @@ pub(crate) fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: 
     // de anotación activa: el dedo debe poder ir a Biblioteca o abrir ajustes
     // sin cambiar antes a navegación. Solo el tap sobre la PÁGINA queda
     // supeditado a la herramienta.
+    // Panel de Estudio (modal): todo tap es suyo (fuera = cerrar la lista).
+    if reader.study.is_some() {
+        reader.study_tap(app, x, y);
+        return;
+    }
     if reader.ai_panel.is_some() {
         ai_panel_tap(reader, x, y);
         return;
