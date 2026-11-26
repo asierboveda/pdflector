@@ -485,6 +485,58 @@ pub(crate) mod theme {
             (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05)
         }
 
+        /// Fija los tokens de forma y tipografía que usan los widgets: escalas
+        /// estrictamente monótonas y radios en el ritmo de 4 px de Astryx.
+        #[test]
+        fn astryx_shape_and_type_scales_are_ordered() {
+            let radii = [
+                RADIUS_INNER,
+                RADIUS_ELEMENT,
+                RADIUS_CONTAINER,
+                RADIUS_CARD,
+                RADIUS_PAGE,
+                RADIUS_FULL,
+            ];
+            assert!(radii.windows(2).all(|w| w[0] < w[1]), "radios: {radii:?}");
+            assert!(radii.iter().all(|r| r % 4.0 == 0.0 || *r == RADIUS_FULL));
+
+            let fonts = [
+                FONT_DISPLAY,
+                FONT_H1,
+                FONT_TITLE,
+                FONT_BODY,
+                FONT_CAPTION,
+                FONT_LABEL_CAPS,
+                FONT_MICRO,
+            ];
+            assert!(fonts.windows(2).all(|w| w[0] > w[1]), "fuentes: {fonts:?}");
+            assert!(TRACKING_CAPS > 0.0 && TRACKING_TIGHT < 0.0);
+        }
+
+        /// Fija los accesores derivados de la paleta (insignias, estado y fondo RGBA).
+        #[test]
+        fn palette_derived_roles_map_to_semantic_tokens() {
+            for t in [
+                AppTheme::DefaultLight,
+                AppTheme::SepiaLight,
+                AppTheme::DefaultDark,
+                AppTheme::SepiaDark,
+            ] {
+                let p = t.palette();
+                assert_eq!(p.is_dark, t.is_dark());
+                assert_eq!(p.badge_bg() & 0x00FF_FFFF, p.bg_popover & 0x00FF_FFFF);
+                assert_eq!(p.badge_bg() >> 24, 0xEB);
+                assert_eq!(p.badge_border(), p.border_emphasized);
+                assert_eq!(p.badge_text(), p.text_primary);
+                assert_eq!(p.status_bg(), p.error_bg);
+                assert_eq!(p.status_border(), p.error_border);
+                assert_eq!(p.status_text(), p.error_text);
+                assert_eq!(p.rgba_bg(), argb_to_rgba(p.bg_body));
+                assert_eq!(p.rgba_lib_bg(), argb_to_rgba(p.bg_body));
+            }
+            assert_eq!(argb_to_rgba(0x8011_2233), [0x11, 0x22, 0x33, 0x80]);
+        }
+
         #[test]
         fn all_astryx_themes_meet_wcag_aa_contrast() {
             let themes = [
