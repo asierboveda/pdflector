@@ -9,14 +9,14 @@
 //! Lo usan `export_markdown_to_file` (aquí) y las escrituras de estado de
 //! `pdf_android::persist`.
 
-use std::fs::File;
-use std::io;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Escribe `contents` en `path` de forma atómica (ver doc del módulo).
 pub fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
-    // STUB (TDD): escritura directa, aún no atómica.
-    std::fs::write(path, contents)
+    write_atomic_with(path, |file| file.write_all(contents.as_ref()))
 }
 
 /// Igual que [`write_atomic`], pero el contenido lo escribe `fill` sobre el
@@ -25,9 +25,53 @@ pub fn write_atomic_with<F>(path: &Path, fill: F) -> io::Result<()>
 where
     F: FnOnce(&mut File) -> io::Result<()>,
 {
-    // STUB (TDD): escribe directamente sobre el destino.
-    let mut file = File::create(path)?;
-    fill(&mut file)
+    let temp = temp_path_for(path)?;
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        fill(&mut file)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, path)
+    })();
+    if let Err(e) = result {
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    // Persistir la entrada de directorio del rename (best-effort: no todos
+    // los sistemas de ficheros permiten sincronizar un directorio).
+    if let Ok(dir) = File::open(parent_dir(path)) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// Directorio padre de `path` (`.` para rutas relativas sin directorio).
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    }
+}
+
+/// Temporal oculto y único junto al destino (mismo sistema de ficheros, así
+/// el `rename` es atómico): `.<nombre>.<pid>-<seq>.tmp`.
+fn temp_path_for(path: &Path) -> io::Result<PathBuf> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let Some(name) = path.file_name() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "la ruta de destino no tiene nombre de fichero",
+        ));
+    };
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut temp_name = std::ffi::OsString::from(".");
+    temp_name.push(name);
+    temp_name.push(format!(".{}-{seq}.tmp", std::process::id()));
+    Ok(parent_dir(path).join(temp_name))
 }
 
 #[cfg(test)]
@@ -35,9 +79,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use std::fs;
-    use std::io::Write;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::AtomicU32;
 
     /// Directorio temporal único por test (se borra al soltarlo).
     struct TempDir(PathBuf);

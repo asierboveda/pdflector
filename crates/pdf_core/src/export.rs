@@ -112,10 +112,11 @@ pub fn export_markdown(doc: &dyn Document, set: &AnnotationSet) -> Result<String
 }
 
 /// Convenience wrapper: exports `set` via `export_markdown` and writes the
-/// UTF-8 result to `path`. The export logic itself stays I/O-free.
+/// UTF-8 result to `path` atomically (`fsutil::write_atomic`: an interrupted
+/// write never leaves a truncated file). The export logic stays I/O-free.
 pub fn export_markdown_to_file(path: &Path, doc: &dyn Document, set: &AnnotationSet) -> Result<()> {
     let md = export_markdown(doc, set)?;
-    std::fs::write(path, md)?; // io error → Error::Io via the From impl
+    crate::fsutil::write_atomic(path, md)?; // io error → Error::Io via the From impl
     Ok(())
 }
 
