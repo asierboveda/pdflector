@@ -46,7 +46,7 @@
     {
       "id": "TD-01",
       "title": "Run 114 pdf_android unit tests on Linux host & CI",
-      "state": "doing",
+      "state": "review",
       "group": "TD",
       "at": "2026-11-26T13:03:52Z",
       "by": "gemini",
@@ -66,6 +66,11 @@
           "at": "2026-11-26T15:29:28Z",
           "by": "claude-code",
           "text": "All 114 pdf_android tests pass on Linux (cargo test -p pdf_android --lib), no warnings, host clippy clean. Android build not checked locally (NDK download blocked in this container); relying on the CI android job (check + clippy aarch64) for commit a9ac0a4."
+        },
+        {
+          "at": "2026-11-26T15:33:00Z",
+          "by": "claude-code",
+          "text": "The 114 pdf_android unit tests now run and pass on Linux and in CI (new CI step \"test pdf_android (host)\"), instead of only compiling for Android.\n- Try it: `cargo test -p pdf_android --lib` (needs a placeholder crates/pdf_android/google_key.txt, as CI already does)\n- Android build unchanged: CI run 200 is green, including check + clippy -D warnings for aarch64\n- How: Android-only crates are behind cfg(target_os = \"android\"); on Linux, small do-nothing stand-ins in src/host/ and src/jni/host.rs take their place. The event loop and GPU library linking are Android-only.\n- Bonus fix: the GPU code typed C strings as u8, which was only correct on ARM; now c_char (no change on the tablet).\n- To check: you are fine with stand-in files living in the crate (they are never compiled into the app)."
         }
       ],
       "started": {
