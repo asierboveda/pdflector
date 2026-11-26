@@ -215,15 +215,25 @@ pub(crate) fn set_reading_view(
     mode: ReadingMode,
     scroll_frac: f32,
 ) -> Vec<BookProgress> {
-    let _ = (path, mode, scroll_frac);
-    books.to_vec()
+    let mut out = books.to_vec();
+    if let Some(b) = out.iter_mut().find(|b| b.path == path) {
+        b.reading_mode = mode;
+        // Un NaN/inf en disco envenenaría la restauración: se guarda 0.
+        b.scroll_frac = if scroll_frac.is_finite() {
+            scroll_frac
+        } else {
+            0.0
+        };
+    }
+    out
 }
 
 /// Modo de lectura y posición fina guardados de `path` (Tap / 0 si no hay
 /// registro).
 pub(crate) fn reading_view_for(books: &[BookProgress], path: &str) -> (ReadingMode, f32) {
-    let _ = (books, path);
-    (ReadingMode::Scroll, 1.0)
+    progress_for(books, path)
+        .map(|b| (b.reading_mode, b.scroll_frac))
+        .unwrap_or((ReadingMode::Tap, 0.0))
 }
 
 fn default_ink_width() -> f32 {
