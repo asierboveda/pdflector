@@ -523,6 +523,8 @@ pub(crate) struct Reader {
     /// su último frame (el tick le inyecta el `dt`).
     pub(crate) scroll_fling: fling::ScrollFling,
     pub(crate) scroll_fling_at: Option<Instant>,
+    /// El Down en curso frenó una inercia: su Up no dispara el tap.
+    pub(crate) scroll_tap_swallowed: bool,
     /// Desplazamiento del bitmap de la LISTA dentro del buffer (picker;
     /// 0 por ahora — `pub(crate)` por el present GPU del picker).
     pub(crate) offset_x: i32,

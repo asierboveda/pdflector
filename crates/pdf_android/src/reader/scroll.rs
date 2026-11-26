@@ -608,14 +608,16 @@ impl Reader {
         self.scroll_moved(&layout, off);
     }
 
-    /// Un dedo toca la pantalla: la inercia se detiene en seco.
+    /// Un dedo toca la pantalla: la inercia se detiene en seco y, si la
+    /// había, ese toque no cuenta como tap al levantarse.
     pub(crate) fn scroll_touch_down(&mut self) {
-        self.scroll_stop_fling();
+        self.scroll_tap_swallowed = self.scroll_fling.touch_down();
+        self.scroll_fling_at = None;
     }
 
-    /// Detiene la inercia (toque, salto, zoom, cambio de modo).
+    /// Detiene la inercia (salto, zoom, cambio de modo).
     pub(crate) fn scroll_stop_fling(&mut self) {
-        self.scroll_fling.touch_down();
+        self.scroll_fling.stop();
         self.scroll_fling_at = None;
     }
 
