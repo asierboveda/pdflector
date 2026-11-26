@@ -70,15 +70,14 @@ impl Reader {
         let Some(req) = self.ai_pending.take() else {
             return;
         };
-        if crate::GOOGLE_API_KEY.trim().len() < 20 {
-            self.ai_text =
-                "Falta tu clave de Gemini: pégala en crates/pdf_android/google_key.txt y reinstala la app."
-                    .to_string();
+        // Clave introducida en la app (Ajustes → Estudio); nunca se loguea.
+        let Some(key) = self.gemini_key.as_ref().map(|k| k.as_str().to_string()) else {
+            self.ai_text = crate::gemini_key::MISSING_KEY_MSG.to_string();
             self.ai_phase = AiPhase::Error;
             self.rebuild_ai_panel();
             self.redraw();
             return;
-        }
+        };
         info!(
             "ask_ai: page {}, {} chars, image {} B PNG -> Gemini ({})",
             req.page,
@@ -93,8 +92,7 @@ impl Reader {
         self.rebuild_ai_panel();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let client =
-                pdf_core::ai::GeminiClient::with_model(crate::GOOGLE_API_KEY, crate::GEMINI_MODEL);
+            let client = pdf_core::ai::GeminiClient::with_model(key.as_str(), crate::GEMINI_MODEL);
             let attempt = |client: &pdf_core::ai::GeminiClient| match &image {
                 Some(b64) => client.explain_image(&prompt, b64),
                 None => client.explain_text(&prompt),
@@ -103,7 +101,7 @@ impl Reader {
                 Ok(answer) => Ok(answer),
                 Err(pdf_core::AiError::Busy(_)) => {
                     let fallback = pdf_core::ai::GeminiClient::with_model(
-                        crate::GOOGLE_API_KEY,
+                        key.as_str(),
                         crate::GEMINI_FALLBACK_MODEL,
                     );
                     attempt(&fallback)

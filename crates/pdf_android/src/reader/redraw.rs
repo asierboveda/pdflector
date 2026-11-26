@@ -206,6 +206,7 @@ impl Reader {
             self.sheet_bitmap = None;
             self.toolbar_bitmap = None;
             self.toolbar_popover_bitmap = None;
+            self.study_bitmap = None; // panel de Estudio: layout nuevo
         }
         match self.mode {
             UiMode::Viewer => {
@@ -593,6 +594,11 @@ impl Reader {
                     // (next_ovl_id) chocaría; los campos son disjuntos.
                     self.ovl_seq += 1;
                     self.toast_id = self.ovl_seq;
+                }
+                if self.study.is_some() && self.study_bitmap.is_none() {
+                    self.study_bitmap = crate::draw::render_study_panel(self);
+                    self.ovl_seq += 1;
+                    self.study_id = self.ovl_seq;
                 }
                 if self.erase_pt.is_some() && self.eraser_cursor.is_none() && self.erase_r_px > 4.0
                 {
