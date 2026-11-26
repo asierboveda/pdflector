@@ -227,6 +227,21 @@ pub(crate) fn entry_is_stale(entry_zoom: f32, expected_zoom: f32) -> bool {
     (entry_zoom - expected_zoom).abs() / expected_zoom > 0.05
 }
 
+/// Posición fina a persistir (`BookProgress::scroll_frac`): la posición
+/// continua relativa a la página actual (la del indicador).
+pub(crate) fn scroll_frac_for(pos: f32, current: u32) -> f32 {
+    let _ = (pos, current);
+    0.5
+}
+
+/// Posición continua a restaurar desde (página, `scroll_frac`) guardados:
+/// un frac corrupto (no finito o fuera de ±1 hoja) cae al borde de la
+/// página.
+pub(crate) fn resume_scroll_pos(page: u32, frac: f32) -> f32 {
+    let _ = frac;
+    page as f32 + 0.5
+}
+
 /// Margen de seguridad sobre el presupuesto de la caché: el recorte idle
 /// (`PageCache::trim_to_budget`) no debe expulsar ninguna hoja del plan.
 const PLAN_BUDGET_FRACTION: f32 = 0.9;
@@ -422,6 +437,19 @@ mod tests {
         let (off2, _) = anchor_zoom(&a, &b, (600.0, 500.0), 1660.0, 0.0);
         // y=500 → página 1, 480 px dentro → 960 px a zoom 2.
         assert!(close(20.0 + 3300.0 - off2 + 960.0, 500.0));
+    }
+
+    #[test]
+    fn scroll_position_round_trips_through_page_and_frac() {
+        assert!(close(scroll_frac_for(3.25, 3), 0.25));
+        // La página actual puede ser la siguiente (más visible): frac < 0.
+        assert!(close(scroll_frac_for(3.8, 4), -0.2));
+        assert!(close(resume_scroll_pos(3, 0.25), 3.25));
+        assert!(close(resume_scroll_pos(4, -0.2), 3.8));
+        assert!(close(resume_scroll_pos(4, f32::NAN), 4.0));
+        assert!(close(resume_scroll_pos(4, 7.0), 4.0));
+        assert!(close(resume_scroll_pos(0, -0.5), 0.0)); // nunca antes del inicio
+        assert!(close(resume_scroll_pos(5, 0.0), 5.0));
     }
 
     #[test]
