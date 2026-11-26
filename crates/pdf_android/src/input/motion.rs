@@ -216,10 +216,7 @@ pub(crate) fn handle_motion(
             pts.len()
         );
     }
-    if reader.mode == UiMode::Picker
-        || reader.mode == UiMode::Library
-        || reader.mode == UiMode::Discover
-    {
+    if motion_route(reader.mode) == MotionRoute::List {
         handle_picker_motion(reader, app, action, pts, up_idx);
         return;
     }
@@ -869,13 +866,51 @@ fn pointer_up_tool_action(up_is_stylus: bool) -> PointerUpToolAction {
     }
 }
 
+/// Manejador al que va un `MotionEvent` según el modo de UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MotionRoute {
+    /// Máquina de gestos del visor (`handle_motion`: tap/pinch/pan/trazo).
+    Viewer,
+    /// Input de las listas (`handle_picker_motion`: scroll + tap, sin pinch).
+    List,
+}
+
+/// Decide el manejador de un `MotionEvent`: picker, biblioteca y Descubrir
+/// comparten el input de lista; el visor usa su máquina de gestos. Función
+/// pura para poder caracterizar el enrutado en host (sin `AndroidApp`).
+pub(crate) fn motion_route(mode: UiMode) -> MotionRoute {
+    if mode == UiMode::Picker || mode == UiMode::Library || mode == UiMode::Discover {
+        MotionRoute::List
+    } else {
+        MotionRoute::Viewer
+    }
+}
+
+/// Pantalla de lista que recibe un tap (ninguna en el visor).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListTapTarget {
+    Picker,
+    Library,
+    Discover,
+}
+
+/// Destino del tap de lista según el modo (`None` en el visor).
+pub(crate) fn list_tap_target(mode: UiMode) -> Option<ListTapTarget> {
+    match mode {
+        UiMode::Picker => Some(ListTapTarget::Picker),
+        UiMode::Library => Some(ListTapTarget::Library),
+        UiMode::Discover => Some(ListTapTarget::Discover),
+        UiMode::Viewer => None,
+    }
+}
+
 /// Tap sobre la lista activa (picker interno o biblioteca MediaStore).
 fn list_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
-    match reader.mode {
-        UiMode::Picker => picker_tap(reader, app, x, y),
-        UiMode::Library => library_tap(reader, app, x, y),
-        UiMode::Discover => discover_tap(reader, app, x, y),
-        UiMode::Viewer => {}
+    match list_tap_target(reader.mode) {
+        Some(ListTapTarget::Picker) => picker_tap(reader, app, x, y),
+        Some(ListTapTarget::Library) => library_tap(reader, app, x, y),
+        Some(ListTapTarget::Discover) => discover_tap(reader, app, x, y),
+        None => {}
     }
 }
 
@@ -1390,6 +1425,31 @@ fn library_down_zone(reader: &Reader, y: f32) -> u8 {
     0
 }
 
+/// Qué es el desplazamiento (`dx`, `dy`) de un dedo en una lista desde su Down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ListMotion {
+    /// Dentro de `TAP_SLOP`: el Move no hace nada y el Up es un tap.
+    Tap,
+    /// Arrastre HORIZONTAL (carousel/filas de chips de la biblioteca).
+    Horizontal,
+    /// Arrastre VERTICAL (scroll de la lista).
+    Vertical,
+}
+
+/// Clasifica el desplazamiento de un dedo en una lista (picker, biblioteca,
+/// Descubrir): por debajo de `TAP_SLOP` es tap; si no, manda el eje
+/// dominante (empate = vertical).
+pub(crate) fn classify_list_motion(dx: f32, dy: f32) -> ListMotion {
+    let moved = (dx * dx + dy * dy).sqrt();
+    if moved > TAP_SLOP && dx.abs() > dy.abs() {
+        ListMotion::Horizontal
+    } else if moved > TAP_SLOP {
+        ListMotion::Vertical
+    } else {
+        ListMotion::Tap
+    }
+}
+
 /// Input del picker/biblioteca (un solo dedo): arrastre VERTICAL = scroll de
 /// la lista (picker: por filas; biblioteca: por PÍXELES del contenido
 /// completo, recientes + rejilla); arrastre HORIZONTAL = scroll del carousel
@@ -1442,8 +1502,8 @@ fn handle_picker_motion(
             {
                 let dx = x - drag.sx;
                 let dy = y - drag.sy;
-                let moved = (dx * dx + dy * dy).sqrt();
-                if moved > TAP_SLOP && dx.abs() > dy.abs() {
+                let motion = classify_list_motion(dx, dy);
+                if motion == ListMotion::Horizontal {
                     // Arrastre HORIZONTAL (solo biblioteca): el scroll de
                     // partida se guardó en `h0` según la zona del Down.
                     if reader.mode == UiMode::Library {
@@ -1479,7 +1539,7 @@ fn handle_picker_motion(
                             reader.redraw();
                         }
                     }
-                } else if moved > TAP_SLOP {
+                } else if motion == ListMotion::Vertical {
                     // Arrastre VERTICAL: picker por filas, biblioteca por px.
                     if reader.mode == UiMode::Picker {
                         let row_h = picker_row_h(reader.win_h) as f32;
@@ -1513,8 +1573,8 @@ fn handle_picker_motion(
         MotionAction::Up => {
             let drag = reader.list_drag.take();
             if let (Some(d), Some(&(_, x, y))) = (drag, pts.first()) {
-                let moved = ((x - d.sx).powi(2) + (y - d.sy).powi(2)).sqrt();
-                if moved <= TAP_SLOP {
+                let motion = classify_list_motion(x - d.sx, y - d.sy);
+                if motion == ListMotion::Tap {
                     list_tap(reader, app, x, y);
                 }
             }
@@ -1941,5 +2001,123 @@ mod tests {
         };
         let next = discriminate_two_finger_mode(TwoFingerMode::Pan, &k);
         assert_eq!(next, TwoFingerMode::Zoom);
+    }
+
+    // --- Caracterización del enrutado por `UiMode` (IN-02) ---
+
+    const ALL_MODES: [UiMode; 4] = [
+        UiMode::Viewer,
+        UiMode::Picker,
+        UiMode::Library,
+        UiMode::Discover,
+    ];
+
+    const ALL_ACTIONS: [MotionAction; 13] = [
+        MotionAction::Down,
+        MotionAction::Up,
+        MotionAction::Move,
+        MotionAction::Cancel,
+        MotionAction::Outside,
+        MotionAction::PointerDown,
+        MotionAction::PointerUp,
+        MotionAction::HoverMove,
+        MotionAction::Scroll,
+        MotionAction::HoverEnter,
+        MotionAction::HoverExit,
+        MotionAction::ButtonPress,
+        MotionAction::ButtonRelease,
+    ];
+
+    #[test]
+    fn route_viewer_goes_to_gesture_machine() {
+        assert_eq!(motion_route(UiMode::Viewer), MotionRoute::Viewer);
+    }
+
+    #[test]
+    fn route_list_modes_go_to_list_input() {
+        assert_eq!(motion_route(UiMode::Picker), MotionRoute::List);
+        assert_eq!(motion_route(UiMode::Library), MotionRoute::List);
+        assert_eq!(motion_route(UiMode::Discover), MotionRoute::List);
+    }
+
+    #[test]
+    fn route_depends_only_on_mode_for_every_action() {
+        // Down/Move/Up/Cancel (y el resto de acciones) van al mismo manejador
+        // dentro de un modo: el enrutado no mira la acción.
+        for mode in ALL_MODES {
+            let expected = if mode == UiMode::Viewer {
+                MotionRoute::Viewer
+            } else {
+                MotionRoute::List
+            };
+            for action in ALL_ACTIONS {
+                assert_eq!(motion_route(mode), expected, "{mode:?} {action:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn list_tap_targets_the_active_list_screen() {
+        assert_eq!(list_tap_target(UiMode::Picker), Some(ListTapTarget::Picker));
+        assert_eq!(
+            list_tap_target(UiMode::Library),
+            Some(ListTapTarget::Library)
+        );
+        assert_eq!(
+            list_tap_target(UiMode::Discover),
+            Some(ListTapTarget::Discover)
+        );
+    }
+
+    #[test]
+    fn list_tap_is_ignored_in_viewer() {
+        assert_eq!(list_tap_target(UiMode::Viewer), None);
+    }
+
+    #[test]
+    fn every_list_routed_mode_has_a_tap_target() {
+        for mode in ALL_MODES {
+            assert_eq!(
+                motion_route(mode) == MotionRoute::List,
+                list_tap_target(mode).is_some(),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_motion_within_slop_is_a_tap() {
+        assert_eq!(classify_list_motion(0.0, 0.0), ListMotion::Tap);
+        assert_eq!(classify_list_motion(TAP_SLOP, 0.0), ListMotion::Tap);
+        assert_eq!(classify_list_motion(0.0, -TAP_SLOP), ListMotion::Tap);
+    }
+
+    #[test]
+    fn list_motion_beyond_slop_follows_dominant_axis() {
+        let d = TAP_SLOP + 1.0;
+        assert_eq!(classify_list_motion(d, 0.0), ListMotion::Horizontal);
+        assert_eq!(classify_list_motion(-d, 1.0), ListMotion::Horizontal);
+        assert_eq!(classify_list_motion(0.0, d), ListMotion::Vertical);
+        assert_eq!(classify_list_motion(1.0, -d), ListMotion::Vertical);
+    }
+
+    #[test]
+    fn list_motion_diagonal_tie_is_vertical() {
+        let d = TAP_SLOP;
+        assert_eq!(classify_list_motion(d, d), ListMotion::Vertical);
+        assert_eq!(classify_list_motion(-d, d), ListMotion::Vertical);
+    }
+
+    #[test]
+    fn same_drag_scrolls_list_but_pans_or_cancels_viewer() {
+        // Un arrastre más allá del slop: en una lista es scroll; en el visor
+        // desplaza la hoja ampliada o solo cancela el tap a zoom 1.
+        let d = TAP_SLOP + 5.0;
+        assert_eq!(classify_list_motion(0.0, d), ListMotion::Vertical);
+        assert_eq!(classify_tap_drag(d, 2.0, false), TapDrag::Pan);
+        assert_eq!(classify_tap_drag(d, PINCH_MIN, false), TapDrag::Cancel);
+        // Dentro del slop ambos siguen siendo tap.
+        assert_eq!(classify_list_motion(0.0, TAP_SLOP), ListMotion::Tap);
+        assert_eq!(classify_tap_drag(TAP_SLOP, 2.0, false), TapDrag::Stay);
     }
 }
