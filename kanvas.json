@@ -382,7 +382,7 @@
     {
       "id": "TD-03",
       "title": "Fix 2 flaky folder_sync timing tests (CI fails at random)",
-      "state": "proposed",
+      "state": "todo",
       "group": "TD",
       "deps": ["TD-01"],
       "at": "2026-11-26T16:01:13Z",
@@ -398,6 +398,11 @@
           "at": "2026-11-26T16:16:45Z",
           "by": "claude-code",
           "text": "Now failing in most CI runs (210, 211, 212). Worth checking while fixing: whether the worker's export path got slower (e.g. CO-01's fsync in export_markdown_to_file), since both tests assert the local save does not wait behind export."
+        },
+        {
+          "at": "2026-11-26T16:49:01Z",
+          "by": "human",
+          "text": "Approved in chat (\"yeah go further in the plan\"). (relayed from chat by the agent)"
         }
       ]
     }
