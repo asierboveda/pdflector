@@ -13,8 +13,8 @@ use crate::theme;
 use pdf_core::Bitmap;
 
 use super::{
-    ButtonVariant, CanvasRect, CanvasText, Elevation, TextAlign, TextFont, draw_astryx_button,
-    draw_surface_card, draw_token_pill, jni_text_bitmap,
+    ButtonRect, ButtonVariant, CanvasRect, CanvasText, Elevation, TextAlign, TextFont,
+    draw_astryx_button, draw_surface_card, draw_token_pill, jni_text_bitmap,
 };
 
 /// Dibuja un encabezado de sección uppercase Astryx dentro de un popover.
@@ -893,4 +893,314 @@ pub(crate) fn draw_settings_menu(
         false,
         crate::draw::discover::ARXIV_ATTRIBUTION,
     ));
+}
+
+// ---------------------------------------------------------------------
+// Layout único de los popovers (fuente común de dibujo e hit-test)
+// ---------------------------------------------------------------------
+
+/// Sección de un popover: título, `top` (y del encabezado), `bottom` (y del
+/// divisor inferior) e ítems interactivos con su hitbox.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MenuSection<I> {
+    pub(crate) title: &'static str,
+    pub(crate) top: f32,
+    pub(crate) bottom: f32,
+    pub(crate) items: Vec<(I, ButtonRect)>,
+}
+
+/// Layout completo de un popover: card + secciones.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MenuLayout<I> {
+    pub(crate) card: ButtonRect,
+    pub(crate) sections: Vec<MenuSection<I>>,
+}
+
+impl<I: Copy> MenuLayout<I> {
+    /// Ítems interactivos en orden, con el rect usado para el hit-test.
+    pub(crate) fn items(&self) -> Vec<(I, ButtonRect)> {
+        self.sections
+            .iter()
+            .flat_map(|s| s.items.iter().copied())
+            .collect()
+    }
+}
+
+/// Resaltado tonal de una fila seleccionada a partir de su hitbox.
+#[cfg_attr(not(test), allow(dead_code))]
+fn menu_row_highlight((l, t, r, b): ButtonRect) -> ButtonRect {
+    (l - 6.0, t + 2.0, r + 6.0, b - 2.0)
+}
+
+/// Estado del menú Vista que decide qué ítems se marcan como activos.
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct ViewMenuState {
+    pub(crate) grid: bool,
+    pub(crate) auto_columns: bool,
+    pub(crate) columns: u32,
+    pub(crate) cover_fit: LibraryCoverFit,
+    pub(crate) hide_covers: bool,
+    pub(crate) group_by: LibraryGroupBy,
+    pub(crate) sort: LibSort,
+}
+
+/// Estado del menú Ajustes que decide qué ítems se marcan como activos.
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct SettingsMenuState {
+    pub(crate) cover_size: u8,
+    pub(crate) cover_progress: bool,
+    pub(crate) confirming_clear: bool,
+}
+
+/// STUB (TDD): pendiente de implementar.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn view_menu_layout(win_w: i32, win_h: i32) -> MenuLayout<ViewMenuItem> {
+    let (card, items) = view_menu_geometry(win_w, win_h);
+    MenuLayout {
+        card,
+        sections: vec![MenuSection {
+            title: "",
+            top: card.1,
+            bottom: card.3,
+            items,
+        }],
+    }
+}
+
+/// STUB (TDD): pendiente de implementar.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn settings_menu_layout(win_w: i32, win_h: i32) -> MenuLayout<SettingsMenuItem> {
+    let (card, items) = settings_menu_geometry(win_w, win_h);
+    MenuLayout {
+        card,
+        sections: vec![MenuSection {
+            title: "",
+            top: card.1,
+            bottom: card.3,
+            items,
+        }],
+    }
+}
+
+/// STUB (TDD): pendiente de implementar.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn draw_view_menu_layout(
+    _layout: &MenuLayout<ViewMenuItem>,
+    _st: &ViewMenuState,
+    _p: &theme::ThemePalette,
+    _rects: &mut Vec<CanvasRect>,
+    _texts: &mut Vec<CanvasText>,
+) {
+}
+
+/// STUB (TDD): pendiente de implementar.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn draw_settings_menu_layout(
+    _layout: &MenuLayout<SettingsMenuItem>,
+    _st: &SettingsMenuState,
+    _p: &theme::ThemePalette,
+    _rects: &mut Vec<CanvasRect>,
+    _texts: &mut Vec<CanvasText>,
+) {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::AppTheme;
+
+    /// Ventanas típicas de la tablet (retrato y apaisado).
+    const SIZES: [(i32, i32); 4] = [(1600, 2560), (2560, 1600), (1200, 1920), (1920, 1200)];
+
+    fn inside((x, y): (f32, f32), (l, t, r, b): ButtonRect) -> bool {
+        x >= l && x <= r && y >= t && y <= b
+    }
+
+    fn contains((ol, ot, or, ob): ButtonRect, (l, t, r, b): ButtonRect) -> bool {
+        l >= ol && t >= ot && r <= or && b <= ob
+    }
+
+    fn bounds(r: &CanvasRect) -> ButtonRect {
+        (r.left, r.top, r.right, r.bottom)
+    }
+
+    /// Desplaza todo el layout: si el dibujo recalculase su propia
+    /// geometría en vez de usar la recibida, dejaría de coincidir.
+    fn shifted<I: Copy>(layout: &MenuLayout<I>, dx: f32, dy: f32) -> MenuLayout<I> {
+        let mv = |(l, t, r, b): ButtonRect| (l + dx, t + dy, r + dx, b + dy);
+        MenuLayout {
+            card: mv(layout.card),
+            sections: layout
+                .sections
+                .iter()
+                .map(|s| MenuSection {
+                    title: s.title,
+                    top: s.top + dy,
+                    bottom: s.bottom + dy,
+                    items: s.items.iter().map(|&(i, r)| (i, mv(r))).collect(),
+                })
+                .collect(),
+        }
+    }
+
+    fn view_state_activating(item: ViewMenuItem) -> ViewMenuState {
+        let mut st = ViewMenuState {
+            columns: 3,
+            ..Default::default()
+        };
+        match item {
+            ViewMenuItem::Grid => st.grid = true,
+            ViewMenuItem::List => st.grid = false,
+            ViewMenuItem::ColumnsAuto => st.auto_columns = true,
+            ViewMenuItem::ColumnsDec | ViewMenuItem::ColumnsInc => st.auto_columns = false,
+            ViewMenuItem::CoverCrop => st.cover_fit = LibraryCoverFit::Crop,
+            ViewMenuItem::CoverFit => st.cover_fit = LibraryCoverFit::Fit,
+            ViewMenuItem::CoverHide => st.hide_covers = true,
+            ViewMenuItem::GroupNone => st.group_by = LibraryGroupBy::None,
+            ViewMenuItem::GroupAuthor => st.group_by = LibraryGroupBy::Author,
+            ViewMenuItem::SortTitle => st.sort = LibSort::Title,
+            ViewMenuItem::SortAuthor => st.sort = LibSort::Author,
+            ViewMenuItem::SortAdded => st.sort = LibSort::RecentlyAdded,
+            ViewMenuItem::SortRead => st.sort = LibSort::RecentlyRead,
+            ViewMenuItem::SortProgress => st.sort = LibSort::Progress,
+        }
+        st
+    }
+
+    fn settings_state_activating(item: SettingsMenuItem) -> SettingsMenuState {
+        let mut st = SettingsMenuState {
+            cover_size: 9,
+            ..Default::default()
+        };
+        match item {
+            SettingsMenuItem::CoverSizeSmall => st.cover_size = 0,
+            SettingsMenuItem::CoverSizeMedium => st.cover_size = 1,
+            SettingsMenuItem::CoverSizeLarge => st.cover_size = 2,
+            SettingsMenuItem::CoverProgress => st.cover_progress = true,
+            SettingsMenuItem::ClearLibrary => st.confirming_clear = true,
+        }
+        st
+    }
+
+    #[test]
+    fn menu_geometry_for_input_is_the_drawn_layout() {
+        for (w, h) in SIZES {
+            let v = view_menu_layout(w, h);
+            assert_eq!(view_menu_geometry(w, h), (v.card, v.items()));
+            let s = settings_menu_layout(w, h);
+            assert_eq!(settings_menu_geometry(w, h), (s.card, s.items()));
+        }
+    }
+
+    #[test]
+    fn view_menu_draws_every_item_on_its_hit_rect() {
+        let p = AppTheme::DefaultLight.palette();
+        for (w, h) in SIZES {
+            let layout = shifted(&view_menu_layout(w, h), 37.0, 53.0);
+            let items = layout.items();
+            assert_eq!(items.len(), 15, "el menú Vista tiene 15 ítems");
+            for &(item, rect) in &items {
+                let st = view_state_activating(item);
+                let (mut rects, mut texts) = (Vec::new(), Vec::new());
+                draw_view_menu_layout(&layout, &st, &p, &mut rects, &mut texts);
+                assert!(
+                    texts.iter().any(|t| inside((t.x, t.y), rect)),
+                    "{item:?}: ninguna etiqueta dibujada dentro de su hitbox {rect:?}"
+                );
+                let want = match item {
+                    ViewMenuItem::ColumnsAuto
+                    | ViewMenuItem::ColumnsDec
+                    | ViewMenuItem::ColumnsInc => rect,
+                    _ => menu_row_highlight(rect),
+                };
+                assert!(
+                    rects.iter().any(|r| bounds(r) == want),
+                    "{item:?}: no se dibuja el rect {want:?} derivado de su hitbox"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn settings_menu_draws_every_item_on_its_hit_rect() {
+        let p = AppTheme::DefaultLight.palette();
+        for (w, h) in SIZES {
+            let layout = shifted(&settings_menu_layout(w, h), -41.0, 29.0);
+            let items = layout.items();
+            assert_eq!(items.len(), 5, "el menú Ajustes tiene 5 ítems");
+            for &(item, rect) in &items {
+                let st = settings_state_activating(item);
+                let (mut rects, mut texts) = (Vec::new(), Vec::new());
+                draw_settings_menu_layout(&layout, &st, &p, &mut rects, &mut texts);
+                assert!(
+                    texts.iter().any(|t| inside((t.x, t.y), rect)),
+                    "{item:?}: ninguna etiqueta dibujada dentro de su hitbox {rect:?}"
+                );
+                let want = menu_row_highlight(rect);
+                assert!(
+                    rects.iter().any(|r| bounds(r) == want),
+                    "{item:?}: no se dibuja el resaltado {want:?} derivado de su hitbox"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn menus_fit_in_window_and_draw_inside_their_card() {
+        let p = AppTheme::DefaultLight.palette();
+        for (w, h) in SIZES {
+            let win = (0.0, 0.0, w as f32, h as f32);
+
+            let v = view_menu_layout(w, h);
+            assert!(
+                contains(win, v.card),
+                "{w}x{h}: menú Vista fuera de la ventana"
+            );
+            assert_eq!(v.sections.len(), 5, "{w}x{h}: secciones del menú Vista");
+            for (item, r) in v.items() {
+                assert!(contains(v.card, r), "{w}x{h}: {item:?} fuera del card");
+            }
+            let (mut rects, mut texts) = (Vec::new(), Vec::new());
+            draw_view_menu_layout(&v, &ViewMenuState::default(), &p, &mut rects, &mut texts);
+            assert!(!texts.is_empty(), "{w}x{h}: el menú Vista no dibuja texto");
+            for t in &texts {
+                assert!(
+                    inside((t.x, t.y), v.card),
+                    "{w}x{h}: texto {:?} fuera del card",
+                    t.text
+                );
+            }
+
+            let s = settings_menu_layout(w, h);
+            assert!(
+                contains(win, s.card),
+                "{w}x{h}: menú Ajustes fuera de la ventana"
+            );
+            assert_eq!(s.sections.len(), 4, "{w}x{h}: secciones del menú Ajustes");
+            for (item, r) in s.items() {
+                assert!(contains(s.card, r), "{w}x{h}: {item:?} fuera del card");
+            }
+            let (mut rects, mut texts) = (Vec::new(), Vec::new());
+            draw_settings_menu_layout(
+                &s,
+                &SettingsMenuState::default(),
+                &p,
+                &mut rects,
+                &mut texts,
+            );
+            assert!(
+                !texts.is_empty(),
+                "{w}x{h}: el menú Ajustes no dibuja texto"
+            );
+            for t in &texts {
+                assert!(
+                    inside((t.x, t.y), s.card),
+                    "{w}x{h}: texto {:?} fuera del card",
+                    t.text
+                );
+            }
+        }
+    }
 }

@@ -47,6 +47,36 @@ pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
     jni_text_bitmap(bw, bh, theme::TRANSPARENT, &rects, &texts)
 }
 
+/// Máximo de líneas del aviso; el resto se trunca con "…".
+pub(crate) const TOAST_MAX_LINES: usize = 3;
+/// Margen mínimo (px) entre el aviso y el borde del viewport.
+pub(crate) const TOAST_MARGIN: i32 = 16;
+/// Relleno horizontal (px) del texto dentro del aviso.
+pub(crate) const TOAST_PAD_X: f32 = 16.0;
+/// Ancho medio estimado (px) de un carácter `FONT_CAPTION` en negrita.
+pub(crate) const TOAST_CHAR_W: f32 = theme::FONT_CAPTION * 0.58;
+
+/// Layout del aviso: tamaño del bitmap y líneas ya envueltas/truncadas.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ToastLayout {
+    pub(crate) w: i32,
+    pub(crate) h: i32,
+    pub(crate) lines: Vec<String>,
+    /// Caracteres máximos por línea con el ancho elegido.
+    pub(crate) max_chars: usize,
+}
+
+/// STUB (TDD): pendiente de implementar.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn toast_layout(msg: &str, win_w: i32, win_h: i32) -> ToastLayout {
+    ToastLayout {
+        w: (win_w / 6).max(140),
+        h: (win_h / 60).max(32),
+        lines: vec![msg.to_string()],
+        max_chars: msg.chars().count(),
+    }
+}
+
 // ---------------------------------------------------------------------
 // Panel de "Preguntar a la IA": diálogo flotante Astryx
 // ---------------------------------------------------------------------
@@ -377,4 +407,95 @@ pub(crate) fn compose_library_snapshot(reader: &Reader) -> Option<Bitmap> {
         copy_region(dst, w as usize, h as usize, w as usize, 4, band, 0, sy);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VIEWPORTS: [(i32, i32); 4] = [(1600, 2560), (2560, 1600), (1200, 1920), (480, 800)];
+
+    /// El texto envuelto cabe en el ancho del aviso.
+    fn assert_text_fits(l: &ToastLayout) {
+        assert!(
+            l.max_chars as f32 * TOAST_CHAR_W + 2.0 * TOAST_PAD_X <= l.w as f32 + 0.5,
+            "max_chars={} no cabe en w={}",
+            l.max_chars,
+            l.w
+        );
+        for line in &l.lines {
+            assert!(
+                line.chars().count() <= l.max_chars,
+                "línea de {} > {} caracteres: {line:?}",
+                line.chars().count(),
+                l.max_chars
+            );
+        }
+    }
+
+    #[test]
+    fn short_toast_keeps_single_line_pill_size() {
+        for (w, h) in VIEWPORTS {
+            let l = toast_layout("Guardado", w, h);
+            assert_eq!(l.lines, vec!["Guardado".to_string()]);
+            assert_eq!((l.w, l.h), ((w / 6).max(140), (h / 60).max(32)));
+        }
+    }
+
+    #[test]
+    fn long_toast_stays_within_viewport_and_is_truncated() {
+        let msg = "Error al sincronizar con Google Drive: la respuesta del servidor \
+                   no es válida (HTTP 502 Bad Gateway). "
+            .repeat(12);
+        for (w, h) in VIEWPORTS {
+            let l = toast_layout(&msg, w, h);
+            assert!(
+                l.w <= w - 2 * TOAST_MARGIN,
+                "{w}x{h}: ancho {} desborda",
+                l.w
+            );
+            assert!(
+                l.h <= h - 2 * TOAST_MARGIN,
+                "{w}x{h}: alto {} desborda",
+                l.h
+            );
+            assert!(l.w > 0 && l.h > 0);
+            assert!(
+                !l.lines.is_empty() && l.lines.len() <= TOAST_MAX_LINES,
+                "{w}x{h}: {} líneas",
+                l.lines.len()
+            );
+            assert!(
+                l.lines.last().is_some_and(|s| s.ends_with('…')),
+                "{w}x{h}: la última línea no termina en elipsis: {:?}",
+                l.lines.last()
+            );
+            assert_text_fits(&l);
+        }
+    }
+
+    #[test]
+    fn medium_toast_wraps_without_losing_words() {
+        let msg = "No se pudo abrir el documento porque el archivo está dañado o protegido";
+        let l = toast_layout(msg, 480, 800);
+        assert!(
+            l.lines.len() > 1,
+            "debería envolver en 480 px: {:?}",
+            l.lines
+        );
+        assert!(l.lines.len() <= TOAST_MAX_LINES);
+        assert_eq!(l.lines.join(" "), msg);
+        assert!(l.w <= 480 - 2 * TOAST_MARGIN);
+        assert_text_fits(&l);
+    }
+
+    #[test]
+    fn unbreakable_word_is_split_and_truncated() {
+        let msg = "/storage/emulated/0/Download/".repeat(20);
+        let l = toast_layout(&msg, 1200, 1920);
+        assert!(l.lines.len() <= TOAST_MAX_LINES);
+        assert!(l.lines.last().is_some_and(|s| s.ends_with('…')));
+        assert!(l.w <= 1200 - 2 * TOAST_MARGIN);
+        assert_text_fits(&l);
+    }
 }
