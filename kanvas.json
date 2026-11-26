@@ -440,7 +440,7 @@
     {
       "id": "PR-02",
       "title": "Study workflow: in-app Gemini key, notes, figures & Anki",
-      "state": "todo",
+      "state": "doing",
       "group": "PR",
       "deps": ["UI-02", "CO-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -461,13 +461,22 @@
           "at": "2026-11-26T20:16:12Z",
           "by": "claude-code",
           "text": "Scope decided by the human in chat: in-app Gemini API key + per-document notebook. Out of scope for now: figure preview, Anki export."
+        },
+        {
+          "at": "2026-11-26T20:16:12Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works test-first in its own worktree; orchestrator verifies every RED/GREEN pair, merges behind the test gate, checks CI (incl. Android) before main moves. Device checks are for the human."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T20:16:12Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "PR-03",
       "title": "Display-list memory cap & 120 Hz profiling on TCL 9469X",
-      "state": "todo",
+      "state": "doing",
       "group": "PR",
       "deps": ["IN-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -478,8 +487,17 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T20:16:12Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works test-first in its own worktree; orchestrator verifies every RED/GREEN pair, merges behind the test gate, checks CI (incl. Android) before main moves. Device checks are for the human."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T20:16:12Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "TD-03",
