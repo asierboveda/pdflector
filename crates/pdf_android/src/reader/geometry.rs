@@ -427,6 +427,18 @@ pub(crate) fn lib_add_btn_w(win_w: i32) -> f32 {
     (win_w as f32 * 0.18).clamp(110.0, 160.0)
 }
 
+/// Rectángulo (left, top, right, bottom) de la píldora "＋ Añadir": anclada a
+/// la derecha con `grid_pad` y centrada en `lib_header_buttons_cy`.
+pub(crate) fn lib_add_btn_rect(win_w: i32, win_h: i32) -> ButtonRect {
+    let header_h = lib_header_h(win_h);
+    let top_pad = 36.0f32;
+    let btn_w = lib_add_btn_w(win_w);
+    let btn_h = ((header_h - top_pad) * 0.52).clamp(38.0, 46.0);
+    let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
+    let btn_x = win_w as f32 - grid_pad(win_w) - btn_w;
+    (btn_x, btn_y, btn_x + btn_w, btn_y + btn_h)
+}
+
 /// Rectángulo (left, top, right, bottom) del botón de menú SETTINGS "☰":
 /// círculo de `header_menu_btn_d` alineado a la IZQUIERDA del "＋ Añadir"
 /// (que mantiene su anclaje a derecha con `grid_pad`) con `header_menu_gap`
@@ -1170,5 +1182,49 @@ mod page_screen_transform_tests {
         assert_eq!(cache.len(), 5);
         assert_eq!(cache.get(1), None);
         assert_eq!(cache.get(0), Some(shifted_geometry()));
+    }
+}
+
+#[cfg(test)]
+mod lib_header_buttons_tests {
+    use super::{lib_add_btn_rect, settings_menu_button_rect, view_menu_button_rect};
+
+    /// TCL 9469X apaisada y vertical, más tamaños extremos de los clamps.
+    const WINDOWS: [(i32, i32); 4] = [(2000, 1200), (1200, 2000), (800, 600), (2560, 1600)];
+
+    #[test]
+    fn menu_buttons_match_add_pill_height_and_row() {
+        for (w, h) in WINDOWS {
+            let add = lib_add_btn_rect(w, h);
+            for (name, r) in [
+                ("⋯", view_menu_button_rect(w, h)),
+                ("☰", settings_menu_button_rect(w, h)),
+            ] {
+                assert!(
+                    ((r.3 - r.1) - (add.3 - add.1)).abs() < 0.01,
+                    "{w}x{h}: alto de {name} {} != alto de ＋ Añadir {}",
+                    r.3 - r.1,
+                    add.3 - add.1
+                );
+                assert!(
+                    (r.1 - add.1).abs() < 0.01,
+                    "{w}x{h}: top de {name} {} != top de ＋ Añadir {}",
+                    r.1,
+                    add.1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn menu_buttons_sit_left_of_add_pill_without_overlap() {
+        for (w, h) in WINDOWS {
+            let add = lib_add_btn_rect(w, h);
+            let s = settings_menu_button_rect(w, h);
+            let v = view_menu_button_rect(w, h);
+            assert!(s.2 <= add.0, "{w}x{h}: ☰ solapa ＋ Añadir");
+            assert!(v.2 <= s.0, "{w}x{h}: ⋯ solapa ☰");
+            assert!(v.2 - v.0 >= 48.0, "{w}x{h}: ⋯ por debajo del touch target");
+        }
     }
 }
