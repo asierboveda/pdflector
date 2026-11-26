@@ -131,7 +131,7 @@ pub(crate) const PINCH_MAX: f32 = 8.0;
 /// Sistema de diseño Astryx adaptado a Canvas JNI nativo (colores ARGB 0xAARRGGBB).
 ///
 /// Jerarquía de superficies (`body → surface → card → popover`), tokens de forma
-/// (`RADIUS_*`), ritmo espacial de 4 px (`SPACE_*`) y escala tipográfica geométrica
+/// (`RADIUS_*`) y escala tipográfica geométrica
 /// con contraste WCAG AA verificado en los 4 temas persistidos.
 pub(crate) mod theme {
     use serde::{Deserialize, Serialize};
@@ -147,48 +147,24 @@ pub(crate) mod theme {
     pub(crate) const SEL_BORDER_RGBA: [u8; 4] = [0x00, 0x64, 0xE0, 0xFF];
 
     // ---- Escala de forma (Astryx Shape: inner → element → container → page → full) ----
-    #[allow(dead_code)]
-    pub(crate) const RADIUS_NONE: f32 = 0.0;
     pub(crate) const RADIUS_INNER: f32 = 4.0;
     pub(crate) const RADIUS_ELEMENT: f32 = 8.0;
-    #[allow(dead_code)]
     pub(crate) const RADIUS_CONTAINER: f32 = 12.0;
-    #[allow(dead_code)]
     pub(crate) const RADIUS_CARD: f32 = 16.0;
-    #[allow(dead_code)]
     pub(crate) const RADIUS_PAGE: f32 = 24.0;
-    #[allow(dead_code)]
     pub(crate) const RADIUS_FULL: f32 = 999.0;
-
-    // ---- Ritmo espacial (Astryx Spacing, base 4 px) ----
-    #[allow(dead_code)]
-    pub(crate) const SPACE_1: f32 = 4.0;
-    #[allow(dead_code)]
-    pub(crate) const SPACE_2: f32 = 8.0;
-    #[allow(dead_code)]
-    pub(crate) const SPACE_3: f32 = 12.0;
-    #[allow(dead_code)]
-    pub(crate) const SPACE_4: f32 = 16.0;
-    #[allow(dead_code)]
-    pub(crate) const SPACE_5: f32 = 20.0;
-    #[allow(dead_code)]
-    pub(crate) const SPACE_6: f32 = 24.0;
 
     // ---- Escala tipográfica geométrica (Astryx Type Scale) ----
     pub(crate) const FONT_DISPLAY: f32 = 26.0;
-    #[allow(dead_code)]
     pub(crate) const FONT_H1: f32 = 20.0;
     pub(crate) const FONT_TITLE: f32 = 17.0;
     pub(crate) const FONT_BODY: f32 = 14.0;
     pub(crate) const FONT_CAPTION: f32 = 12.0;
     pub(crate) const FONT_LABEL_CAPS: f32 = 11.0;
-    #[allow(dead_code)]
     pub(crate) const FONT_MICRO: f32 = 10.0;
 
     /// Tracking tipográfico (`Paint.setLetterSpacing` en em).
-    #[allow(dead_code)]
     pub(crate) const TRACKING_CAPS: f32 = 0.08;
-    #[allow(dead_code)]
     pub(crate) const TRACKING_TIGHT: f32 = -0.015;
 
     /// Temas persistidos en `state.json` (se preservan las variantes exactas).
@@ -222,7 +198,6 @@ pub(crate) mod theme {
             match self {
                 // Astryx Core Light (`#F1F4F7` body → `#FFFFFF` surface/card/popover, `#0064E0` accent)
                 Self::DefaultLight => ThemePalette {
-                    name: "Claro",
                     is_dark: false,
                     bg_body: 0xFFF1_F4F7,
                     bg_surface: 0xFFFF_FFFF,
@@ -232,7 +207,6 @@ pub(crate) mod theme {
                     bg_inverted: 0xFF0A_1317,
                     text_primary: 0xFF0A_1317,
                     text_secondary: 0xFF44_5564,
-                    text_disabled: 0xFF69_7886,
                     text_accent: 0xFF00_64E0,
                     on_accent: 0xFFFF_FFFF,
                     on_inverted: 0xFFFF_FFFF,
@@ -243,14 +217,10 @@ pub(crate) mod theme {
                     accent: 0xFF00_64E0,
                     accent_muted: 0xFFD8_EBFF,
                     on_accent_muted: 0xFF04_2F97,
-                    success: 0xFF0D_8626,
                     success_bg: 0xFFD6_F4E1,
                     success_text: 0xFF09_441F,
-                    success_border: 0xFF0D_8626,
-                    warning: 0xFFC5_8600,
                     warning_bg: 0xFFFB_F0CE,
                     warning_text: 0xFF6B_3A06,
-                    error: 0xFFE3_193B,
                     error_bg: 0xFFFC_DCE1,
                     error_text: 0xFF8B_0A1E,
                     error_border: 0xFFE3_193B,
@@ -261,7 +231,6 @@ pub(crate) mod theme {
                 },
                 // Astryx Paper Light (papel cálido editorial + acento Astryx Teal)
                 Self::SepiaLight => ThemePalette {
-                    name: "Papel",
                     is_dark: false,
                     bg_body: 0xFFEC_E3D2,
                     bg_surface: 0xFFF8_F3E8,
@@ -271,7 +240,6 @@ pub(crate) mod theme {
                     bg_inverted: 0xFF26_1D15,
                     text_primary: 0xFF26_1D15,
                     text_secondary: 0xFF5D_4B3B,
-                    text_disabled: 0xFF84_715E,
                     text_accent: 0xFF00_6663,
                     on_accent: 0xFFFF_FFFF,
                     on_inverted: 0xFFF8_F3E8,
@@ -282,14 +250,10 @@ pub(crate) mod theme {
                     accent: 0xFF00_6E6A,
                     accent_muted: 0xFFCF_E8E5,
                     on_accent_muted: 0xFF06_3D3B,
-                    success: 0xFF15_7A30,
                     success_bg: 0xFFD6_ECD7,
                     success_text: 0xFF0F_4A1E,
-                    success_border: 0xFF15_7A30,
-                    warning: 0xFFB0_7704,
                     warning_bg: 0xFFF5_E7C1,
                     warning_text: 0xFF62_3B07,
-                    error: 0xFFC8_2333,
                     error_bg: 0xFFF6_D9D5,
                     error_text: 0xFF84_1515,
                     error_border: 0xFFC8_2333,
@@ -300,7 +264,6 @@ pub(crate) mod theme {
                 },
                 // Astryx Core Dark (`#111112` body → `#1F1F22` card → `#28292C` popover)
                 Self::DefaultDark => ThemePalette {
-                    name: "Oscuro",
                     is_dark: true,
                     bg_body: 0xFF11_1112,
                     bg_surface: 0xFF1F_1F22,
@@ -310,7 +273,6 @@ pub(crate) mod theme {
                     bg_inverted: 0xFFFF_FFFF,
                     text_primary: 0xFFDF_E2E5,
                     text_secondary: 0xFFB0_B5BB,
-                    text_disabled: 0xFF7B_8088,
                     text_accent: 0xFF5B_AEFF,
                     on_accent: 0xFFFF_FFFF,
                     on_inverted: 0xFF0A_1317,
@@ -321,14 +283,10 @@ pub(crate) mod theme {
                     accent: 0xFF01_71E3,
                     accent_muted: 0xFF16_324E,
                     on_accent_muted: 0xFFAF_D7FF,
-                    success: 0xFF26_A756,
                     success_bg: 0xFF13_3521,
                     success_text: 0xFF9C_EFA8,
-                    success_border: 0xFF26_A756,
-                    warning: 0xFFF2_C00B,
                     warning_bg: 0xFF3E_2F10,
                     warning_text: 0xFFFB_D65A,
-                    error: 0xFFF5_394F,
                     error_bg: 0xFF41_171F,
                     error_text: 0xFFFF_B2B8,
                     error_border: 0xFFF5_394F,
@@ -339,7 +297,6 @@ pub(crate) mod theme {
                 },
                 // Astryx Nocturne Paper (sombra cálida de estudio nocturno + Teal luminoso)
                 Self::SepiaDark => ThemePalette {
-                    name: "Nocturno",
                     is_dark: true,
                     bg_body: 0xFF17_130F,
                     bg_surface: 0xFF23_1E18,
@@ -349,7 +306,6 @@ pub(crate) mod theme {
                     bg_inverted: 0xFFF3_E6D0,
                     text_primary: 0xFFF3_E6D0,
                     text_secondary: 0xFFC4_B094,
-                    text_disabled: 0xFF8A_7860,
                     text_accent: 0xFF55_D8D0,
                     on_accent: 0xFFFF_FFFF,
                     on_inverted: 0xFF17_130F,
@@ -360,14 +316,10 @@ pub(crate) mod theme {
                     accent: 0xFF13_847E,
                     accent_muted: 0xFF17_3634,
                     on_accent_muted: 0xFF8C_ECE5,
-                    success: 0xFF2E_B864,
                     success_bg: 0xFF18_3320,
                     success_text: 0xFF9C_E8A5,
-                    success_border: 0xFF2E_B864,
-                    warning: 0xFFE8_B931,
                     warning_bg: 0xFF3E_3014,
                     warning_text: 0xFFF8_D568,
-                    error: 0xFFF2_5C5C,
                     error_bg: 0xFF41_1C1B,
                     error_text: 0xFFFF_B5B0,
                     error_border: 0xFFF2_5C5C,
@@ -381,10 +333,8 @@ pub(crate) mod theme {
     }
 
     /// Paleta semántica de color Astryx para renderizado nativo Canvas+JNI.
-    #[allow(dead_code)]
     #[derive(Copy, Clone, Debug)]
     pub(crate) struct ThemePalette {
-        pub(crate) name: &'static str,
         pub(crate) is_dark: bool,
         // Superficies Astryx (`body → surface → card → popover`)
         pub(crate) bg_body: u32,
@@ -396,7 +346,6 @@ pub(crate) mod theme {
         // Tipografía e iconos
         pub(crate) text_primary: u32,
         pub(crate) text_secondary: u32,
-        pub(crate) text_disabled: u32,
         pub(crate) text_accent: u32,
         pub(crate) on_accent: u32,
         pub(crate) on_inverted: u32,
@@ -410,14 +359,10 @@ pub(crate) mod theme {
         pub(crate) accent_muted: u32,
         pub(crate) on_accent_muted: u32,
         // Roles semánticos de estado y taxonomía
-        pub(crate) success: u32,
         pub(crate) success_bg: u32,
         pub(crate) success_text: u32,
-        pub(crate) success_border: u32,
-        pub(crate) warning: u32,
         pub(crate) warning_bg: u32,
         pub(crate) warning_text: u32,
-        pub(crate) error: u32,
         pub(crate) error_bg: u32,
         pub(crate) error_text: u32,
         pub(crate) error_border: u32,
