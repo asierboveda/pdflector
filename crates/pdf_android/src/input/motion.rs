@@ -25,7 +25,7 @@ use crate::reader::{
     PickerKind, Reader, UiMode, disc_card_action_rect, disc_card_gap, disc_card_h, disc_card_rect,
     disc_cat_row_rect, disc_content_y0, disc_detail_back_rect, disc_detail_layout,
     disc_more_btn_rect, disc_search_rect, disc_subtabs_rect, grid_cell_h, grid_cell_w, grid_gap,
-    grid_pad, lib_add_btn_w, lib_chip_h, lib_chips, lib_collection_chips, lib_content_y0,
+    grid_pad, lib_add_btn_rect, lib_chip_h, lib_chips, lib_collection_chips, lib_content_y0,
     lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h, lib_org_chip_h,
     lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h, lib_tabs_rect,
     list_row_gap, list_row_h, picker_btn_w, picker_header_h, picker_row_h,
@@ -1107,13 +1107,9 @@ fn library_tap(reader: &mut Reader, app: &AndroidApp, x: f32, y: f32) {
             reader.redraw();
             return;
         }
-        let pad = grid_pad(reader.win_w);
-        let top_pad = 36.0f32;
-        let btn_w = lib_add_btn_w(reader.win_w);
-        let btn_h = ((header_h - top_pad) * 0.52).clamp(34.0, 46.0);
-        let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
-        let btn_x = reader.win_w as f32 - pad - btn_w;
-        if x >= btn_x && x < btn_x + btn_w && y >= btn_y && y < btn_y + btn_h {
+        // Mismo rect que el render (`lib_add_btn_rect`).
+        let (bl, bt, br, bb) = lib_add_btn_rect(reader.win_w, reader.win_h);
+        if x >= bl && x < br && y >= bt && y < bb {
             reader.add_book(app);
         }
         return;
