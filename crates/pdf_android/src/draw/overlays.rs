@@ -22,28 +22,173 @@ pub(crate) const AI_HEADING_SIZE: f32 = 21.0;
 pub(crate) const AI_EQUATION_SIZE: f32 = 19.0;
 pub(crate) const AI_LINE_H: f32 = 28.0;
 
+/// Máximo de líneas del aviso; el resto se trunca con "…".
+pub(crate) const TOAST_MAX_LINES: usize = 3;
+/// Margen mínimo (px) entre el aviso y el borde del viewport.
+pub(crate) const TOAST_MARGIN: i32 = 16;
+/// Relleno horizontal (px) del texto dentro del aviso.
+pub(crate) const TOAST_PAD_X: f32 = 16.0;
+/// Ancho medio estimado (px) de un carácter `FONT_CAPTION` en negrita.
+pub(crate) const TOAST_CHAR_W: f32 = theme::FONT_CAPTION * 0.58;
+
+/// Layout del aviso: tamaño del bitmap y líneas ya envueltas/truncadas.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ToastLayout {
+    pub(crate) w: i32,
+    pub(crate) h: i32,
+    pub(crate) lines: Vec<String>,
+    /// Caracteres máximos por línea con el ancho elegido.
+    pub(crate) max_chars: usize,
+}
+
+/// Interlineado (px) de las líneas del aviso.
+const TOAST_LINE_H: f32 = theme::FONT_CAPTION * 1.4;
+/// Relleno vertical (px) del texto dentro del aviso.
+const TOAST_PAD_Y: f32 = 7.0;
+/// Ancho máximo (px) del aviso aunque el viewport sea mayor (legibilidad).
+const TOAST_MAX_W: i32 = 720;
+
+/// Layout puro del aviso: el tamaño mínimo es el de la píldora clásica
+/// (1/6 del ancho, 1/60 del alto); si el texto no cabe, crece hasta el ancho
+/// del viewport (menos `TOAST_MARGIN` por lado, tope `TOAST_MAX_W`), envuelve
+/// por palabras hasta `TOAST_MAX_LINES` y trunca con "…" lo que sobre.
+pub(crate) fn toast_layout(msg: &str, win_w: i32, win_h: i32) -> ToastLayout {
+    let min_w = (win_w / 6).max(140);
+    let min_h = (win_h / 60).max(32);
+    let max_w = (win_w - 2 * TOAST_MARGIN).clamp(1, TOAST_MAX_W);
+    let max_h = (win_h - 2 * TOAST_MARGIN).max(1);
+    let wrap_chars = chars_fitting(max_w);
+    let lines = wrap_toast_lines(msg, wrap_chars, TOAST_MAX_LINES);
+    let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    // +1 px: margen frente al redondeo para que `longest` quepa siempre.
+    let text_w = (longest as f32 * TOAST_CHAR_W + 2.0 * TOAST_PAD_X).ceil() as i32 + 1;
+    let w = text_w.max(min_w).min(max_w);
+    let text_h = (lines.len() as f32 * TOAST_LINE_H + 2.0 * TOAST_PAD_Y).ceil() as i32;
+    let h = text_h.max(min_h).min(max_h);
+    ToastLayout {
+        w,
+        h,
+        lines,
+        max_chars: chars_fitting(w),
+    }
+}
+
+/// Caracteres estimados que caben en un aviso de `w` px de ancho.
+fn chars_fitting(w: i32) -> usize {
+    (((w as f32 - 2.0 * TOAST_PAD_X) / TOAST_CHAR_W).floor() as usize).max(1)
+}
+
+/// Envuelve `msg` por palabras en líneas de `max_chars` como mucho (las
+/// palabras más largas se parten) y, si no cabe en `max_lines`, trunca la
+/// última con "…".
+fn wrap_toast_lines(msg: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
+    let max_chars = max_chars.max(1);
+    let max_lines = max_lines.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur: Vec<char> = Vec::new();
+    let mut truncated = false;
+    'words: for word in msg.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let sep = usize::from(!cur.is_empty());
+            if cur.len() + sep + word.len() <= max_chars {
+                if sep == 1 {
+                    cur.push(' ');
+                }
+                cur.extend(word);
+                continue 'words;
+            }
+            if cur.is_empty() {
+                // Palabra más larga que una línea (rutas, URLs): corte duro.
+                let rest = word.split_off(max_chars);
+                lines.push(word.into_iter().collect());
+                word = rest;
+            } else {
+                lines.push(std::mem::take(&mut cur).into_iter().collect());
+            }
+            if lines.len() == max_lines {
+                truncated = true;
+                break 'words;
+            }
+        }
+    }
+    if !truncated && (!cur.is_empty() || lines.is_empty()) {
+        lines.push(cur.into_iter().collect());
+    }
+    if truncated && let Some(last) = lines.last_mut() {
+        let mut chars: Vec<char> = last.chars().collect();
+        chars.truncate(max_chars - 1);
+        while chars.last().is_some_and(|c| c.is_whitespace()) {
+            chars.pop();
+        }
+        chars.push('…');
+        *last = chars.into_iter().collect();
+    }
+    lines
+}
+
 // ---------------------------------------------------------------------
 // Aviso breve (toast) — píldora invertida Astryx de alto contraste
 // ---------------------------------------------------------------------
 pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
-    let msg = reader.toast.as_ref()?.0.clone();
-    let (bw, bh) = ((reader.win_w / 6).max(140), (reader.win_h / 60).max(32));
+    let msg = &reader.toast.as_ref()?.0;
+    let layout = toast_layout(msg, reader.win_w, reader.win_h);
+    let (bw, bh) = (layout.w, layout.h);
     let p = reader.theme.palette();
     let mut rects = Vec::new();
     let mut texts = Vec::new();
-    draw_token_pill(
-        &mut rects,
-        &mut texts,
-        (0.0, 0.0, bw as f32, bh as f32),
-        p.bg_inverted,
-        Some(p.border_emphasized),
-        p.on_inverted,
-        theme::FONT_CAPTION,
-        TextFont::Sans,
-        0.01,
-        true,
-        &msg,
-    );
+    if layout.lines.len() <= 1 {
+        draw_token_pill(
+            &mut rects,
+            &mut texts,
+            (0.0, 0.0, bw as f32, bh as f32),
+            p.bg_inverted,
+            Some(p.border_emphasized),
+            p.on_inverted,
+            theme::FONT_CAPTION,
+            TextFont::Sans,
+            0.01,
+            true,
+            layout.lines.first().map_or("", String::as_str),
+        );
+    } else {
+        // Varias líneas: tarjeta con radio de card (una píldora de radio h/2
+        // recortaría las esquinas del texto).
+        let (fw, fh) = (bw as f32, bh as f32);
+        let rad = theme::RADIUS_CARD;
+        rects.push(CanvasRect::rounded(
+            0.0,
+            0.0,
+            fw,
+            fh,
+            rad,
+            p.border_emphasized,
+        ));
+        rects.push(CanvasRect::rounded(
+            1.0,
+            1.0,
+            fw - 1.0,
+            fh - 1.0,
+            (rad - 1.0).max(0.0),
+            p.bg_inverted,
+        ));
+        let y0 = (fh - layout.lines.len() as f32 * TOAST_LINE_H) * 0.5;
+        for (i, line) in layout.lines.iter().enumerate() {
+            let cy = y0 + (i as f32 + 0.5) * TOAST_LINE_H + theme::FONT_CAPTION * 0.35;
+            texts.push(
+                CanvasText::new(
+                    fw * 0.5,
+                    cy,
+                    theme::FONT_CAPTION,
+                    p.on_inverted,
+                    TextAlign::Center,
+                    true,
+                    line.as_str(),
+                )
+                .with_tracking(0.01),
+            );
+        }
+    }
     jni_text_bitmap(bw, bh, theme::TRANSPARENT, &rects, &texts)
 }
 
@@ -377,4 +522,95 @@ pub(crate) fn compose_library_snapshot(reader: &Reader) -> Option<Bitmap> {
         copy_region(dst, w as usize, h as usize, w as usize, 4, band, 0, sy);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VIEWPORTS: [(i32, i32); 4] = [(1600, 2560), (2560, 1600), (1200, 1920), (480, 800)];
+
+    /// El texto envuelto cabe en el ancho del aviso.
+    fn assert_text_fits(l: &ToastLayout) {
+        assert!(
+            l.max_chars as f32 * TOAST_CHAR_W + 2.0 * TOAST_PAD_X <= l.w as f32 + 0.5,
+            "max_chars={} no cabe en w={}",
+            l.max_chars,
+            l.w
+        );
+        for line in &l.lines {
+            assert!(
+                line.chars().count() <= l.max_chars,
+                "línea de {} > {} caracteres: {line:?}",
+                line.chars().count(),
+                l.max_chars
+            );
+        }
+    }
+
+    #[test]
+    fn short_toast_keeps_single_line_pill_size() {
+        for (w, h) in VIEWPORTS {
+            let l = toast_layout("Guardado", w, h);
+            assert_eq!(l.lines, vec!["Guardado".to_string()]);
+            assert_eq!((l.w, l.h), ((w / 6).max(140), (h / 60).max(32)));
+        }
+    }
+
+    #[test]
+    fn long_toast_stays_within_viewport_and_is_truncated() {
+        let msg = "Error al sincronizar con Google Drive: la respuesta del servidor \
+                   no es válida (HTTP 502 Bad Gateway). "
+            .repeat(12);
+        for (w, h) in VIEWPORTS {
+            let l = toast_layout(&msg, w, h);
+            assert!(
+                l.w <= w - 2 * TOAST_MARGIN,
+                "{w}x{h}: ancho {} desborda",
+                l.w
+            );
+            assert!(
+                l.h <= h - 2 * TOAST_MARGIN,
+                "{w}x{h}: alto {} desborda",
+                l.h
+            );
+            assert!(l.w > 0 && l.h > 0);
+            assert!(
+                !l.lines.is_empty() && l.lines.len() <= TOAST_MAX_LINES,
+                "{w}x{h}: {} líneas",
+                l.lines.len()
+            );
+            assert!(
+                l.lines.last().is_some_and(|s| s.ends_with('…')),
+                "{w}x{h}: la última línea no termina en elipsis: {:?}",
+                l.lines.last()
+            );
+            assert_text_fits(&l);
+        }
+    }
+
+    #[test]
+    fn medium_toast_wraps_without_losing_words() {
+        let msg = "No se pudo abrir el documento porque el archivo está dañado o protegido";
+        let l = toast_layout(msg, 480, 800);
+        assert!(
+            l.lines.len() > 1,
+            "debería envolver en 480 px: {:?}",
+            l.lines
+        );
+        assert!(l.lines.len() <= TOAST_MAX_LINES);
+        assert_eq!(l.lines.join(" "), msg);
+        assert!(l.w <= 480 - 2 * TOAST_MARGIN);
+        assert_text_fits(&l);
+    }
+
+    #[test]
+    fn unbreakable_word_is_split_and_truncated() {
+        let msg = "/storage/emulated/0/Download/".repeat(20);
+        let l = toast_layout(&msg, 1200, 1920);
+        assert!(l.lines.len() <= TOAST_MAX_LINES);
+        assert!(l.lines.last().is_some_and(|s| s.ends_with('…')));
+        assert!(l.w <= 1200 - 2 * TOAST_MARGIN);
+        assert_text_fits(&l);
+    }
 }
