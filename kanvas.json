@@ -114,7 +114,7 @@
     {
       "id": "TD-02",
       "title": "Delete dead theme tokens behind allow(dead_code)",
-      "state": "doing",
+      "state": "review",
       "group": "TD",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -130,6 +130,11 @@
           "at": "2026-11-26T15:39:20Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
+        },
+        {
+          "at": "2026-11-26T16:05:53Z",
+          "by": "claude-code",
+          "text": "The Android theme no longer carries unused design tokens or `#[allow(dead_code)]` hiding them (15 removed, 0 left).\n- Deleted: RADIUS_NONE, SPACE_1–SPACE_6, and 6 palette fields nothing read (name, text_disabled, success, success_border, warning, error)\n- Kept: tokens only the WCAG contrast test reads (success_bg/text, warning_bg/text), per the card's rule that a token used by a test is not dead\n- TDD verified by the orchestrator: 2 characterization tests committed first, passing on the old code and after the deletion. Sent back once: a new test tripped clippy (constant assertion); fixed as a compile-time check.\n- Nothing visible should change on the tablet."
         }
       ],
       "started": {
@@ -176,7 +181,7 @@
     {
       "id": "CO-02",
       "title": "Move pdf_core::theme into pdf_app",
-      "state": "doing",
+      "state": "review",
       "group": "CO",
       "at": "2026-11-26T13:03:52Z",
       "by": "gemini",
@@ -191,6 +196,11 @@
           "at": "2026-11-26T15:39:21Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
+        },
+        {
+          "at": "2026-11-26T16:05:53Z",
+          "by": "claude-code",
+          "text": "pdf_core (the PDF engine) no longer contains UI styling: its `theme` module now lives in pdf_app, the desktop testbed and its only user. The Android app never used it (it has its own theme).\n- Moved with git mv (history follows); the only content change is one import path\n- TDD verified by the orchestrator: 5 characterization tests were committed first and passed in pdf_core; the same 5 pass unchanged in pdf_app after the move. No existing test changed.\n- One extra cleanup: pdf_app's apply_theme repeated a match that DesignTokens::for_mode already does; it now calls it (covered by a test)\n- Nothing to check on the tablet. Optional: launch pdf_app and toggle light/dark."
         }
       ],
       "started": {
