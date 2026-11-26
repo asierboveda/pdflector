@@ -6,7 +6,7 @@
 
 use crate::reader::{
     Reader, ReadingMode, sheet_act_y, sheet_btn_h, sheet_btn_w, sheet_h, sheet_mode_y, sheet_nav_y,
-    sheet_pad, sheet_theme_btn_w, sheet_theme_y,
+    sheet_pad, sheet_study_y, sheet_theme_btn_w, sheet_theme_y,
 };
 use crate::theme;
 use pdf_core::{Bitmap, Document};
@@ -18,7 +18,8 @@ use super::{
 
 /// Botones del sheet de ajustes del visor (S2, S3):
 /// Fila 0 = 4 Temas (swatches); Fila 1 = Modo de lectura (Tap / Scroll);
-/// Fila 2 = Navegación (−10 / Pág / +10); Fila 3 = Acciones.
+/// Fila 2 = Navegación (−10 / Pág / +10); Fila 3 = Estudio (Cuaderno /
+/// Clave IA, PR-02); Fila 4 = Acciones.
 pub(crate) fn sheet_buttons(
     _reader: &Reader,
     win_w: f32,
@@ -58,7 +59,15 @@ pub(crate) fn sheet_layout(win_w: f32, win_h: f32) -> Vec<(&'static str, ButtonR
         out.push((label, (x0, ny, x0 + bw, ny + bh)));
     }
 
-    // Fila 3: 3 botones de acción
+    // Fila 3: Estudio (cuaderno del documento + clave de Gemini)
+    let sy = sheet_study_y(win_h as i32);
+    let sw = (win_w - 3.0 * pad) / 2.0;
+    for (i, label) in ["Study:Notebook", "Study:Key"].into_iter().enumerate() {
+        let x0 = pad + i as f32 * (sw + pad);
+        out.push((label, (x0, sy, x0 + sw, sy + bh)));
+    }
+
+    // Fila 4: 3 botones de acción
     let ay = sheet_act_y(win_h as i32);
     for (i, label) in ["← Library", "Search", "Close"].into_iter().enumerate() {
         let x0 = pad + i as f32 * (bw + pad);
@@ -129,10 +138,12 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
     let nav_y = sheet_nav_y(reader.win_h);
     let act_y = sheet_act_y(reader.win_h);
     let mode_y = sheet_mode_y(reader.win_h);
+    let study_y = sheet_study_y(reader.win_h);
     for (y, title, draw_rule) in [
         (theme_y, "APARIENCIA", false),
         (mode_y, "MODO DE LECTURA", true),
         (nav_y, "NAVEGACIÓN", true),
+        (study_y, "ESTUDIO", true),
         (act_y, "DOCUMENTO", true),
     ] {
         if draw_rule {
@@ -322,6 +333,7 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
                 ButtonVariant::Secondary
             }
         };
+        let key_label;
         let (variant, label_str) = match label {
             "Mode:Tap" => (mode_variant(ReadingMode::Tap), "Página a página"),
             "Mode:Scroll" => (mode_variant(ReadingMode::Scroll), "Continuo"),
@@ -330,6 +342,12 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
             "← Library" => (ButtonVariant::Secondary, "← Biblioteca"),
             "Search" => (ButtonVariant::Secondary, "Buscar"),
             "Close" => (ButtonVariant::Primary, "Listo"),
+            "Study:Notebook" => (ButtonVariant::Secondary, "Cuaderno"),
+            "Study:Key" => {
+                // Estado de la clave SIEMPRE enmascarado (4 últimos).
+                key_label = crate::gemini_key::sheet_key_label(reader.gemini_key.as_ref());
+                (ButtonVariant::Secondary, key_label.as_str())
+            }
             _ => (ButtonVariant::Secondary, label),
         };
 
