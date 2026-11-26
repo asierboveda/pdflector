@@ -172,20 +172,27 @@ pub(crate) enum PageTap {
 /// no hay pase de página por tap (se navega arrastrando): todo tap
 /// alterna el chrome.
 pub(crate) fn page_tap_action(mode: ReadingMode, x: f32, win_w: f32) -> PageTap {
-    let _ = (mode, x, win_w);
-    PageTap::Next
+    if mode == ReadingMode::Scroll {
+        return PageTap::Chrome;
+    }
+    let third = win_w / 3.0;
+    if x < third {
+        PageTap::Prev
+    } else if x > 2.0 * third {
+        PageTap::Next
+    } else {
+        PageTap::Chrome
+    }
 }
 
 /// Tap simple: tercio izquierdo → página anterior; tercio derecho → página siguiente;
-/// tercio central → alternar visibilidad del chrome del visor.
+/// tercio central → alternar visibilidad del chrome del visor. En modo
+/// Scroll todo tap alterna el chrome (`page_tap_action`).
 fn tap_page(reader: &mut Reader, x: f32) {
-    let third = reader.win_w as f32 / 3.0;
-    if x < third {
-        reader.prev_page();
-    } else if x > 2.0 * third {
-        reader.next_page();
-    } else {
-        reader.toggle_chrome();
+    match page_tap_action(reader.reading_mode, x, reader.win_w as f32) {
+        PageTap::Prev => reader.prev_page(),
+        PageTap::Next => reader.next_page(),
+        PageTap::Chrome => reader.toggle_chrome(),
     }
 }
 

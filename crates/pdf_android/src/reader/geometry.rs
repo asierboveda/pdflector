@@ -277,22 +277,29 @@ pub(crate) fn sheet_btn_h(_win_h: i32) -> f32 {
     50.0
 }
 
-/// Y del borde superior de la fila de temas del sheet (B2: distribuido uniforme).
+/// Y del borde superior de la fila de temas del sheet (B2: distribuido
+/// uniforme; 4 filas desde PR-01).
 pub(crate) fn sheet_theme_y(win_h: i32) -> f32 {
     let sh = sheet_h(win_h) as f32;
-    (sh * 0.18).clamp(90.0, 160.0)
+    (sh * 0.15).clamp(90.0, 150.0)
+}
+
+/// Y del borde superior de la fila del modo de lectura (Tap / Scroll).
+pub(crate) fn sheet_mode_y(win_h: i32) -> f32 {
+    let sh = sheet_h(win_h) as f32;
+    (sh * 0.37).clamp(240.0, 350.0)
 }
 
 /// Y del borde superior de la fila de navegación del sheet (B2: distribuido uniforme).
 pub(crate) fn sheet_nav_y(win_h: i32) -> f32 {
     let sh = sheet_h(win_h) as f32;
-    (sh * 0.48).clamp(280.0, 430.0)
+    (sh * 0.59).clamp(380.0, 560.0)
 }
 
 /// Y del borde superior de la fila de acciones del sheet (B2: distribuido uniforme).
 pub(crate) fn sheet_act_y(win_h: i32) -> f32 {
     let sh = sheet_h(win_h) as f32;
-    (sh * 0.78).clamp(470.0, 700.0)
+    (sh * 0.81).clamp(520.0, 770.0)
 }
 
 /// Ancho (px) de cada botón de 3 por fila del sheet.
