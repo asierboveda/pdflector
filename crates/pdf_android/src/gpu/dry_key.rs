@@ -29,7 +29,13 @@ impl DryKey {
 /// actual en Tap, TODAS las visibles de la columna en Scroll — PR-04): un
 /// cambio en cualquiera de ellas invalida la dry, no solo en la actual.
 pub(crate) fn ann_key(pages: &[u32], count: impl Fn(u32) -> usize) -> usize {
-    pages.first().map_or(0, |&p| count(p))
+    // FNV-1a sobre (página, recuento): mover un trazo de una hoja visible
+    // a otra también cambia la firma.
+    const PRIME: u64 = 0x0100_0000_01b3;
+    let mix = |h: u64, v: u64| (h ^ v).wrapping_mul(PRIME);
+    pages.iter().fold(0xcbf2_9ce4_8422_2325, |h, &p| {
+        mix(mix(h, p as u64), count(p) as u64)
+    }) as usize
 }
 
 #[cfg(test)]
