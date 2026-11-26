@@ -371,13 +371,20 @@
     },
     {
       "id": "TD-03",
-      "title": "Make the annotation-worker timing test robust",
+      "title": "Fix 2 flaky folder_sync timing tests (CI fails at random)",
       "state": "proposed",
       "group": "TD",
       "deps": ["TD-01"],
       "at": "2026-11-26T16:01:13Z",
       "by": "claude-code",
-      "desc": "One pdf_android test run failed once (1 of 129) while the machine was very busy, then passed 100+ times. The likely cause is folder_sync's `annotation_worker_serializes_snapshots_to_sqlite_before_export_delay`, which requires a background SQLite save to finish in under 600 ms; a loaded CI runner can miss that.\nDone means: the test still proves the snapshot is saved before the export delay, but without a wall-clock bound that a slow machine can break (e.g. a controllable clock or ordering check), and the suite passes repeatedly under heavy load."
+      "desc": "CI now fails at random: since TD-01 started running pdf_android tests in CI, two pre-existing folder_sync tests fail on slow runners (CI runs 204 and 206; the same commits pass on rerun):\n- `annotation_worker_serializes_snapshots_to_sqlite_before_export_delay`: requires a background SQLite save within 600 ms\n- `failed_export_does_not_block_local_sqlite_save_for_another_pdf`\nNeither was changed today; they rely on wall-clock time.\nDone means: both tests still prove what they prove now (save happens before the export delay; a failed export doesn't block other saves), but without timing bounds a slow machine can break, and the pdf_android suite passes repeatedly under heavy load.",
+      "notes": [
+        {
+          "at": "2026-11-26T16:06:15Z",
+          "by": "claude-code",
+          "text": "Added CI evidence: 2 failing tests, runs 204 and 206"
+        }
+      ]
     }
   ]
 }
