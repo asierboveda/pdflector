@@ -230,16 +230,19 @@ pub(crate) fn entry_is_stale(entry_zoom: f32, expected_zoom: f32) -> bool {
 /// Posición fina a persistir (`BookProgress::scroll_frac`): la posición
 /// continua relativa a la página actual (la del indicador).
 pub(crate) fn scroll_frac_for(pos: f32, current: u32) -> f32 {
-    let _ = (pos, current);
-    0.5
+    pos - current as f32
 }
 
 /// Posición continua a restaurar desde (página, `scroll_frac`) guardados:
 /// un frac corrupto (no finito o fuera de ±1 hoja) cae al borde de la
 /// página.
 pub(crate) fn resume_scroll_pos(page: u32, frac: f32) -> f32 {
-    let _ = frac;
-    page as f32 + 0.5
+    let frac = if frac.is_finite() && frac.abs() <= 1.0 {
+        frac
+    } else {
+        0.0
+    };
+    (page as f32 + frac).max(0.0)
 }
 
 /// Margen de seguridad sobre el presupuesto de la caché: el recorte idle
