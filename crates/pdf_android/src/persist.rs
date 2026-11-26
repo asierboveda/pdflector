@@ -724,4 +724,74 @@ mod tests {
         assert!(meta.authors.is_empty());
         assert!(meta.updated.is_empty());
     }
+
+    /// Cada `save_*` reemplaza su fichero con escritura atómica
+    /// (`pdf_core::write_atomic`): `rename` de un temporal, no truncado en
+    /// sitio. Un hard link al fichero previo conserva el contenido viejo y
+    /// no quedan temporales en el directorio.
+    #[cfg(unix)]
+    #[test]
+    fn every_save_replaces_its_file_atomically() {
+        let dir =
+            std::env::temp_dir().join(format!("pdflector-persist-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let d = Some(dir.as_path());
+
+        let state = ViewerState {
+            path: "/x.pdf".into(),
+            page: 2,
+            zoom: 1.0,
+            dark: false,
+            theme: None,
+            view_mode: Default::default(),
+            cover_fit: Default::default(),
+            columns: 3,
+            hide_covers: false,
+            cover_size: 1,
+            cover_progress: false,
+        };
+        let saves: Vec<(PathBuf, Box<dyn Fn()>)> = vec![
+            (library_path(&dir), Box::new(move || save_progress(d, &[]))),
+            (
+                tool_state_path(&dir),
+                Box::new(move || save_tool_state(d, &ToolState::default())),
+            ),
+            (recents_path(&dir), Box::new(move || save_recents(d, &[]))),
+            (state_path(&dir), Box::new(move || save_state(d, &state))),
+            (papers_path(&dir), Box::new(move || save_papers(d, &[]))),
+            (
+                discover_path(&dir),
+                Box::new(move || save_discover(d, &DiscoverPrefs::default())),
+            ),
+        ];
+        for (path, save) in &saves {
+            fs::write(path, "anterior").unwrap();
+            let link = dir.join("old-link");
+            fs::hard_link(path, &link).unwrap();
+
+            save();
+
+            assert_ne!(
+                fs::read_to_string(path).unwrap(),
+                "anterior",
+                "{}",
+                path.display()
+            );
+            assert_eq!(
+                fs::read_to_string(&link).unwrap(),
+                "anterior",
+                "{} se reescribió en sitio, no de forma atómica",
+                path.display()
+            );
+            fs::remove_file(&link).unwrap();
+        }
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| !n.ends_with(".json"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporales sobrantes: {leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
