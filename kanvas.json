@@ -563,7 +563,7 @@
     {
       "id": "PR-04",
       "title": "Continuous scroll polish: fling, mixed page sizes, retries",
-      "state": "todo",
+      "state": "doing",
       "group": "PR",
       "deps": ["PR-01"],
       "at": "2026-11-26T19:59:12Z",
@@ -574,8 +574,17 @@
           "at": "2026-11-26T20:16:11Z",
           "by": "human",
           "text": "Approved in chat. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T20:48:51Z",
+          "by": "claude-code",
+          "text": "Plan: a dedicated agent works test-first (fling physics, per-page layout, cache invalidation, retry back-off as separate red/green pairs); orchestrator verifies each pair, merges behind the test gate, checks CI before main moves."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T20:48:51Z",
+        "by": "claude-code"
+      }
     }
   ]
 }
