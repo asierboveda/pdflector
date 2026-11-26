@@ -28,22 +28,34 @@ pub(crate) struct PageSlots {
 impl PageSlots {
     /// Textura ya subida para (`page`, `key`); un acierto pasa a MRU.
     pub(crate) fn lookup(&mut self, page: u32, key: BitmapKey) -> Option<u32> {
-        let _ = (page, key);
-        None
+        let pos = self
+            .slots
+            .iter()
+            .position(|&(p, k, _)| p == page && k == key)?;
+        let slot = self.slots.remove(pos);
+        self.slots.push(slot);
+        Some(slot.2)
     }
 
     /// Registra la textura `tex` recién subida para (`page`, `key`).
     /// Devuelve las texturas a borrar: la anterior de la misma página (otro
     /// bitmap) y las víctimas LRU por encima de `PAGE_SLOTS_MAX`.
     pub(crate) fn insert(&mut self, page: u32, key: BitmapKey, tex: u32) -> Vec<u32> {
-        let _ = (page, key, tex);
-        Vec::new()
+        let mut freed = Vec::new();
+        if let Some(pos) = self.slots.iter().position(|&(p, _, _)| p == page) {
+            freed.push(self.slots.remove(pos).2);
+        }
+        self.slots.push((page, key, tex));
+        while self.slots.len() > PAGE_SLOTS_MAX {
+            freed.push(self.slots.remove(0).2);
+        }
+        freed
     }
 
     /// Vacía las ranuras (cambio de documento, salida del modo Scroll):
     /// devuelve todas las texturas a borrar.
     pub(crate) fn drain(&mut self) -> Vec<u32> {
-        Vec::new()
+        self.slots.drain(..).map(|(_, _, tex)| tex).collect()
     }
 }
 
