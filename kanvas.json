@@ -62,7 +62,7 @@
     {
       "id": "UI-02",
       "title": "Merge Astryx redesign to main & prune git/PR noise",
-      "state": "todo",
+      "state": "doing",
       "group": "UI",
       "deps": ["UI-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -73,8 +73,17 @@
           "at": "2026-11-26T15:39:05Z",
           "by": "human",
           "text": "Approved in chat (all cards). Tablet cards: agents do code + tests, human verifies on device. UI-02: human allowed merging to main and merging/closing the Dependabot PRs. (relayed from chat by the agent)"
+        },
+        {
+          "at": "2026-11-26T17:59:28Z",
+          "by": "claude-code",
+          "text": "Plan: merge feat/frontend-redesign-astryx and this session's branch into main (approved in chat), with CI green before main moves; triage the Dependabot PRs; check for the stale 'actualizar' worktree. Commit + push each step."
         }
-      ]
+      ],
+      "started": {
+        "at": "2026-11-26T17:59:28Z",
+        "by": "claude-code"
+      }
     },
     {
       "id": "TD-01",
