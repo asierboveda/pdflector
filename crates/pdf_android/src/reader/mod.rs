@@ -53,6 +53,8 @@ mod navigation;
 mod pinch;
 mod recorte;
 mod redraw;
+// Reintento con espera de las hojas que MuPDF no pudo renderizar (PR-04).
+mod render_failures;
 mod scroll;
 mod seleccion;
 mod sheet_chrome;
