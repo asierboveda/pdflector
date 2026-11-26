@@ -16,6 +16,7 @@ use std::path::Path;
 
 use mupdf::{Colorspace, Matrix, TextBlockContent, TextPageFlags};
 
+use crate::engine::display_list_cache::{DisplayListBudget, DisplayListStats};
 use crate::engine::{
     Bitmap, Document, Error, PageGeometry, PageRect, PageText, PageTransform, RenderEngine, Result,
     TextSpan,
@@ -189,10 +190,15 @@ impl Default for MupdfEngine {
     }
 }
 
-impl RenderEngine for MupdfEngine {
-    type Document = MupdfDocument;
-
-    fn open(&self, path: &Path) -> Result<Self::Document> {
+impl MupdfEngine {
+    /// Opens `path` with an explicit display-list budget (PR-03). `open`
+    /// uses `DisplayListBudget::TABLET_DEFAULT`; tests pass tiny budgets.
+    pub fn open_with_display_list_budget(
+        &self,
+        path: &Path,
+        budget: DisplayListBudget,
+    ) -> Result<MupdfDocument> {
+        let _ = budget;
         initialize_font_loader();
         let doc = mupdf::Document::open(path)
             .map_err(|e| Error::Engine(format!("open {}: {e}", path.display())))?;
@@ -201,6 +207,14 @@ impl RenderEngine for MupdfEngine {
             display_lists: RefCell::new(HashMap::new()),
             page_geometries: RefCell::new(VecDeque::new()),
         })
+    }
+}
+
+impl RenderEngine for MupdfEngine {
+    type Document = MupdfDocument;
+
+    fn open(&self, path: &Path) -> Result<Self::Document> {
+        self.open_with_display_list_budget(path, DisplayListBudget::TABLET_DEFAULT)
     }
 }
 
@@ -222,7 +236,18 @@ pub struct MupdfDocument {
     page_geometries: RefCell<VecDeque<(u32, PageGeometry)>>,
 }
 
+/// Estimated resident size of the display list built from `page` (stub).
+fn estimate_display_list_bytes(page: &mupdf::Page) -> usize {
+    let _ = page;
+    0
+}
+
 impl MupdfDocument {
+    /// Counters of this document's display-list cache (stub).
+    pub fn display_list_stats(&self) -> DisplayListStats {
+        DisplayListStats::default()
+    }
+
     /// Loads `page` (0-based), checking the range before loading.
     fn load_page(&self, page: u32) -> Result<mupdf::Page> {
         let page_count = self.page_count();
@@ -537,6 +562,86 @@ mod geometry_cache_tests {
             .map(|(page, _)| *page)
             .collect::<Vec<_>>();
         assert_eq!(cached_pages, vec![5, 0, 4, 3, 2]);
+    }
+
+    fn tiny_budget(max_entries: usize, max_bytes: usize) -> DisplayListBudget {
+        DisplayListBudget {
+            max_entries,
+            max_bytes,
+        }
+    }
+
+    #[test]
+    fn display_lists_stay_within_entry_budget_over_a_long_document() {
+        let path = multi_page_pdf(12);
+        let doc = MupdfEngine::new()
+            .unwrap()
+            .open_with_display_list_budget(&path.0, tiny_budget(3, usize::MAX))
+            .unwrap();
+
+        for page in 0..doc.page_count() {
+            doc.render_page(page, 1.0).unwrap();
+            assert!(doc.display_list_stats().entries <= 3);
+        }
+
+        let s = doc.display_list_stats();
+        assert_eq!(s.entries, 3, "{s}");
+        assert_eq!(s.misses, 12, "{s}");
+        assert_eq!(s.evictions, 9, "{s}");
+        assert!(s.bytes > 0, "{s}");
+        assert!(s.peak_bytes >= s.bytes, "{s}");
+    }
+
+    #[test]
+    fn display_list_is_reused_across_zoom_levels() {
+        let path = multi_page_pdf(2);
+        let doc = MupdfEngine::new().unwrap().open(&path.0).unwrap();
+
+        doc.render_page(0, 1.0).unwrap();
+        doc.render_page(0, 2.0).unwrap();
+
+        let s = doc.display_list_stats();
+        assert_eq!((s.misses, s.hits, s.entries), (1, 1, 1), "{s}");
+    }
+
+    #[test]
+    fn disabled_display_list_budget_renders_identically_and_retains_nothing() {
+        let path = single_page_text_pdf(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            "Hello",
+        );
+        let engine = MupdfEngine::new().unwrap();
+        let cached = engine.open(&path.0).unwrap();
+        let uncached = engine
+            .open_with_display_list_budget(&path.0, tiny_budget(0, 0))
+            .unwrap();
+
+        let a = cached.render_page(0, 1.5).unwrap();
+        let b = uncached.render_page(0, 1.5).unwrap();
+        assert_eq!(a.data, b.data);
+        uncached.render_page(0, 1.5).unwrap();
+
+        let s = uncached.display_list_stats();
+        assert_eq!((s.entries, s.bytes, s.misses), (0, 0, 2), "{s}");
+        assert_eq!(cached.display_list_stats().entries, 1);
+    }
+
+    #[test]
+    fn display_list_estimate_grows_with_page_content() {
+        let font = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+        let short = single_page_text_pdf(font, "A");
+        let long = single_page_text_pdf(font, &"Lorem ipsum dolor sit amet ".repeat(200));
+        let engine = MupdfEngine::new().unwrap();
+        let short_doc = engine.open(&short.0).unwrap();
+        let long_doc = engine.open(&long.0).unwrap();
+
+        let short_bytes = estimate_display_list_bytes(&short_doc.load_page(0).unwrap());
+        let long_bytes = estimate_display_list_bytes(&long_doc.load_page(0).unwrap());
+        assert!(short_bytes > 0);
+        assert!(
+            long_bytes > short_bytes,
+            "long {long_bytes} <= short {short_bytes}"
+        );
     }
 
     fn single_page_text_pdf(font_dict: &str, text: &str) -> TempPdf {
