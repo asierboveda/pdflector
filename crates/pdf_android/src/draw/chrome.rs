@@ -106,6 +106,64 @@ pub(crate) fn viewer_top_chrome_buttons(win_w: f32, win_h: f32) -> [(&'static st
     ]
 }
 
+/// Rects y textos del botón de ciclo de tema de la barra superior del visor,
+/// dentro de `rect` (geometría pura, testeable en host).
+fn theme_button_parts(
+    rect: ButtonRect,
+    p: &theme::ThemePalette,
+) -> (Vec<CanvasRect>, Vec<CanvasText>) {
+    let mut rects = Vec::new();
+    let mut texts = Vec::new();
+    // Botón de ciclo de tema: contenedor Astryx RADIUS_ELEMENT con glifo "Aa"
+    // (apariencia) en `text_primary` y subrayado de acento del tema activo.
+    // Antes era una muestra `bg_body` con aro `border_emphasized` sobre
+    // `bg_muted`: colores casi idénticos (p. ej. #F1F4F7 sobre #E6ECF2), así
+    // que en la TCL solo se veía la franja azul de acento.
+    let (tl, tt, tr, tb) = rect;
+    rects.push(CanvasRect::rounded(
+        tl,
+        tt,
+        tr,
+        tb,
+        theme::RADIUS_ELEMENT,
+        p.border_emphasized,
+    ));
+    rects.push(CanvasRect::rounded(
+        tl + 1.0,
+        tt + 1.0,
+        tr - 1.0,
+        tb - 1.0,
+        theme::RADIUS_ELEMENT - 1.0,
+        p.bg_muted,
+    ));
+    // Glifo centrado: la línea base queda 0.3 em bajo el centro para que
+    // ascendentes y subrayado ocupen el centro óptico del botón.
+    let ts = theme::FONT_H1;
+    let cx = (tl + tr) * 0.5;
+    let baseline = (tt + tb) * 0.5 + ts * 0.3;
+    texts.push(CanvasText::new(
+        cx,
+        baseline,
+        ts,
+        p.text_primary,
+        TextAlign::Center,
+        true,
+        "Aa",
+    ));
+    // Subrayado de acento bajo el glifo (indicador del tema activo)
+    let dash_w = 16.0f32;
+    rects.push(CanvasRect::rounded(
+        cx - dash_w * 0.5,
+        baseline + 4.0,
+        cx + dash_w * 0.5,
+        baseline + 7.0,
+        1.5,
+        p.accent,
+    ));
+
+    (rects, texts)
+}
+
 /// Renderiza la barra superior flotante Astryx del visor.
 pub(crate) fn render_viewer_top_chrome(reader: &Reader) -> Option<Bitmap> {
     let w = reader.win_w;
@@ -144,53 +202,10 @@ pub(crate) fn render_viewer_top_chrome(reader: &Reader) -> Option<Bitmap> {
         "← Biblioteca",
     );
 
-    // Botón de ciclo de tema: contenedor Astryx RADIUS_ELEMENT con muestra bicolor (superficie + acento)
-    let (tl, tt, tr, tb) = btns[1].1;
-    rects.push(CanvasRect::rounded(
-        tl,
-        tt,
-        tr,
-        tb,
-        theme::RADIUS_ELEMENT,
-        p.border_emphasized,
-    ));
-    rects.push(CanvasRect::rounded(
-        tl + 1.0,
-        tt + 1.0,
-        tr - 1.0,
-        tb - 1.0,
-        theme::RADIUS_ELEMENT - 1.0,
-        p.bg_muted,
-    ));
-    let sw_l = tl + 10.0;
-    let sw_t = tt + 10.0;
-    let sw_r = tr - 10.0;
-    let sw_b = tb - 10.0;
-    rects.push(CanvasRect::rounded(
-        sw_l,
-        sw_t,
-        sw_r,
-        sw_b,
-        theme::RADIUS_INNER + 2.0,
-        p.border_emphasized,
-    ));
-    rects.push(CanvasRect::rounded(
-        sw_l + 1.0,
-        sw_t + 1.0,
-        sw_r - 1.0,
-        sw_b - 1.0,
-        theme::RADIUS_INNER + 1.0,
-        p.bg_body,
-    ));
-    // Franja inferior de acento dentro de la muestra del tema
-    rects.push(CanvasRect::rounded(
-        sw_l + 4.0,
-        sw_b - 9.0,
-        sw_r - 4.0,
-        sw_b - 4.0,
-        2.5,
-        p.accent,
-    ));
+    // Botón de ciclo de tema (geometría pura en `theme_button_parts`)
+    let (icon_rects, icon_texts) = theme_button_parts(btns[1].1, &p);
+    rects.extend(icon_rects);
+    texts.extend(icon_texts);
 
     // Título editorial limpio (sin extensión .pdf)
     let raw_title = reader
@@ -364,4 +379,97 @@ pub(crate) fn render_eraser_cursor(reader: &Reader, radius_px: i32) -> Option<Bi
         fill,
     ));
     jni_text_bitmap(d, d, theme::TRANSPARENT, &rects, &[])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ButtonRect, CanvasText, TextAlign, theme_button_parts, viewer_top_chrome_buttons};
+    use crate::theme::AppTheme;
+
+    const THEMES: [AppTheme; 4] = [
+        AppTheme::DefaultLight,
+        AppTheme::SepiaLight,
+        AppTheme::DefaultDark,
+        AppTheme::SepiaDark,
+    ];
+
+    /// Ventanas de la TCL 9469X (apaisada y vertical) y una pequeña.
+    const WINDOWS: [(f32, f32); 3] = [(2000.0, 1200.0), (1200.0, 2000.0), (800.0, 600.0)];
+
+    /// Caja aproximada (l, t, r, b) que ocupa un glifo de texto: ascendente
+    /// ~0.8 em sobre la línea base, descendente ~0.25 em y ~0.65 em de avance
+    /// por carácter (estimación conservadora de Roboto en negrita).
+    fn glyph_box(t: &CanvasText) -> ButtonRect {
+        let w = t.text.chars().count() as f32 * t.size * 0.65;
+        let (l, r) = match t.align {
+            TextAlign::Left => (t.x, t.x + w),
+            TextAlign::Center => (t.x - w / 2.0, t.x + w / 2.0),
+            TextAlign::Right => (t.x - w, t.x),
+        };
+        (l, t.y - t.size * 0.8, r, t.y + t.size * 0.25)
+    }
+
+    fn inside(inner: ButtonRect, outer: ButtonRect) -> bool {
+        inner.0 >= outer.0 && inner.1 >= outer.1 && inner.2 <= outer.2 && inner.3 <= outer.3
+    }
+
+    /// Luminancia relativa WCAG de un color 0xAARRGGBB.
+    fn luminance(c: u32) -> f32 {
+        let ch = |v: u32| {
+            let s = (v & 0xFF) as f32 / 255.0;
+            if s <= 0.039_28 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(c >> 16) + 0.7152 * ch(c >> 8) + 0.0722 * ch(c)
+    }
+
+    fn contrast(a: u32, b: u32) -> f32 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn theme_button_draws_a_full_glyph_inside_its_rect() {
+        for (w, h) in WINDOWS {
+            let rect = viewer_top_chrome_buttons(w, h)[1].1;
+            for th in THEMES {
+                let p = th.palette();
+                let (_, texts) = theme_button_parts(rect, &p);
+                assert!(
+                    !texts.is_empty(),
+                    "{th:?} {w}x{h}: el botón de tema no dibuja ningún glifo (solo rects)"
+                );
+                for t in &texts {
+                    let gb = glyph_box(t);
+                    assert!(
+                        inside(gb, rect),
+                        "{th:?} {w}x{h}: glifo {:?} {gb:?} fuera del botón {rect:?}",
+                        t.text
+                    );
+                    assert!(
+                        contrast(t.color, p.bg_muted) >= 4.5,
+                        "{th:?}: glifo {:?} sin contraste con el relleno del botón",
+                        t.text
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn theme_button_rects_stay_inside_its_rect() {
+        for (w, h) in WINDOWS {
+            let rect = viewer_top_chrome_buttons(w, h)[1].1;
+            for th in THEMES {
+                let (rects, _) = theme_button_parts(rect, &th.palette());
+                for r in &rects {
+                    let rr = (r.left, r.top, r.right, r.bottom);
+                    assert!(inside(rr, rect), "{th:?}: rect {rr:?} fuera de {rect:?}");
+                }
+            }
+        }
+    }
 }

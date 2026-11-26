@@ -8,8 +8,8 @@ use crate::android_activity::ndk::native_window::NativeWindow;
 use crate::persist;
 use crate::reader::{
     GRID_CELL_PAD, LibraryCoverFit, Reader, cover_size_multiplier, entry_title, grid_cell_h,
-    grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, lib_add_btn_w, lib_chip_h,
-    lib_chips, lib_collection_chips, lib_content_y0, lib_empty_state_geom, lib_grid_y0,
+    grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w, grid_pad, lib_add_btn_rect,
+    lib_chip_h, lib_chips, lib_collection_chips, lib_content_y0, lib_empty_state_geom, lib_grid_y0,
     lib_header_h, lib_search_h, list_row_gap, list_row_h, list_row_rect, picker_row_h,
     settings_menu_button_rect, truncate_name, view_menu_button_rect,
 };
@@ -213,11 +213,6 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     ));
 
     // ---- CABECERA: control segmentado [Biblioteca | Descubrir] + CTA primario "＋ Añadir" ----
-    let top_pad = 36.0f32;
-    let btn_w = lib_add_btn_w(w);
-    let btn_h = ((header_h - top_pad) * 0.52).clamp(38.0, 46.0);
-    let btn_y = top_pad + (header_h - top_pad - btn_h) / 2.0;
-    let btn_x = w as f32 - pad - btn_w;
     super::draw_header_tabs(
         &mut rects,
         &mut texts,
@@ -229,7 +224,7 @@ pub(crate) fn render_library_header(reader: &Reader) -> Option<Bitmap> {
     draw_astryx_button(
         &mut rects,
         &mut texts,
-        (btn_x, btn_y, btn_x + btn_w, btn_y + btn_h),
+        lib_add_btn_rect(w, reader.win_h),
         ButtonVariant::Primary,
         &p,
         theme::FONT_BODY,
