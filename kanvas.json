@@ -140,7 +140,7 @@
     {
       "id": "CO-01",
       "title": "Unify atomic file writes in persist.rs & export.rs",
-      "state": "doing",
+      "state": "review",
       "group": "CO",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -156,6 +156,11 @@
           "at": "2026-11-26T15:39:21Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
+        },
+        {
+          "at": "2026-11-26T16:00:11Z",
+          "by": "claude-code",
+          "text": "Saving the library, reading progress, tool settings, recents, papers and Discover state, and the Markdown export, can no longer leave a half-written or empty file after a crash or power loss.\n- Every one of those 7 writes now goes through one helper (pdf_core::write_atomic): write a hidden temp file next to the target, sync it to disk, then swap it in. On any error the old file stays as it was and the temp file is removed.\n- TDD verified by the orchestrator: the tests committed first fail against a stub that writes in place (4 failures, incl. one covering all 6 saves), and pass after the change. 129 pdf_android tests pass after merging; workspace clippy and fmt clean.\n- Follow-up idea, not done: two older JSON-only helpers in folder_sync could reuse it; one leaves its temp file behind on failure.\n- On the tablet: nothing visible should change; opening the app with your existing library and progress is the check."
         }
       ],
       "started": {
