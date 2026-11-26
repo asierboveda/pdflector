@@ -113,8 +113,12 @@ fn theme_button_parts(
     p: &theme::ThemePalette,
 ) -> (Vec<CanvasRect>, Vec<CanvasText>) {
     let mut rects = Vec::new();
-    let texts = Vec::new();
-    // Botón de ciclo de tema: contenedor Astryx RADIUS_ELEMENT con muestra bicolor (superficie + acento)
+    let mut texts = Vec::new();
+    // Botón de ciclo de tema: contenedor Astryx RADIUS_ELEMENT con glifo "Aa"
+    // (apariencia) en `text_primary` y subrayado de acento del tema activo.
+    // Antes era una muestra `bg_body` con aro `border_emphasized` sobre
+    // `bg_muted`: colores casi idénticos (p. ej. #F1F4F7 sobre #E6ECF2), así
+    // que en la TCL solo se veía la franja azul de acento.
     let (tl, tt, tr, tb) = rect;
     rects.push(CanvasRect::rounded(
         tl,
@@ -132,33 +136,28 @@ fn theme_button_parts(
         theme::RADIUS_ELEMENT - 1.0,
         p.bg_muted,
     ));
-    let sw_l = tl + 10.0;
-    let sw_t = tt + 10.0;
-    let sw_r = tr - 10.0;
-    let sw_b = tb - 10.0;
-    rects.push(CanvasRect::rounded(
-        sw_l,
-        sw_t,
-        sw_r,
-        sw_b,
-        theme::RADIUS_INNER + 2.0,
-        p.border_emphasized,
+    // Glifo centrado: la línea base queda 0.3 em bajo el centro para que
+    // ascendentes y subrayado ocupen el centro óptico del botón.
+    let ts = theme::FONT_H1;
+    let cx = (tl + tr) * 0.5;
+    let baseline = (tt + tb) * 0.5 + ts * 0.3;
+    texts.push(CanvasText::new(
+        cx,
+        baseline,
+        ts,
+        p.text_primary,
+        TextAlign::Center,
+        true,
+        "Aa",
     ));
+    // Subrayado de acento bajo el glifo (indicador del tema activo)
+    let dash_w = 16.0f32;
     rects.push(CanvasRect::rounded(
-        sw_l + 1.0,
-        sw_t + 1.0,
-        sw_r - 1.0,
-        sw_b - 1.0,
-        theme::RADIUS_INNER + 1.0,
-        p.bg_body,
-    ));
-    // Franja inferior de acento dentro de la muestra del tema
-    rects.push(CanvasRect::rounded(
-        sw_l + 4.0,
-        sw_b - 9.0,
-        sw_r - 4.0,
-        sw_b - 4.0,
-        2.5,
+        cx - dash_w * 0.5,
+        baseline + 4.0,
+        cx + dash_w * 0.5,
+        baseline + 7.0,
+        1.5,
         p.accent,
     ));
 
