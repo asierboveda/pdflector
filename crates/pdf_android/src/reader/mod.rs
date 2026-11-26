@@ -745,6 +745,10 @@ pub(crate) struct Reader {
     pub(crate) ai_phase: AiPhase,
     /// Selección pendiente de confirmación explícita antes de contactar Gemini.
     pub(crate) ai_pending: Option<PendingAiRequest>,
+    /// Clave de Gemini introducida en la app (PR-02; `gemini_key`): se lee
+    /// de `internal/gemini_api_key` al arrancar y se cambia desde el sheet
+    /// (Estudio → Clave IA). None = sin clave (el panel de IA lo avisa).
+    pub(crate) gemini_key: Option<crate::gemini_key::GeminiKey>,
     /// Receptor del hilo de fondo de IA (std::thread + mpsc, el patrón de
     /// `pdf_core::prefetch`): Some mientras una consulta está en vuelo.
     /// `tick` lo sondea con `try_recv` (sin bloquear) y lo libera al llegar

@@ -160,6 +160,7 @@ impl Reader {
             ai_text: String::new(),
             ai_phase: AiPhase::Asking,
             ai_pending: None,
+            gemini_key: crate::gemini_key::load_key(app.internal_data_path().as_deref()),
             ai_rx: None,
             toast: None,
             toast_bitmap: None,

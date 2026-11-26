@@ -13,7 +13,9 @@
 !/.agents/skills/master-sync/
 /.claude/skills/
 
-# API keys locales de IA (uso personal, NO commitear)
+# API keys locales de IA (uso personal, NO commitear). google_key.txt ya no
+# se usa (la clave de Gemini se introduce en la app, PR-02); se mantiene
+# ignorado por si queda una copia antigua en algún árbol de trabajo.
 crates/pdf_android/groq_key.txt
 crates/pdf_android/google_key.txt
 
