@@ -10,7 +10,7 @@
 //! This module is framework-agnostic. The UI shells (egui, slint) consume
 //! these tokens to style their components.
 
-use crate::annotations::Color;
+use pdf_core::annotations::Color;
 
 /// The active theme mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
