@@ -22,31 +22,6 @@ pub(crate) const AI_HEADING_SIZE: f32 = 21.0;
 pub(crate) const AI_EQUATION_SIZE: f32 = 19.0;
 pub(crate) const AI_LINE_H: f32 = 28.0;
 
-// ---------------------------------------------------------------------
-// Aviso breve (toast) — píldora invertida Astryx de alto contraste
-// ---------------------------------------------------------------------
-pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
-    let msg = reader.toast.as_ref()?.0.clone();
-    let (bw, bh) = ((reader.win_w / 6).max(140), (reader.win_h / 60).max(32));
-    let p = reader.theme.palette();
-    let mut rects = Vec::new();
-    let mut texts = Vec::new();
-    draw_token_pill(
-        &mut rects,
-        &mut texts,
-        (0.0, 0.0, bw as f32, bh as f32),
-        p.bg_inverted,
-        Some(p.border_emphasized),
-        p.on_inverted,
-        theme::FONT_CAPTION,
-        TextFont::Sans,
-        0.01,
-        true,
-        &msg,
-    );
-    jni_text_bitmap(bw, bh, theme::TRANSPARENT, &rects, &texts)
-}
-
 /// Máximo de líneas del aviso; el resto se trunca con "…".
 pub(crate) const TOAST_MAX_LINES: usize = 3;
 /// Margen mínimo (px) entre el aviso y el borde del viewport.
@@ -66,15 +41,155 @@ pub(crate) struct ToastLayout {
     pub(crate) max_chars: usize,
 }
 
-/// STUB (TDD): pendiente de implementar.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Interlineado (px) de las líneas del aviso.
+const TOAST_LINE_H: f32 = theme::FONT_CAPTION * 1.4;
+/// Relleno vertical (px) del texto dentro del aviso.
+const TOAST_PAD_Y: f32 = 7.0;
+/// Ancho máximo (px) del aviso aunque el viewport sea mayor (legibilidad).
+const TOAST_MAX_W: i32 = 720;
+
+/// Layout puro del aviso: el tamaño mínimo es el de la píldora clásica
+/// (1/6 del ancho, 1/60 del alto); si el texto no cabe, crece hasta el ancho
+/// del viewport (menos `TOAST_MARGIN` por lado, tope `TOAST_MAX_W`), envuelve
+/// por palabras hasta `TOAST_MAX_LINES` y trunca con "…" lo que sobre.
 pub(crate) fn toast_layout(msg: &str, win_w: i32, win_h: i32) -> ToastLayout {
+    let min_w = (win_w / 6).max(140);
+    let min_h = (win_h / 60).max(32);
+    let max_w = (win_w - 2 * TOAST_MARGIN).clamp(1, TOAST_MAX_W);
+    let max_h = (win_h - 2 * TOAST_MARGIN).max(1);
+    let wrap_chars = chars_fitting(max_w);
+    let lines = wrap_toast_lines(msg, wrap_chars, TOAST_MAX_LINES);
+    let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    // +1 px: margen frente al redondeo para que `longest` quepa siempre.
+    let text_w = (longest as f32 * TOAST_CHAR_W + 2.0 * TOAST_PAD_X).ceil() as i32 + 1;
+    let w = text_w.max(min_w).min(max_w);
+    let text_h = (lines.len() as f32 * TOAST_LINE_H + 2.0 * TOAST_PAD_Y).ceil() as i32;
+    let h = text_h.max(min_h).min(max_h);
     ToastLayout {
-        w: (win_w / 6).max(140),
-        h: (win_h / 60).max(32),
-        lines: vec![msg.to_string()],
-        max_chars: msg.chars().count(),
+        w,
+        h,
+        lines,
+        max_chars: chars_fitting(w),
     }
+}
+
+/// Caracteres estimados que caben en un aviso de `w` px de ancho.
+fn chars_fitting(w: i32) -> usize {
+    (((w as f32 - 2.0 * TOAST_PAD_X) / TOAST_CHAR_W).floor() as usize).max(1)
+}
+
+/// Envuelve `msg` por palabras en líneas de `max_chars` como mucho (las
+/// palabras más largas se parten) y, si no cabe en `max_lines`, trunca la
+/// última con "…".
+fn wrap_toast_lines(msg: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
+    let max_chars = max_chars.max(1);
+    let max_lines = max_lines.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur: Vec<char> = Vec::new();
+    let mut truncated = false;
+    'words: for word in msg.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let sep = usize::from(!cur.is_empty());
+            if cur.len() + sep + word.len() <= max_chars {
+                if sep == 1 {
+                    cur.push(' ');
+                }
+                cur.extend(word);
+                continue 'words;
+            }
+            if cur.is_empty() {
+                // Palabra más larga que una línea (rutas, URLs): corte duro.
+                let rest = word.split_off(max_chars);
+                lines.push(word.into_iter().collect());
+                word = rest;
+            } else {
+                lines.push(std::mem::take(&mut cur).into_iter().collect());
+            }
+            if lines.len() == max_lines {
+                truncated = true;
+                break 'words;
+            }
+        }
+    }
+    if !truncated && (!cur.is_empty() || lines.is_empty()) {
+        lines.push(cur.into_iter().collect());
+    }
+    if truncated && let Some(last) = lines.last_mut() {
+        let mut chars: Vec<char> = last.chars().collect();
+        chars.truncate(max_chars - 1);
+        while chars.last().is_some_and(|c| c.is_whitespace()) {
+            chars.pop();
+        }
+        chars.push('…');
+        *last = chars.into_iter().collect();
+    }
+    lines
+}
+
+// ---------------------------------------------------------------------
+// Aviso breve (toast) — píldora invertida Astryx de alto contraste
+// ---------------------------------------------------------------------
+pub(crate) fn render_toast(reader: &Reader) -> Option<Bitmap> {
+    let msg = &reader.toast.as_ref()?.0;
+    let layout = toast_layout(msg, reader.win_w, reader.win_h);
+    let (bw, bh) = (layout.w, layout.h);
+    let p = reader.theme.palette();
+    let mut rects = Vec::new();
+    let mut texts = Vec::new();
+    if layout.lines.len() <= 1 {
+        draw_token_pill(
+            &mut rects,
+            &mut texts,
+            (0.0, 0.0, bw as f32, bh as f32),
+            p.bg_inverted,
+            Some(p.border_emphasized),
+            p.on_inverted,
+            theme::FONT_CAPTION,
+            TextFont::Sans,
+            0.01,
+            true,
+            layout.lines.first().map_or("", String::as_str),
+        );
+    } else {
+        // Varias líneas: tarjeta con radio de card (una píldora de radio h/2
+        // recortaría las esquinas del texto).
+        let (fw, fh) = (bw as f32, bh as f32);
+        let rad = theme::RADIUS_CARD;
+        rects.push(CanvasRect::rounded(
+            0.0,
+            0.0,
+            fw,
+            fh,
+            rad,
+            p.border_emphasized,
+        ));
+        rects.push(CanvasRect::rounded(
+            1.0,
+            1.0,
+            fw - 1.0,
+            fh - 1.0,
+            (rad - 1.0).max(0.0),
+            p.bg_inverted,
+        ));
+        let y0 = (fh - layout.lines.len() as f32 * TOAST_LINE_H) * 0.5;
+        for (i, line) in layout.lines.iter().enumerate() {
+            let cy = y0 + (i as f32 + 0.5) * TOAST_LINE_H + theme::FONT_CAPTION * 0.35;
+            texts.push(
+                CanvasText::new(
+                    fw * 0.5,
+                    cy,
+                    theme::FONT_CAPTION,
+                    p.on_inverted,
+                    TextAlign::Center,
+                    true,
+                    line.as_str(),
+                )
+                .with_tracking(0.01),
+            );
+        }
+    }
+    jni_text_bitmap(bw, bh, theme::TRANSPARENT, &rects, &texts)
 }
 
 // ---------------------------------------------------------------------
