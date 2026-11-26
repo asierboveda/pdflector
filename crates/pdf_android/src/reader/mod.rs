@@ -43,6 +43,8 @@ pub(crate) mod discover_categories;
 pub(crate) mod discover_state;
 #[path = "../discover.rs"]
 pub(crate) mod discover_worker;
+// Inercia del modo Scroll (PR-04): física pura del fling.
+mod fling;
 mod geometry;
 mod library;
 mod library_state;
