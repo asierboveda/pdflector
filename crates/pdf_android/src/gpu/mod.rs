@@ -36,7 +36,10 @@ pub(crate) use dry_key::DryKey;
 // Política de presupuesto LRU por bytes de las texturas de overlay en módulo
 // puro (sin FFI/GL, testeable en host): evicción y bytes NO dependen de GL.
 mod ovl_budget;
+// Ranuras de textura por página del modo Scroll (PR-01), política pura.
+mod page_slots;
 pub(crate) use ovl_budget::{OVL_BYTE_BUDGET, OvlBudget};
+pub(crate) use page_slots::{BitmapKey, PageSlots};
 
 // Submódulos del pipeline GPU:
 // declaraciones FFI EGL/GLES2, shaders, ciclo de vida de surface/contexto,
