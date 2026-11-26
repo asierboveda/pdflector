@@ -70,7 +70,7 @@ pub(crate) use geometry::{
     disc_card_pad, disc_card_rect, disc_cat_row_h, disc_cat_row_rect, disc_content_y0,
     disc_detail_back_rect, disc_detail_layout, disc_more_btn_rect, disc_search_rect,
     disc_subtabs_rect, grid_cell_h, grid_cell_rect, grid_cell_w, grid_cover_h, grid_cover_w,
-    grid_gap, grid_pad, human_size, lib_add_btn_w, lib_chip_h, lib_chips, lib_collection_chips,
+    grid_gap, grid_pad, human_size, lib_add_btn_rect, lib_chip_h, lib_chips, lib_collection_chips,
     lib_content_y0, lib_empty_state_geom, lib_grid_y0, lib_header_h, lib_org_block_h,
     lib_org_chip_h, lib_org_chips, lib_search_chips_y0, lib_search_h, lib_search_panel_h,
     lib_tabs_rect, list_row_gap, list_row_h, list_row_rect, page_badge_rect, page_badge_size,
