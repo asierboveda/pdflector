@@ -61,6 +61,10 @@ use pdf_core::{
     Stroke, TextNote, TextSpan, Viewport, invert_bitmap, read_rss_kb, scale_level_for_zoom,
 };
 
+/// Tokens de diseño (Modo Papel / Modo Noche) del shell egui; viven aquí y no
+/// en pdf_core porque son estilo de UI (CO-02).
+mod theme;
+
 /// Zoom range and per-click step. The continuous `zoom` factor is
 /// clamped to this range; `+`/`−` step by `ZOOM_STEP`, ctrl+wheel and trackpad
 /// pinch follow egui's `zoom_delta` (see `App::update`).
@@ -679,17 +683,14 @@ impl App {
     /// applies `invert_bitmap` on the way to the GPU. `last_get` is cleared
     /// so the re-issue is not throttled by the `GET_PAGE_RETRY` gate.
     fn apply_theme(&mut self, ctx: &egui::Context) {
-        use pdf_core::theme::{DesignTokens, ThemeColor, ThemeMode};
+        use crate::theme::{DesignTokens, ThemeColor, ThemeMode};
 
         let mode = if self.dark_mode {
             ThemeMode::Night
         } else {
             ThemeMode::Paper
         };
-        let tokens = match mode {
-            ThemeMode::Paper => DesignTokens::PAPER,
-            ThemeMode::Night => DesignTokens::NIGHT,
-        };
+        let tokens = DesignTokens::for_mode(mode);
 
         let to_egui = |c: ThemeColor| egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
 

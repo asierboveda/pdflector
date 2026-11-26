@@ -21,7 +21,6 @@ pub mod selection;
 pub mod store;
 pub mod sync;
 pub mod textcache;
-pub mod theme;
 pub mod zoom;
 
 pub use ai::{AiError, GeminiClient, OllamaClient, chunk_pages};
@@ -50,7 +49,6 @@ pub use sync::{
     AnnotationWatcher, SyncError, annotations_dir, library_index_path, watch_annotations,
 };
 pub use textcache::PageTextCache;
-pub use theme::{DesignTokens, ThemeColor, ThemeMode};
 pub use zoom::{crop_centered, crop_rect, scale_bitmap, scale_level_for_zoom};
 /// Corpus directory. `PDFLECTOR_CORPUS_DIR` wins when set (e.g. on device);
 /// otherwise falls back to the workspace-relative corpus folder (desktop).
