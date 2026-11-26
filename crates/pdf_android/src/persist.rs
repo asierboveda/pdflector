@@ -41,7 +41,36 @@ use pdf_core::Color;
 use serde::{Deserialize, Serialize};
 
 use crate::annotations::{DEFAULT_INK_COLOR, PenMode, STROKE_WIDTH_PT};
-use crate::draw::ToolbarDock;
+
+/// Borde de la ventana al que está acoplada la barra.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ToolbarDock {
+    #[default]
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// Layout de la biblioteca: rejilla de portadas o lista de filas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum LibraryViewMode {
+    /// Rejilla (por defecto).
+    #[default]
+    Grid,
+    /// Lista (filas compactas).
+    List,
+}
+
+/// Ajuste de las portadas dentro de sus marcos.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum LibraryCoverFit {
+    /// Recorte central (fill, por defecto).
+    #[default]
+    Crop,
+    /// Portada completa visible (contain).
+    Fit,
+}
 
 /// Máximo de entradas de la lista de recientes (los últimos PDFs abiertos).
 pub(crate) const RECENTS_MAX: usize = 10;
@@ -282,10 +311,10 @@ pub(crate) struct ViewerState {
     /// Layout de la biblioteca (Grid/List; menú View "⋯").
     /// `#[serde(default)]` = compat con `state.json` viejo → Grid.
     #[serde(default)]
-    pub(crate) view_mode: crate::reader::LibraryViewMode,
+    pub(crate) view_mode: LibraryViewMode,
     /// Ajuste de las portadas en sus marcos (Crop/Fit; menú View "⋯").
     #[serde(default)]
-    pub(crate) cover_fit: crate::reader::LibraryCoverFit,
+    pub(crate) cover_fit: LibraryCoverFit,
     /// Columnas fijas de la rejilla si `auto_columns` es false (menú View).
     #[serde(default = "default_columns")]
     pub(crate) columns: u32,

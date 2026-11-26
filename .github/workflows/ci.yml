@@ -20,6 +20,12 @@ jobs:
           /tmp/corpus-venv/bin/pip install --quiet pillow reportlab
           /tmp/corpus-venv/bin/python tools/generate_corpus.py
           cargo test -p pdf_core
+      - name: test pdf_android (host)
+        run: |
+          cargo clippy -p pdf_android --lib --tests -- -D warnings
+          cargo test -p pdf_android --lib
+      - name: check pdf_app
+        run: cargo check -p pdf_app
       - name: test python tools
         run: |
           python3 -m unittest discover -s tools/tests

@@ -208,26 +208,7 @@ pub(crate) enum LibSort {
     Progress,
 }
 
-/// Layout de la biblioteca (menú View "⋯", Tarea 2 implementa el contenido):
-/// rejilla de portadas o lista de filas.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) enum LibraryViewMode {
-    /// Rejilla (por defecto).
-    #[default]
-    Grid,
-    /// Lista (filas compactas).
-    List,
-}
-
-/// Ajuste de las portadas dentro de sus marcos (menú View "⋯", Tarea 2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) enum LibraryCoverFit {
-    /// Recorte central (fill, por defecto).
-    #[default]
-    Crop,
-    /// Portada completa visible (contain).
-    Fit,
-}
+pub(crate) use crate::persist::{LibraryCoverFit, LibraryViewMode};
 
 /// Agrupación de la rejilla (menú View "⋯", Tarea 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]

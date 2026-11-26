@@ -1,0 +1,298 @@
+{
+  "kanvas": 1,
+  "title": "pdflector",
+  "groups": [
+    {
+      "id": "UI",
+      "name": "Astryx UI & Tablet"
+    },
+    {
+      "id": "TD",
+      "name": "Test Loop & Hygiene"
+    },
+    {
+      "id": "CO",
+      "name": "Core & Safety"
+    },
+    {
+      "id": "IN",
+      "name": "Ink & Architecture"
+    },
+    {
+      "id": "PR",
+      "name": "Product Reshape"
+    },
+    {
+      "id": "FD",
+      "name": "Fundamentos y TDD"
+    },
+    {
+      "id": "VL",
+      "name": "Archivos y Vault"
+    },
+    {
+      "id": "RD",
+      "name": "Motor PDF y Zoom"
+    },
+    {
+      "id": "AI",
+      "name": "Asistente IA"
+    },
+    {
+      "id": "UX",
+      "name": "Interfaz Compose Editorial"
+    },
+    {
+      "id": "AC",
+      "name": "Aceptación en Tablet"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "FD-01",
+      "title": "Rama limpia desde main y tests host de pdf_android en CI",
+      "state": "review",
+      "group": "FD",
+      "yolo": true,
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Crear rama limpia desde main (descartando el Astryx en Rust de la rama previa) y habilitar la ejecución de tests unitarios de pdf_android en Linux host y CI sin NDK.\n- [ ] Gatear dependencias Android (ndk, jni, android_logger) con cfg(target_os = \"android\") y añadir crate-type rlib\n- [ ] TDD: cargo test -p pdf_android --lib falla en rojo antes del cambio y pasa en verde en host Linux\n- [ ] cargo test -p pdf_core, cargo check -p pdf_app y clippy Android -D warnings en verde en CI",
+      "notes": [
+        {
+          "at": "2026-11-26T14:51:38Z",
+          "by": "gemini-orchestrator",
+          "text": "Plan: crear rama feat/pdflector-v2 desde main preservando kanvas.json, AGENTS.md y .agents/skills/kanvas/; comprobar fallo en rojo de cargo test -p pdf_android --lib en Linux host; gatear dependencias Android bajo cfg(target_os = \"android\") con crate-type rlib + cdylib; verificar pdf_core, pdf_android --lib, pdf_app, clippy Android y actualizar CI."
+        },
+        {
+          "at": "2026-11-26T14:57:04Z",
+          "by": "gemini-orchestrator",
+          "text": "Rama limpia `feat/pdflector-v2` creada desde `main` (`9c6068c`, commit `a4d7762`) preservando `kanvas.json`, `AGENTS.md` y `.agents/skills/kanvas/`, con los tests unitarios de `pdf_android` ejecutándose en Linux host y en CI sin NDK.\n\nQué cambió:\n- `crates/pdf_android/Cargo.toml`: añadido `crate-type = [\"cdylib\", \"rlib\"]` y movidas las dependencias Android (`android-activity`, `ndk`, `jni`, `android_logger`) bajo `[target.'cfg(target_os = \"android\")'.dependencies]`.\n- Gateados los módulos acoplados a Android/NDK (`draw`, `input`, `jni`, `reader`, `zoom`, `gpu/{ffi,pipeline,shaders,surface,textures}`, `android_main`, `GOOGLE_API_KEY`) bajo `cfg(target_os = \"android\")`, desacoplando `ToolbarDock`, `LibraryViewMode` y `LibraryCoverFit` en `persist.rs`.\n- `.github/workflows/ci.yml`: añadidos `cargo clippy -p pdf_android --lib --tests -- -D warnings`, `cargo test -p pdf_android --lib` y `cargo check -p pdf_app` en el job `check`.\n\nVerificación TDD ejecutada:\n- RED: `cargo test -p pdf_android --lib` falló antes del cambio con `ndk-sys only supports compiling for Android`.\n- GREEN:\n  - `cargo test -p pdf_android --lib`: 58 passed, 0 failed (en host Linux, sin NDK).\n  - `cargo clippy -p pdf_android --lib --tests -- -D warnings`: 0 warnings.\n  - `cargo fmt --all -- --check` y `cargo clippy --all-targets -- -D warnings`: 0 warnings.\n  - `cargo test -p pdf_core`: todas las suites en verde, 0 failed.\n  - `cargo check -p pdf_app`: compilación limpia.\n  - `cargo check` y `cargo clippy -p pdf_android --target aarch64-linux-android --all-targets -- -D warnings` (NDK r28): 0 warnings.\n\nPara revisar: confirma `FD-01` en el tablero y aprueba (o activa YOLO sobre) las siguientes tareas (`FD-02`, `FD-03`, o la cadena completa hasta `AC-01`/`AC-02`) para continuar con el resto de olas."
+        }
+      ],
+      "started": {
+        "at": "2026-11-26T14:51:38Z",
+        "by": "gemini-orchestrator"
+      }
+    },
+    {
+      "id": "FD-02",
+      "title": "Configurar Jetpack Compose y Robolectric JVM en Gradle",
+      "state": "proposed",
+      "group": "FD",
+      "deps": ["FD-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Preparar android/product para desarrollar y testear la nueva UI en Jetpack Compose con Robolectric en JVM sin necesitar emulador ni NDK.\n- [ ] Añadir Compose BOM, Material 3, WindowSizeClass, Coroutines y Robolectric en build.gradle.kts\n- [ ] Mantener buildRustArm64 desacoplado de testDebugUnitTest\n- [ ] TDD: primer test Compose + Robolectric ejecutándose con ./gradlew :app:testDebugUnitTest sin ANDROID_NDK_HOME"
+    },
+    {
+      "id": "FD-03",
+      "title": "Spike hardware ComponentActivity + Dual SurfaceView (Z=-2/-1) + tinta 240 Hz",
+      "state": "proposed",
+      "group": "FD",
+      "deps": ["FD-02"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Reemplazar GameActivity por ComponentActivity con pdfSurfaceView (Z=-2), inkSurfaceView con setZOrderMediaOverlay (Z=-1) y capa Compose (Z=0), validándolo en la TCL 9469X.\n- [ ] Ruta síncrona de entrada 240 Hz (View.OnTouchListener + FloatArray reutilizado sin saltos de hilo hacia GLFrontBufferedRenderer)\n- [ ] Barrera síncrona detachSurfaceBlocking() al destruir superficie (sin SIGSEGV al rotar)\n- [ ] TDD + verificación en TCL 9469X: overlays Compose visibles sobre tinta húmeda sin parpadeo ni regresión de latencia"
+    },
+    {
+      "id": "VL-01",
+      "title": "Vault local en pdf_core: esquema SQLite WAL, indexado in-place y deduplicación SHA-256",
+      "state": "proposed",
+      "group": "VL",
+      "deps": ["FD-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Sustituir las bibliotecas duplicadas por un índice único vault_index.db sobre las carpetas reales del dispositivo sin copiar PDFs internamente.\n- [ ] Esquema vault_roots, documents (clave content_sha256 + /ID[0]) y locations (N rutas -> 1 doc_id)\n- [ ] Detección incremental FUSE-safe por (size, mtime_ms) sin st_ino + pre-hash 12 KiB + exclusión de _PDFLector, .tacitpart, .syncthing*, *.sync-conflict-* y escrituras parciales sin %%EOF\n- [ ] TDD (rojo->verde): T-CORE-01..07, T-CORE-10 y T-CORE-13 en pdf_core (0 PDFs copiados, dedup, sin colisiones, renombrado/movimiento, archivo de notas)"
+    },
+    {
+      "id": "VL-02",
+      "title": "Búsqueda instantánea SQLite FTS5 sobre nombres, carpetas y metadatos",
+      "state": "proposed",
+      "group": "VL",
+      "deps": ["VL-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Encontrar cualquier PDF al instante tolerando tildes, prefijos parciales y caracteres especiales.\n- [ ] Tabla virtual docs_fts (unicode61 remove_diacritics 2, prefix='2 3') sincronizada por triggers con ranking BM25\n- [ ] Sanitización segura de consultas (comillas sin cerrar, operadores FTS, símbolos como C++)\n- [ ] TDD (rojo->verde): T-CORE-12 verificando diacríticos, prefijos, rutas, metadatos PDF y consultas malformadas"
+    },
+    {
+      "id": "VL-03",
+      "title": "Publicación atómica _PDFLector FUSE-safe y restauración de respaldos tras renombrar",
+      "state": "proposed",
+      "group": "VL",
+      "deps": ["VL-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Garantizar la publicación segura de PDFs anotados y respaldos JSON v2 en Android 10-15 sin bucle de re-indexado ni fallos EINVAL.\n- [ ] Fallback atómico en install_no_replace_fuse_safe() cuando renameat2(RENAME_NOREPLACE) devuelve EINVAL\n- [ ] No crear sidecar .db vacío al solo leer; restaurar respaldos JSON emparejando por source_hash aunque el PDF se haya movido\n- [ ] TDD (rojo->verde): T-CORE-08 (sin bucle _PDFLector), T-CORE-09 (fallback EINVAL) y T-CORE-11 (restauración tras renombrado)"
+    },
+    {
+      "id": "VL-04",
+      "title": "Separar VaultIndexerWorker y AnnotationActor con escrituras atómicas",
+      "state": "proposed",
+      "group": "VL",
+      "deps": ["VL-01", "VL-03"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Evitar que escanear carpetas grandes bloquee el guardado de trazos o descarte actualizaciones de la biblioteca.\n- [ ] Dos hilos desacoplados: AnnotationActor (< 5 ms local en privado/annotations/<doc_id>.db) y VaultIndexerWorker cancelable\n- [ ] Notificación por generación sin pérdidas (corrige sync_channel(4)) y escrituras atómicas en todo estado persistente\n- [ ] TDD (rojo->verde): T-AND-03 (guardado < 100 ms bajo escaneo pesado), T-AND-04 (atomicidad) y T-AND-05 (sin pérdida de eventos)"
+    },
+    {
+      "id": "VL-05",
+      "title": "Migración sin pérdida desde biblioteca heredada y puente SafVaultBridge",
+      "state": "proposed",
+      "group": "VL",
+      "deps": ["VL-02", "VL-04", "FD-02"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Migrar todas las anotaciones y progreso existentes sin pérdidas y soportar acceso SAF sin OOM cuando no haya permiso MANAGE_EXTERNAL_STORAGE.\n- [ ] Migración idempotente de library.json, folder-library.json, recents, state y ambos formatos de sidecar (<stem>.db y <stem>-<fnv1a>.db), cuarentenando JSON corruptos\n- [ ] SafVaultBridge Kotlin con DocumentsContract BFS + ParcelFileDescriptor.detachFd() -> OwnedFd (sin cargar PDFs en Vec<u8>)\n- [ ] TDD (rojo->verde): T-AND-01, T-AND-02 y tests Kotlin JVM T-KT-01..03"
+    },
+    {
+      "id": "RD-01",
+      "title": "MuPDF en pdf_core: caché LRU de DisplayList, RGBA directo y render_page_region",
+      "state": "proposed",
+      "group": "RD",
+      "deps": ["FD-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Cortar la fuga de memoria de DisplayLists, eliminar la doble copia RGB->RGBA y permitir rasterizar regiones recortadas hasta 8x sin pérdida de nitidez.\n- [ ] LruCache acotado (6 páginas/worker) para DisplayList con métricas de desalojo\n- [ ] Render RGBA directo (alpha=true) y Document::render_page_region con recorte scissor (compatibilidad total con pdf_app)\n- [ ] TDD (rojo->verde): tests de límite LRU, paridad píxel a píxel de regiones (<= 1 LSB), bordes, 8x sin recorte de escala + benchmarks tile_render y display_list_lru"
+    },
+    {
+      "id": "RD-02",
+      "title": "Pirámide de tiles 512x512, TileCache 48 MiB y TileRenderPool paralelo en pdf_core",
+      "state": "proposed",
+      "group": "RD",
+      "deps": ["RD-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Planificar, cachear y renderizar tiles visibles en paralelo en varios núcleos con preempción inmediata y errores visibles.\n- [ ] Niveles discretos anclados a página (invariantes al rotar) con histéresis 12%, culling visible, anillo 1-tile según velocidad y fallback a ancestro L-1\n- [ ] 2 workers MuPDF en paralelo con generación/Cookie para abortar trabajos obsoletos y eventos explícitos TileFailed (cero errores silenciados)\n- [ ] TDD (rojo->verde): tests de culling, rotación, histéresis, LRU 48 MiB, preempción, paralelismo con barrera y propagación de errores + benchmark tile_cache"
+    },
+    {
+      "id": "RD-03",
+      "title": "GLES 3.0 TEXTURE_2D_ARRAY, GpuTileAtlas (2 tiles/frame) y anotaciones sin rebuild",
+      "state": "proposed",
+      "group": "RD",
+      "deps": ["RD-02", "FD-03"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Mantener 120 Hz constantes durante pinch y pan eliminando subidas GL bloqueantes, errores GLES y re-teselado de trazos en cada frame.\n- [ ] Subir EGL a GLES 3.0 con glTexStorage3D (48 capas 512x512) + PBO limitado a <= 2 tiles/frame + anillo 3 slots Capa-0; eliminar GL_TEXTURE_WRAP_R inválido\n- [ ] Quitar zoom/pan de DryKey: VBO de anotaciones en espacio de página proyectado por uViewProj; limitar eglSwapInterval(0) a trazos activos\n- [ ] TDD (rojo->verde): tests host de GpuTileAtlas (no desalojar tiles fijados, tope 2/frame) y AnnotationMeshKey invariante ante pan/zoom"
+    },
+    {
+      "id": "RD-04",
+      "title": "Integrar tiles en el visor, conservar caché al rotar y paridad wet->dry en InkGlRenderer",
+      "state": "proposed",
+      "group": "RD",
+      "deps": ["RD-03"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Conectar el nuevo motor de tiles al visor eliminando el desenfoque a >2x, las recargas innecesarias y el salto visual al levantar el lápiz.\n- [ ] Eliminar scale *= 0.5 (>48 MiB), el borrado de caché al rotar/salir, la doble apertura al restaurar y text_cache.prefetch en hilo UI\n- [ ] Añadir remates y uniones circulares (SDF) en InkGlRenderer.kt para paridad exacta wet->dry\n- [ ] TDD (rojo->verde): tests host de rotación, restauración única y pinch 8x a nivel 3 + tests JVM de InkGlRenderer"
+    },
+    {
+      "id": "AI-01",
+      "title": "AiProvider unificado en reqwest con streaming (Gemini SSE y Ollama NDJSON)",
+      "state": "proposed",
+      "group": "AI",
+      "deps": ["FD-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Reemplazar las peticiones bloqueantes y el cliente TCP manual por un trait enchufable con streaming real en Gemini y Ollama.\n- [ ] Retirar TcpStream manual de Ollama (corrige chunked encoding, https:// y connect timeout) unificando en reqwest pooled\n- [ ] Gemini SSE (filtrando part.thought, mapeando SAFETY a Blocked, maxOutputTokens 2048, fallback válido) + Ollama NDJSON + GET /api/tags\n- [ ] TDD (rojo->verde): tests en pdf_core contra servidores mock TcpListener con chunks TCP partidos, thought parts, SAFETY y NDJSON chunked"
+    },
+    {
+      "id": "AI-02",
+      "title": "Cancelación <200 ms, reintentos seguros, redacción de claves y recorte acotado",
+      "state": "proposed",
+      "group": "AI",
+      "deps": ["AI-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Hacer robusto el pipeline de consulta IA: cancelable al instante, sin fugas de claves, con recortes fiables y contexto multi-turno acotado.\n- [ ] CancellationToken abortando sockets/backoffs en <200 ms; reintento 429/503 solo antes del primer delta; SecretString redactado en errores/logs\n- [ ] chunk_pages por caracteres Unicode; recorte independiente de PageCache acotado a <=1280 px / <=512 KiB respetando 2 columnas; poda multi-turno sin re-subir PNGs viejos\n- [ ] TDD (rojo->verde): tests de cancelación, no-retry tras delta, fail-fast 401/403/413, redacción, Unicode y poda de historial"
+    },
+    {
+      "id": "AI-03",
+      "title": "Historial por documento (AiChatStore SQLite) y AiEngineBridge resistente a rotación",
+      "state": "proposed",
+      "group": "AI",
+      "deps": ["AI-02", "VL-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Persistir conversaciones de estudio por documento en SQLite WAL separado de las anotaciones y mantener el streaming vivo al girar la tablet.\n- [ ] Esquema ai_chat.db (conversations + messages con complete/stopped/error + caché LRU 20 MiB para miniaturas)\n- [ ] Puente JNI AiEngineBridge de ámbito de proceso (desacoplado de Activity/Surface)\n- [ ] TDD (rojo->verde): tests de aislamiento por doc_id, reapertura SQLite, ON DELETE CASCADE y contrato del puente"
+    },
+    {
+      "id": "AI-04",
+      "title": "Claves cifradas en Android Keystore AES-256-GCM y purga de secretos embebidos",
+      "state": "proposed",
+      "group": "AI",
+      "deps": ["AI-03", "FD-02"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Eliminar las API keys en texto plano compiladas en el binario y almacenarlas cifradas por hardware en Android.\n- [ ] Borrar google_key.txt, groq_key.txt y todo include_str! de claves; fijar android:allowBackup=\"false\" en AndroidManifest.xml\n- [ ] SecretStore en Kotlin con Android Keystore AES-256-GCM (IV aleatorio + AAD por proveedor) sobre Jetpack DataStore\n- [ ] TDD (rojo->verde): SecretStoreTest (cifrado en reposo, fallo ante manipulación AAD) + test estático que falla si reaparecen claves en repo/código"
+    },
+    {
+      "id": "UX-01",
+      "title": "Purgar UI Rust legacy y construir Design System Editorial Compose (Paper/Sepia/Dark)",
+      "state": "proposed",
+      "group": "UX",
+      "deps": ["FD-03"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Eliminar toda la UI dibujada a mano en Rust y establecer los tokens editoriales en Jetpack Compose.\n- [ ] Borrar crates/pdf_android/src/draw/, tools/ime/, reader/library*, reader/discover*, reader/toolbar.rs, reader/sheet_chrome.rs, zoom.rs, thumbs.rs y JNI de plataforma obsoleto\n- [ ] Refactorizar ViewerEngine y input/motion.rs (solo gestos del lienzo PDF y stylus 240 Hz, testeables en host)\n- [ ] TDD (rojo->verde): tests host de gestos/palm-rejection/botones TCL/reconcile_pending_ink + ThemeContrastTest (>= 4.5:1 en Paper, Sepia y Dark)"
+    },
+    {
+      "id": "UX-02",
+      "title": "LibraryScreen Compose: sidebar de carpetas, búsqueda FTS5 y vistas Grid/Lista",
+      "state": "proposed",
+      "group": "UX",
+      "deps": ["UX-01", "VL-05"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Construir la nueva pantalla de biblioteca editorial conectada al VaultEngineBridge con navegación real de carpetas.\n- [ ] PermanentNavigationDrawer en horizontal (>=840 dp) y ModalNavigationDrawer en vertical con árbol real + filtros (Todos, Recientes, Leyendo, Notas archivadas)\n- [ ] Búsqueda instantánea FTS5, alternancia Grid/Lista, portadas MuPDF asíncronas y estados vacío/permisos/error\n- [ ] TDD (rojo->verde): LibraryViewModelTest (JVM) y LibraryScreenUiTest (Robolectric en vertical y horizontal)"
+    },
+    {
+      "id": "UX-03",
+      "title": "ReaderScreen Compose: chrome auto-hide, scrubber y barra flotante de anotación",
+      "state": "proposed",
+      "group": "UX",
+      "deps": ["UX-02", "RD-04"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Implementar la interfaz minimalista del lector sobre PdfCanvasHost con foco total en el documento y protección contra palma.\n- [ ] Barra superior y scrubber inferior con auto-ocultado (2.5 s e inmediato al apoyar stylus)\n- [ ] Barra flotante colapsable (Lápiz, Subrayador, Borrador, Lazo, Color, Grosor, Undo/Redo) con popovers anclados\n- [ ] TDD (rojo->verde): ReaderViewModelTest y Robolectric ReaderScreenUiTest (auto-hide, selección de herramientas, popovers y ADR-012)"
+    },
+    {
+      "id": "UX-04",
+      "title": "AiStudySheet Compose: chat contextual streaming con Markdown y LaTeX",
+      "state": "proposed",
+      "group": "UX",
+      "deps": ["UX-03", "AI-04"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Crear el asistente de estudio completo con panel lateral en horizontal / bottom sheet en vertical y fórmulas matemáticas nítidas.\n- [ ] Barra de contexto y privacidad ADR-015 (Selección / Página actual / Sin adjunto + proveedor activo), pregunta libre y chips Explicar/Resumir/Demostrar\n- [ ] Streaming en vivo con parser incremental Markdown + JLaTeXMath-Android cacheado, botón Stop/Reintentar e historial por documento\n- [ ] TDD (rojo->verde): AiAssistantViewModelTest, MarkdownMathParserTest (preserva $50, {x|x>0}, 2*3) y Robolectric UI tests"
+    },
+    {
+      "id": "UX-05",
+      "title": "SettingsScreen Compose: temas, carpetas del vault, stylus y proveedores IA",
+      "state": "proposed",
+      "group": "UX",
+      "deps": ["UX-02", "AI-04"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Centralizar toda la configuración en una pantalla limpia sin archivos manuales ni recompilaciones.\n- [ ] Secciones: Apariencia (Paper/Sepia/Dark), Raíces del Vault + permisos MANAGE_EXTERNAL_STORAGE/SAF + estado _PDFLector, Stylus (botones barril TCL y palm rejection) y Proveedores IA (Gemini / Ollama URL + modelos /api/tags + clave Keystore + Probar conexión)\n- [ ] TDD (rojo->verde): SettingsViewModelTest y tests Robolectric (clave enmascarada, cambio de proveedor y gestión de raíces)"
+    },
+    {
+      "id": "AC-01",
+      "title": "Validación integral en TCL 9469X: puertas G1-G5 (120 Hz, 8x, <150 MB, Vault, IA)",
+      "state": "proposed",
+      "group": "AC",
+      "deps": ["UX-04", "UX-05"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Verificar todas las métricas objetivas en la tablet TCL 9469X con corpus sintético antes de dar la versión por cerrada.\n- [ ] G1-G3: dumpsys gfxinfo P95 <= 8.33 ms (jank < 2%), zoom 8x a zoom_level 3 (time-to-sharp P50 <= 90 ms), dumpsys meminfo < 150 MB y 0 errores GL\n- [ ] G4: 0 PDFs copiados, dedup real, renombrado/movimiento con notas intactas, 0 re-hashes tras reinicio, publicación _PDFLector, fallback SAF y migración de sidecars\n- [ ] G5: streaming Gemini + Ollama con Markdown/LaTeX y clave Keystore"
+    },
+    {
+      "id": "AC-02",
+      "title": "Consolidación en main, limpieza de ramas y verificación final de pdf_app",
+      "state": "proposed",
+      "group": "AC",
+      "deps": ["AC-01"],
+      "at": "2026-11-26T14:45:24Z",
+      "by": "gemini",
+      "desc": "Integrar el producto renovado en main con toda la suite CI verde y sin ruido en el repositorio.\n- [ ] CI verde: cargo test --workspace, cargo test -p pdf_android --lib, cargo check -p pdf_app, clippy Android -D warnings, ./gradlew :app:testDebugUnitTest y assembleProductDebug\n- [ ] Fusionar a main y limpiar ramas/worktrees obsoletos (feat/frontend-redesign-astryx, actualizar)"
+    }
+  ]
+}

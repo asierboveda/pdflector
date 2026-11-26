@@ -31,21 +31,29 @@
 
 // Clave de invalidación de la capa Dry en módulo puro (sin FFI/GL, testeable en host).
 mod dry_key;
+#[cfg(target_os = "android")]
 pub(crate) use dry_key::DryKey;
 
 // Política de presupuesto LRU por bytes de las texturas de overlay en módulo
 // puro (sin FFI/GL, testeable en host): evicción y bytes NO dependen de GL.
 mod ovl_budget;
+#[cfg(target_os = "android")]
 pub(crate) use ovl_budget::{OVL_BYTE_BUDGET, OvlBudget};
 
 // Submódulos del pipeline GPU:
 // declaraciones FFI EGL/GLES2, shaders, ciclo de vida de surface/contexto,
 // texturas y render/present. Este fichero queda como cordón de módulos y
 // re-exports para mantener la API pública `crate::gpu::X`.
+#[cfg(target_os = "android")]
 mod ffi;
+#[cfg(target_os = "android")]
 mod pipeline;
+#[cfg(target_os = "android")]
 mod shaders;
+#[cfg(target_os = "android")]
 mod surface;
+#[cfg(target_os = "android")]
 mod textures;
 
+#[cfg(target_os = "android")]
 pub(crate) use surface::Gpu;

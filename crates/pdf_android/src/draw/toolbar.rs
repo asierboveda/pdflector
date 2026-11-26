@@ -20,15 +20,7 @@ use crate::reader::{Reader, viewer_bottom_chrome_h, viewer_top_chrome_h};
 use crate::theme;
 use pdf_core::{Bitmap, Color};
 
-/// Borde de la ventana al que está acoplada la barra.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum ToolbarDock {
-    #[default]
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
+pub(crate) use crate::persist::ToolbarDock;
 
 impl ToolbarDock {
     fn vertical(self) -> bool {

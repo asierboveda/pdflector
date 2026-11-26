@@ -732,6 +732,7 @@ fn emit(
     }
 }
 
+#[cfg(target_os = "android")]
 impl crate::reader::Reader {
     pub(crate) fn retry_deferred_annotation_saves(&mut self) {
         if let Some(job) = self.unqueueable_annotation_save.take()

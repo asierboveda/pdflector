@@ -31,6 +31,7 @@
 //! página↔pantalla solo depende de la escala `cover × zoom` y de la posición
 //! de la página; ver `Reader::screen_to_page`).
 
+#[cfg(target_os = "android")]
 use android_activity::input::ButtonState;
 use pdf_core::{Color, TextSpan};
 
@@ -44,12 +45,14 @@ use pdf_core::{Color, TextSpan};
 /// estándar Android. Verificado en el logcat `pen_buttons` de la TCL 9469X
 /// (ButtonPress en el aire y `button_state` en contacto). Si otro boli
 /// reportara distinto, se intercambian ESTAS dos constantes, no el flujo.
+#[cfg(target_os = "android")]
 pub(crate) const PEN_BTN_SELECT: ButtonState = ButtonState(0x40);
 
 /// Botón "DOWN" del boli: MANTENIDO + boli apoyado = BORRAR con GOMA real
 /// (recorta trazos parcialmente y elimina subrayados completos; ver
 /// `pdf_core::split_stroke` y `Reader::{begin,update,end}_erase_gesture`).
 /// Calibrado en el botón INFERIOR de este boli (0x20).
+#[cfg(target_os = "android")]
 pub(crate) const PEN_BTN_ERASE: ButtonState = ButtonState(0x20);
 
 /// Radio de hit-test del borrado en puntos DE PÁGINA: distancia punto→seg-

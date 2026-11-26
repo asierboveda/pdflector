@@ -22,25 +22,36 @@
 //! - `folder_sync`: background SQLite persistence and folder-sync export worker.
 //! - `cache`, `thumbs`, `persist`, `undo`, `view`, `zoom`, `annotations`, `discover`.
 
+#![cfg_attr(not(target_os = "android"), allow(dead_code))]
+
+#[cfg(target_os = "android")]
 use android_activity::{AndroidApp, MainEvent, PollEvent};
+#[cfg(target_os = "android")]
 use log::info;
 
 mod annotations;
 mod cache;
+#[cfg(target_os = "android")]
 mod draw;
 mod folder_sync;
 mod gpu;
 pub mod ink;
+#[cfg(target_os = "android")]
 mod input;
+#[cfg(target_os = "android")]
 mod jni;
 mod persist;
+#[cfg(target_os = "android")]
 mod reader;
 mod thumbs;
 mod undo;
 mod view;
+#[cfg(target_os = "android")]
 mod zoom;
 
+#[cfg(target_os = "android")]
 use crate::input::handle_input;
+#[cfg(target_os = "android")]
 use crate::reader::Reader;
 
 /// Radio (px) de movimiento máximo entre Down y Up para considerar el gesto un
@@ -95,6 +106,7 @@ pub(crate) const LIB_FADE_MS: f32 = 0.18;
 // PRIVACIDAD: la key viaja en el binario — no publiques el APK ni el repo
 // con la key real; el fichero está ignorado por Git y un placeholder
 // compila pero el panel avisa de que falta la clave.
+#[cfg(target_os = "android")]
 pub(crate) const GOOGLE_API_KEY: &str = include_str!("../google_key.txt");
 /// Modelo de GEMINI para "Preguntar a la IA": multimodal (texto + imagen),
 /// así que la misma llamada explica texto, ecuaciones y gráficos a partir
@@ -328,6 +340,7 @@ pub(crate) mod theme {
     }
 }
 
+#[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub fn android_main(app: AndroidApp) {
     android_logger::init_once(
