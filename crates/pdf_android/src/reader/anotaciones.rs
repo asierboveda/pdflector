@@ -207,7 +207,8 @@ impl Reader {
     }
 
     /// Tras deshacer/rehacer: recompone la capa Dry, guarda el sidecar,
-    /// refresca la barra y lleva la vista a la página afectada si es otra.
+    /// refresca la barra y lleva la vista a la página afectada si no está
+    /// ya a la vista (`history_jump`).
     fn after_history_step(&mut self, page: Option<usize>) {
         self.invalidate_toolbar();
         let Some(page) = page else {
@@ -217,8 +218,11 @@ impl Reader {
             gpu.invalidate_dry();
         }
         self.save_annotations();
-        if page as u32 != self.page {
-            self.jump_page(page as i32 - self.page as i32);
+        // Modo Scroll: si la hoja afectada ya se ve, el cambio aparece en su
+        // sitio (la dry hornea todas las visibles) sin mover la columna.
+        let visible = self.scroll_visible_pages();
+        if let Some(target) = history_jump(page as u32, self.page, &visible) {
+            self.jump_page(target as i32 - self.page as i32);
         }
         self.mark_repaint();
     }
@@ -238,8 +242,8 @@ impl Reader {
 /// `affected` (None = quedarse): en Tap, cualquier otra hoja; en Scroll
 /// (`visible` = hojas a la vista de la columna) solo si la afectada no se
 /// ve ya — el cambio se muestra en su sitio sin mover la columna (PR-04).
-pub(crate) fn history_jump(affected: u32, current: u32, _visible: &[u32]) -> Option<u32> {
-    (affected != current).then_some(affected)
+pub(crate) fn history_jump(affected: u32, current: u32, visible: &[u32]) -> Option<u32> {
+    (affected != current && !visible.contains(&affected)).then_some(affected)
 }
 
 #[cfg(test)]
