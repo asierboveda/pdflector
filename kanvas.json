@@ -135,6 +135,11 @@
           "at": "2026-11-26T16:05:53Z",
           "by": "claude-code",
           "text": "The Android theme no longer carries unused design tokens or `#[allow(dead_code)]` hiding them (15 removed, 0 left).\n- Deleted: RADIUS_NONE, SPACE_1–SPACE_6, and 6 palette fields nothing read (name, text_disabled, success, success_border, warning, error)\n- Kept: tokens only the WCAG contrast test reads (success_bg/text, warning_bg/text), per the card's rule that a token used by a test is not dead\n- TDD verified by the orchestrator: 2 characterization tests committed first, passing on the old code and after the deletion. Sent back once: a new test tripped clippy (constant assertion); fixed as a compile-time check.\n- Nothing visible should change on the tablet."
+        },
+        {
+          "at": "2026-11-26T16:16:45Z",
+          "by": "claude-code",
+          "text": "CI Android build failed after merge: success_bg/success_text were read only by the contrast test, which the real app build doesn't compile, so -D warnings flagged them as dead. My instruction to the agent (\"a token used by a test is not dead\") caused it. Fixed by removing both fields and the matching success pair from the contrast test (it checked colours the app never shows). Checked: all 28 remaining palette fields are read by app code."
         }
       ],
       "started": {
@@ -388,6 +393,11 @@
           "at": "2026-11-26T16:06:15Z",
           "by": "claude-code",
           "text": "Added CI evidence: 2 failing tests, runs 204 and 206"
+        },
+        {
+          "at": "2026-11-26T16:16:45Z",
+          "by": "claude-code",
+          "text": "Now failing in most CI runs (210, 211, 212). Worth checking while fixing: whether the worker's export path got slower (e.g. CO-01's fsync in export_markdown_to_file), since both tests assert the local save does not wait behind export."
         }
       ]
     }
