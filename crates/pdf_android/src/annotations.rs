@@ -31,7 +31,7 @@
 //! página↔pantalla solo depende de la escala `cover × zoom` y de la posición
 //! de la página; ver `Reader::screen_to_page`).
 
-use android_activity::input::ButtonState;
+use crate::android_activity::input::ButtonState;
 use pdf_core::{Color, TextSpan};
 
 /// Botón "UP" del boli: MANTENIDO + boli apoyado = SELECTOR de Recorte

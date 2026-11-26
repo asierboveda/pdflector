@@ -22,7 +22,21 @@
 //! - `folder_sync`: background SQLite persistence and folder-sync export worker.
 //! - `cache`, `thumbs`, `persist`, `undo`, `view`, `zoom`, `annotations`, `discover`.
 
-use android_activity::{AndroidApp, MainEvent, PollEvent};
+// En host solo se compilan los tests: el código que únicamente alcanza
+// `android_main` queda sin uso y no debe ensuciar la salida con avisos.
+#![cfg_attr(not(target_os = "android"), allow(dead_code, unused_imports))]
+
+// En Android, `crate::android_activity` es la crate real; en host (tests en
+// Linux, donde ndk-sys no compila) es un sustituto inerte con los mismos
+// nombres, así el resto del código no distingue plataforma.
+#[cfg(target_os = "android")]
+pub(crate) use ::android_activity;
+#[cfg(not(target_os = "android"))]
+#[path = "host/android_activity.rs"]
+pub(crate) mod android_activity;
+
+#[cfg(target_os = "android")]
+use crate::android_activity::{AndroidApp, MainEvent, PollEvent};
 use log::info;
 
 mod annotations;
@@ -40,6 +54,7 @@ mod undo;
 mod view;
 mod zoom;
 
+#[cfg(target_os = "android")]
 use crate::input::handle_input;
 use crate::reader::Reader;
 
@@ -515,6 +530,7 @@ pub(crate) mod theme {
     }
 }
 
+#[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub fn android_main(app: AndroidApp) {
     android_logger::init_once(

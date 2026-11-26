@@ -7,7 +7,7 @@
 //! no existe en Android (`libEGL.so`) — así que el spike validó este FFI
 //! directo en la TCL.
 #![allow(non_snake_case)]
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
 pub type EGLDisplay = *mut c_void;
 pub type EGLConfig = *mut c_void;
@@ -57,7 +57,7 @@ pub const GL_LINK_STATUS: u32 = 0x8B82;
 pub const GL_FRAMEBUFFER: u32 = 0x8D40;
 pub const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
 pub const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
-#[link(name = "EGL")]
+#[cfg_attr(target_os = "android", link(name = "EGL"))]
 unsafe extern "C" {
     pub fn glBlendFuncSeparate(sfactor: u32, dfactor: u32, alpha_s: u32, alpha_d: u32);
 
@@ -125,14 +125,14 @@ unsafe extern "C" {
     pub fn eglDestroyContext(dpy: EGLDisplay, ctx: EGLContext) -> u32;
 }
 
-#[link(name = "GLESv2")]
+#[cfg_attr(target_os = "android", link(name = "GLESv2"))]
 unsafe extern "C" {
     pub fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     pub fn glClear(mask: u32);
     pub fn glViewport(x: i32, y: i32, w: i32, h: i32);
     pub fn glUseProgram(p: GLhandle);
-    pub fn glGetUniformLocation(p: GLhandle, name: *const u8) -> i32;
-    pub fn glGetAttribLocation(p: GLhandle, name: *const u8) -> i32;
+    pub fn glGetUniformLocation(p: GLhandle, name: *const c_char) -> i32;
+    pub fn glGetAttribLocation(p: GLhandle, name: *const c_char) -> i32;
     pub fn glUniform1i(loc: i32, v: i32);
     pub fn glUniform1f(loc: i32, v: f32);
     pub fn glUniform2f(loc: i32, x: f32, y: f32);

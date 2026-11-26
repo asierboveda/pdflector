@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use android_activity::AndroidApp;
+use crate::android_activity::AndroidApp;
 use jni::ids::JMethodID;
 use jni::objects::{Global, JObject, JValue};
 use jni::signature::{Primitive, ReturnType};

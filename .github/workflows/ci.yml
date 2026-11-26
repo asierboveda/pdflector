@@ -20,6 +20,13 @@ jobs:
           /tmp/corpus-venv/bin/pip install --quiet pillow reportlab
           /tmp/corpus-venv/bin/python tools/generate_corpus.py
           cargo test -p pdf_core
+      # pdf_android fuera de Android: las crates Android-only van tras
+      # cfg(target_os = "android") y src/host/ las sustituye, así sus tests
+      # puros (gestos, tinta, tema/contraste...) corren aquí y no solo compilan.
+      - name: test pdf_android (host)
+        run: |
+          echo "placeholder" > crates/pdf_android/google_key.txt
+          cargo test -p pdf_android --lib
       - name: test python tools
         run: |
           python3 -m unittest discover -s tools/tests

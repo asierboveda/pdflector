@@ -23,8 +23,8 @@ pub(crate) fn find_arxiv_in_library<'a>(
         .iter()
         .find(|b| pdf_core::matches_arxiv_id(&b.name, arxiv_id))
 }
+use crate::android_activity::AndroidApp;
 use crate::persist::{self, PaperMeta};
-use android_activity::AndroidApp;
 use log::{error, info, warn};
 use pdf_core::arxiv::ArxivEntry;
 use pdf_core::engine::mupdf::MupdfEngine;

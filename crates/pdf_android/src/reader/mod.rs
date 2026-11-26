@@ -20,8 +20,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use android_activity::AndroidApp;
-use android_activity::ndk::native_window::NativeWindow;
+use crate::android_activity::AndroidApp;
+use crate::android_activity::ndk::native_window::NativeWindow;
 use pdf_core::engine::mupdf::MupdfDocument;
 use pdf_core::folder_sync::ImportedDocument;
 use pdf_core::{AnnotationSet, Bitmap, Color, PageTextCache};

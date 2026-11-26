@@ -8,9 +8,9 @@
 
 use super::motion::{PenButtons, handle_motion};
 use super::stylus::{feed_stylus_history, is_stylus_tool, normalize_pressure};
+use crate::android_activity::input::{InputEvent, MotionAction};
+use crate::android_activity::{AndroidApp, InputStatus};
 use crate::reader::Reader;
-use android_activity::input::{InputEvent, MotionAction};
-use android_activity::{AndroidApp, InputStatus};
 use log::warn;
 
 /// Input multitáctil: tap (1 dedo, página anterior/siguiente o sheet), pull
@@ -56,8 +56,8 @@ pub(crate) fn handle_input(app: &AndroidApp, reader: &mut Reader) {
                 let stylus = motion.pointers().any(|p| {
                     matches!(
                         p.tool_type(),
-                        android_activity::input::ToolType::Stylus
-                            | android_activity::input::ToolType::Eraser
+                        crate::android_activity::input::ToolType::Stylus
+                            | crate::android_activity::input::ToolType::Eraser
                     )
                 });
                 let up_idx = if action == MotionAction::PointerUp {

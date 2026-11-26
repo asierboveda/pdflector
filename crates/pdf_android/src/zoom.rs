@@ -15,7 +15,7 @@
 //! en unos pocos ms (coste ~memcpy de una pantalla); al soltar, tras el
 //! re-render, el factor es 1.0 y el blit es 1:1 nítido, sin doble zoom.
 
-use android_activity::ndk::native_window::NativeWindow;
+use crate::android_activity::ndk::native_window::NativeWindow;
 use log::warn;
 use pdf_core::Bitmap;
 

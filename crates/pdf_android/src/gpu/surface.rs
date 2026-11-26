@@ -7,8 +7,8 @@
 //! recreación por ventana (`recreate_surface`, `drop_surface*`), contadores
 //! del ciclo de vida, `clear`/`view_bg` y los helpers de FBO
 //! (`create/destroy_fbo_with_tex`) y swap interval.
-use android_activity::ndk::hardware_buffer_format::HardwareBufferFormat;
-use android_activity::ndk::native_window::NativeWindow;
+use crate::android_activity::ndk::hardware_buffer_format::HardwareBufferFormat;
+use crate::android_activity::ndk::native_window::NativeWindow;
 use log::{info, warn};
 
 use crate::reader::Reader;
@@ -125,7 +125,7 @@ pub(crate) struct Gpu {
 impl Gpu {
     /// Crea display + contexto (una vez por proceso) y la surface para `win`.
     pub(crate) unsafe fn new(
-        win: &android_activity::ndk::native_window::NativeWindow,
+        win: &crate::android_activity::ndk::native_window::NativeWindow,
     ) -> Option<Self> {
         unsafe {
             Self::create_display()
@@ -179,7 +179,7 @@ impl Gpu {
         dpy: gl::EGLDisplay,
         cfg: gl::EGLConfig,
         ctx: gl::EGLContext,
-        win: &android_activity::ndk::native_window::NativeWindow,
+        win: &crate::android_activity::ndk::native_window::NativeWindow,
     ) -> Option<Self> {
         unsafe {
             let surf =

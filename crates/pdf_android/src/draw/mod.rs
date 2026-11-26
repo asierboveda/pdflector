@@ -18,8 +18,11 @@
 //! Los paths `crate::draw::X` del código previo se conservan con los
 //! re-exports de abajo (consumidores: `reader`, `input`, `zoom`, `gpu`).
 
+#[cfg(target_os = "android")]
 use jni::objects::JValue;
+#[cfg(target_os = "android")]
 use jni::{JavaVM, jni_sig, jni_str};
+#[cfg(target_os = "android")]
 use log::error;
 use pdf_core::Bitmap;
 
@@ -462,9 +465,24 @@ fn jni_text_bitmap(
     jni_canvas_bitmap(w, h, bg, rects, &[], texts)
 }
 
+/// En host (tests en Linux) no hay `android.graphics.Canvas`: sin bitmap, como
+/// cuando la llamada JNI falla en Android; los llamadores ya lo toleran.
+#[cfg(not(target_os = "android"))]
+fn jni_canvas_bitmap(
+    _w: i32,
+    _h: i32,
+    _bg: u32,
+    _rects: &[CanvasRect],
+    _lines: &[CanvasLine],
+    _texts: &[CanvasText],
+) -> Option<Bitmap> {
+    None
+}
+
 /// Como `jni_text_bitmap`, con segmentos antialiasados de extremos
 /// redondeados entre los rectángulos y los textos. Orden de dibujo: fondo →
 /// rects → líneas → textos.
+#[cfg(target_os = "android")]
 fn jni_canvas_bitmap(
     w: i32,
     h: i32,

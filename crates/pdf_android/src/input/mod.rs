@@ -57,10 +57,12 @@ mod gestos;
 mod motion;
 // Bucle de eventos (`handle_input`): drena `input_events_iter()` y despacha a
 // `motion`, drenando antes el history del stylus (USI).
+#[cfg(target_os = "android")]
 mod dispatch;
 // Bloque stylus USI 2.0: history 240 Hz del lápiz, timestamps y presión.
 mod stylus;
 
+#[cfg(target_os = "android")]
 pub(crate) use dispatch::handle_input;
 pub(crate) use gestos::GestureState;
 pub(crate) use motion::tick_gestures;

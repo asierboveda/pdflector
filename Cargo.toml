@@ -4,9 +4,10 @@
 [workspace]
 resolver = "2"
 members = ["crates/pdf_core", "crates/pdf_app", "crates/pdf_bench", "crates/pdf_android"]
-# pdf_android es Android-only (android-activity aborta en host): queda fuera de
-# los comandos sin -p (build/clippy/test en la raíz) y se compila solo con
-# --target aarch64-linux-android -p pdf_android.
+# pdf_android es la app Android: queda fuera de los comandos sin -p
+# (build/clippy/test en la raíz) y se compila con
+# --target aarch64-linux-android -p pdf_android. Sus tests puros corren en host
+# con `cargo test -p pdf_android --lib` (sustitutos en crates/pdf_android/src/host/).
 default-members = ["crates/pdf_core", "crates/pdf_app", "crates/pdf_bench"]
 
 [workspace.package]
