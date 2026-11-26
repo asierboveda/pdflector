@@ -71,6 +71,10 @@ struct ActorState {
     flush_requested: bool,
     last_save_enqueued: Option<Instant>,
     stopped: bool,
+    /// Solo tests: retraso artificial antes de cada guardado SQLite local, para
+    /// simular un runner de CI lento (fsync/SQLite lentos) de forma determinista.
+    #[cfg(test)]
+    test_slow_local_save: Duration,
 }
 
 pub(crate) enum FolderSyncEvent {
@@ -601,6 +605,15 @@ fn save_job(
 
     persist_job_and_queue(journal, shared, &job)
         .map_err(|e| format!("Cannot persist pending annotations: {e}"))?;
+    #[cfg(test)]
+    {
+        let delay = shared
+            .0
+            .lock()
+            .map(|state| state.test_slow_local_save)
+            .unwrap_or_default();
+        thread::sleep(delay);
+    }
     let store =
         AnnotationStore::open(&job.sidecar).map_err(|e| format!("Cannot open annotations: {e}"))?;
     store
@@ -878,6 +891,17 @@ mod tests {
     use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::time::{Duration, Instant};
 
+    /// Retraso por guardado SQLite local que simula un runner de CI lento (las
+    /// ejecuciones 204, 206, 210, 211 y 212 fallaron por tiempos así).
+    const SLOW_MACHINE_LOCAL_SAVE: Duration = Duration::from_millis(1500);
+
+    /// Hace que cada guardado SQLite local del actor tarde
+    /// `SLOW_MACHINE_LOCAL_SAVE`, como en una máquina lenta. Debe llamarse antes
+    /// del primer `save`.
+    fn simulate_slow_machine(worker: &FolderSyncWorker) {
+        worker.shared.0.lock().unwrap().test_slow_local_save = SLOW_MACHINE_LOCAL_SAVE;
+    }
+
     #[test]
     fn folder_sync_is_disabled_when_configuration_is_missing_or_incomplete() {
         assert!(!FolderSyncConfig::default().is_active());
@@ -964,6 +988,7 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         let worker = FolderSyncWorker::start(base.clone(), FolderSyncConfig::default());
+        simulate_slow_machine(&worker);
         let pdf_path = base.join("book.pdf");
         let sidecar = base.join("book.db");
         let mut final_set = AnnotationSet::new();
@@ -1161,6 +1186,7 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
         let worker = FolderSyncWorker::start(base.clone(), FolderSyncConfig::default());
+        simulate_slow_machine(&worker);
 
         let mut note_a = AnnotationSet::new();
         note_a.add(
