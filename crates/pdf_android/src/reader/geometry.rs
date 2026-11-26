@@ -104,6 +104,28 @@ impl PageScreenTransform {
         })
     }
 
+    /// Transformación que coloca la caja visible de la página EXACTAMENTE
+    /// en el rect de pantalla `rect` (l, t, r, b): la usa el modo Scroll,
+    /// donde cada página de la columna tiene su propio rect. None si el
+    /// rect o la página son degenerados.
+    pub(crate) fn from_screen_rect(
+        geometry: pdf_core::engine::PageGeometry,
+        rect: (f32, f32, f32, f32),
+    ) -> Option<Self> {
+        let _ = (geometry, rect);
+        None
+    }
+
+    /// Quad del bitmap residente de esta página (render full `full_w` px de
+    /// ancho, recorte con origen `crop_x/crop_y`): (escala de dibujo del
+    /// bitmap, x, y) de su esquina superior izquierda en pantalla. Sirve
+    /// para bitmaps a CUALQUIER escala de render (el modo Scroll dibuja
+    /// páginas renderizadas a zooms distintos).
+    pub(crate) fn bitmap_quad(self, full_w: u32, crop_x: u32, crop_y: u32) -> (f32, f32, f32) {
+        let _ = (full_w, crop_x, crop_y);
+        (1.0, 0.0, 0.0)
+    }
+
     pub(crate) fn scale(self) -> f32 {
         self.scale
     }
@@ -1172,6 +1194,38 @@ mod page_screen_transform_tests {
             .unwrap();
 
         assert_eq!(pixels, (60.0, 20.0, 160.0, 120.0));
+    }
+
+    #[test]
+    fn transform_from_screen_rect_places_the_page_in_that_rect() {
+        let rect = (100.0, -250.0, 700.0, 550.0); // 600×800 = 2× la caja 300×400
+        let t = PageScreenTransform::from_screen_rect(shifted_geometry(), rect).unwrap();
+        assert_eq!(t.page_screen_rect(), rect);
+        assert_eq!(t.scale(), 2.0);
+        assert_eq!(t.page_to_screen(24.0, 48.0), (100.0, -250.0));
+        let back = t.screen_to_page(400.0, 150.0);
+        assert_eq!(back, (174.0, 248.0));
+        assert!(
+            PageScreenTransform::from_screen_rect(shifted_geometry(), (0.0, 0.0, 0.0, 10.0))
+                .is_none()
+        );
+        assert!(
+            PageScreenTransform::from_screen_rect(shifted_geometry(), (0.0, 0.0, f32::NAN, 1.0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bitmap_quad_scales_any_render_resolution_onto_the_page_rect() {
+        let rect = (100.0, -250.0, 700.0, 550.0);
+        let t = PageScreenTransform::from_screen_rect(shifted_geometry(), rect).unwrap();
+        // Render a la misma escala que la pantalla: 1:1 en el origen.
+        assert_eq!(t.bitmap_quad(600, 0, 0), (1.0, 100.0, -250.0));
+        // Render a la mitad (zoom viejo): se estira 2× sin moverse.
+        assert_eq!(t.bitmap_quad(300, 0, 0), (2.0, 100.0, -250.0));
+        // Recorte: el origen del crop se desplaza a su sitio en pantalla.
+        assert_eq!(t.bitmap_quad(300, 10, 20), (2.0, 120.0, -210.0));
+        assert_eq!(t.bitmap_quad(0, 0, 0).0, 1.0); // degenerado: sin escala
     }
 
     #[test]
