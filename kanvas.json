@@ -476,7 +476,7 @@
     {
       "id": "PR-03",
       "title": "Display-list memory cap & 120 Hz profiling on TCL 9469X",
-      "state": "doing",
+      "state": "review",
       "group": "PR",
       "deps": ["IN-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -492,6 +492,11 @@
           "at": "2026-11-26T20:16:12Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works test-first in its own worktree; orchestrator verifies every RED/GREEN pair, merges behind the test gate, checks CI (incl. Android) before main moves. Device checks are for the human."
+        },
+        {
+          "at": "2026-11-26T20:28:00Z",
+          "by": "claude-code",
+          "text": "MuPDF's cached page data (\"display lists\") now has a memory cap instead of growing with every page you visit: at most 16 pages / ~24 MB per open document, least-recently-used dropped first, never a page being drawn.\n- MuPDF can't report a list's real size, so it's estimated from the page's stored content and image sizes (errs high). Calibrate it on the tablet (below).\n- Counters in logcat: `adb logcat | grep dlcache` shows entries, bytes, peak, hits, misses, evictions after each render batch.\n- TDD verified by the orchestrator: test commit fails (14 failures), implementation passes (107 pdf_core lib tests; all pdf_core suites incl. the 9 real-MuPDF page-cache tests; 169 Android tests; all clippy + fmt clean). One of the new tests was corrected in the impl commit: it expected an over-budget page to be dropped, contradicting the documented rule (that rule has its own test); the \"never over budget\" check stays strict.\n- Not covered: MuPDF's own decoded-image cache (default 256 MB) is separate and still uncapped; worth a look if PSS stays high on scanned PDFs.\nOn the tablet (needs adb):\n1. Scroll a 100+ page (ideally scanned) PDF end to end in Continuo: entries ≤ 16, bytes ≤ ~24 MB, evictions grow\n2. `adb shell dumpsys meminfo <package>`: PSS plateaus instead of growing\n3. Scrolling back within ~16 pages and pinch-zoom stay smooth (hits rise)\n4. Frame time no worse than before on a page-turn-heavy session"
         }
       ],
       "started": {
