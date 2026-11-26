@@ -51,6 +51,7 @@ mod navigation;
 mod pinch;
 mod recorte;
 mod redraw;
+mod scroll;
 mod seleccion;
 mod sheet_chrome;
 mod tick;
@@ -62,6 +63,7 @@ mod tools;
 use geometry::PageGeometryCache;
 use pinch::PinchAnchor;
 use redraw::{RenderWorker, WorkerMsg};
+pub(crate) use scroll::ReadingMode;
 
 // API geométrica compartida del crate (paths `crate::reader::*` que consumen
 // `draw`/`input`; el resto de la geometría sigue siendo `reader::geometry`).

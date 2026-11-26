@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::annotations::{DEFAULT_INK_COLOR, PenMode, STROKE_WIDTH_PT};
 use crate::draw::ToolbarDock;
+use crate::reader::ReadingMode;
 
 /// Máximo de entradas de la lista de recientes (los últimos PDFs abiertos).
 pub(crate) const RECENTS_MAX: usize = 10;
@@ -89,6 +90,15 @@ pub(crate) struct BookProgress {
     pub(crate) last_read_unix: i64,
     /// Unix timestamp (segundos) de cuando se añadió a la biblioteca.
     pub(crate) added_unix: i64,
+    /// Modo de lectura de ESTE documento (Tap / Scroll, PR-01).
+    /// `#[serde(default)]` = compat con `library.json` viejo → Tap.
+    #[serde(default)]
+    pub(crate) reading_mode: ReadingMode,
+    /// Posición fina en modo Scroll: desplazamiento respecto al borde
+    /// superior de `page`, en unidades de página (p. ej. 0.25 = un cuarto
+    /// de hoja más abajo). La posición continua es `page + scroll_frac`.
+    #[serde(default)]
+    pub(crate) scroll_frac: f32,
 }
 
 impl BookProgress {
@@ -189,9 +199,31 @@ pub(crate) fn touch_progress(
             page_count,
             last_read_unix: now,
             added_unix: now,
+            reading_mode: ReadingMode::Tap,
+            scroll_frac: 0.0,
         });
     }
     out
+}
+
+/// Fija el modo de lectura y la posición fina (`scroll_frac`) del registro
+/// de `path`. Devuelve la lista NUEVA (sin tocar disco); sin registro no
+/// hace nada (el registro lo crea `touch_progress`).
+pub(crate) fn set_reading_view(
+    books: &[BookProgress],
+    path: &str,
+    mode: ReadingMode,
+    scroll_frac: f32,
+) -> Vec<BookProgress> {
+    let _ = (path, mode, scroll_frac);
+    books.to_vec()
+}
+
+/// Modo de lectura y posición fina guardados de `path` (Tap / 0 si no hay
+/// registro).
+pub(crate) fn reading_view_for(books: &[BookProgress], path: &str) -> (ReadingMode, f32) {
+    let _ = (books, path);
+    (ReadingMode::Scroll, 1.0)
 }
 
 fn default_ink_width() -> f32 {
@@ -645,6 +677,8 @@ mod tests {
             page_count: 100,
             last_read_unix: 1,
             added_unix: 1,
+            reading_mode: ReadingMode::Tap,
+            scroll_frac: 0.0,
         };
         assert!((b.pct() - 0.5).abs() < 1e-6);
         assert!(!b.is_finished());
@@ -659,6 +693,63 @@ mod tests {
         };
         assert_eq!(empty.pct(), 0.0);
         assert!(!empty.is_finished());
+    }
+
+    #[test]
+    fn library_json_without_reading_fields_defaults_to_tap() {
+        // Registro escrito por versiones anteriores a PR-01 (sin modo).
+        let old = r#"[{ "path": "/x/a.pdf", "page": 7, "page_count": 20,
+                        "last_read_unix": 5, "added_unix": 1 }]"#;
+        let books: Vec<BookProgress> = serde_json::from_str(old).unwrap();
+        assert_eq!(books[0].reading_mode, ReadingMode::Tap);
+        assert_eq!(books[0].scroll_frac, 0.0);
+        assert_eq!(
+            reading_view_for(&books, "/x/a.pdf"),
+            (ReadingMode::Tap, 0.0)
+        );
+    }
+
+    #[test]
+    fn reading_view_is_per_document_and_round_trips() {
+        let books = touch_progress(&[], "/x/a.pdf", 3, 10, 1);
+        let books = touch_progress(&books, "/x/b.pdf", 4, 10, 1);
+        let books = set_reading_view(&books, "/x/b.pdf", ReadingMode::Scroll, 0.25);
+        assert_eq!(
+            reading_view_for(&books, "/x/a.pdf"),
+            (ReadingMode::Tap, 0.0)
+        );
+        assert_eq!(
+            reading_view_for(&books, "/x/b.pdf"),
+            (ReadingMode::Scroll, 0.25)
+        );
+        // Sin registro: Tap en el inicio de la página.
+        assert_eq!(
+            reading_view_for(&books, "/x/c.pdf"),
+            (ReadingMode::Tap, 0.0)
+        );
+        // El modo sobrevive al JSON y a un nuevo `touch_progress`.
+        let text = serde_json::to_string(&books).unwrap();
+        let back: Vec<BookProgress> = serde_json::from_str(&text).unwrap();
+        let back = touch_progress(&back, "/x/b.pdf", 5, 10, 2);
+        assert_eq!(
+            reading_view_for(&back, "/x/b.pdf"),
+            (ReadingMode::Scroll, 0.25)
+        );
+    }
+
+    #[test]
+    fn reading_view_survives_a_real_save_and_load() {
+        let dir = std::env::temp_dir().join(format!("pr01-view-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let books = touch_progress(&[], "/x/a.pdf", 2, 9, 1);
+        let books = set_reading_view(&books, "/x/a.pdf", ReadingMode::Scroll, -0.5);
+        save_progress(Some(&dir), &books);
+        let loaded = load_progress(Some(&dir));
+        assert_eq!(
+            reading_view_for(&loaded, "/x/a.pdf"),
+            (ReadingMode::Scroll, -0.5)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
