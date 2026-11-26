@@ -18,8 +18,9 @@ pub(crate) const RETRY_MAX: Duration = Duration::from_secs(30);
 
 /// Espera antes de reintentar una hoja que lleva `failures` fallos
 /// seguidos (≥ 1).
-pub(crate) fn retry_delay(_failures: u32) -> Duration {
-    Duration::ZERO
+pub(crate) fn retry_delay(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    RETRY_BASE.saturating_mul(1 << doublings).min(RETRY_MAX)
 }
 
 /// Qué pinta la columna en la ranura de una hoja visible.
@@ -34,8 +35,12 @@ pub(crate) enum SlotDraw {
 }
 
 /// Decide qué pintar en la ranura de una hoja.
-pub(crate) fn slot_draw(_cached: bool, _failed: bool) -> SlotDraw {
-    SlotDraw::Blank
+pub(crate) fn slot_draw(cached: bool, failed: bool) -> SlotDraw {
+    match (cached, failed) {
+        (true, _) => SlotDraw::Bitmap,
+        (false, true) => SlotDraw::Error,
+        (false, false) => SlotDraw::Blank,
+    }
 }
 
 /// Registro de fallos por página: (fallos seguidos, próximo reintento).
@@ -46,23 +51,34 @@ pub(crate) struct RenderFailures {
 
 impl RenderFailures {
     /// El render de `page` falló en `now`.
-    pub(crate) fn fail(&mut self, _page: u32, _now: Instant) {}
+    pub(crate) fn fail(&mut self, page: u32, now: Instant) {
+        let failures = self
+            .pages
+            .get(&page)
+            .map_or(0, |&(n, _)| n)
+            .saturating_add(1);
+        self.pages
+            .insert(page, (failures, now + retry_delay(failures)));
+    }
 
     /// El render de `page` llegó bien: olvida sus fallos.
-    pub(crate) fn succeed(&mut self, _page: u32) {}
+    pub(crate) fn succeed(&mut self, page: u32) {
+        self.pages.remove(&page);
+    }
 
     /// ¿Está `page` en error (último render fallido)?
-    pub(crate) fn is_failed(&self, _page: u32) -> bool {
-        false
+    pub(crate) fn is_failed(&self, page: u32) -> bool {
+        self.pages.contains_key(&page)
     }
 
     /// ¿Se puede volver a pedir `page` en `now`?
-    pub(crate) fn can_request(&self, _page: u32, _now: Instant) -> bool {
-        true
+    pub(crate) fn can_request(&self, page: u32, now: Instant) -> bool {
+        self.pages.get(&page).is_none_or(|&(_, at)| now >= at)
     }
 
     /// Filtra un plan de render: quita las hojas aún en espera.
-    pub(crate) fn requestable(&self, plan: Vec<u32>, _now: Instant) -> Vec<u32> {
+    pub(crate) fn requestable(&self, mut plan: Vec<u32>, now: Instant) -> Vec<u32> {
+        plan.retain(|&p| self.can_request(p, now));
         plan
     }
 
