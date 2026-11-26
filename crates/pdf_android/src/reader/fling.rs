@@ -97,7 +97,9 @@ impl Fling {
         })
     }
 
-    /// Velocidad actual (px/s).
+    /// Velocidad actual (px/s). Solo la leen los tests: la app solo avanza
+    /// la inercia (`step`), así que en el build real no se compila.
+    #[cfg(test)]
     pub(crate) fn velocity(&self) -> f32 {
         self.v
     }
