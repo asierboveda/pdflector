@@ -27,6 +27,7 @@ use super::redraw::budget_render_scale;
 use crate::cache::{CACHE_BYTE_BUDGET, CACHE_MAX_ENTRIES};
 use crate::view::{initial_scale_with_margin, viewport_margin_px};
 use pdf_core::Document;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Modo de lectura del visor (por documento, persistido en `library.json`).
@@ -47,7 +48,7 @@ pub(crate) enum ReadingMode {
 /// vertical `off` (px) es la distancia desde el inicio de la columna al
 /// borde superior de la ventana. Una página más alta que la ranura (PDF de
 /// tamaños mixtos) se reduce para caber en ella; una más baja se centra.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ScrollLayout {
     pub(crate) win_w: f32,
     pub(crate) win_h: f32,
@@ -62,6 +63,8 @@ pub(crate) struct ScrollLayout {
     pub(crate) zoom: f32,
     /// Número de páginas del documento.
     pub(crate) pages: u32,
+    /// Tamaño (px a zoom 1, contain) de cada página ya conocida (PR-04).
+    pub(crate) sizes: Arc<[Option<(f32, f32)>]>,
 }
 
 impl ScrollLayout {
@@ -236,6 +239,17 @@ pub(crate) fn anchor_zoom(
     (off1, pan1)
 }
 
+/// Offset que mantiene fija en pantalla la página `page` cuando el layout
+/// cambia de `old` a `new` (p. ej. llega el tamaño real de otra hoja).
+pub(crate) fn reanchor_offset(
+    _old: &ScrollLayout,
+    _new: &ScrollLayout,
+    off: f32,
+    _page: u32,
+) -> f32 {
+    off
+}
+
 /// ¿El bitmap residente (renderizado a `entry_zoom`) está obsoleto frente
 /// al zoom que el worker produciría ahora (`expected_zoom`)? Tolerancia del
 /// 5% (el redondeo a píxeles enteros del render no cuenta como cambio).
@@ -350,6 +364,7 @@ impl Reader {
             ref_h: ph * fit,
             zoom,
             pages,
+            sizes: Arc::from(Vec::new()),
         })
     }
 
@@ -629,6 +644,24 @@ mod tests {
             ref_h: 1640.0,
             zoom,
             pages: 10,
+            sizes: Arc::from(Vec::new()),
+        }
+    }
+
+    const A4: (f32, f32) = (1160.0, 1640.0);
+    const LAND: (f32, f32) = (1160.0, 820.0);
+
+    /// Columna de tamaños MIXTOS (PR-04): 0 A4, 1 apaisada, 2 aún sin
+    /// tamaño (provisional = referencia A4), 3 A4.
+    fn mixed(zoom: f32) -> ScrollLayout {
+        with_sizes(zoom, &[Some(A4), Some(LAND), None, Some(A4)])
+    }
+
+    fn with_sizes(zoom: f32, sizes: &[Option<(f32, f32)>]) -> ScrollLayout {
+        ScrollLayout {
+            pages: sizes.len() as u32,
+            sizes: Arc::from(sizes.to_vec()),
+            ..tablet(zoom)
         }
     }
 
@@ -806,5 +839,91 @@ mod tests {
         let (pages, rz) = render_plan(&z, 400.0, 0, 48 * MIB, 5);
         assert_eq!(pages, vec![0]);
         assert!(close(rz, 2.0));
+    }
+
+    #[test]
+    fn mixed_pages_get_their_own_slot_heights() {
+        let l = mixed(1.0);
+        // Pitches 1660, 840 (apaisada), 1660 (provisional), 1660.
+        assert!(close(
+            l.content_h(),
+            40.0 + 1660.0 + 840.0 + 1660.0 + 1660.0 - 20.0
+        ));
+        let r1 = l.page_rect(1, LAND, 0.0, 0.0);
+        assert!(close(r1.1, 20.0 + 1660.0), "{r1:?}"); // sin centrar en 1640
+        assert!(close(r1.3 - r1.1, 820.0) && close(r1.2 - r1.0, 1160.0));
+        let r2 = l.page_rect(2, A4, 0.0, 0.0);
+        assert!(close(r2.1, 20.0 + 1660.0 + 840.0), "{r2:?}");
+        let r3 = l.page_rect(3, A4, 0.0, 0.0);
+        assert!(close(r3.1, 20.0 + 1660.0 + 840.0 + 1660.0), "{r3:?}");
+        // A zoom 2 cada ranura escala con su página; el hueco no.
+        let z = mixed(2.0);
+        let z1 = z.page_rect(1, LAND, 0.0, 0.0);
+        assert!(close(z1.1, 20.0 + 3300.0) && close(z1.3 - z1.1, 1640.0));
+        let z3 = z.page_rect(3, A4, 0.0, 0.0);
+        assert!(close(z3.1, 20.0 + 3300.0 + 1660.0 + 3300.0), "{z3:?}");
+    }
+
+    #[test]
+    fn visible_current_and_hit_pages_follow_mixed_heights() {
+        let l = mixed(1.0);
+        assert_eq!(l.visible_pages(0.0), Some((0, 1)));
+        // off 1500: hoja 0 asoma 160 px, la apaisada 820, la 2 980.
+        assert_eq!(l.visible_pages(1500.0), Some((0, 2)));
+        assert_eq!(l.current_page(1500.0), 2);
+        assert_eq!(l.page_at_y(1700.0, 0.0), Some(1));
+        assert_eq!(l.page_at_y(2510.0, 0.0), None); // hueco tras la apaisada
+        assert_eq!(l.page_at_y(2600.0, 0.0), Some(2));
+    }
+
+    #[test]
+    fn positions_round_trip_through_mixed_heights() {
+        let l = mixed(1.0);
+        assert!(close(l.offset_for_pos(1.5), 1660.0 + 420.0));
+        assert!(close(l.pos_for_offset(1660.0 + 420.0), 1.5));
+        assert!(close(l.offset_for_pos(2.0), 2500.0));
+        assert!(close(l.pos_for_offset(2500.0 + 830.0), 2.5));
+        let max = l.content_h() - 2000.0;
+        assert!(close(l.offset_for_pos(3.0), max));
+        // Reanudar (página, frac) guardados cae en el mismo punto.
+        let pos = resume_scroll_pos(1, scroll_frac_for(1.5, 1));
+        assert!(close(l.offset_for_pos(pos), 2080.0));
+    }
+
+    #[test]
+    fn learning_a_page_size_keeps_the_current_page_anchored() {
+        // La hoja 0 aún no se conoce (provisional 1640); la actual es la 2.
+        let old = with_sizes(1.0, &[None, Some(A4), Some(A4), Some(A4), Some(A4)]);
+        let off = 3320.0;
+        assert_eq!(old.current_page(off), 2);
+        let before = old.page_rect(2, A4, off, 0.0);
+        // Llega la hoja 0: es apaisada → todo lo de debajo sube 820 px.
+        let new = with_sizes(1.0, &[Some(LAND), Some(A4), Some(A4), Some(A4), Some(A4)]);
+        // Sin reanclar, la hoja actual saltaría 820 px hacia arriba.
+        assert!(close(new.page_rect(2, A4, off, 0.0).1, before.1 - 820.0));
+        let off1 = reanchor_offset(&old, &new, off, 2);
+        let after = new.page_rect(2, A4, off1, 0.0);
+        assert!(close(before.1, after.1), "{before:?} → {after:?}");
+        assert_eq!(new.current_page(off1), 2);
+        // Un cambio POR DEBAJO de la actual no mueve la vista.
+        let below = with_sizes(1.0, &[None, Some(A4), Some(A4), Some(A4), Some(LAND)]);
+        assert!(close(reanchor_offset(&old, &below, off, 2), off));
+    }
+
+    #[test]
+    fn pinch_anchor_uses_each_page_height() {
+        let (a, b) = (mixed(1.0), mixed(2.0));
+        // y=1000 con la apaisada arriba: 140 px dentro de la hoja 2.
+        let (off, _) = anchor_zoom(&a, &b, (600.0, 1000.0), 1660.0, 0.0);
+        assert!(close(off, 3300.0 + 1700.0 + 280.0 + 20.0 - 1000.0), "{off}");
+    }
+
+    #[test]
+    fn render_plan_budgets_each_page_by_its_own_size() {
+        // Apaisadas a zoom 2: ~14,5 MiB por hoja, dos visibles caben en 48.
+        let l = with_sizes(2.0, &[Some(LAND); 10]);
+        let (pages, rz) = render_plan(&l, 0.0, 0, 48 * MIB, 5);
+        assert_eq!(&pages[..2], &[0, 1]);
+        assert!(close(rz, 2.0), "{rz}");
     }
 }
