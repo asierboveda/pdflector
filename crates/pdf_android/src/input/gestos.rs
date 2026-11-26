@@ -13,7 +13,7 @@ use crate::android_activity::AndroidApp;
 use crate::annotations::ToolKind;
 use crate::draw::{sheet_buttons, viewer_top_chrome_buttons};
 use crate::reader::{
-    Reader, page_badge_rect, sheet_h, viewer_bottom_chrome_h, viewer_top_chrome_h,
+    Reader, ReadingMode, page_badge_rect, sheet_h, viewer_bottom_chrome_h, viewer_top_chrome_h,
 };
 use std::time::Instant;
 
@@ -157,6 +157,23 @@ impl GestureState {
             press_at: None,
         }
     }
+}
+
+/// Acción de un tap simple sobre la página.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PageTap {
+    Prev,
+    Next,
+    Chrome,
+}
+
+/// Acción del tap sobre la página según el modo de lectura: en Tap, tercio
+/// izquierdo → anterior, derecho → siguiente, central → chrome; en Scroll
+/// no hay pase de página por tap (se navega arrastrando): todo tap
+/// alterna el chrome.
+pub(crate) fn page_tap_action(mode: ReadingMode, x: f32, win_w: f32) -> PageTap {
+    let _ = (mode, x, win_w);
+    PageTap::Next
 }
 
 /// Tap simple: tercio izquierdo → página anterior; tercio derecho → página siguiente;
@@ -303,5 +320,26 @@ pub(crate) fn fire_tap_action(reader: &mut Reader, app: &AndroidApp, x: f32, y: 
         // Indicador de página: siguiente (consumido).
     } else {
         tap_page(reader, x);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tap_mode_keeps_the_three_thirds() {
+        let w = 1200.0;
+        assert_eq!(page_tap_action(ReadingMode::Tap, 100.0, w), PageTap::Prev);
+        assert_eq!(page_tap_action(ReadingMode::Tap, 600.0, w), PageTap::Chrome);
+        assert_eq!(page_tap_action(ReadingMode::Tap, 1100.0, w), PageTap::Next);
+    }
+
+    #[test]
+    fn scroll_mode_taps_never_turn_pages() {
+        let w = 1200.0;
+        for x in [0.0, 100.0, 600.0, 1100.0, 1199.0] {
+            assert_eq!(page_tap_action(ReadingMode::Scroll, x, w), PageTap::Chrome);
+        }
     }
 }

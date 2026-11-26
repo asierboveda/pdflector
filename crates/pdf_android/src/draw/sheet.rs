@@ -23,6 +23,11 @@ pub(crate) fn sheet_buttons(
     win_w: f32,
     win_h: f32,
 ) -> Vec<(&'static str, ButtonRect)> {
+    sheet_layout(win_w, win_h)
+}
+
+/// Layout PURO del sheet (fuente única de dibujo e hit-test, sin `Reader`).
+pub(crate) fn sheet_layout(win_w: f32, win_h: f32) -> Vec<(&'static str, ButtonRect)> {
     let pad = sheet_pad(win_w as i32);
     let bh = sheet_btn_h(win_h as i32);
     let mut out = Vec::with_capacity(10);
@@ -320,4 +325,33 @@ pub(crate) fn render_sheet(reader: &Reader) -> Option<Bitmap> {
     }
 
     jni_text_bitmap(w, h, theme::TRANSPARENT, &rects, &texts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn overlap(a: ButtonRect, b: ButtonRect) -> bool {
+        a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+    }
+
+    #[test]
+    fn sheet_has_a_tap_scroll_toggle_that_fits_without_overlaps() {
+        for (w, h) in [(1200.0, 2000.0), (2000.0, 1200.0), (800.0, 1280.0)] {
+            let layout = sheet_layout(w, h);
+            let labels: Vec<&str> = layout.iter().map(|(l, _)| *l).collect();
+            assert!(labels.contains(&"Mode:Tap"), "{labels:?}");
+            assert!(labels.contains(&"Mode:Scroll"), "{labels:?}");
+            let sh = sheet_h(h as i32) as f32;
+            for (i, (la, ra)) in layout.iter().enumerate() {
+                assert!(
+                    ra.0 >= 0.0 && ra.2 <= w && ra.1 >= 0.0 && ra.3 <= sh,
+                    "{la} {ra:?}"
+                );
+                for (lb, rb) in layout.iter().skip(i + 1) {
+                    assert!(!overlap(*ra, *rb), "{la} {ra:?} solapa {lb} {rb:?}");
+                }
+            }
+        }
+    }
 }

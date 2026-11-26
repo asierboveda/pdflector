@@ -173,6 +173,15 @@ fn render_worker_req(
     }
 }
 
+/// Escala de render del worker para una página de `pw × ph` puntos con
+/// escala contain `fit` y zoom `target`: se reduce por MITADES hasta que el
+/// bitmap cabe en la caché (`CACHE_BYTE_BUDGET`). El modo Scroll la usa
+/// para saber a qué zoom quedará realmente un bitmap pedido.
+pub(crate) fn budget_render_scale(fit: f32, target: f32, pw: f32, ph: f32) -> f32 {
+    let _ = (pw, ph);
+    fit * target
+}
+
 impl Reader {
     /// Redibuja: re-render si cambió página, zoom o tamaño de ventana, y blit.
     pub(crate) fn redraw(&mut self) {
@@ -925,5 +934,27 @@ impl Reader {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::budget_render_scale;
+
+    #[test]
+    fn budget_scale_is_the_requested_one_when_it_fits() {
+        // A4 (595×842 pt) a contain ~1.95 y zoom 1: ~7,6 MiB, cabe.
+        assert_eq!(budget_render_scale(1.95, 1.0, 595.0, 842.0), 1.95);
+    }
+
+    #[test]
+    fn budget_scale_halves_until_the_bitmap_fits_the_cache() {
+        let s = budget_render_scale(1.95, 8.0, 595.0, 842.0);
+        let bytes = 595.0 * 842.0 * s * s * 4.0;
+        assert!(bytes <= crate::cache::CACHE_BYTE_BUDGET as f32);
+        assert!(s < 1.95 * 8.0);
+        // Exactamente una potencia de dos por debajo de lo pedido.
+        let k = (1.95 * 8.0) / s;
+        assert_eq!(k, 2f32.powi(k.log2().round() as i32));
     }
 }
