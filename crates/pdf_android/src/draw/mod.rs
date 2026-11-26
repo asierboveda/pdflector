@@ -34,6 +34,7 @@ mod menus;
 mod overlays;
 mod primitives;
 mod sheet;
+mod study;
 mod toolbar;
 pub(crate) use ai_text::{AiLine, AiLineKind, format_ai_response};
 pub(crate) use chrome::ButtonRect;

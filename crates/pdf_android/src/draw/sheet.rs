@@ -375,4 +375,27 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn sheet_has_a_study_row_with_notebook_and_key_between_nav_and_actions() {
+        for (w, h) in [(1200.0, 2000.0), (2000.0, 1200.0), (800.0, 1280.0)] {
+            let layout = sheet_layout(w, h);
+            let find = |label: &str| {
+                layout
+                    .iter()
+                    .find(|(l, _)| *l == label)
+                    .map(|(_, r)| *r)
+                    .unwrap_or_else(|| panic!("falta {label}"))
+            };
+            let nb = find("Study:Notebook");
+            let key = find("Study:Key");
+            assert_eq!(nb.1, key.1, "misma fila");
+            assert!(!overlap(nb, key));
+            let nav = find("-10");
+            let act = find("Close");
+            // Hueco para el divisor y el título de sección (≥ 40 px).
+            assert!(nb.1 >= nav.3 + 40.0, "{nav:?} {nb:?}");
+            assert!(act.1 >= nb.3 + 40.0, "{nb:?} {act:?}");
+        }
+    }
 }
