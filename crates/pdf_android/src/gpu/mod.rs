@@ -47,6 +47,7 @@ pub(crate) use page_slots::{BitmapKey, PageSlots};
 // re-exports para mantener la API pública `crate::gpu::X`.
 mod ffi;
 mod pipeline;
+mod scroll;
 mod shaders;
 mod surface;
 mod textures;

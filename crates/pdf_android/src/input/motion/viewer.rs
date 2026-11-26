@@ -70,6 +70,8 @@ pub(crate) fn tick_gestures(reader: &mut Reader, _app: &AndroidApp) {
     // evita que el panel viejo tape el nuevo rect/menú).
     reader.clear_selection();
     reader.close_ai_panel();
+    // Modo continuo: la selección es de la hoja bajo el dedo.
+    reader.scroll_focus_page_at(ay);
     reader.gesture.kind = GestureKind::Selecting { anchor: (ax, ay) };
     // Materializa el rect como PUNTO (ancla = actual): feedback visual de que
     // el long-press entró en modo selección; el rect crece al arrastrar.
@@ -261,6 +263,8 @@ pub(crate) fn handle_motion(
                     if reader.tool_gesture.is_some() {
                         return;
                     }
+                    // Modo continuo: el lápiz actúa sobre la hoja que toca.
+                    reader.scroll_focus_page_at(y);
                     let erase_btn = buttons.state.0 & PEN_BTN_ERASE.0 != 0;
                     let select_btn = buttons.state.0 & PEN_BTN_SELECT.0 != 0;
                     let tool = (!reader.toolbar_collapsed).then_some(reader.pen_mode);
@@ -444,7 +448,7 @@ pub(crate) fn handle_motion(
                         // El pull-down con el sheet cerrado se eliminó: los
                         // ajustes se abren con tap en la barra superior.
                         let pull = reader.sheet_progress > 0.0 && dy.abs() > dx.abs();
-                        match classify_tap_drag(moved, reader.zoom, pull) {
+                        match classify_tap_drag_in(reader.reading_mode, moved, reader.zoom, pull) {
                             TapDrag::PullSheet => {
                                 reader.begin_sheet_drag();
                                 reader.gesture.kind = GestureKind::Pull { start_y };

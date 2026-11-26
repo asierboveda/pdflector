@@ -67,6 +67,11 @@ impl Reader {
     /// y, cuando la página nueva NO está en caché, renderiza la página y sus
     /// vecinas inmediatas en orden direccional.
     fn goto_page(&mut self, page: u32) {
+        // Modo continuo: saltar es desplazar la columna hasta la hoja.
+        if self.is_scroll_mode() {
+            self.scroll_to_page(page);
+            return;
+        }
         let prev = self.page;
         if prev == page {
             return;
@@ -218,6 +223,18 @@ impl Reader {
                 pages,
                 now,
             );
+            // Modo de lectura y posición fina de ESTE documento (PR-01).
+            let frac = if self.is_scroll_mode() {
+                super::scroll::scroll_frac_for(self.scroll_pos, self.page)
+            } else {
+                0.0
+            };
+            self.library.lib_books = crate::persist::set_reading_view(
+                &self.library.lib_books,
+                &path,
+                self.reading_mode,
+                frac,
+            );
             crate::persist::save_progress(self.internal_dir.as_deref(), &self.library.lib_books);
         }
     }
@@ -225,7 +242,7 @@ impl Reader {
     /// Marca el estado como pendiente de persistir (A1, diferido): registra
     /// `state_dirty_since` para que `flush_state_if_due` (2 s desde `tick`)
     /// escriba sin I/O en el tap. `goto_page` es su único llamador.
-    fn mark_state_dirty(&mut self) {
+    pub(super) fn mark_state_dirty(&mut self) {
         self.state_dirty = true;
         self.state_dirty_since = Some(Instant::now());
     }
@@ -308,6 +325,11 @@ impl Reader {
                 self.doc = Some(doc);
                 self.page = page;
                 self.cache.set_protected(page);
+                // Modo de lectura del documento (por documento, PR-01): la
+                // columna espera a conocer la geometría de una hoja.
+                self.doc_path = Some(path.to_string());
+                self.scroll_ref_pts = None;
+                self.resume_scroll_at(page);
                 // Apertura/restore: NO es un turno de navegación — sin
                 // dirección de viaje previa → ventana ±1 simétrica (fase B).
                 self.last_direction = 0;

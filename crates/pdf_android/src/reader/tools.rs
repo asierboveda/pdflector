@@ -182,12 +182,20 @@ impl Reader {
     /// Pan con DEDO (herramienta activa, modo mano): devuelve el pan de
     /// partida al bajar el dedo (mismo formato que `set_pan`).
     pub(crate) fn begin_pan(&self) -> (f32, f32) {
+        if self.is_scroll_mode() {
+            return self.scroll_begin_pan();
+        }
         (self.pan_x, self.pan_y)
     }
 
     /// Fija el pan (px) del documento, clampado a los bordes de la hoja
     /// (un borde nunca entra dentro de la ventana), y marca repintado.
     pub(crate) fn set_pan(&mut self, x: f32, y: f32) {
+        if self.is_scroll_mode() {
+            // Modo continuo: y = −offset de la columna (PR-01).
+            self.scroll_set_pan(x, y);
+            return;
+        }
         let (dw, dh) = self.page_doc_size_px(self.page);
         if dw > 0.0 && dh > 0.0 {
             (self.pan_x, self.pan_y) = Self::clamped_pan(
@@ -207,7 +215,9 @@ impl Reader {
     /// pinch): suma el delta al pan actual y lo clampa a los bordes de la
     /// hoja (igual que el anclaje; sin clamp el contenido dejaría huecos).
     pub(crate) fn pan_by(&mut self, dx: f32, dy: f32) {
-        self.set_pan(self.pan_x + dx, self.pan_y + dy);
+        // `begin_pan`: en modo Scroll el eje Y es −offset de la columna.
+        let (x, y) = self.begin_pan();
+        self.set_pan(x + dx, y + dy);
     }
 
     /// ¿Debe ignorarse el táctil del dedo/palma por haber escrito hace poco con el stylus?

@@ -10,6 +10,7 @@ use log::info;
 
 use pdf_core::Bitmap;
 
+use super::BitmapKey;
 use super::ffi as gl;
 use super::surface::Gpu;
 
@@ -265,6 +266,26 @@ impl Gpu {
         }
         if let Some((_, tex)) = self.picker_plane.take() {
             self.delete_texture(tex, "picker");
+        }
+    }
+    /// Textura de la hoja `page` de la columna del modo Scroll: se sube solo
+    /// si su bitmap residente cambió (política en `PageSlots`).
+    pub(crate) fn page_slot_tex(&mut self, page: u32, b: &Bitmap) -> u32 {
+        let key: BitmapKey = (b.width, b.height, b.data.as_ptr() as usize);
+        if let Some(tex) = self.page_slots.lookup(page, key) {
+            return tex;
+        }
+        let tex = self.upload_texture(b, "page_slot");
+        for old in self.page_slots.insert(page, key, tex) {
+            self.delete_texture(old, "page_slot");
+        }
+        tex
+    }
+    /// Libera las texturas de la columna (salida del modo Scroll, cambio de
+    /// documento o surface soltada). No-op si no hay ninguna.
+    pub(crate) fn free_page_slots(&mut self) {
+        for tex in self.page_slots.drain() {
+            self.delete_texture(tex, "page_slot");
         }
     }
     /// Borra una textura standalone (overlay LRU, fade o plano) con contador

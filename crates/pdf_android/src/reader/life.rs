@@ -286,62 +286,72 @@ impl Reader {
             // se BORRA el estado y se muestra la BIBLIOTECA CURADA
             // (`internal/library.json`) — SIN escanear MediaStore.
             None => {
-                let restored =
-                    if let Some(state) = persist::load_state(reader.internal_dir.as_deref()) {
-                        if let Some(th) = state.theme {
-                            reader.theme = th;
-                            reader.dark = th.is_dark();
+                let restored = if let Some(state) =
+                    persist::load_state(reader.internal_dir.as_deref())
+                {
+                    if let Some(th) = state.theme {
+                        reader.theme = th;
+                        reader.dark = th.is_dark();
+                    } else {
+                        reader.dark = state.dark;
+                        reader.theme = if state.dark {
+                            theme::AppTheme::DefaultDark
                         } else {
-                            reader.dark = state.dark;
-                            reader.theme = if state.dark {
-                                theme::AppTheme::DefaultDark
-                            } else {
-                                theme::AppTheme::DefaultLight
-                            };
+                            theme::AppTheme::DefaultLight
+                        };
+                    }
+                    // Preferencias de la BIBLIOTECA (menús ⋯/☰, Tarea 1:
+                    // esqueleto): se restauran aunque el PDF guardado ya
+                    // no exista (caen a la biblioteca con su layout).
+                    reader.view_mode = state.view_mode;
+                    reader.cover_fit = state.cover_fit;
+                    reader.columns = state.columns;
+                    reader.hide_covers = state.hide_covers;
+                    reader.cover_size = state.cover_size;
+                    reader.cover_progress = state.cover_progress;
+                    // Solo restaurar si el PDF sigue accesible: `open_pdf`
+                    // falla si no se puede abrir (corrupto) y deja el
+                    // estado intacto.
+                    // Posición fina del modo Scroll ANTES de abrir:
+                    // `open_pdf` re-sella el registro en la página 1.
+                    let saved_view = persist::progress_for(&reader.library.lib_books, &state.path)
+                        .map(|b| (b.page, b.scroll_frac));
+                    if Path::new(&state.path).exists() && reader.open_pdf(&state.path) {
+                        let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
+                        reader.page = state.page.min(pages.saturating_sub(1));
+                        reader.cache.set_protected(reader.page);
+                        // Modo continuo: posición fina de esa página.
+                        let frac = saved_view
+                            .filter(|&(p, _)| p == reader.page)
+                            .map_or(0.0, |(_, f)| f);
+                        reader.scroll_pos = super::scroll::resume_scroll_pos(reader.page, frac);
+                        reader.zoom = state.zoom.clamp(PINCH_MIN, PINCH_MAX);
+                        reader.rendered_zoom = reader.zoom;
+                        // Modo UNA HOJA: la página restaurada se fija
+                        // directamente (no hay scroll que alinear).
+                        reader.cache.clear();
+                        reader.fallback_page = None;
+                        if let Some(g) = reader.gpu.as_mut() {
+                            let bg = reader.theme.palette().rgba_bg();
+                            g.reset_document(bg);
                         }
-                        // Preferencias de la BIBLIOTECA (menús ⋯/☰, Tarea 1:
-                        // esqueleto): se restauran aunque el PDF guardado ya
-                        // no exista (caen a la biblioteca con su layout).
-                        reader.view_mode = state.view_mode;
-                        reader.cover_fit = state.cover_fit;
-                        reader.columns = state.columns;
-                        reader.hide_covers = state.hide_covers;
-                        reader.cover_size = state.cover_size;
-                        reader.cover_progress = state.cover_progress;
-                        // Solo restaurar si el PDF sigue accesible: `open_pdf`
-                        // falla si no se puede abrir (corrupto) y deja el
-                        // estado intacto.
-                        if Path::new(&state.path).exists() && reader.open_pdf(&state.path) {
-                            let pages = reader.doc.as_ref().map(|d| d.page_count()).unwrap_or(0);
-                            reader.page = state.page.min(pages.saturating_sub(1));
-                            reader.cache.set_protected(reader.page);
-                            reader.zoom = state.zoom.clamp(PINCH_MIN, PINCH_MAX);
-                            reader.rendered_zoom = reader.zoom;
-                            // Modo UNA HOJA: la página restaurada se fija
-                            // directamente (no hay scroll que alinear).
-                            reader.cache.clear();
-                            reader.fallback_page = None;
-                            if let Some(g) = reader.gpu.as_mut() {
-                                let bg = reader.theme.palette().rgba_bg();
-                                g.reset_document(bg);
-                            }
-                            reader.page_badge = None; // indicador de la página restaurada
-                            info!(
-                                "restored {} @page {} zoom {:.3} theme {:?}",
-                                state.path,
-                                reader.page + 1,
-                                reader.zoom,
-                                reader.theme
-                            );
-                            reader.save_state();
-                            reader.redraw();
-                            true
-                        } else {
-                            false
-                        }
+                        reader.page_badge = None; // indicador de la página restaurada
+                        info!(
+                            "restored {} @page {} zoom {:.3} theme {:?}",
+                            state.path,
+                            reader.page + 1,
+                            reader.zoom,
+                            reader.theme
+                        );
+                        reader.save_state();
+                        reader.redraw();
+                        true
                     } else {
                         false
-                    };
+                    }
+                } else {
+                    false
+                };
                 if !restored {
                     // Sin estado (primer arranque) o PDF ya no accesible:
                     // limpiar el estado huérfano y mostrar la BIBLIOTECA

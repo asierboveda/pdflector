@@ -21,7 +21,7 @@ use super::shaders::{
     link,
 };
 use super::textures::OverlayTex;
-use super::{DryKey, OVL_BYTE_BUDGET, OvlBudget};
+use super::{DryKey, OVL_BYTE_BUDGET, OvlBudget, PageSlots};
 
 /// Contexto EGL + recursos GLES2 del visor, la biblioteca y el picker. La
 /// surface se destruye y recrea SOLO con la ventana (resize/InitWindow/
@@ -44,6 +44,9 @@ pub(crate) struct Gpu {
     pub(crate) page_tex_w: i32,
     pub(crate) page_tex_h: i32,
     pub(crate) page_loaded: Option<(u32, f32, u32)>,
+    /// Texturas por hoja de la columna del modo Scroll (PR-01): fuera del
+    /// LRU de overlays, misma categoría que `page_tex`.
+    pub(crate) page_slots: PageSlots,
     pub(crate) vbo_quad: u32,
     pub(crate) vbo_ink: u32,
     /// Caché de texturas de overlay claveada por id de generación (ver
@@ -298,6 +301,7 @@ impl Gpu {
                 page_tex_w: 0,
                 page_tex_h: 0,
                 page_loaded: None,
+                page_slots: PageSlots::default(),
                 vbo_quad,
                 vbo_ink,
                 ovl_cache: Vec::new(),
@@ -450,6 +454,9 @@ impl Gpu {
             // pintarse — liberarlas aquí (Tarea 2.7).
             self.free_ui_planes();
 
+            // Texturas de la columna del modo Scroll: se re-suben al volver.
+            self.free_page_slots();
+
             if let Some(s) = self.surf.take() {
                 let unbind = gl::eglMakeCurrent(
                     self.dpy,
@@ -547,6 +554,7 @@ impl Gpu {
         self.settled_ink = None;
         self.page_loaded = None;
         self.free_fade_tex();
+        self.free_page_slots(); // hojas del documento anterior
         if self.dry_fbo != 0 {
             unsafe {
                 gl::glBindFramebuffer(gl::GL_FRAMEBUFFER, self.dry_fbo);
