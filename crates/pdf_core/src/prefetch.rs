@@ -21,7 +21,7 @@
 //! `pdf_bench` `prefetch` bench). No render is cancelled mid-page (MuPDF has
 //! no cancellation); the preemption point is between pages.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
@@ -30,7 +30,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::cache::{CacheStats, PageKey, RenderCache};
-use crate::engine::{Bitmap, RenderEngine, Result};
+use crate::engine::{Bitmap, Error, RenderEngine, Result};
 use crate::scroll::Viewport;
 
 /// Commands sent to the worker thread.
@@ -53,6 +53,14 @@ enum Cmd {
     },
 }
 
+/// A page the worker failed to render, surfaced to the client through
+/// `Prefetcher::take_errors` instead of being silently dropped.
+#[derive(Debug)]
+pub struct PageRenderError {
+    pub key: PageKey,
+    pub error: Error,
+}
+
 /// Prefetch controller: owns the channel to the renderer worker and a
 /// thread-safe snapshot of the worker's cache stats.
 ///
@@ -62,6 +70,9 @@ pub struct Prefetcher<E: RenderEngine> {
     tx: Sender<Cmd>,
     handle: Option<JoinHandle<()>>,
     stats: Arc<Mutex<CacheStats>>,
+    /// Per-page render errors recorded by the worker, drained by
+    /// `take_errors`. Bounded to `MAX_PENDING_ERRORS` (oldest dropped).
+    errors: Arc<Mutex<VecDeque<PageRenderError>>>,
     /// Number of `Cmd::Request` submitted by the client (incremented before
     /// each `send`). Drives `await_idle_timeout`.
     requested: Arc<AtomicU64>,
@@ -84,6 +95,8 @@ impl<E: RenderEngine> Prefetcher<E> {
         let (init_tx, init_rx) = channel::<Result<()>>();
         let stats = Arc::new(Mutex::new(CacheStats::default()));
         let stats_worker = stats.clone();
+        let errors = Arc::new(Mutex::new(VecDeque::new()));
+        let errors_worker = errors.clone();
         let requested = Arc::new(AtomicU64::new(0));
         let completed = Arc::new(AtomicU64::new(0));
         let completed_worker = completed.clone();
@@ -108,14 +121,21 @@ impl<E: RenderEngine> Prefetcher<E> {
                         // newer Request queued behind this one preempts the
                         // rest at the next page boundary: stale wishlists are
                         // abandoned, only the newest viewport is rendered to
-                        // the end. Per-page render errors are dropped on
-                        // purpose: prefetch is best-effort, and one failing
-                        // page must not kill the worker or stall the queue.
+                        // the end. A failing page must not kill the worker
+                        // or stall the queue: its error is recorded for the
+                        // client (`take_errors`) and the queue moves on.
                         let mut queue: Vec<PageKey> =
                             visibles.into_iter().chain(prefetch).collect();
                         loop {
                             while let Some(key) = queue.first() {
-                                let _ = cache.get_or_render(key.page_idx, key.scale_level);
+                                if let Err(error) =
+                                    cache.get_or_render(key.page_idx, key.scale_level)
+                                {
+                                    record_error(
+                                        &errors_worker,
+                                        PageRenderError { key: *key, error },
+                                    );
+                                }
                                 queue.remove(0);
                                 // Peek the channel between pages: any newer
                                 // request already queued supersedes this one
@@ -180,6 +200,7 @@ impl<E: RenderEngine> Prefetcher<E> {
                 tx,
                 handle: Some(handle),
                 stats,
+                errors,
                 requested,
                 completed,
                 _marker: std::marker::PhantomData,
@@ -282,6 +303,20 @@ impl<E: RenderEngine> Prefetcher<E> {
         reply_rx
     }
 
+    /// Drains the per-page render errors recorded by the worker since the
+    /// previous call, oldest first.
+    ///
+    /// Prefetch stays best-effort (a failing page never stops the worker),
+    /// but its errors are no longer swallowed: the client polls this to log
+    /// or display them. At most `MAX_PENDING_ERRORS` are kept between calls;
+    /// older ones are dropped first.
+    pub fn take_errors(&self) -> Vec<PageRenderError> {
+        self.errors
+            .lock()
+            .map(|mut q| q.drain(..).collect())
+            .unwrap_or_default()
+    }
+
     /// Waits until the worker has processed every `Cmd::Request` submitted up
     /// to the moment this method is called, or `timeout` elapses. Returns
     /// `true` if the worker went idle (i.e. the last request was fully
@@ -306,6 +341,22 @@ impl<E: RenderEngine> Prefetcher<E> {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+}
+
+/// Upper bound on undrained errors, so a client that never calls
+/// `take_errors` (or a document where every page fails) cannot grow the
+/// slot without limit.
+pub const MAX_PENDING_ERRORS: usize = 64;
+
+/// Worker side of the error slot: appends `err`, evicting the oldest entry
+/// once `MAX_PENDING_ERRORS` is reached.
+fn record_error(slot: &Mutex<VecDeque<PageRenderError>>, err: PageRenderError) {
+    if let Ok(mut q) = slot.lock() {
+        if q.len() >= MAX_PENDING_ERRORS {
+            q.pop_front();
+        }
+        q.push_back(err);
     }
 }
 
