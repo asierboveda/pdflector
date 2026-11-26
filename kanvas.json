@@ -201,7 +201,7 @@
     {
       "id": "CO-03",
       "title": "Single-source menu hitboxes & bounded toast layout",
-      "state": "doing",
+      "state": "review",
       "group": "CO",
       "deps": ["TD-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -217,6 +217,11 @@
           "at": "2026-11-26T15:39:21Z",
           "by": "claude-code",
           "text": "Plan: a dedicated agent works on it test-first in its own worktree; the orchestrator reviews the TDD history (failing test committed before the fix), merges into the session branch and checks CI."
+        },
+        {
+          "at": "2026-11-26T16:02:25Z",
+          "by": "claude-code",
+          "text": "The ⋯ View and ☰ Settings menus are now drawn from the exact rectangles used for taps, so a tap always hits the row you see. Long toasts wrap and stay on screen.\n- Menus: one layout per menu feeds both drawing and tapping. Tap areas are unchanged (the agent compared old vs new geometry at 4 screen sizes: identical).\n- Toasts: short messages keep the old pill. Longer ones grow up to the screen width (max 720 px), wrap by words, split very long words like file paths, and end in \"…\" after 3 lines.\n- TDD verified by the orchestrator: tests committed first fail (6 failures), pass after the change; 137 tests pass after merging with UI-01/IN-02/CO-01; clippy and fmt clean; no existing test changed.\n- Not testable here: actual pixels (no Android text rendering on Linux); toast text width is an estimate.\nOn the tablet:\n1. Both menus look as before (highlight, ✓, columns −/+, \"Vaciar biblioteca\" confirm)\n2. Every menu item tap hits the row you see\n3. A long error toast (e.g. Drive sync failure) in library and reader: max 3 centred lines ending in \"…\", no text past the edges"
         }
       ],
       "started": {
