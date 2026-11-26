@@ -10,7 +10,7 @@
 //! This module is framework-agnostic. The UI shells (egui, slint) consume
 //! these tokens to style their components.
 
-use crate::annotations::Color;
+use pdf_core::annotations::Color;
 
 /// The active theme mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,5 +113,69 @@ impl DesignTokens {
             ThemeMode::Paper => Self::PAPER,
             ThemeMode::Night => Self::NIGHT,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests de caracterización: fijan los valores públicos actuales de los
+    // tokens para que mover el módulo no cambie nada observable.
+
+    #[test]
+    fn from_hex_descompone_rgb_y_alfa_opaco() {
+        assert_eq!(
+            ThemeColor::from_hex(0x0075DE),
+            ThemeColor::new(0x00, 0x75, 0xDE, 255)
+        );
+        assert_eq!(
+            ThemeColor::from_hex(0xFF_123456),
+            ThemeColor::new(0x12, 0x34, 0x56, 255)
+        );
+    }
+
+    #[test]
+    fn theme_color_se_convierte_a_color_de_anotacion() {
+        let c: Color = ThemeColor::new(1, 2, 3, 4).into();
+        assert_eq!((c.r, c.g, c.b, c.a), (1, 2, 3, 4));
+    }
+
+    #[test]
+    fn tokens_papel_tienen_los_valores_esperados() {
+        let t = DesignTokens::PAPER;
+        assert_eq!(t.canvas, ThemeColor::from_hex(0xF6F5F4));
+        assert_eq!(t.surface, ThemeColor::from_hex(0xFFFFFF));
+        assert_eq!(t.border, ThemeColor::from_hex(0xE5E5E6));
+        assert_eq!(t.ink, ThemeColor::from_hex(0x1C1C1C));
+        assert_eq!(t.accent, ThemeColor::from_hex(0x0075DE));
+        assert_eq!(t.highlight_yellow, ThemeColor::from_hex(0xFDECC8));
+        assert_eq!(t.highlight_green, ThemeColor::from_hex(0xDBEDDB));
+        assert_eq!(t.highlight_blue, ThemeColor::from_hex(0xD3E5EF));
+    }
+
+    #[test]
+    fn tokens_noche_tienen_los_valores_esperados() {
+        let t = DesignTokens::NIGHT;
+        assert_eq!(t.canvas, ThemeColor::from_hex(0x000000));
+        assert_eq!(t.surface, ThemeColor::from_hex(0x0A0A0A));
+        assert_eq!(t.border, ThemeColor::from_hex(0x1A1A1A));
+        assert_eq!(t.ink, ThemeColor::from_hex(0xEDEDED));
+        assert_eq!(t.accent, ThemeColor::from_hex(0x0070F3));
+        assert_eq!(t.highlight_yellow, ThemeColor::from_hex(0xFDECC8));
+        assert_eq!(t.highlight_green, ThemeColor::from_hex(0xDBEDDB));
+        assert_eq!(t.highlight_blue, ThemeColor::from_hex(0xD3E5EF));
+    }
+
+    #[test]
+    fn for_mode_elige_los_tokens_del_modo() {
+        assert_eq!(
+            DesignTokens::for_mode(ThemeMode::Paper),
+            DesignTokens::PAPER
+        );
+        assert_eq!(
+            DesignTokens::for_mode(ThemeMode::Night),
+            DesignTokens::NIGHT
+        );
     }
 }
