@@ -445,7 +445,7 @@
     {
       "id": "PR-02",
       "title": "Study workflow: in-app Gemini key, notes, figures & Anki",
-      "state": "review",
+      "state": "done",
       "group": "PR",
       "deps": ["UI-02", "CO-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -476,6 +476,11 @@
           "at": "2026-11-26T20:39:08Z",
           "by": "claude-code",
           "text": "You can now enter your Gemini key inside the app, and every PDF has its own notebook. Builds no longer need google_key.txt (CI stopped creating it).\n- Key: reader settings sheet → new ESTUDIO row → Clave IA. Paste, Guardar; shown only as ••••last4, never pre-filled, never logged. Stored in the app's private files (atomic write, mode 0600). With no key, the AI message points to Ajustes → Estudio → Clave de Gemini. You must enter your key once (the old file is ignored).\n- Notebook: ESTUDIO → Cuaderno. Newest first with \"Pág. N · date\"; + Nota attaches the current page; Editar; Borrar (tap twice); tapping a note jumps to its page (Tap and Scroll modes). Saved per PDF in notebooks.json (atomic; a corrupt file is kept as .corrupt). While open, pen/pinch don't act underneath.\n- TDD verified by the orchestrator: 4 test-first pairs, each test commit fails (5, 10, 7, 8 failures) and passes after its implementation; 200 tests total, all clippy + fmt clean, and the build passes with no key file. Checked: no log line prints the key.\n- Limits: single-line notes (the keyboard bridge has no line breaks); the note list scrolls with ▲/▼ only.\n- Decision for you: Android cloud backup may include the key and notes (allowBackup isn't set). Keep it, or exclude the key from backup?\nOn the tablet: the 12-point checklist is in the agent's report; key ones: build without google_key.txt, add/clear the key, Explicar works after restart, add/edit/delete notes, tap a note jumps to its page, notes separate per PDF and survive restart, `adb logcat | grep -i aiza` shows nothing."
+        },
+        {
+          "at": "2026-11-26T20:50:26Z",
+          "by": "human",
+          "text": "Accepted in chat (\"yeah pr02 pr03 done\"). (relayed from chat by the agent)"
         }
       ],
       "started": {
@@ -486,7 +491,7 @@
     {
       "id": "PR-03",
       "title": "Display-list memory cap & 120 Hz profiling on TCL 9469X",
-      "state": "review",
+      "state": "done",
       "group": "PR",
       "deps": ["IN-01"],
       "at": "2026-11-26T13:03:52Z",
@@ -507,6 +512,11 @@
           "at": "2026-11-26T20:28:00Z",
           "by": "claude-code",
           "text": "MuPDF's cached page data (\"display lists\") now has a memory cap instead of growing with every page you visit: at most 16 pages / ~24 MB per open document, least-recently-used dropped first, never a page being drawn.\n- MuPDF can't report a list's real size, so it's estimated from the page's stored content and image sizes (errs high). Calibrate it on the tablet (below).\n- Counters in logcat: `adb logcat | grep dlcache` shows entries, bytes, peak, hits, misses, evictions after each render batch.\n- TDD verified by the orchestrator: test commit fails (14 failures), implementation passes (107 pdf_core lib tests; all pdf_core suites incl. the 9 real-MuPDF page-cache tests; 169 Android tests; all clippy + fmt clean). One of the new tests was corrected in the impl commit: it expected an over-budget page to be dropped, contradicting the documented rule (that rule has its own test); the \"never over budget\" check stays strict.\n- Not covered: MuPDF's own decoded-image cache (default 256 MB) is separate and still uncapped; worth a look if PSS stays high on scanned PDFs.\nOn the tablet (needs adb):\n1. Scroll a 100+ page (ideally scanned) PDF end to end in Continuo: entries ≤ 16, bytes ≤ ~24 MB, evictions grow\n2. `adb shell dumpsys meminfo <package>`: PSS plateaus instead of growing\n3. Scrolling back within ~16 pages and pinch-zoom stay smooth (hits rise)\n4. Frame time no worse than before on a page-turn-heavy session"
+        },
+        {
+          "at": "2026-11-26T20:50:26Z",
+          "by": "human",
+          "text": "Accepted in chat (\"yeah pr02 pr03 done\"). (relayed from chat by the agent)"
         }
       ],
       "started": {
