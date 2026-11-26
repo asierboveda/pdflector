@@ -455,7 +455,7 @@ pub(crate) mod theme {
                 FONT_MICRO,
             ];
             assert!(fonts.windows(2).all(|w| w[0] > w[1]), "fuentes: {fonts:?}");
-            assert!(TRACKING_CAPS > 0.0 && TRACKING_TIGHT < 0.0);
+            const { assert!(TRACKING_CAPS > 0.0 && TRACKING_TIGHT < 0.0) };
         }
 
         /// Fija los accesores derivados de la paleta (insignias, estado y fondo RGBA).
