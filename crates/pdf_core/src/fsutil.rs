@@ -181,4 +181,34 @@ mod tests {
         assert_eq!(fs::read_to_string(&old).unwrap(), "anterior");
         assert_eq!(entries(&tmp.0), vec!["old-link", "state.json"]);
     }
+
+    #[test]
+    fn colliding_temp_file_is_not_deleted_on_already_exists() {
+        let tmp = TempDir::new("collide");
+        let path = tmp.0.join("state.json");
+        let probe = temp_path_for(&path).unwrap();
+        let probe_name = probe.file_name().unwrap().to_str().unwrap();
+        let prefix = format!(".state.json.{}-", std::process::id());
+        let seq: u64 = probe_name
+            .strip_prefix(&prefix)
+            .and_then(|s| s.strip_suffix(".tmp"))
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let precreated: Vec<PathBuf> = (1..=32)
+            .map(|offset| {
+                let p = tmp.0.join(format!("{prefix}{}.tmp", seq + offset));
+                fs::write(&p, "keep-me").unwrap();
+                p
+            })
+            .collect();
+
+        let err = write_atomic(&path, "new").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        for p in &precreated {
+            assert!(p.exists(), "colliding temp file was deleted: {p:?}");
+            assert_eq!(fs::read_to_string(p).unwrap(), "keep-me");
+        }
+    }
 }
