@@ -18,6 +18,15 @@ is still open. Board state itself lives in `kanvas.json`; run
 
 ## 2. How the human works with the board
 
+- **Commit identity:** commits are authored by the human, with Claude as
+  co-author. Set this at the start of every session:
+  `git config user.name asierboveda` and
+  `git config user.email 145044583+asierboveda@users.noreply.github.com`,
+  and end every message with the `Co-Authored-By: Claude ...` trailer.
+  On 2026-11-27 the 105 commits of the first session that were authored by
+  "Claude" were rewritten to this identity and force-pushed with the human's
+  OK, so commit IDs quoted in old PR comments and board notes no longer exist.
+
 - The human uses the **chat only**; the Kanvas web board (`kanvas.py serve`)
   runs inside the cloud container and is unreachable for them.
 - So the chat replaces the board for human decisions. When the human
@@ -90,7 +99,7 @@ is still open. Board state itself lives in `kanvas.json`; run
 | IN-03 | Prefetch render errors surfaced (`take_errors`); `jni.rs` split into `jni/{window,launch,parse,media,ime}.rs` |
 | TD-03 | Two flaky folder_sync timing tests made causal (injectable debounce/backoff) |
 | UI-02 | main fast-forwarded with Astryx + all work; Dependabot #41 #42 #44 #54 #57 closed (already applied), #58 #59 applied |
-| IN-01 | Wet ink capsules with round caps/joins (`InkStrokeGeometry.kt`) matching dry `draw_polyline_gpu`; PR #55 ported as 40d24aa and closed |
+| IN-01 | Wet ink capsules with round caps/joins (`InkStrokeGeometry.kt`) matching dry `draw_polyline_gpu`; PR #55 ported (cherry-pick -x of 04fd3bc) and closed |
 | PR-01 | Continuo (Scroll) reading mode per document, toggle in the reader sheet |
 | PR-03 | Display-list LRU budget (16 lists / 24 MiB per doc), `dlcache` log counters |
 | PR-02 | In-app Gemini key (private file, masked, never logged; `google_key.txt` no longer needed) + per-document notebook (`notebooks.json`) |
