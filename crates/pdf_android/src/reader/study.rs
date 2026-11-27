@@ -601,4 +601,28 @@ mod tests {
         );
         assert_eq!(ime_target(UiMode::Library, true), ImeTarget::LibrarySearch);
     }
+
+    #[test]
+    fn deactivate_ime_clears_buffer_before_hiding_keyboard() {
+        let mut active = true;
+        let mut events = Vec::new();
+
+        deactivate_ime(
+            &mut active,
+            |text| events.push(format!("set_text:{text:?}")),
+            || events.push("hide".to_string()),
+        );
+
+        assert!(!active);
+        assert_eq!(events, vec!["set_text:\"\"", "hide"]);
+
+        // Idempotent when already inactive.
+        events.clear();
+        deactivate_ime(
+            &mut active,
+            |text| events.push(format!("set_text:{text:?}")),
+            || events.push("hide".to_string()),
+        );
+        assert!(events.is_empty());
+    }
 }
