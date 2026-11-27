@@ -231,4 +231,24 @@ mod tests {
             Some("2401.12345")
         );
     }
+
+    #[test]
+    fn ime_jni_borrows_global_class_ref_and_clears_exceptions() {
+        let src = include_str!("jni/ime.rs");
+        assert!(
+            !src.contains("JClass::from_raw("),
+            "jni/ime.rs must borrow the GlobalRef via env.as_cast_raw::<JClass>, never wrap it in an owning JClass::from_raw"
+        );
+        assert!(
+            src.contains("as_cast_raw::<JClass>"),
+            "jni/ime.rs must cast the cached GlobalRef non-owningly with as_cast_raw::<JClass>"
+        );
+        // Every function calling attach_current_thread must clear pending Java exceptions on Err.
+        let attach_calls = src.matches("attach_current_thread(").count();
+        let clear_calls = src.matches("exception_clear()").count();
+        assert!(
+            clear_calls >= attach_calls,
+            "expected at least {attach_calls} exception_clear() guards in jni/ime.rs, found {clear_calls}"
+        );
+    }
 }
