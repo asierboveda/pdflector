@@ -946,12 +946,14 @@ impl Reader {
     }
 
     /// Cierra el teclado del buscador si está abierto (al entrar al visor,
-    /// al abrir el selector de añadir, etc.). No toca el texto del filtro.
+    /// al abrir el selector de añadir, etc.). No toca `self.library.lib_query`,
+    /// pero limpia el búfer compartido de `ImeHelper` antes de ocultar el IME.
     pub(crate) fn lib_close_ime(&mut self, app: &AndroidApp) {
-        if self.ime_active {
-            self.ime_active = false;
-            crate::jni::ime_hide(app);
-        }
+        super::study::deactivate_ime(
+            &mut self.ime_active,
+            |t| crate::jni::ime_set_text(app, t),
+            || crate::jni::ime_hide(app),
+        );
     }
 
     /// Polling del texto tecleado (llamado desde `tick`): si cambió, se
@@ -966,9 +968,12 @@ impl Reader {
         );
         if target == super::study::ImeTarget::None {
             // Visor sin editor abierto (p. ej. el panel se cerró al cambiar
-            // de documento): nadie escucha → ocultar el teclado.
-            self.ime_active = false;
-            crate::jni::ime_hide(app);
+            // de documento): nadie escucha → limpiar búfer y ocultar teclado.
+            super::study::deactivate_ime(
+                &mut self.ime_active,
+                |t| crate::jni::ime_set_text(app, t),
+                || crate::jni::ime_hide(app),
+            );
             return;
         }
         let Some(t) = crate::jni::ime_text(app) else {

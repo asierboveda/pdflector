@@ -267,6 +267,21 @@ pub(crate) fn ime_target(mode: UiMode, study_editing: bool) -> ImeTarget {
     }
 }
 
+/// Desactiva el IME limpiando SIEMPRE el búfer `ImeHelper.sText` antes de
+/// ocultar el teclado, para que claves API o borradores no permanezcan en el
+/// campo compartido de Java tras cerrar o abandonar el editor.
+pub(crate) fn deactivate_ime(
+    ime_active: &mut bool,
+    mut set_text: impl FnMut(&str),
+    mut hide: impl FnMut(),
+) {
+    if *ime_active {
+        *ime_active = false;
+        set_text("");
+        hide();
+    }
+}
+
 // ---------------------------------------------------------------------
 // Pegamento con `Reader` (no testeable en host: teclado y disco reales)
 // ---------------------------------------------------------------------
@@ -348,7 +363,14 @@ impl Reader {
 
     fn apply_study_effect(&mut self, app: &AndroidApp, fx: StudyEffect) {
         match fx {
-            StudyEffect::Close => self.close_study(),
+            StudyEffect::Close => {
+                deactivate_ime(
+                    &mut self.ime_active,
+                    |t| crate::jni::ime_set_text(app, t),
+                    || crate::jni::ime_hide(app),
+                );
+                self.close_study();
+            }
             StudyEffect::Jump(p) => {
                 let delta = p as i32 - self.page as i32;
                 self.jump_page(delta);
@@ -358,11 +380,11 @@ impl Reader {
                 self.ime_active = true;
             }
             StudyEffect::HideKeyboard => {
-                if self.ime_active {
-                    crate::jni::ime_set_text(app, "");
-                    crate::jni::ime_hide(app);
-                    self.ime_active = false;
-                }
+                deactivate_ime(
+                    &mut self.ime_active,
+                    |t| crate::jni::ime_set_text(app, t),
+                    || crate::jni::ime_hide(app),
+                );
             }
             StudyEffect::SaveNotebook => {
                 let (Some(path), Some(st)) = (self.doc_path.as_deref(), self.study.as_ref()) else {
@@ -605,24 +627,24 @@ mod tests {
     #[test]
     fn deactivate_ime_clears_buffer_before_hiding_keyboard() {
         let mut active = true;
-        let mut events = Vec::new();
+        let events = std::cell::RefCell::new(Vec::new());
 
         deactivate_ime(
             &mut active,
-            |text| events.push(format!("set_text:{text:?}")),
-            || events.push("hide".to_string()),
+            |text| events.borrow_mut().push(format!("set_text:{text:?}")),
+            || events.borrow_mut().push("hide".to_string()),
         );
 
         assert!(!active);
-        assert_eq!(events, vec!["set_text:\"\"", "hide"]);
+        assert_eq!(*events.borrow(), vec!["set_text:\"\"", "hide"]);
 
         // Idempotent when already inactive.
-        events.clear();
+        events.borrow_mut().clear();
         deactivate_ime(
             &mut active,
-            |text| events.push(format!("set_text:{text:?}")),
-            || events.push("hide".to_string()),
+            |text| events.borrow_mut().push(format!("set_text:{text:?}")),
+            || events.borrow_mut().push("hide".to_string()),
         );
-        assert!(events.is_empty());
+        assert!(events.borrow().is_empty());
     }
 }
