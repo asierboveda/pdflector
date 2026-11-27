@@ -115,3 +115,22 @@
 | Latencia motion-to-photon de tinta húmeda con T-Pen físico (`IN-01`) | `SIN MEDIR` (requiere lápiz físico + cámara high-speed / verificación humana) |
 | Escaneo incremental `folder_sync` sobre corpus sintético en tablet | `SIN MEDIR` (protección de privacidad D3: no se ejecutó sobre `synced-pdfs` personal) |
 | `frame p50 / p99` (pipeline actual solo emite `p95` en `logcat`) | `SIN MEDIR` (`gpu/pipeline.rs` solo loguea `p95`) |
+
+---
+
+## 2026-11-27 — Post-Fix Must-Fix #1–#10 Verification (`8cfa77d`, ARM64 `app-debug.apk`)
+
+### Hardware & Build
+- **Tablet:** TCL NXTPaper 11 Plus (`TCL 9469X`, Android 16 / SDK 36, MediaTek Helio G100, Mali-G57 MC2, `1440×2200` @ `120 Hz`, pantalla ON).
+- **Build:** `libpdf_android.so` release ARM64 (`16,419,432 B`, NDK r28), `android/product/app/build/outputs/apk/debug/app-debug.apk` con `res/xml/backup_rules.xml` (`300 B`) y `res/xml/data_extraction_rules.xml` (`564 B`) verificados vía `unzip -l` y `aapt2 dump xmltree` (`allowBackup=true`, `fullBackupContent=@0x7f0f0000`, `dataExtractionRules=@0x7f0f0001`).
+
+### Flujos Verificados en Vivo (corpus sintético aislado, cero datos personales)
+| Flujo medido | Métrica / Resultado |
+|---|---|
+| `ACTION_VIEW` `mixed_stress.pdf` cold start (`am start -W`, Must-Fix #5) | `TotalTime: 685 ms` (`WaitTime: 704 ms`), `state.json` preservó `dark: true`, `columns: 4`, `hide_covers: true` y abrió en la página guardada `5` (`library.json`) en lugar de resetear a `0` |
+| Idle Viewer `mixed_stress.pdf` (`dumpsys meminfo`) | `TOTAL PSS: 184,093 KB` (`179.8 MiB`), `Native Heap: 62.8 MB`, `EGL: 33.0 MB`, `GL: 45.2 MB` |
+| Paso de página + invalidación de chrome inferior (Must-Fix #9) | `page_turn 6–11 ms`; al mostrar chrome tras girar páginas, `gpu: tex destroy 12 kind=ovl` + `tex create 16 1440x140 kind=ovl` regeneró el overlay de la barra inferior |
+| Ciclo `Pause` → `TerminateWindow` → `Destroy` → `Resume` (Must-Fix #3/#4/#6) | Restauró `mixed_stress.pdf @page 7 zoom 1.000 theme DefaultDark`, `keep_screen_on` + `enable_120hz` aplicados, **0 errores/warnings** (`pdf_android:W`, `AndroidRuntime:E`, `art:E`, `DEBUG:F`, `libc:F`) |
+| Transición Viewer → Library (`enter_library()`, Must-Fix #6) | `Native Heap` cayó de `68,148 KB` (`66.6 MiB`) a `51,240 KB` (`50.0 MiB`) (**`-16.5 MiB` liberados al instante** al soltar `MupdfDocument` y cachés de geometría/anotaciones); `GL mtrack` (`109.3 MB`) sigue pendiente de Phase 1 del roadmap (`PageSlots` pool + techo `fz_store`) |
+| Limpieza de tablet post-verificación | 4 JSONs del usuario restaurados y verificados idénticos vía `cmp`; `files/bench_corpus/`, `files/.audit_backup/` y `/data/local/tmp/pdflector*` eliminados; `stayon=false`, `accelerometer_rotation=1`, `user_rotation=0` |
+
