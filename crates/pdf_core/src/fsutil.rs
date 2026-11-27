@@ -25,12 +25,33 @@ pub fn write_atomic_with<F>(path: &Path, fill: F) -> io::Result<()>
 where
     F: FnOnce(&mut File) -> io::Result<()>,
 {
+    write_atomic_with_mode(path, None, fill)
+}
+
+/// Igual que [`write_atomic`], pero creando el temporal con permisos Unix `0600`
+/// desde el `open(O_CREAT | O_EXCL)` inicial (sin ventana TOCTOU antes del `rename`).
+pub fn write_atomic_private(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+    write_atomic_with_mode(path, Some(0o600), |file| file.write_all(contents.as_ref()))
+}
+
+fn write_atomic_with_mode<F>(path: &Path, unix_mode: Option<u32>, fill: F) -> io::Result<()>
+where
+    F: FnOnce(&mut File) -> io::Result<()>,
+{
     let temp = temp_path_for(path)?;
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(mode) = unix_mode {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = unix_mode;
+    // Abrir con `create_new(true)` ANTES del bloque con cleanup: si falla
+    // (p. ej. `AlreadyExists`), el fichero previo NO nos pertenece y no se borra.
+    let mut file = opts.open(&temp)?;
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
         fill(&mut file)?;
         file.flush()?;
         file.sync_all()?;
@@ -210,5 +231,26 @@ mod tests {
             assert!(p.exists(), "colliding temp file was deleted: {p:?}");
             assert_eq!(fs::read_to_string(p).unwrap(), "keep-me");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_private_creates_0600_before_rename() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = TempDir::new("private");
+        let path = tmp.0.join("secret");
+        let mut temp_mode = None;
+        write_atomic_with_mode(&path, Some(0o600), |f| {
+            temp_mode = Some(f.metadata()?.permissions().mode() & 0o777);
+            f.write_all(b"secret")
+        })
+        .unwrap();
+        assert_eq!(temp_mode, Some(0o600));
+
+        let path2 = tmp.0.join("secret2");
+        write_atomic_private(&path2, "secret2").unwrap();
+        let mode = fs::metadata(&path2).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{mode:o}");
     }
 }

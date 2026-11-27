@@ -18,7 +18,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use pdf_core::write_atomic;
+use pdf_core::write_atomic_private;
 
 /// Longitud mínima aceptada (las claves de AI Studio tienen 39 caracteres;
 /// mismo umbral que el antiguo aviso de "falta la clave").
@@ -130,13 +130,7 @@ pub(crate) fn save_key(internal_dir: Option<&Path>, key: &GeminiKey) -> io::Resu
         ));
     };
     let path = key_path(dir);
-    write_atomic(&path, key.as_str())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    write_atomic_private(&path, key.as_str())
 }
 
 /// Borra la clave guardada (no es error si no existía).

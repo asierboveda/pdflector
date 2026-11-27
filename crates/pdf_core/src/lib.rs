@@ -37,7 +37,7 @@ pub use cache::{CacheStats, PageKey, RenderCache, RenderedPage, scale_for_level}
 pub use dark::invert_bitmap;
 pub use engine::{Bitmap, Document, Error, PageText, RenderEngine, Result, TextSpan};
 pub use export::{export_markdown, export_markdown_to_file, export_pdf_annotated};
-pub use fsutil::{write_atomic, write_atomic_with};
+pub use fsutil::{write_atomic, write_atomic_private, write_atomic_with};
 pub use metrics::{FrameTimer, read_rss_kb};
 pub use scroll::{Viewport, visible_and_prefetch_pages};
 pub use selection::{
