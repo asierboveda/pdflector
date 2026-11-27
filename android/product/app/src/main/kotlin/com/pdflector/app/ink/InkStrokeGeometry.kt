@@ -66,6 +66,7 @@ internal object InkStrokeGeometry {
     fun capsule(x0: Float, y0: Float, x1: Float, y1: Float, widthPx: Float, out: FloatArray): Int {
         require(out.size >= MAX_FLOATS)
         if (!(widthPx > 0f) || widthPx.isInfinite()) return 0
+        if (!x0.isFinite() || !y0.isFinite() || !x1.isFinite() || !y1.isFinite()) return 0
         val halfWidth = halfWidth(widthPx)
         val segments = circleSegments(halfWidth)
         val dx = x1 - x0
