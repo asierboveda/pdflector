@@ -1012,3 +1012,90 @@ impl Reader {
         self.redraw();
     }
 }
+
+#[cfg(test)]
+mod lifecycle_cleanup_tests {
+    use super::*;
+    use crate::reader::fling::ScrollFling;
+    use crate::reader::geometry::PageGeometryCache;
+    use crate::reader::render_failures::RenderFailures;
+    use pdf_core::engine::{Bitmap, Document, PageGeometry, PageText};
+    use pdf_core::{Annotation, AnnotationSet, Color, PageTextCache, Stroke};
+    use std::time::Instant;
+
+    struct DummyDoc;
+    impl Document for DummyDoc {
+        fn page_count(&self) -> u32 {
+            1
+        }
+        fn page_size(&self, _page: u32) -> pdf_core::Result<(f32, f32)> {
+            Ok((612.0, 792.0))
+        }
+        fn render_page(&self, _page: u32, _scale: f32) -> pdf_core::Result<Bitmap> {
+            Ok(Bitmap {
+                width: 1,
+                height: 1,
+                data: vec![0; 4],
+            })
+        }
+        fn text(&self, _page: u32) -> pdf_core::Result<PageText> {
+            Ok(PageText {
+                text: "sample".into(),
+                spans: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn release_document_state_drops_doc_caches_annotations_and_fling() {
+        let mut doc = Some("mock-mupdf-doc");
+        let mut geom_cache = PageGeometryCache::default();
+        geom_cache.insert(0, PageGeometry::from_page_size(612.0, 792.0));
+        let mut render_failures = RenderFailures::default();
+        render_failures.fail(0, Instant::now());
+        let mut text_cache = PageTextCache::default();
+        assert_eq!(text_cache.prefetch(&DummyDoc, &[0]), 1);
+        let mut annotations = AnnotationSet::new();
+        annotations.add(
+            0,
+            Annotation::Stroke(Stroke {
+                points: vec![(0.0, 0.0), (10.0, 10.0)],
+                color: Color {
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                    a: 255,
+                },
+                width: 2.0,
+            }),
+        );
+        let mut sidecar = Some(PathBuf::from("/tmp/test.annot.db"));
+        let mut scroll_ref_pts = Some((612.0, 792.0));
+        let mut scroll_fling = ScrollFling::default();
+        scroll_fling.track(0, 0.0);
+        assert!(scroll_fling.release(20_000_000, 400.0));
+        let mut scroll_fling_at = Some(Instant::now());
+
+        release_document_state(
+            &mut doc,
+            &mut geom_cache,
+            &mut render_failures,
+            &mut text_cache,
+            &mut annotations,
+            &mut sidecar,
+            &mut scroll_ref_pts,
+            &mut scroll_fling,
+            &mut scroll_fling_at,
+        );
+
+        assert!(doc.is_none());
+        assert!(geom_cache.get(0).is_none());
+        assert!(!render_failures.is_failed(0));
+        assert!(text_cache.get(0).is_none());
+        assert!(annotations.is_empty());
+        assert!(sidecar.is_none());
+        assert!(scroll_ref_pts.is_none());
+        assert!(!scroll_fling.is_active());
+        assert!(scroll_fling_at.is_none());
+    }
+}
