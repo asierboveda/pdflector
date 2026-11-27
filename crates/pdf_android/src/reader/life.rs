@@ -346,7 +346,7 @@ impl Reader {
                             let bg = reader.theme.palette().rgba_bg();
                             g.reset_document(bg);
                         }
-                        reader.page_badge = None; // indicador de la página restaurada
+                        reader.invalidate_page_overlays(); // indicador y barra de la página restaurada
                         info!(
                             "restored {} @page {} zoom {:.3} theme {:?}",
                             state.path,
@@ -419,9 +419,9 @@ impl Reader {
         self.bitmap = None;
         self.library.lib_header = None;
         self.library.lib_band = None;
-        self.page_badge = None;
+        self.invalidate_page_overlays();
+        self.chrome_top_bitmap = None;
         self.invalidate_toolbar();
-        self.sheet_bitmap = None;
         self.list_dirty = true;
         // Nueva ventana → posible nueva escala contain: las páginas de la caché
         // se reutilizan si el tamaño no cambió; el redraw detecta el cambio de
@@ -443,9 +443,9 @@ impl Reader {
         }
         self.window = None;
         self.bitmap = None;
-        self.page_badge = None;
+        self.invalidate_page_overlays();
+        self.chrome_top_bitmap = None;
         self.invalidate_toolbar();
-        self.sheet_bitmap = None;
         self.list_dirty = true;
     }
 }

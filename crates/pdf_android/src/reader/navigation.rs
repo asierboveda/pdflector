@@ -11,10 +11,20 @@ use log::error;
 use log::info;
 use log::warn;
 use pdf_core::engine::mupdf::MupdfEngine;
-use pdf_core::{Document, RenderEngine};
+use pdf_core::{Bitmap, Document, RenderEngine};
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
+
+pub(super) fn invalidate_page_overlays(
+    page_badge: &mut Option<Bitmap>,
+    sheet_bitmap: &mut Option<Bitmap>,
+    chrome_bottom_bitmap: &mut Option<Bitmap>,
+) {
+    *page_badge = None;
+    *sheet_bitmap = None;
+    *chrome_bottom_bitmap = None;
+}
 
 fn prefetch_page_window(page: u32, page_count: u32, direction: i8) -> Vec<u32> {
     if page_count == 0 {
@@ -56,6 +66,15 @@ fn prefetch_page_window(page: u32, page_count: u32, direction: i8) -> Vec<u32> {
 }
 
 impl Reader {
+    /// Invalida todos los overlays dependientes de la página actual
+    /// (`page_badge`, `sheet_bitmap` y barra inferior `chrome_bottom_bitmap`).
+    pub(super) fn invalidate_page_overlays(&mut self) {
+        invalidate_page_overlays(
+            &mut self.page_badge,
+            &mut self.sheet_bitmap,
+            &mut self.chrome_bottom_bitmap,
+        );
+    }
     /// Cambia a la página `page` (0-based) — modo UNA HOJA: `page` se fija
     /// directamente (no hay scroll que alinear: la columna de páginas se
     /// eliminó). Base compartida de `next_page`/`prev_page`/`jump_page` y del
@@ -85,8 +104,7 @@ impl Reader {
         // taps delegan todos aquí, así que el signo se calcula UNA vez en el
         // punto común (el delta i64 evita el overflow de u32 sin signo).
         self.last_direction = (page as i64 - prev as i64).signum() as i8;
-        self.page_badge = None; // el indicador "N / total" cambia
-        self.sheet_bitmap = None; // el indicador del sheet cambia
+        self.invalidate_page_overlays(); // indicador, sheet y barra inferior cambian
         info!("page {}", self.page + 1);
         // Instrumentación (A2): arranca el cronómetro del turno — lo cierra
         // `present_viewer` con el log `page_turn <ms>` cuando la página real
@@ -376,7 +394,8 @@ impl Reader {
                 self.status = None;
                 self.doc_path = Some(path.to_string());
                 self.start_render_worker(path);
-                self.page_badge = None;
+                self.invalidate_page_overlays();
+                self.chrome_top_bitmap = None;
                 self.sheet_hide_now(); // sheet del visor anterior: fuera (libera también el frame)
                 self.clear_selection(); // selección del documento anterior: fuera
                 self.close_ai_panel(); // panel de IA del documento anterior: fuera

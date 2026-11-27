@@ -673,8 +673,7 @@ impl Reader {
                 self.scroll_pos = page as f32;
                 self.page = page;
                 self.cache.set_protected(page);
-                self.page_badge = None;
-                self.sheet_bitmap = None;
+                self.invalidate_page_overlays();
                 self.mark_state_dirty();
                 self.scroll_ensure_rendered();
                 self.mark_repaint();
@@ -689,8 +688,7 @@ impl Reader {
         if cur != self.page {
             self.page = cur;
             self.cache.set_protected(cur);
-            self.page_badge = None; // el indicador "N / total" cambia
-            self.sheet_bitmap = None;
+            self.invalidate_page_overlays();
         }
         self.mark_state_dirty();
         self.scroll_ensure_rendered();
@@ -711,8 +709,7 @@ impl Reader {
         {
             self.page = p;
             self.cache.set_protected(p);
-            self.page_badge = None;
-            self.sheet_bitmap = None;
+            self.invalidate_page_overlays();
         }
     }
 
@@ -846,8 +843,7 @@ impl Reader {
             self.page = layout.current_page(off);
         }
         self.cache.set_protected(self.page);
-        self.page_badge = None;
-        self.sheet_bitmap = None;
+        self.invalidate_page_overlays();
         if let Some(g) = self.gpu.as_mut() {
             g.invalidate_dry();
         }
