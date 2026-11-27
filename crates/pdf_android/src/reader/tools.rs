@@ -165,6 +165,10 @@ fn new_tool_gesture(
     )
 }
 
+fn should_repaint_on_tool_begin(has_window: bool, gesture: Option<&ToolGesture>) -> bool {
+    has_window && gesture.is_some_and(ToolGesture::requires_native_wet)
+}
+
 impl Reader {
     /// Descarta cualquier tinta wet que siga en la superficie compartida al
     /// salir del documento. Las anotaciones secas y su sidecar permanecen.
@@ -293,7 +297,7 @@ impl Reader {
         }
         // FASE 2: la tinta es geometría GPU por frame — sin frame base que
         // clonar ni stamping. El siguiente blit pinta página + gesto.
-        if self.window.is_some() {
+        if should_repaint_on_tool_begin(self.window.is_some(), self.tool_gesture.as_ref()) {
             self.mark_repaint();
         }
         true
