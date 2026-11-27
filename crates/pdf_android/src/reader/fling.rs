@@ -154,6 +154,7 @@ impl ScrollFling {
 
     /// Detiene la inercia (salto de página, zoom, cambio de modo...).
     pub(crate) fn stop(&mut self) {
+        self.tracker.reset();
         self.fling = None;
     }
 

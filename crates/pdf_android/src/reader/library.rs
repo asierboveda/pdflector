@@ -34,10 +34,40 @@ use crate::persist::{self};
 use log::error;
 use log::info;
 use pdf_core::engine::mupdf::MupdfEngine;
-use pdf_core::{Document, RenderEngine};
+use super::fling::ScrollFling;
+use super::geometry::PageGeometryCache;
+use super::render_failures::RenderFailures;
+use pdf_core::{AnnotationSet, Document, PageTextCache, RenderEngine};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
+
+/// Libera el estado efímero de documento del visor al entrar en biblioteca
+/// (documento MuPDF, cachés de geometría/texto/fallos, anotaciones en memoria e
+/// inercia de scroll) para evitar retención de memoria y estado obsoleto.
+#[allow(clippy::too_many_arguments)]
+fn release_document_state<D>(
+    doc: &mut Option<D>,
+    page_geometry_cache: &mut PageGeometryCache,
+    render_failures: &mut RenderFailures,
+    text_cache: &mut PageTextCache,
+    annotations: &mut AnnotationSet,
+    annot_sidecar: &mut Option<PathBuf>,
+    scroll_ref_pts: &mut Option<(f32, f32)>,
+    scroll_fling: &mut ScrollFling,
+    scroll_fling_at: &mut Option<Instant>,
+) {
+    *doc = None;
+    page_geometry_cache.clear();
+    render_failures.clear();
+    text_cache.clear();
+    *annotations = AnnotationSet::new();
+    *annot_sidecar = None;
+    *scroll_ref_pts = None;
+    scroll_fling.stop();
+    *scroll_fling_at = None;
+}
 
 impl Reader {
     /// Entra en la biblioteca (botón "← Library" del sheet del visor):
@@ -53,6 +83,7 @@ impl Reader {
         // la biblioteca recarga `library.json` justo debajo: sin este flush
         // el progreso de una lectura reciente (<2 s) no se reflejaría.
         self.flush_state();
+        self.flush_annotation_publication();
         self.mode = UiMode::Library;
         // EGL (Tarea 2.7, productor único): la surface del visor NO se
         // suelta al entrar en la biblioteca — la biblioteca presenta por el
@@ -72,6 +103,18 @@ impl Reader {
         self.cache.clear();
         self.stop_render_worker();
         self.fallback_page = None;
+        release_document_state(
+            &mut self.doc,
+            &mut self.page_geometry_cache,
+            &mut self.render_failures,
+            &mut self.text_cache,
+            &mut self.annotations,
+            &mut self.annot_sidecar,
+            &mut self.scroll_ref_pts,
+            &mut self.scroll_fling,
+            &mut self.scroll_fling_at,
+        );
+        self.scroll_reset_geometry();
         if let Some(g) = self.gpu.as_mut() {
             let bg = self.theme.palette().rgba_bg();
             g.reset_document(bg);

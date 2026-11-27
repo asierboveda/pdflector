@@ -346,6 +346,9 @@ impl Reader {
                 // Modo de lectura del documento (por documento, PR-01): la
                 // columna espera a conocer la geometría de una hoja.
                 self.doc_path = Some(path.to_string());
+                self.scroll_stop_fling();
+                self.page_geometry_cache.clear();
+                self.render_failures.clear();
                 self.scroll_ref_pts = None;
                 self.scroll_reset_geometry();
                 self.resume_scroll_at(page);

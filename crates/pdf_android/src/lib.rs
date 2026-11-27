@@ -601,6 +601,8 @@ pub fn android_main(app: AndroidApp) {
                 // A1: flush explícito del estado diferido al pausar (Home /
                 // cambio de app): el proceso puede morir en segundo plano
                 // antes de que `tick` cumpla los 2 s del flush periódico.
+                reader.scroll_stop_fling();
+                reader.cancel_tool_gesture();
                 reader.flush_state();
                 reader.flush_annotation_publication();
             }
