@@ -94,6 +94,14 @@ class InkStrokeGeometryTest {
         assertEquals(0, InkStrokeGeometry.capsule(0f, 0f, 5f, 5f, Float.NaN, out))
     }
 
+    @Test
+    fun nonFiniteCoordinatesEmitNothing() {
+        assertEquals(0, InkStrokeGeometry.capsule(Float.NaN, 0f, 5f, 5f, 4f, out))
+        assertEquals(0, InkStrokeGeometry.capsule(0f, Float.POSITIVE_INFINITY, 5f, 5f, 4f, out))
+        assertEquals(0, InkStrokeGeometry.capsule(0f, 0f, Float.NEGATIVE_INFINITY, 5f, 4f, out))
+        assertEquals(0, InkStrokeGeometry.capsule(0f, 0f, 5f, Float.NaN, 4f, out))
+    }
+
     private data class Triangle(
         val ax: Float, val ay: Float,
         val bx: Float, val by: Float,
