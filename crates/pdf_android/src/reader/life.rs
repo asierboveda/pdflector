@@ -449,3 +449,61 @@ impl Reader {
         self.list_dirty = true;
     }
 }
+
+#[cfg(test)]
+mod launch_restore_tests {
+    use super::*;
+    use crate::persist::{BookProgress, ViewerState};
+    use crate::reader::ReadingMode;
+
+    #[test]
+    fn restore_prefs_preserves_theme_dark_and_library_layout() {
+        let state = ViewerState {
+            path: "/docs/a.pdf".into(),
+            page: 4,
+            zoom: 1.5,
+            dark: false,
+            theme: Some(theme::AppTheme::SepiaDark),
+            view_mode: LibraryViewMode::List,
+            cover_fit: LibraryCoverFit::Fit,
+            columns: 5,
+            hide_covers: true,
+            cover_size: 2,
+            cover_progress: true,
+        };
+
+        let prefs = restore_prefs_from_state(&state);
+        assert_eq!(prefs.theme, theme::AppTheme::SepiaDark);
+        assert!(prefs.dark);
+        assert_eq!(prefs.view_mode, LibraryViewMode::List);
+        assert_eq!(prefs.cover_fit, LibraryCoverFit::Fit);
+        assert_eq!(prefs.columns, 5);
+        assert!(prefs.hide_covers);
+        assert_eq!(prefs.cover_size, 2);
+        assert!(prefs.cover_progress);
+
+        let legacy_dark = ViewerState {
+            theme: None,
+            dark: true,
+            ..state
+        };
+        let legacy_prefs = restore_prefs_from_state(&legacy_dark);
+        assert_eq!(legacy_prefs.theme, theme::AppTheme::DefaultDark);
+        assert!(legacy_prefs.dark);
+    }
+
+    #[test]
+    fn action_view_resumes_saved_page_from_library_progress() {
+        let books = vec![BookProgress {
+            path: "/docs/paper.pdf".into(),
+            page: 9,
+            page_count: 20,
+            last_read_unix: 100,
+            added_unix: 50,
+            reading_mode: ReadingMode::Scroll,
+            scroll_frac: 0.35,
+        }];
+        assert_eq!(launch_file_start_page(&books, "/docs/paper.pdf"), Some(9));
+        assert_eq!(launch_file_start_page(&books, "/docs/other.pdf"), None);
+    }
+}
