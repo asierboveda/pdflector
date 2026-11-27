@@ -443,4 +443,22 @@ mod prefetch_tests {
         assert_eq!(prefetch_page_window(3, 4, -1), vec![3, 2]);
         assert!(prefetch_page_window(0, 0, 0).is_empty());
     }
+
+    #[test]
+    fn page_overlay_invalidation_clears_badge_sheet_and_bottom_chrome() {
+        let bmp = || pdf_core::Bitmap {
+            width: 1,
+            height: 1,
+            data: vec![0; 4],
+        };
+        let mut badge = Some(bmp());
+        let mut sheet = Some(bmp());
+        let mut chrome_bottom = Some(bmp());
+
+        super::invalidate_page_overlays(&mut badge, &mut sheet, &mut chrome_bottom);
+
+        assert!(badge.is_none());
+        assert!(sheet.is_none());
+        assert!(chrome_bottom.is_none());
+    }
 }
