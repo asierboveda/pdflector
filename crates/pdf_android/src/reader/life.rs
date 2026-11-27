@@ -36,12 +36,65 @@ use crate::thumbs::ThumbCache;
 use log::error;
 use log::info;
 use log::warn;
-use pdf_core::engine::mupdf::MupdfEngine;
-use pdf_core::{AnnotationSet, Document, PageTextCache, RenderEngine};
+use pdf_core::{AnnotationSet, Document, PageTextCache};
 use std::collections::HashSet;
 use std::path::Path;
 
+/// Preferencias globales restaurables de `state.json` antes de cualquier ruta
+/// de arranque (`ACTION_VIEW`, `Remote`, o lanzamiento normal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RestoredPrefs {
+    theme: theme::AppTheme,
+    dark: bool,
+    view_mode: LibraryViewMode,
+    cover_fit: LibraryCoverFit,
+    columns: u32,
+    hide_covers: bool,
+    cover_size: u8,
+    cover_progress: bool,
+}
+
+fn restore_prefs_from_state(state: &persist::ViewerState) -> RestoredPrefs {
+    let (theme, dark) = match state.theme {
+        Some(th) => (th, th.is_dark()),
+        None => (
+            if state.dark {
+                theme::AppTheme::DefaultDark
+            } else {
+                theme::AppTheme::DefaultLight
+            },
+            state.dark,
+        ),
+    };
+    RestoredPrefs {
+        theme,
+        dark,
+        view_mode: state.view_mode,
+        cover_fit: state.cover_fit,
+        columns: state.columns,
+        hide_covers: state.hide_covers,
+        cover_size: state.cover_size,
+        cover_progress: state.cover_progress,
+    }
+}
+
+/// Página inicial para un `ACTION_VIEW` sobre `path`: reanuda la posición
+/// guardada en `library.json` si el documento ya se había leído antes.
+fn launch_file_start_page(books: &[persist::BookProgress], path: &str) -> Option<u32> {
+    persist::progress_for(books, path).map(|b| b.page)
+}
+
 impl Reader {
+    fn apply_restored_prefs(&mut self, prefs: RestoredPrefs) {
+        self.theme = prefs.theme;
+        self.dark = prefs.dark;
+        self.view_mode = prefs.view_mode;
+        self.cover_fit = prefs.cover_fit;
+        self.columns = prefs.columns;
+        self.hide_covers = prefs.hide_covers;
+        self.cover_size = prefs.cover_size;
+        self.cover_progress = prefs.cover_progress;
+    }
     pub(crate) fn new(app: &AndroidApp) -> Self {
         let tool_state = persist::load_tool_state(app.internal_data_path().as_deref());
         let internal_root = app.internal_data_path();
@@ -204,44 +257,26 @@ impl Reader {
             thumb_worker: None,
             thumb_rx: None,
         };
+        // Restaurar preferencias globales (tema + layout de biblioteca) ANTES
+        // de cualquier ruta de arranque para que ACTION_VIEW / Remote nunca
+        // sobrescriban `state.json` con los valores por defecto.
+        let saved_state = persist::load_state(reader.internal_dir.as_deref());
+        if let Some(ref state) = saved_state {
+            reader.apply_restored_prefs(restore_prefs_from_state(state));
+        }
         match launch_intent_request(app) {
             // "Abrir con" (ACTION_VIEW): el PDF se abre directamente, sin pasar
-            // por la biblioteca. Si falla, se cae al picker interno con el
-            // motivo como estado (comportamiento previo al spike de biblioteca).
+            // por la biblioteca, preservando preferencias globales y reanudando
+            // página/modo de lectura si ya existe en `library.json`. Si falla,
+            // se cae al picker interno con el motivo como estado.
             Some(LaunchRequest::File(lp)) => {
                 info!("open-with intent: {} ({})", lp.name, lp.source);
-                let engine = match MupdfEngine::new() {
-                    Ok(e) => e,
-                    Err(e) => {
-                        // Prácticamente infalible (solo falla ante fallo catastrófico
-                        // del allocator); si ocurriera seguimos sin motor.
-                        error!("MupdfEngine::new: {e}");
-                        MupdfEngine
-                    }
-                };
-                match engine.open(Path::new(&lp.path)) {
-                    Ok(doc) => {
-                        info!("opened: {} pages", doc.page_count());
-                        reader.doc = Some(doc);
-                        reader.doc_path = Some(lp.path.clone());
-                        reader.mode = UiMode::Viewer;
-                        // Anotaciones del documento (sidecar SQLite; set vacío
-                        // si no existe o está corrupto).
-                        reader.load_annotations(&lp.path);
-                        // Registrar también el "abrir con": el próximo arranque
-                        // sin intent restaurará este PDF en su última posición.
-                        reader.save_state();
-                        // Y añadirlo a los RECIENTES de la biblioteca (el
-                        // "abrir con" no pasa por `open_pdf`).
-                        reader.touch_recent(&lp.path);
-                        reader.start_render_worker(&lp.path);
-                    }
-                    Err(e) => {
-                        error!("cannot open {}: {e}", lp.path);
-                        reader.mode = UiMode::Picker;
-                        reader.status = Some(format!("Cannot open {}", lp.name));
-                        reader.pdf_list = scan_pdfs(app);
-                    }
+                let start_page = launch_file_start_page(&reader.library.lib_books, &lp.path);
+                if !reader.open_pdf_at(&lp.path, start_page) {
+                    error!("cannot open {}", lp.path);
+                    reader.mode = UiMode::Picker;
+                    reader.status = Some(format!("Cannot open {}", lp.name));
+                    reader.pdf_list = scan_pdfs(app);
                 }
             }
             // Handoff PaperTok / navegador → PDFLector (ACTION_VIEW pdflector:// o ACTION_SEND)
@@ -271,7 +306,9 @@ impl Reader {
                     }
                     if let Some(path_str) = found_path {
                         info!("launch_intent_request: {id} already present at {path_str}");
-                        if reader.open_pdf(&path_str) {
+                        let start_page =
+                            launch_file_start_page(&reader.library.lib_books, &path_str);
+                        if reader.open_pdf_at(&path_str, start_page) {
                             reader.redraw();
                         } else {
                             reader.status = Some(format!("Cannot open {id}"));
@@ -297,29 +334,7 @@ impl Reader {
             // se BORRA el estado y se muestra la BIBLIOTECA CURADA
             // (`internal/library.json`) — SIN escanear MediaStore.
             None => {
-                let restored = if let Some(state) =
-                    persist::load_state(reader.internal_dir.as_deref())
-                {
-                    if let Some(th) = state.theme {
-                        reader.theme = th;
-                        reader.dark = th.is_dark();
-                    } else {
-                        reader.dark = state.dark;
-                        reader.theme = if state.dark {
-                            theme::AppTheme::DefaultDark
-                        } else {
-                            theme::AppTheme::DefaultLight
-                        };
-                    }
-                    // Preferencias de la BIBLIOTECA (menús ⋯/☰, Tarea 1:
-                    // esqueleto): se restauran aunque el PDF guardado ya
-                    // no exista (caen a la biblioteca con su layout).
-                    reader.view_mode = state.view_mode;
-                    reader.cover_fit = state.cover_fit;
-                    reader.columns = state.columns;
-                    reader.hide_covers = state.hide_covers;
-                    reader.cover_size = state.cover_size;
-                    reader.cover_progress = state.cover_progress;
+                let restored = if let Some(state) = saved_state {
                     // Solo restaurar si el PDF sigue accesible: `open_pdf`
                     // falla si no se puede abrir (corrupto) y deja el
                     // estado intacto.
