@@ -928,4 +928,25 @@ mod ink_overlay_lifecycle_tests {
         assert_eq!(overlay.commits, 0);
         assert_eq!(overlay.events, ["cancel", "clear"]);
     }
+
+    #[test]
+    fn begin_tool_gesture_skips_native_repaint_when_ink_overlay_is_active() {
+        let mut overlay_ink = ink_gesture();
+        overlay_ink.ink_overlay_route = true;
+        overlay_ink.ink_overlay_used = true;
+        assert!(
+            !should_repaint_on_tool_begin(true, Some(&overlay_ink)),
+            "pen-down already routed to InkOverlay must not trigger a redundant EGL repaint"
+        );
+
+        let fallback_ink = ink_gesture();
+        assert!(
+            should_repaint_on_tool_begin(true, Some(&fallback_ink)),
+            "pen-down without InkOverlay must request native wet repaint"
+        );
+        assert!(
+            !should_repaint_on_tool_begin(false, Some(&fallback_ink)),
+            "no window means no repaint"
+        );
+    }
 }
