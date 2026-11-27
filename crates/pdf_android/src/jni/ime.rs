@@ -67,7 +67,7 @@ fn ime_class_raw(app: &AndroidApp) -> Option<jni::sys::jobject> {
     let vm = JavaVM::singleton().ok()?;
     let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
     let res: jni::errors::Result<Global<JObject<'static>>> = vm.attach_current_thread(|env| {
-        env.with_local_frame(32, |env| {
+        let res = env.with_local_frame(32, |env| {
             // SAFETY: ref global no owned, válida mientras viva `app`.
             let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
             let cls_loader = env
@@ -108,15 +108,15 @@ fn ime_class_raw(app: &AndroidApp) -> Option<jni::sys::jobject> {
                 )?
                 .l()?;
             env.new_global_ref(class)
-        })
+        });
+        if res.is_err() {
+            env.exception_clear();
+        }
+        res
     });
     let class = match res {
         Ok(c) => c,
         Err(e) => {
-            let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
-                env.exception_clear();
-                Ok(())
-            });
             error!("ime: load ImeHelper: {e}");
             return None;
         }
@@ -142,15 +142,15 @@ pub(crate) fn ime_attach(app: &AndroidApp, initial: &str) {
     };
     let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
     let initial = initial.to_string();
-    let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
-        env.with_local_frame(16, |env| {
-            // SAFETY: clase GlobalRef (instancia de java.lang.Class) válida mientras la JVM viva.
-            let class = unsafe { JClass::from_raw(env, raw) };
+    let res: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+        let res = env.with_local_frame(16, |env| {
+            // SAFETY: ref global no owned (GlobalRef cacheado en IME_LOADED), válida mientras la JVM viva.
+            let class = unsafe { env.as_cast_raw::<JClass>(&raw)? };
             // SAFETY: ref global no owned, válida mientras viva `app`.
             let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
             let jinit = env.new_string(&initial)?;
             env.call_static_method(
-                &class,
+                class.as_ref(),
                 jni_str!("attach"),
                 jni_sig!(sig = (android.app.Activity, java.lang.String) -> void),
                 &[
@@ -159,8 +159,15 @@ pub(crate) fn ime_attach(app: &AndroidApp, initial: &str) {
                 ],
             )?;
             Ok(())
-        })
+        });
+        if res.is_err() {
+            env.exception_clear();
+        }
+        res
     });
+    if let Err(e) = res {
+        error!("ime_attach: {e}");
+    }
 }
 
 /// Oculta el teclado y suelta el foco del campo invisible.
@@ -172,21 +179,28 @@ pub(crate) fn ime_hide(app: &AndroidApp) {
         return;
     };
     let raw_activity = app.activity_as_ptr() as jni::sys::jobject;
-    let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
-        env.with_local_frame(8, |env| {
-            // SAFETY: clase GlobalRef (instancia de java.lang.Class) válida mientras la JVM viva.
-            let class = unsafe { JClass::from_raw(env, raw) };
+    let res: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+        let res = env.with_local_frame(8, |env| {
+            // SAFETY: ref global no owned (GlobalRef cacheado en IME_LOADED), válida mientras la JVM viva.
+            let class = unsafe { env.as_cast_raw::<JClass>(&raw)? };
             // SAFETY: ref global no owned, válida mientras viva `app`.
             let activity = unsafe { env.as_cast_raw::<JObject>(&raw_activity)? };
             env.call_static_method(
-                &class,
+                class.as_ref(),
                 jni_str!("hide"),
                 jni_sig!(sig = (android.app.Activity) -> void),
                 &[JValue::Object(activity.as_ref())],
             )?;
             Ok(())
-        })
+        });
+        if res.is_err() {
+            env.exception_clear();
+        }
+        res
     });
+    if let Err(e) = res {
+        error!("ime_hide: {e}");
+    }
 }
 
 /// Texto ACTUAL del campo del buscador (lo que ha tecleado el usuario; el
@@ -195,27 +209,27 @@ pub(crate) fn ime_text(app: &AndroidApp) -> Option<String> {
     let raw = ime_class_raw(app)?;
     let vm = JavaVM::singleton().ok()?;
     let res: jni::errors::Result<String> = vm.attach_current_thread(|env| {
-        env.with_local_frame(8, |env| {
-            // SAFETY: clase GlobalRef (instancia de java.lang.Class) válida mientras la JVM viva.
-            let class = unsafe { JClass::from_raw(env, raw) };
+        let res = env.with_local_frame(8, |env| {
+            // SAFETY: ref global no owned (GlobalRef cacheado en IME_LOADED), válida mientras la JVM viva.
+            let class = unsafe { env.as_cast_raw::<JClass>(&raw)? };
             let obj = env
                 .call_static_method(
-                    &class,
+                    class.as_ref(),
                     jni_str!("getText"),
                     jni_sig!(sig = () -> java.lang.String),
                     &[],
                 )?
                 .l()?;
             jni_jstring(env, &obj)
-        })
+        });
+        if res.is_err() {
+            env.exception_clear();
+        }
+        res
     });
     match res {
         Ok(t) => Some(t),
         Err(e) => {
-            let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
-                env.exception_clear();
-                Ok(())
-            });
             error!("ime_text: {e}");
             None
         }
@@ -231,18 +245,25 @@ pub(crate) fn ime_set_text(app: &AndroidApp, text: &str) {
         return;
     };
     let text = text.to_string();
-    let _: jni::errors::Result<()> = vm.attach_current_thread(|env| {
-        env.with_local_frame(8, |env| {
-            // SAFETY: clase GlobalRef (instancia de java.lang.Class) válida mientras la JVM viva.
-            let class = unsafe { JClass::from_raw(env, raw) };
+    let res: jni::errors::Result<()> = vm.attach_current_thread(|env| {
+        let res = env.with_local_frame(8, |env| {
+            // SAFETY: ref global no owned (GlobalRef cacheado en IME_LOADED), válida mientras la JVM viva.
+            let class = unsafe { env.as_cast_raw::<JClass>(&raw)? };
             let jt = env.new_string(&text)?;
             env.call_static_method(
-                &class,
+                class.as_ref(),
                 jni_str!("setText"),
                 jni_sig!(sig = (java.lang.String) -> void),
                 &[JValue::Object(jt.as_ref())],
             )?;
             Ok(())
-        })
+        });
+        if res.is_err() {
+            env.exception_clear();
+        }
+        res
     });
+    if let Err(e) = res {
+        error!("ime_set_text: {e}");
+    }
 }
