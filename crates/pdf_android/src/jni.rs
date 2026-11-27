@@ -251,4 +251,23 @@ mod tests {
             "expected at least {attach_calls} exception_clear() guards in jni/ime.rs, found {clear_calls}"
         );
     }
+
+    #[test]
+    fn window_jni_guards_null_insets_controller_and_clears_exceptions() {
+        let src = include_str!("jni/window.rs");
+        assert!(
+            !src.contains("let _ = env.set_field("),
+            "jni/window.rs must clear pending Java exceptions if set_field fails before calling setAttributes"
+        );
+        assert!(
+            src.contains("controller.is_null()"),
+            "enter_immersive must guard against null getInsetsController() before calling hide/setSystemBarsBehavior"
+        );
+        let attach_calls = src.matches("attach_current_thread(").count();
+        let clear_calls = src.matches("exception_clear()").count();
+        assert!(
+            clear_calls >= attach_calls + 2,
+            "expected exception_clear() on every attach_current_thread and both optional set_field calls in jni/window.rs, found {clear_calls} for {attach_calls} attaches"
+        );
+    }
 }
